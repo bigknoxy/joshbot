@@ -19,6 +19,14 @@ success(){ printf "${GREEN}[OK]${RESET} %s\n" "$1"; }
 warn()  { printf "${YELLOW}[WARN]${RESET} %s\n" "$1"; }
 error() { printf "${RED}[ERROR]${RESET} %s\n" "$1" >&2; }
 
+# Use sudo only when needed and available
+SUDO=""
+if [[ $(id -u) -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+        SUDO="sudo"
+    fi
+fi
+
 # Check Python 3.11+
 info "Checking Python version..."
 if ! command -v python3 >/dev/null 2>&1; then
@@ -47,31 +55,44 @@ if ! command -v pipx >/dev/null 2>&1; then
         # Method 1: pip already available
         if python3 -m pip --version >/dev/null 2>&1; then
             info "Installing pipx via pip..."
-            python3 -m pip install --user pipx 2>&1 && PIPX_INSTALLED=true
-
-        # Method 2: bootstrap pip via ensurepip, then install pipx
-        elif python3 -m ensurepip --user >/dev/null 2>&1; then
-            info "Bootstrapped pip via ensurepip, installing pipx..."
-            python3 -m pip install --user pipx 2>&1 && PIPX_INSTALLED=true
+            if python3 -m pip install --user pipx 2>&1; then
+                PIPX_INSTALLED=true
+            fi
         fi
 
-        # Method 3: system package manager (sudo as last resort)
+        # Method 2: bootstrap pip via ensurepip, then install pipx
+        if [[ "$PIPX_INSTALLED" != "true" ]] && python3 -c "import ensurepip" 2>/dev/null; then
+            info "Bootstrapping pip via ensurepip..."
+            if python3 -m ensurepip --user 2>&1; then
+                info "Installing pipx via pip..."
+                if python3 -m pip install --user pipx 2>&1; then
+                    PIPX_INSTALLED=true
+                fi
+            fi
+        fi
+
+        # Method 3: system package manager (last resort)
         if [[ "$PIPX_INSTALLED" != "true" ]]; then
             if command -v apt-get >/dev/null 2>&1; then
-                info "Trying system package manager: sudo apt-get install pipx..."
-                # Install python3-pip + pipx; pipx may not exist in all repos
-                if sudo apt-get update -qq 2>&1 && sudo apt-get install -y -qq pipx 2>&1; then
+                info "Installing pipx via apt-get..."
+                if $SUDO apt-get update -qq 2>&1 && $SUDO apt-get install -y pipx 2>&1; then
                     PIPX_INSTALLED=true
-                elif sudo apt-get install -y -qq python3-pip 2>&1; then
-                    info "Installed python3-pip, now installing pipx..."
-                    python3 -m pip install --user pipx 2>&1 && PIPX_INSTALLED=true
+                elif $SUDO apt-get install -y python3-pip 2>&1; then
+                    info "Installed python3-pip, now installing pipx via pip..."
+                    if python3 -m pip install --user pipx 2>&1; then
+                        PIPX_INSTALLED=true
+                    fi
                 fi
             elif command -v dnf >/dev/null 2>&1; then
-                info "Trying system package manager: sudo dnf install pipx..."
-                sudo dnf install -y pipx 2>&1 && PIPX_INSTALLED=true
+                info "Installing pipx via dnf..."
+                if $SUDO dnf install -y pipx 2>&1; then
+                    PIPX_INSTALLED=true
+                fi
             elif command -v brew >/dev/null 2>&1; then
-                info "Trying: brew install pipx..."
-                brew install pipx 2>&1 && PIPX_INSTALLED=true
+                info "Installing pipx via brew..."
+                if brew install pipx 2>&1; then
+                    PIPX_INSTALLED=true
+                fi
             fi
         fi
 
@@ -94,7 +115,7 @@ if ! command -v pipx >/dev/null 2>&1; then
         warn "You may need to restart your shell for PATH changes."
     fi
 fi
-success "pipx available"
+success "pipx ready"
 
 # Check if already installed
 if command -v joshbot >/dev/null 2>&1; then
@@ -104,10 +125,10 @@ if command -v joshbot >/dev/null 2>&1; then
 fi
 
 # Install joshbot
-info "Installing joshbot from GitHub..."
-$PIPX install "joshbot @ git+https://github.com/bigknoxy/joshbot.git" 2>&1 | tail -3
+info "Installing joshbot from GitHub (this may take a minute)..."
+$PIPX install "joshbot @ git+https://github.com/bigknoxy/joshbot.git" 2>&1 | tail -5
 
-# Verify — check PATH and common pipx locations
+# Verify
 JOSHBOT_BIN=""
 if command -v joshbot >/dev/null 2>&1; then
     JOSHBOT_BIN="joshbot"

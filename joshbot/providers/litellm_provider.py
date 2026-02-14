@@ -6,11 +6,15 @@ import json
 import os
 from typing import Any
 
+import litellm
 from loguru import logger
 
 from ..config.schema import Config, ProviderConfig
 from .base import LLMProvider, LLMResponse, ToolCallRequest
 from .registry import PROVIDERS, resolve_model_name
+
+# Suppress litellm's noisy banner messages
+litellm.suppress_debug_info = True
 
 
 class LiteLLMProvider(LLMProvider):

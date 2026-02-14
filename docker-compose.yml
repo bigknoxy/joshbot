@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  joshbot:
+    build: .
+    container_name: joshbot
+    restart: unless-stopped
+    volumes:
+      # Persist config, sessions, and memory across restarts
+      - ~/.joshbot:/root/.joshbot
+    environment:
+      # Alternatively, set provider keys via env vars:
+      # JOSHBOT_PROVIDERS__OPENROUTER__API_KEY: "sk-or-..."
+      # JOSHBOT_CHANNELS__TELEGRAM__ENABLED: "true"
+      # JOSHBOT_CHANNELS__TELEGRAM__TOKEN: "..."
+      - TZ=UTC
+    # Use gateway mode by default (Telegram + all channels)
+    command: gateway

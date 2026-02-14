@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "joshbot"
+version = "0.1.0"
+description = "A lightweight personal AI assistant with self-learning, long-term memory, and Telegram integration"
+requires-python = ">=3.11"
+dependencies = [
+    "litellm>=1.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "prompt-toolkit>=3.0.0",
+    "httpx[socks]>=0.25.0",
+    "readability-lxml>=0.8.0",
+    "loguru>=0.7.0",
+    "croniter>=2.0.0",
+    "python-telegram-bot[socks]>=21.0",
+    "lxml_html_clean>=0.1.0",
+]
+
+[project.scripts]
+joshbot = "joshbot.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["joshbot"]

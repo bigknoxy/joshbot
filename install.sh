@@ -42,9 +42,45 @@ if ! command -v pipx >/dev/null 2>&1; then
         PIPX="python3 -m pipx"
     else
         warn "pipx not found, installing..."
-        python3 -m pip install --user pipx 2>&1 | tail -1
-        python3 -m pipx ensurepath >/dev/null 2>&1 || true
-        PIPX="python3 -m pipx"
+        PIPX_INSTALLED=false
+
+        # Method 1: pip (most common)
+        if python3 -m pip install --user pipx 2>/dev/null; then
+            PIPX_INSTALLED=true
+        # Method 2: bootstrap pip via ensurepip, then install pipx
+        elif python3 -m ensurepip --user 2>/dev/null && python3 -m pip install --user pipx 2>/dev/null; then
+            PIPX_INSTALLED=true
+        # Method 3: system package manager (sudo as last resort)
+        elif command -v apt-get >/dev/null 2>&1; then
+            info "pip not available, trying: sudo apt-get install -y pipx"
+            if sudo apt-get update -qq && sudo apt-get install -y -qq pipx; then
+                PIPX_INSTALLED=true
+            fi
+        elif command -v dnf >/dev/null 2>&1; then
+            info "pip not available, trying: sudo dnf install -y pipx"
+            if sudo dnf install -y pipx 2>/dev/null; then
+                PIPX_INSTALLED=true
+            fi
+        elif command -v brew >/dev/null 2>&1; then
+            info "pip not available, trying: brew install pipx"
+            if brew install pipx 2>/dev/null; then
+                PIPX_INSTALLED=true
+            fi
+        fi
+
+        if [[ "$PIPX_INSTALLED" != "true" ]]; then
+            error "Could not install pipx. Please install it manually:"
+            error "  https://pipx.pypa.io/stable/installation/"
+            exit 1
+        fi
+
+        # Determine how to invoke pipx
+        if command -v pipx >/dev/null 2>&1; then
+            PIPX="pipx"
+        else
+            PIPX="python3 -m pipx"
+        fi
+        $PIPX ensurepath >/dev/null 2>&1 || true
         warn "You may need to restart your shell for PATH changes."
     fi
 fi

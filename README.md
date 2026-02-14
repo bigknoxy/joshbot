@@ -24,7 +24,21 @@ A lightweight personal AI assistant with self-learning, long-term memory, skill 
 
 ## Quick Start
 
-### 1. Install
+### Quick Install (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
+```
+
+This installs joshbot via [pipx](https://pipx.pypa.io/) in an isolated environment. Requires Python 3.11+.
+
+After install, run:
+
+```bash
+joshbot onboard
+```
+
+### Manual Install
 
 ```bash
 git clone https://github.com/bigknoxy/joshbot.git
@@ -411,6 +425,18 @@ joshbot/
 ## Upgrading
 
 ```bash
+pipx upgrade joshbot --pip-args='--force-reinstall'
+```
+
+Or reinstall:
+
+```bash
+pipx uninstall joshbot && pipx install "joshbot @ git+https://github.com/bigknoxy/joshbot.git"
+```
+
+If you installed from source:
+
+```bash
 cd joshbot
 git pull
 pip install .
@@ -418,11 +444,24 @@ pip install .
 
 Your config, sessions, and memory in `~/.joshbot/` are preserved across upgrades.
 
-## Uninstalling
+## Uninstall
+
+### Quick Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/uninstall.sh | bash
+```
+
+This removes joshbot and optionally cleans up your data directory.
+
+### Manual Uninstall
 
 ```bash
 # Remove the package
 pip uninstall joshbot
+
+# Or if installed with pipx:
+pipx uninstall joshbot
 
 # Remove all data (config, sessions, memory, media)
 rm -rf ~/.joshbot

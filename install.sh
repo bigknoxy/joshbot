@@ -52,10 +52,13 @@ if ! command -v pipx >/dev/null 2>&1; then
         warn "pipx not found, installing..."
         PIPX_INSTALLED=false
 
+        # pip flags: --break-system-packages handles PEP 668 (Debian 12+, Alpine, etc.)
+        PIP_FLAGS="--user --break-system-packages"
+
         # Method 1: pip already available
         if python3 -m pip --version >/dev/null 2>&1; then
             info "Installing pipx via pip..."
-            if python3 -m pip install --user pipx 2>&1; then
+            if python3 -m pip install $PIP_FLAGS pipx 2>&1; then
                 PIPX_INSTALLED=true
             fi
         fi
@@ -63,9 +66,9 @@ if ! command -v pipx >/dev/null 2>&1; then
         # Method 2: bootstrap pip via ensurepip, then install pipx
         if [[ "$PIPX_INSTALLED" != "true" ]] && python3 -c "import ensurepip" 2>/dev/null; then
             info "Bootstrapping pip via ensurepip..."
-            if python3 -m ensurepip --user 2>&1; then
+            if python3 -m ensurepip $PIP_FLAGS 2>&1; then
                 info "Installing pipx via pip..."
-                if python3 -m pip install --user pipx 2>&1; then
+                if python3 -m pip install $PIP_FLAGS pipx 2>&1; then
                     PIPX_INSTALLED=true
                 fi
             fi
@@ -73,13 +76,23 @@ if ! command -v pipx >/dev/null 2>&1; then
 
         # Method 3: system package manager (last resort)
         if [[ "$PIPX_INSTALLED" != "true" ]]; then
-            if command -v apt-get >/dev/null 2>&1; then
+            if command -v apk >/dev/null 2>&1; then
+                info "Installing pipx via apk..."
+                if $SUDO apk add --no-cache pipx 2>&1; then
+                    PIPX_INSTALLED=true
+                elif $SUDO apk add --no-cache py3-pip 2>&1; then
+                    info "Installed py3-pip, now installing pipx..."
+                    if python3 -m pip install $PIP_FLAGS pipx 2>&1; then
+                        PIPX_INSTALLED=true
+                    fi
+                fi
+            elif command -v apt-get >/dev/null 2>&1; then
                 info "Installing pipx via apt-get..."
                 if $SUDO apt-get update -qq 2>&1 && $SUDO apt-get install -y pipx 2>&1; then
                     PIPX_INSTALLED=true
                 elif $SUDO apt-get install -y python3-pip 2>&1; then
                     info "Installed python3-pip, now installing pipx via pip..."
-                    if python3 -m pip install --user pipx 2>&1; then
+                    if python3 -m pip install $PIP_FLAGS pipx 2>&1; then
                         PIPX_INSTALLED=true
                     fi
                 fi
@@ -98,6 +111,7 @@ if ! command -v pipx >/dev/null 2>&1; then
 
         if [[ "$PIPX_INSTALLED" != "true" ]]; then
             error "Could not install pipx. Please install manually:"
+            error "  apk add pipx                   # Alpine"
             error "  sudo apt-get install -y pipx   # Debian/Ubuntu"
             error "  sudo dnf install -y pipx       # Fedora/RHEL"
             error "  brew install pipx              # macOS"

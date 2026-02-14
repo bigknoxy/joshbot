@@ -44,32 +44,42 @@ if ! command -v pipx >/dev/null 2>&1; then
         warn "pipx not found, installing..."
         PIPX_INSTALLED=false
 
-        # Method 1: pip (most common)
-        if python3 -m pip install --user pipx 2>/dev/null; then
-            PIPX_INSTALLED=true
+        # Method 1: pip already available
+        if python3 -m pip --version >/dev/null 2>&1; then
+            info "Installing pipx via pip..."
+            python3 -m pip install --user pipx 2>&1 && PIPX_INSTALLED=true
+
         # Method 2: bootstrap pip via ensurepip, then install pipx
-        elif python3 -m ensurepip --user 2>/dev/null && python3 -m pip install --user pipx 2>/dev/null; then
-            PIPX_INSTALLED=true
+        elif python3 -m ensurepip --user >/dev/null 2>&1; then
+            info "Bootstrapped pip via ensurepip, installing pipx..."
+            python3 -m pip install --user pipx 2>&1 && PIPX_INSTALLED=true
+        fi
+
         # Method 3: system package manager (sudo as last resort)
-        elif command -v apt-get >/dev/null 2>&1; then
-            info "pip not available, trying: sudo apt-get install -y pipx"
-            if sudo apt-get update -qq && sudo apt-get install -y -qq pipx; then
-                PIPX_INSTALLED=true
-            fi
-        elif command -v dnf >/dev/null 2>&1; then
-            info "pip not available, trying: sudo dnf install -y pipx"
-            if sudo dnf install -y pipx 2>/dev/null; then
-                PIPX_INSTALLED=true
-            fi
-        elif command -v brew >/dev/null 2>&1; then
-            info "pip not available, trying: brew install pipx"
-            if brew install pipx 2>/dev/null; then
-                PIPX_INSTALLED=true
+        if [[ "$PIPX_INSTALLED" != "true" ]]; then
+            if command -v apt-get >/dev/null 2>&1; then
+                info "Trying system package manager: sudo apt-get install pipx..."
+                # Install python3-pip + pipx; pipx may not exist in all repos
+                if sudo apt-get update -qq 2>&1 && sudo apt-get install -y -qq pipx 2>&1; then
+                    PIPX_INSTALLED=true
+                elif sudo apt-get install -y -qq python3-pip 2>&1; then
+                    info "Installed python3-pip, now installing pipx..."
+                    python3 -m pip install --user pipx 2>&1 && PIPX_INSTALLED=true
+                fi
+            elif command -v dnf >/dev/null 2>&1; then
+                info "Trying system package manager: sudo dnf install pipx..."
+                sudo dnf install -y pipx 2>&1 && PIPX_INSTALLED=true
+            elif command -v brew >/dev/null 2>&1; then
+                info "Trying: brew install pipx..."
+                brew install pipx 2>&1 && PIPX_INSTALLED=true
             fi
         fi
 
         if [[ "$PIPX_INSTALLED" != "true" ]]; then
-            error "Could not install pipx. Please install it manually:"
+            error "Could not install pipx. Please install manually:"
+            error "  sudo apt-get install -y pipx   # Debian/Ubuntu"
+            error "  sudo dnf install -y pipx       # Fedora/RHEL"
+            error "  brew install pipx              # macOS"
             error "  https://pipx.pypa.io/stable/installation/"
             exit 1
         fi

@@ -52,60 +52,34 @@ if ! command -v pipx >/dev/null 2>&1; then
         warn "pipx not found, installing..."
         PIPX_INSTALLED=false
 
-        # pip flags: --break-system-packages handles PEP 668 (Debian 12+, Alpine, etc.)
-        PIP_FLAGS="--user --break-system-packages"
-
-        # Method 1: pip already available
-        if python3 -m pip --version >/dev/null 2>&1; then
-            info "Installing pipx via pip..."
-            if python3 -m pip install $PIP_FLAGS pipx 2>&1; then
-                PIPX_INSTALLED=true
-            fi
+        # Method 1: system package manager (most reliable)
+        if command -v apk >/dev/null 2>&1; then
+            info "Installing pipx via apk..."
+            ${SUDO:+$SUDO} apk add pipx 2>&1 && PIPX_INSTALLED=true || true
+        elif command -v apt-get >/dev/null 2>&1; then
+            info "Installing pipx via apt-get..."
+            ( ${SUDO:+$SUDO} apt-get update -qq && ${SUDO:+$SUDO} apt-get install -y pipx ) 2>&1 && PIPX_INSTALLED=true || true
+        elif command -v dnf >/dev/null 2>&1; then
+            info "Installing pipx via dnf..."
+            ${SUDO:+$SUDO} dnf install -y pipx 2>&1 && PIPX_INSTALLED=true || true
+        elif command -v brew >/dev/null 2>&1; then
+            info "Installing pipx via brew..."
+            brew install pipx 2>&1 && PIPX_INSTALLED=true || true
         fi
 
-        # Method 2: bootstrap pip via ensurepip, then install pipx
+        # Method 2: pip (if package manager failed or unavailable)
+        if [[ "$PIPX_INSTALLED" != "true" ]] && python3 -m pip --version >/dev/null 2>&1; then
+            info "Installing pipx via pip..."
+            python3 -m pip install --user --break-system-packages pipx 2>&1 && PIPX_INSTALLED=true || true
+        fi
+
+        # Method 3: bootstrap pip via ensurepip, then install pipx
         if [[ "$PIPX_INSTALLED" != "true" ]] && python3 -c "import ensurepip" 2>/dev/null; then
             info "Bootstrapping pip via ensurepip..."
-            if python3 -m ensurepip $PIP_FLAGS 2>&1; then
+            python3 -m ensurepip --user --break-system-packages 2>&1 || true
+            if python3 -m pip --version >/dev/null 2>&1; then
                 info "Installing pipx via pip..."
-                if python3 -m pip install $PIP_FLAGS pipx 2>&1; then
-                    PIPX_INSTALLED=true
-                fi
-            fi
-        fi
-
-        # Method 3: system package manager (last resort)
-        if [[ "$PIPX_INSTALLED" != "true" ]]; then
-            if command -v apk >/dev/null 2>&1; then
-                info "Installing pipx via apk..."
-                if $SUDO apk add --no-cache pipx 2>&1; then
-                    PIPX_INSTALLED=true
-                elif $SUDO apk add --no-cache py3-pip 2>&1; then
-                    info "Installed py3-pip, now installing pipx..."
-                    if python3 -m pip install $PIP_FLAGS pipx 2>&1; then
-                        PIPX_INSTALLED=true
-                    fi
-                fi
-            elif command -v apt-get >/dev/null 2>&1; then
-                info "Installing pipx via apt-get..."
-                if $SUDO apt-get update -qq 2>&1 && $SUDO apt-get install -y pipx 2>&1; then
-                    PIPX_INSTALLED=true
-                elif $SUDO apt-get install -y python3-pip 2>&1; then
-                    info "Installed python3-pip, now installing pipx via pip..."
-                    if python3 -m pip install $PIP_FLAGS pipx 2>&1; then
-                        PIPX_INSTALLED=true
-                    fi
-                fi
-            elif command -v dnf >/dev/null 2>&1; then
-                info "Installing pipx via dnf..."
-                if $SUDO dnf install -y pipx 2>&1; then
-                    PIPX_INSTALLED=true
-                fi
-            elif command -v brew >/dev/null 2>&1; then
-                info "Installing pipx via brew..."
-                if brew install pipx 2>&1; then
-                    PIPX_INSTALLED=true
-                fi
+                python3 -m pip install --user --break-system-packages pipx 2>&1 && PIPX_INSTALLED=true || true
             fi
         fi
 

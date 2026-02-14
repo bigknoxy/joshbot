@@ -92,7 +92,7 @@ Config file: `~/.joshbot/config.json`
   "agents": {
     "defaults": {
       "workspace": "~/.joshbot/workspace",
-      "model": "google/gemma-2-9b-it:free",
+      "model": "arcee-ai/trinity-large-preview:free",
       "max_tokens": 8192,
       "temperature": 0.7,
       "max_tool_iterations": 20,
@@ -125,7 +125,7 @@ Config file: `~/.joshbot/config.json`
 
 ### Changing the LLM Model
 
-The default model is `google/gemma-2-9b-it:free` via OpenRouter (free, no credit card needed).
+The default model is `arcee-ai/trinity-large-preview:free` via OpenRouter (free, no credit card needed).
 
 **To use a better model** (requires OpenRouter credits):
 ```json

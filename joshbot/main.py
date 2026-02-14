@@ -9,9 +9,14 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
+
+# Configure loguru to use WARNING level by default (not DEBUG)
+logger.remove()
+logger.add(sys.stderr, level="WARNING")
 
 app = typer.Typer(
     name="joshbot",

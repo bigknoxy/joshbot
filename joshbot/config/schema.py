@@ -25,7 +25,7 @@ class AgentDefaults(BaseModel):
     """Default agent configuration."""
 
     workspace: str = str(DEFAULT_WORKSPACE)
-    model: str = "google/gemma-2-9b-it:free"
+    model: str = "arcee-ai/trinity-large-preview:free"
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20

@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -15,11 +15,41 @@ from rich.prompt import Prompt, Confirm
 
 app = typer.Typer(
     name="joshbot",
-    help="A lightweight personal AI assistant with self-learning and long-term memory.",
     no_args_is_help=True,
 )
 
+
+def _version_callback(value: bool) -> None:
+    """Print version and exit."""
+    if value:
+        from . import __version__
+
+        console.print(f"joshbot v{__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
+    """A lightweight personal AI assistant with self-learning and long-term memory."""
+    pass
+
+
 console = Console()
+
+if TYPE_CHECKING:
+    from .bus.queue import MessageBus
+    from .config.schema import Config
+    from .cron.service import CronService
+    from .tools.registry import ToolRegistry
 
 
 def _get_bundled_skills_dir() -> Path:
@@ -27,7 +57,9 @@ def _get_bundled_skills_dir() -> Path:
     return Path(__file__).parent.parent / "skills"
 
 
-def _build_tools(config, bus, cron_service):
+def _build_tools(
+    config: Config, bus: MessageBus, cron_service: CronService
+) -> ToolRegistry:
     """Build and register all tools."""
     from .tools.registry import ToolRegistry
     from .tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
@@ -68,7 +100,7 @@ def _build_tools(config, bus, cron_service):
     return registry
 
 
-async def _run_agent_mode(config):
+async def _run_agent_mode(config: Config) -> None:
     """Run joshbot in interactive CLI mode."""
     from .bus.queue import MessageBus
     from .providers.litellm_provider import LiteLLMProvider
@@ -129,7 +161,7 @@ async def _run_agent_mode(config):
         await cron_service.stop()
 
 
-async def _run_gateway_mode(config):
+async def _run_gateway_mode(config: Config) -> None:
     """Run joshbot in gateway mode (Telegram + all channels)."""
     from .bus.queue import MessageBus
     from .providers.litellm_provider import LiteLLMProvider
@@ -502,6 +534,7 @@ def gateway():
 @app.command()
 def status():
     """Show joshbot configuration and status."""
+    from . import __version__
     from .config.loader import load_config, CONFIG_FILE
     from .config.schema import DEFAULT_HOME
 
@@ -513,6 +546,7 @@ def status():
 
     console.print(
         Panel.fit(
+            f"[bold]Version:[/bold] {__version__}\n"
             f"[bold]Config file:[/bold] {CONFIG_FILE} {'[green](exists)[/green]' if config_exists else '[red](missing)[/red]'}\n"
             f"[bold]Workspace:[/bold] {config.workspace_dir} {'[green](exists)[/green]' if ws_exists else '[red](missing)[/red]'}\n"
             f"[bold]Sessions:[/bold] {config.sessions_dir}\n"
@@ -539,6 +573,240 @@ def status():
         size = history_file.stat().st_size
         lines = len(history_file.read_text().splitlines())
         console.print(f"  HISTORY.md: {size} bytes, {lines} lines")
+
+
+GITHUB_REPO = "bigknoxy/joshbot"
+
+
+def _fetch_latest_version() -> str | None:
+    """Fetch latest version tag from GitHub API."""
+    import httpx
+
+    try:
+        resp = httpx.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            timeout=10,
+            follow_redirects=True,
+        )
+        if resp.status_code == 200:
+            tag = resp.json().get("tag_name", "")
+            return tag.lstrip("v")
+        # No releases yet — try tags
+        resp = httpx.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/tags",
+            timeout=10,
+            follow_redirects=True,
+        )
+        if resp.status_code == 200:
+            tags = resp.json()
+            if tags:
+                return tags[0]["name"].lstrip("v")
+        return None
+    except (httpx.HTTPError, KeyError, IndexError):
+        return None
+
+
+def _compare_versions(latest: str, current: str) -> bool:
+    """Return True if latest is newer than current."""
+    try:
+        latest_parts = [int(x) for x in latest.split(".")]
+        current_parts = [int(x) for x in current.split(".")]
+        return latest_parts > current_parts
+    except (ValueError, AttributeError):
+        return latest != current
+
+
+def _detect_install_method() -> str:
+    """Auto-detect how joshbot was installed."""
+    import os
+    import subprocess
+
+    # Check for Docker
+    if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER"):
+        return "docker"
+
+    # Check for pipx
+    try:
+        result = subprocess.run(
+            ["pipx", "list", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and "joshbot" in result.stdout:
+            return "pipx"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Check for editable install (development mode)
+    try:
+        result = subprocess.run(
+            ["pip", "show", "-f", "joshbot"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and "Editable" in result.stdout:
+            return "editable"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return "pip"
+
+
+def _run_update(method: str) -> bool:
+    """Execute the update using the detected method."""
+    import os
+    import subprocess
+
+    try:
+        if method == "pipx":
+            result = subprocess.run(
+                ["pipx", "upgrade", "joshbot", "--pip-args=--force-reinstall"],
+                capture_output=False,
+                timeout=120,
+            )
+            return result.returncode == 0
+
+        elif method == "editable":
+            # Find the source directory
+            result = subprocess.run(
+                ["pip", "show", "joshbot"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            location = ""
+            for line in result.stdout.splitlines():
+                if line.startswith("Location:"):
+                    location = line.split(":", 1)[1].strip()
+                    break
+
+            if not location:
+                return False
+
+            # Git pull then reinstall
+            source_dir = (
+                os.path.dirname(location) if "site-packages" in location else location
+            )
+            # For editable installs, the source is typically the project root
+            # Try to find it via pip show's Editable project location
+            result2 = subprocess.run(
+                ["pip", "show", "-f", "joshbot"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            for line in result2.stdout.splitlines():
+                if "Editable project location" in line:
+                    source_dir = line.split(":", 1)[1].strip()
+                    break
+
+            git_result = subprocess.run(
+                ["git", "-C", source_dir, "pull"],
+                capture_output=False,
+                timeout=60,
+            )
+            if git_result.returncode != 0:
+                return False
+
+            pip_result = subprocess.run(
+                ["pip", "install", "-e", source_dir],
+                capture_output=False,
+                timeout=120,
+            )
+            return pip_result.returncode == 0
+
+        elif method == "docker":
+            console.print("[yellow]Docker containers cannot self-update.[/yellow]")
+            console.print("Run these commands on the host:")
+            console.print("  [bold]docker compose build && docker compose up -d[/bold]")
+            return True
+
+        else:  # pip
+            result = subprocess.run(
+                [
+                    "pip",
+                    "install",
+                    "--upgrade",
+                    f"joshbot @ git+https://github.com/{GITHUB_REPO}.git",
+                ],
+                capture_output=False,
+                timeout=120,
+            )
+            return result.returncode == 0
+
+    except subprocess.TimeoutExpired:
+        console.print("[red]Update timed out.[/red]")
+        return False
+    except Exception as e:
+        console.print(f"[red]Update error: {e}[/red]")
+        return False
+
+
+def _print_manual_instructions(method: str) -> None:
+    """Print manual update instructions as fallback."""
+    console.print()
+    if method == "pipx":
+        console.print("  pipx upgrade joshbot --pip-args='--force-reinstall'")
+    elif method == "editable":
+        console.print("  cd <joshbot-source> && git pull && pip install -e .")
+    elif method == "docker":
+        console.print("  docker compose build && docker compose up -d")
+    else:
+        console.print(
+            f'  pip install --upgrade "joshbot @ git+https://github.com/{GITHUB_REPO}.git"'
+        )
+
+
+@app.command()
+def update(
+    check: bool = typer.Option(
+        False, "--check", "-c", help="Check for updates without installing."
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Force reinstall even if up to date."
+    ),
+) -> None:
+    """Check for and install joshbot updates."""
+    from . import __version__
+
+    console.print(f"[bold]joshbot[/bold] v{__version__}")
+
+    # 1. Fetch latest version from GitHub
+    latest = _fetch_latest_version()
+    if latest is None:
+        console.print("[red]Could not check for updates. Check your connection.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"Latest:  v{latest}")
+
+    # 2. Compare versions
+    is_newer = _compare_versions(latest, __version__)
+    if not is_newer and not force:
+        console.print("[green]Already up to date.[/green]")
+        raise typer.Exit()
+
+    if is_newer:
+        console.print(f"[yellow]Update available: v{__version__} → v{latest}[/yellow]")
+    else:
+        console.print("[dim]Forcing reinstall...[/dim]")
+
+    if check:
+        console.print("\nRun [bold]joshbot update[/bold] to install.")
+        raise typer.Exit()
+
+    # 3. Detect install method and update
+    method = _detect_install_method()
+    console.print(f"\n[bold]Updating via {method}...[/bold]")
+
+    success = _run_update(method)
+    if success:
+        console.print(f"\n[green]✓ Updated successfully.[/green]")
+    else:
+        console.print(f"\n[red]Update failed. Try manually:[/red]")
+        _print_manual_instructions(method)
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

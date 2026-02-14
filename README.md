@@ -424,17 +424,33 @@ joshbot/
 
 ## Upgrading
 
+The easiest way to update joshbot:
+
+```bash
+joshbot update
+```
+
+Check for updates without installing:
+
+```bash
+joshbot update --check
+```
+
+Check your current version:
+
+```bash
+joshbot --version
+```
+
+### Manual upgrade methods
+
+**pipx (quick install):**
+
 ```bash
 pipx upgrade joshbot --pip-args='--force-reinstall'
 ```
 
-Or reinstall:
-
-```bash
-pipx uninstall joshbot && pipx install "joshbot @ git+https://github.com/bigknoxy/joshbot.git"
-```
-
-If you installed from source:
+**Source install:**
 
 ```bash
 cd joshbot
@@ -442,7 +458,14 @@ git pull
 pip install .
 ```
 
-Your config, sessions, and memory in `~/.joshbot/` are preserved across upgrades.
+**Docker:**
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+Your config, sessions, and memory in `~/.joshbot/` are preserved across upgrades. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Uninstall
 

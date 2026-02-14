@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "joshbot"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A lightweight personal AI assistant with self-learning, long-term memory, and Telegram integration"
 requires-python = ">=3.11"
 dependencies = [
@@ -27,3 +27,6 @@ joshbot = "joshbot.main:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["joshbot"]
+
+[tool.hatch.version]
+path = "joshbot/__init__.py"

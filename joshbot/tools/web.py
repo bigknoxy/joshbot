@@ -6,6 +6,7 @@ from typing import Any
 
 from loguru import logger
 
+from .. import __version__
 from .base import Tool
 
 
@@ -114,7 +115,9 @@ class WebFetchTool(Tool):
             ) as client:
                 response = await client.get(
                     url,
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; joshbot/0.1)"},
+                    headers={
+                        "User-Agent": f"Mozilla/5.0 (compatible; joshbot/{__version__})"
+                    },
                     timeout=20.0,
                 )
                 response.raise_for_status()

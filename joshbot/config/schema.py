@@ -12,6 +12,9 @@ from pydantic_settings import BaseSettings
 DEFAULT_HOME = Path.home() / ".joshbot"
 DEFAULT_WORKSPACE = DEFAULT_HOME / "workspace"
 
+# Schema versioning for config migrations
+CURRENT_SCHEMA_VERSION = 1
+
 
 class ProviderConfig(BaseModel):
     """Configuration for a single LLM provider."""
@@ -91,6 +94,7 @@ class Config(BaseSettings):
 
     model_config = {"env_prefix": "JOSHBOT_", "env_nested_delimiter": "__"}
 
+    schema_version: int = CURRENT_SCHEMA_VERSION
     providers: dict[str, ProviderConfig] = Field(
         default_factory=lambda: {"openrouter": ProviderConfig()}
     )

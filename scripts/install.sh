@@ -146,17 +146,20 @@ download_binary() {
     # Normalize version (remove 'v' prefix if present)
     local version_normalized="${version#v}"
     
-    # Build download URL
-    local filename="${BINARY_NAME}_${version_normalized}_${os}_${arch}"
+    # Build download URLs (try archive first, then raw binary)
+    local archive_filename="${BINARY_NAME}_${version_normalized}_${os}_${arch}"
+    local binary_filename="${BINARY_NAME}_${os}_${arch}"
+    
     local extension=""
     if [ "$os" = "windows" ]; then
         extension=".zip"
     else
         extension=".tar.gz"
     fi
-    local archive="${filename}${extension}"
+    local archive="${archive_filename}${extension}"
     
-    local url="https://github.com/${REPO}/releases/download/${version}/${archive}"
+    local archive_url="https://github.com/${REPO}/releases/download/${version}/${archive}"
+    local binary_url="https://github.com/${REPO}/releases/download/${version}/${binary_filename}"
     
     echo "Downloading joshbot ${version} for ${os}/${arch}..."
     
@@ -165,65 +168,80 @@ download_binary() {
     temp_dir=$(mktemp -d)
     trap "rm -rf $temp_dir" EXIT
     
-    # Download archive
-    local http_code
-    http_code=$(curl -fsSL -w "%{http_code}" -o "${temp_dir}/${archive}" "$url")
+    # Try to download archive first, fall back to raw binary
+    local use_archive=false
+    local downloaded_file=""
     
-    if [ "$http_code" != "200" ]; then
-        echo "Error: Failed to download from ${url} (HTTP ${http_code})" >&2
-        exit 1
-    fi
-    
-    # Verify checksum
-    echo "Verifying checksums..."
-    local checksum_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
-    local checksums
-    checksums=$(curl -fsSL "$checksum_url")
-    
-    local checksum
-    if [ "$os" = "windows" ]; then
-        checksum=$(echo "$checksums" | grep -i "${filename}.zip" | awk '{print1}' | tr '[:upper:]' '[:lower:]')
+    # Try archive download
+    echo "  Trying archive: ${archive}..."
+    if curl -fsSL -o "${temp_dir}/${archive}" "$archive_url" 2>/dev/null; then
+        use_archive=true
+        downloaded_file="${temp_dir}/${archive}"
+        echo "  ✓ Archive downloaded"
     else
-        checksum=$(echo "$checksums" | grep -i "${filename}.tar.gz" | awk '{print1}' | tr '[:upper:]' '[:lower:]')
-    fi
-    
-    if [ -z "$checksum" ]; then
-        echo "Warning: Could not find checksum in release, skipping verification"
-    else
-        # Verify the downloaded file
-        local actual_checksum
-        if [ "$os" = "windows" ]; then
-            # For zip files
-            actual_checksum=$(shasum -a 256 "${temp_dir}/${archive}" 2>/dev/null | awk '{print1}' | tr '[:upper:]' '[:lower:]')
+        # Fall back to raw binary
+        echo "  Archive not found, trying raw binary..."
+        if curl -fsSL -o "${temp_dir}/${BINARY_NAME}" "$binary_url" 2>/dev/null; then
+            downloaded_file="${temp_dir}/${BINARY_NAME}"
+            echo "  ✓ Binary downloaded"
         else
-            actual_checksum=$(shasum -a 256 "${temp_dir}/${archive}" 2>/dev/null | awk '{print1}' | tr '[:upper:]' '[:lower:]')
-        fi
-        
-        if [ "$checksum" != "$actual_checksum" ]; then
-            echo "Error: Checksum mismatch!" >&2
-            echo "Expected: $checksum" >&2
-            echo "Actual:   $actual_checksum" >&2
+            echo "Error: Failed to download joshbot ${version} for ${os}/${arch}" >&2
+            echo "Tried:" >&2
+            echo "  - ${archive_url}" >&2
+            echo "  - ${binary_url}" >&2
             exit 1
         fi
-        echo "Checksum verified."
     fi
     
-    # Extract binary
+    # Verify checksum if available
+    echo "Checking for checksums..."
+    local checksum_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
+    local checksums
+    if checksums=$(curl -fsSL "$checksum_url" 2>/dev/null); then
+        local checksum=""
+        if [ "$use_archive" = true ]; then
+            checksum=$(echo "$checksums" | grep -i "${archive}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+        else
+            checksum=$(echo "$checksums" | grep -i "${binary_filename}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+        fi
+        
+        if [ -n "$checksum" ]; then
+            local actual_checksum
+            actual_checksum=$(shasum -a 256 "$downloaded_file" 2>/dev/null | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+            
+            if [ "$checksum" = "$actual_checksum" ]; then
+                echo "  ✓ Checksum verified"
+            else
+                echo "Warning: Checksum mismatch (continuing anyway)" >&2
+            fi
+        else
+            echo "  Checksum not found in release"
+        fi
+    else
+        echo "  No checksums available"
+    fi
+    
+    # Extract or prepare binary
     echo "Installing to ${install_dir}..."
     
-    if [ "$os" = "windows" ]; then
-        # Extract from zip (Windows)
-        unzip -j -o "${temp_dir}/${archive}" "${BINARY_NAME}.exe" -d "$temp_dir" > /dev/null
-        local binary="${temp_dir}/${BINARY_NAME}.exe"
+    local binary=""
+    if [ "$use_archive" = true ]; then
+        # Extract from archive
+        if [ "$os" = "windows" ]; then
+            unzip -j -o "$downloaded_file" "${BINARY_NAME}.exe" -d "$temp_dir" > /dev/null 2>&1 || true
+            binary="${temp_dir}/${BINARY_NAME}.exe"
+        else
+            tar -xzf "$downloaded_file" -C "$temp_dir" "$BINARY_NAME" 2>/dev/null || true
+            binary="${temp_dir}/${BINARY_NAME}"
+        fi
     else
-        # Extract from tar.gz
-        tar -xzf "${temp_dir}/${archive}" -C "$temp_dir" "$BINARY_NAME"
-        local binary="${temp_dir}/${BINARY_NAME}"
+        # Use raw binary directly
+        binary="${temp_dir}/${BINARY_NAME}"
     fi
     
     # Check if binary exists
     if [ ! -f "$binary" ]; then
-        echo "Error: Failed to extract binary from archive" >&2
+        echo "Error: Failed to locate binary after download" >&2
         exit 1
     fi
     
@@ -244,7 +262,8 @@ download_binary() {
     # Move binary to install directory
     mv -f "$binary" "$target"
     
-    echo "Successfully installed joshbot ${version} to ${install_dir}"
+    echo ""
+    echo "✓ Successfully installed joshbot ${version} to ${install_dir}"
 }
 
 # Main

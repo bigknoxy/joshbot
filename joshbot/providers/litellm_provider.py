@@ -62,6 +62,7 @@ class LiteLLMProvider(LLMProvider):
         model: str = "",
         max_tokens: int = 8192,
         temperature: float = 0.7,
+        timeout: float = 120.0,
     ) -> LLMResponse:
         """Send a chat completion request via litellm."""
         import litellm
@@ -78,6 +79,7 @@ class LiteLLMProvider(LLMProvider):
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "timeout": timeout,  # Prevent indefinite blocking
         }
 
         if tools:
@@ -92,7 +94,9 @@ class LiteLLMProvider(LLMProvider):
             kwargs["extra_headers"] = provider_config.extra_headers
 
         try:
-            logger.debug(f"LLM call: model={resolved_model}, messages={len(messages)}")
+            logger.debug(
+                f"LLM call: model={resolved_model}, messages={len(messages)}, timeout={timeout}"
+            )
             response = await litellm.acompletion(**kwargs)
             return self._parse_response(response)
         except Exception as e:

@@ -41,6 +41,7 @@ class LLMProvider(ABC):
         model: str = "",
         max_tokens: int = 8192,
         temperature: float = 0.7,
+        timeout: float = 120.0,
     ) -> LLMResponse:
         """Send a chat completion request."""
         ...

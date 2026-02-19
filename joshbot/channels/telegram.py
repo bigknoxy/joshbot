@@ -64,10 +64,11 @@ class TelegramChannel(BaseChannel):
         from telegram.request import HTTPXRequest
 
         # Build application
+        # Note: read_timeout must be > getUpdates timeout (30s) to avoid context deadline exceeded
         request_kwargs = {
             "connection_pool_size": 16,
-            "connect_timeout": 30.0,
-            "read_timeout": 30.0,
+            "connect_timeout": 10.0,
+            "read_timeout": 60.0,  # Increased to prevent context deadline exceeded
             "write_timeout": 30.0,
         }
 
@@ -137,10 +138,20 @@ class TelegramChannel(BaseChannel):
                 logger.warning(f"Error stopping Telegram: {e}")
         logger.info("Telegram channel stopped")
 
-    async def send(self, channel_id: str, content: str) -> None:
-        """Send a message to a Telegram chat."""
+    def _cleanup_stale_typing_tasks(self, max_age_seconds: float = 300) -> None:
+        """Clean up typing tasks for inactive chats to prevent memory leaks."""
+        stale_chats = []
+        for chat_id, task in self._typing_tasks.items():
+            if task.done():
+                stale_chats.append(chat_id)
+        for chat_id in stale_chats:
+            del self._typing_tasks[chat_id]
+            logger.debug(f"Cleaned up stale typing task for chat {chat_id}")
+
+    async def send(self, channel_id: str, content: str, max_retries: int = 3) -> bool:
+        """Send a message to a Telegram chat with retry logic."""
         if not self._app:
-            return
+            return False
 
         # Extract chat_id from channel_id (format: "telegram:12345")
         chat_id = channel_id.split(":", 1)[-1] if ":" in channel_id else channel_id
@@ -151,21 +162,42 @@ class TelegramChannel(BaseChannel):
         # Convert markdown to Telegram-safe HTML
         html = self._markdown_to_telegram_html(content)
 
-        try:
-            await self._app.bot.send_message(
-                chat_id=int(chat_id),
-                text=html,
-                parse_mode="HTML",
-            )
-        except Exception:
-            # Fallback to plain text
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                await self._app.bot.send_message(
+                    chat_id=int(chat_id),
+                    text=html,
+                    parse_mode="HTML",
+                )
+                return True
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = min(2**attempt, 10)  # Exponential backoff, max 10s
+                    logger.warning(
+                        f"Telegram send failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s..."
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Final attempt failed, try fallback
+                    break
+
+        # Fallback to plain text
+        for attempt in range(2):
             try:
                 await self._app.bot.send_message(
                     chat_id=int(chat_id),
                     text=content,
                 )
+                return True
             except Exception as e:
-                logger.error(f"Failed to send Telegram message: {e}")
+                last_error = e
+                if attempt == 0:
+                    await asyncio.sleep(1)
+
+        logger.error(f"Failed to send Telegram message after all retries: {last_error}")
+        return False
 
     async def _handle_outbound(self, message: OutboundMessage) -> None:
         """Handle outbound messages directed to Telegram."""

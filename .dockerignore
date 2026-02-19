@@ -1,15 +1,44 @@
+# Python (not needed for Go build)
 __pycache__
 *.pyc
 *.pyo
-.git
-.gitignore
-.env
 *.egg-info
-dist
-build
-.venv
-venv
-node_modules
 .pytest_cache
 .mypy_cache
+
+# Git
+.git
+.gitignore
+
+# Environment
+.env
+.env.*
+
+# Build artifacts
+dist
+build
+*.tar.gz
+*.zip
+
+# Go
+vendor/
+*.test
+coverage.out
+
+# Python virtual environment
+.venv
+venv
 workspace/
+
+# IDE
+.vscode
+.idea
+
+# Documentation that shouldn't be in image
+*.md
+LICENSE
+
+# Test files
+*_test.go
+tests/
+testdata/

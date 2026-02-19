@@ -177,24 +177,34 @@ download_binary() {
     local use_archive=false
     local downloaded_file=""
     
-    # Try archive download
+    # Try archive download first
     echo "  Trying archive: ${archive}..."
     if curl -fsSL -o "${temp_dir}/${archive}" "$archive_url" 2>/dev/null; then
         use_archive=true
         downloaded_file="${temp_dir}/${archive}"
         echo "  ✓ Archive downloaded"
     else
-        # Fall back to raw binary
+        # Fall back to raw binary (try several naming patterns)
         echo "  Archive not found, trying raw binary..."
-        if curl -fsSL -o "${temp_dir}/${BINARY_NAME}" "$binary_url" 2>/dev/null; then
-            downloaded_file="${temp_dir}/${BINARY_NAME}"
-            echo "  ✓ Binary downloaded"
+        # Try default binary name
+        local dest1="${temp_dir}/$(basename "$binary_url")"
+        if curl -fsSL -o "$dest1" "$binary_url" 2>/dev/null; then
+            downloaded_file="$dest1"
+            echo "  ✓ Binary downloaded: $(basename "$dest1")"
         else
-            echo "Error: Failed to download joshbot ${version} for ${os}/${arch}" >&2
-            echo "Tried:" >&2
-            echo "  - ${archive_url}" >&2
-            echo "  - ${binary_url}" >&2
-            exit 1
+            # Try alternate binary name (double underscore)
+            local dest2="${temp_dir}/$(basename "$binary_url_alt")"
+            if curl -fsSL -o "$dest2" "$binary_url_alt" 2>/dev/null; then
+                downloaded_file="$dest2"
+                echo "  ✓ Binary downloaded: $(basename "$dest2")"
+            else
+                echo "Error: Failed to download joshbot ${version} for ${os}/${arch}" >&2
+                echo "Tried:" >&2
+                echo "  - ${archive_url}" >&2
+                echo "  - ${binary_url}" >&2
+                echo "  - ${binary_url_alt}" >&2
+                exit 1
+            fi
         fi
     fi
     
@@ -240,8 +250,8 @@ download_binary() {
             binary="${temp_dir}/${BINARY_NAME}"
         fi
     else
-        # Use raw binary directly
-        binary="${temp_dir}/${BINARY_NAME}"
+        # Use raw binary directly (use the downloaded file path)
+        binary="${downloaded_file}"
     fi
     
     # Check if binary exists

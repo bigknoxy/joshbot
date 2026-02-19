@@ -146,9 +146,13 @@ download_binary() {
     # Normalize version (remove 'v' prefix if present)
     local version_normalized="${version#v}"
     
-    # Build download URLs (try archive first, then raw binary)
+    # Build download URLs (try multiple naming patterns)
+    # Pattern 1: Archive with version (preferred)
     local archive_filename="${BINARY_NAME}_${version_normalized}_${os}_${arch}"
+    # Pattern 2: Raw binary without version (GoReleaser default)
     local binary_filename="${BINARY_NAME}_${os}_${arch}"
+    # Pattern 3: Binary with double underscore (GoReleaser bug)
+    local binary_filename_alt="${BINARY_NAME}__${os}_${arch}"
     
     local extension=""
     if [ "$os" = "windows" ]; then
@@ -160,6 +164,7 @@ download_binary() {
     
     local archive_url="https://github.com/${REPO}/releases/download/${version}/${archive}"
     local binary_url="https://github.com/${REPO}/releases/download/${version}/${binary_filename}"
+    local binary_url_alt="https://github.com/${REPO}/releases/download/${version}/${binary_filename_alt}"
     
     echo "Downloading joshbot ${version} for ${os}/${arch}..."
     

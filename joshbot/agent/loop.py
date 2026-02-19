@@ -101,8 +101,15 @@ class AgentLoop:
             # Build messages for LLM
             messages = [{"role": "system", "content": system_prompt}] + session.messages
 
-            # Run the ReAct loop
-            response_content = await self._react_loop(messages, session)
+            # Run the ReAct loop with timeout protection
+            try:
+                response_content = await asyncio.wait_for(
+                    self._react_loop(messages, session),
+                    timeout=300,  # 5 minute total timeout for processing
+                )
+            except asyncio.TimeoutError:
+                logger.error("Message processing timed out after 5 minutes")
+                response_content = "I'm sorry, but processing your request took too long. Please try again or simplify your request."
 
             # Save session
             await self._sessions.save(session)

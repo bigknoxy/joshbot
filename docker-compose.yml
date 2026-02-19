@@ -1,18 +1,50 @@
 version: '3.8'
 
 services:
+  # Go implementation (default)
   joshbot:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: joshbot
     restart: unless-stopped
     volumes:
       # Persist config, sessions, and memory across restarts
-      - ~/.joshbot:/root/.joshbot
+      - joshbot-config:/home/joshbot/.joshbot
     environment:
-      # Alternatively, set provider keys via env vars:
+      # Configure via environment variables (prefix with JOSHBOT_)
+      # Example provider config:
       # JOSHBOT_PROVIDERS__OPENROUTER__API_KEY: "sk-or-..."
       # JOSHBOT_CHANNELS__TELEGRAM__ENABLED: "true"
       # JOSHBOT_CHANNELS__TELEGRAM__TOKEN: "..."
       - TZ=UTC
     # Use gateway mode by default (Telegram + all channels)
     command: gateway
+    healthcheck:
+      test: ["CMD", "joshbot", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Python implementation (alternative)
+  # Uncomment to use Python version instead:
+  # joshbot-python:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.python
+  #   container_name: joshbot-python
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ~/.joshbot:/root/.joshbot
+  #   environment:
+  #     - TZ=UTC
+  #   command: gateway
+
+volumes:
+  joshbot-config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${JOSHBOT_CONFIG_DIR:-~/.joshbot}

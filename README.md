@@ -24,7 +24,9 @@ A lightweight personal AI assistant with self-learning, long-term memory, skill 
 
 ## Quick Start
 
-### Quick Install (Recommended)
+### Quick Install
+
+### Using curl (Recommended)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
@@ -32,13 +34,22 @@ curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | 
 
 This installs joshbot via [pipx](https://pipx.pypa.io/) in an isolated environment. Requires Python 3.11+.
 
-After install, run:
+### Using Go Install (For Go Developers)
 
 ```bash
-joshbot onboard
+go install github.com/bigknoxy/joshbot@latest
 ```
 
-### Manual Install
+Make sure your Go binary is in your PATH. Requires Python 3.11+.
+
+### Docker
+
+```bash
+docker build -t joshbot .
+docker run -it -v ~/.joshbot:/root/.joshbot joshbot onboard
+```
+
+### Manual Build From Source
 
 ```bash
 git clone https://github.com/bigknoxy/joshbot.git
@@ -53,6 +64,12 @@ pip install .
 
 # Or install in dev mode
 pip install -e .
+```
+
+After install, run:
+
+```bash
+joshbot onboard
 ```
 
 ### 2. Onboard
@@ -472,27 +489,28 @@ Your config, sessions, and memory in `~/.joshbot/` are preserved across upgrades
 ### Quick Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/scripts/uninstall.sh | bash
 ```
 
-This removes joshbot and optionally cleans up your data directory.
+### Using the CLI
+
+```bash
+joshbot uninstall
+```
 
 ### Manual Uninstall
 
 ```bash
-# Remove the package
-pip uninstall joshbot
+# Remove binary
+rm $(which joshbot)
 
-# Or if installed with pipx:
-pipx uninstall joshbot
-
-# Remove all data (config, sessions, memory, media)
+# Optionally remove configuration
 rm -rf ~/.joshbot
-
-# If you set environment variables, remove them from your shell profile:
-# unset JOSHBOT_PROVIDERS__OPENROUTER__API_KEY
-# etc.
 ```
+
+This will:
+- Remove the joshbot binary
+- Ask if you want to remove ~/.joshbot (with all configs, memories, sessions)
 
 ## Troubleshooting
 
@@ -502,7 +520,7 @@ rm -rf ~/.joshbot
 
 **Telegram bot not responding** — Verify `channels.telegram.enabled` is `true` and the token is correct. Check that your user ID is in `allow_from` (or that the list is empty). If behind a firewall, configure the `proxy` field.
 
-**`readability-lxml` install fails** — Install system dependencies: `sudo apt install libxml2-dev libxslt-dev` (Debian/Ubuntu) or `brew install libxml2 libxslt` (macOS).
+**`readability-lxml` install fails** — Install system dependencies: `sudo apt install libxml2-dev libxslt-dev` (Debian/Ubuntu) or `pkg install libxml2 libxslt` (macOS).
 
 **`web_search` returns errors** — This tool requires a Brave Search API key. Get one at [brave.com/search/api](https://brave.com/search/api/) and set it in `tools.web.search.api_key`.
 

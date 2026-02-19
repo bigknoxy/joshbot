@@ -1,0 +1,99 @@
+# .goreleaser.yaml
+# Build configuration for joshbot Go implementation
+# https://goreleaser.com
+
+project_name: joshbot
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: joshbot
+    dir: .
+    main: ./cmd/joshbot
+    binary: joshbot
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    goarm:
+      - v7
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/bigknoxy/joshbot/cmd/joshbot.Version={{.Version}}
+
+archives:
+  - id: default
+    format_overrides:
+      - goos: windows
+        format: zip
+    format: tar.gz
+    files:
+      - README.md
+      - LICENSE
+    # Include installation script in archives
+    extra_files:
+      - glob: scripts/install.sh
+        info:
+          mode: 0755
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^refactor:'
+
+release:
+  github:
+    owner: bigknoxy
+    name: joshbot
+  draft: false
+  prerelease: auto
+  name_template: '{{ .Tag }}'
+
+dockers:
+  - id: joshbot
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/bigknoxy/joshbot:latest"
+      - "ghcr.io/bigknoxy/joshbot:{{ .Tag }}"
+      - "ghcr.io/joshbot:latest"
+      - "ghcr.io/joshbot:{{ .Tag }}"
+    build_flag_templates:
+      - "--label=org.opencontainers.image.title=joshbot"
+      - "--label=org.opencontainers.image.description=A lightweight personal AI assistant"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.authors=bigknoxy"
+      - "--label=org.opencontainers.image.source=https://github.com/bigknoxy/joshbot"
+      - "--label=org.opencontainers.image.documentation=https://github.com/bigknoxy/joshbot#readme"
+    # Multi-platform build requires Buildx
+    use: buildx
+    dockerfile: Dockerfile
+    context: .
+    skip_download: true
+
+# Cosign configuration for container signing
+# Uncomment after setting up cosign
+# docker_signs:
+#   - id: cosign
+#     artifacts: docker
+#     key: '{{ .Env.COSIGN_KEY }}'

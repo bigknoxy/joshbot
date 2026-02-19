@@ -13,9 +13,15 @@ from .events import InboundMessage, OutboundMessage
 class MessageBus:
     """Two-queue message bus decoupling channels from the agent."""
 
+    MAX_QUEUE_SIZE = 1000  # Prevent unbounded queue growth
+
     def __init__(self) -> None:
-        self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
-        self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+        self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue(
+            maxsize=self.MAX_QUEUE_SIZE
+        )
+        self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue(
+            maxsize=self.MAX_QUEUE_SIZE
+        )
         self._inbound_handlers: list[Callable[[InboundMessage], Awaitable[None]]] = []
         self._outbound_handlers: list[Callable[[OutboundMessage], Awaitable[None]]] = []
         self._running = False
@@ -30,17 +36,25 @@ class MessageBus:
         """Register a handler for outbound messages."""
         self._outbound_handlers.append(handler)
 
-    async def publish_inbound(self, message: InboundMessage) -> None:
-        """Publish an inbound message from a channel."""
+    async def publish_inbound(self, message: InboundMessage) -> bool:
+        """Publish an inbound message from a channel. Returns False if queue is full."""
+        if self._inbound.full():
+            logger.error(f"Inbound queue full! Dropping message from {message.channel}")
+            return False
         logger.debug(
             f"Inbound from {message.channel}:{message.sender_name}: {message.content[:80]}"
         )
         await self._inbound.put(message)
+        return True
 
-    async def publish_outbound(self, message: OutboundMessage) -> None:
-        """Publish an outbound message to a channel."""
+    async def publish_outbound(self, message: OutboundMessage) -> bool:
+        """Publish an outbound message to a channel. Returns False if queue is full."""
+        if self._outbound.full():
+            logger.error(f"Outbound queue full! Dropping message to {message.channel}")
+            return False
         logger.debug(f"Outbound to {message.channel}: {message.content[:80]}")
         await self._outbound.put(message)
+        return True
 
     async def start(self) -> None:
         """Start processing messages."""

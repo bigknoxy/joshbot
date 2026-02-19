@@ -87,13 +87,23 @@ class SessionManager:
             metadata=metadata,
         )
 
-    async def save(self, session: Session) -> None:
-        """Save a session to disk as JSONL."""
+    async def save(self, session: Session) -> bool:
+        """Save a session to disk as JSONL. Returns True if successful."""
         session.updated_at = time.time()
         path = self._session_path(session.key)
 
+        # Limit message count to prevent huge files
+        MAX_MESSAGES = 1000
+        if len(session.messages) > MAX_MESSAGES:
+            logger.warning(
+                f"Session {session.key} has {len(session.messages)} messages, truncating to {MAX_MESSAGES}"
+            )
+            session.messages = session.messages[-MAX_MESSAGES:]
+
         try:
-            with open(path, "w") as f:
+            # Atomic write: write to temp file then rename
+            temp_path = path.with_suffix(".tmp")
+            with open(temp_path, "w") as f:
                 # Write metadata header
                 metadata = {
                     "_type": "metadata",
@@ -108,11 +118,21 @@ class SessionManager:
                 for msg in session.messages:
                     f.write(json.dumps(msg) + "\n")
 
+            # Atomic rename
+            temp_path.rename(path)
+
             logger.debug(
                 f"Saved session {session.key} ({len(session.messages)} messages)"
             )
+            return True
         except Exception as e:
             logger.error(f"Failed to save session {session.key}: {e}")
+            # Clean up temp file if it exists
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
 
     async def delete(self, key: str) -> None:
         """Delete a session."""

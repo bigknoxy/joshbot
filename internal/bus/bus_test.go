@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -76,9 +77,12 @@ func TestMessageBusStopMultiple(t *testing.T) {
 func TestSubscribeUnsubscribe(t *testing.T) {
 	mb := NewMessageBus()
 
-	handlerCalled := false
+	handlerCalled := make(chan bool, 1)
 	handler := func(ctx context.Context, msg InboundMessage) {
-		handlerCalled = true
+		select {
+		case handlerCalled <- true:
+		default:
+		}
 	}
 
 	mb.Subscribe("test", handler)
@@ -90,22 +94,29 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 		Content:  "hello",
 	})
 
-	time.Sleep(50 * time.Millisecond)
-	if !handlerCalled {
+	select {
+	case <-handlerCalled:
+		// Success
+	case <-time.After(100 * time.Millisecond):
 		t.Error("handler should have been called")
 	}
 
 	// Test unsubscribe
 	mb.Unsubscribe("test", handler)
-	handlerCalled = false
 	mb.dispatchInbound(InboundMessage{
 		SenderID: "user1",
 		Channel:  "test",
 		Content:  "hello",
 	})
+
+	// Give it time to potentially call handler
 	time.Sleep(50 * time.Millisecond)
-	if handlerCalled {
+
+	select {
+	case <-handlerCalled:
 		t.Error("handler should not have been called after unsubscribe")
+	default:
+		// Success - no message received
 	}
 }
 
@@ -179,7 +190,17 @@ func TestSendBlocking(t *testing.T) {
 
 func TestSendBlockingCancelled(t *testing.T) {
 	mb := NewMessageBus()
-	// Don't start - so the channel will block forever
+	// Don't start - so the channel will block
+
+	// Fill the channel completely so it blocks
+	for i := 0; i < MaxQueueSize; i++ {
+		mb.inboundCh <- InboundMessage{
+			SenderID:  fmt.Sprintf("user%d", i),
+			Content:   "test",
+			Channel:   "test",
+			Timestamp: time.Now(),
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately

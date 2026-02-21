@@ -43,3 +43,66 @@ func sudoCmd(cmd string) string {
 ```
 
 **Prevention rule**: Always check `os.Getuid() == 0` before using sudo in scripts/tools that may run as root.
+
+---
+
+## 2026-02-21 22:20: Terminal Escape Sequences in User Input
+
+**Context**: Telegram token validation failed with `net/url: invalid control character in URL` - escape sequences like `\x1b[C` (arrow keys) were captured in the token string.
+
+**Root cause**: When users paste or edit text in terminal prompts, arrow key presses and other control sequences can be captured by the input reader, embedding escape characters in the final string.
+
+**Fix**: Sanitize user input by stripping control characters before validation:
+```go
+func sanitizeToken(token string) string {
+    // Remove control characters (0x00-0x1F and 0x7F) except space
+    var result strings.Builder
+    for _, r := range token {
+        if r >= 0x20 && r != 0x7F {
+            result.WriteRune(r)
+        }
+    }
+    return result.String()
+}
+```
+
+**Prevention rule**: Always sanitize terminal input for control characters when the input will be used in URLs, API calls, or file paths.
+
+---
+
+## 2026-02-21 22:20: Non-Systemd Systems
+
+**Context**: Service install failed with "systemctl: executable file not found in $PATH" on systems without systemd.
+
+**Root cause**: The systemd implementation assumed systemctl exists without checking.
+
+**Fix**: Check for systemctl availability before attempting service operations:
+```go
+func checkSystemctl() error {
+    _, err := exec.LookPath("systemctl")
+    if err != nil {
+        return ErrSystemdNotDetected
+    }
+    return nil
+}
+```
+
+Return a helpful error message explaining alternatives when systemctl is not found.
+
+**Prevention rule**: Always verify external tool availability before using it, and provide helpful error messages with alternatives.
+
+---
+
+## 2026-02-21 22:20: Reconfiguration Without Showing Current Values
+
+**Context**: When user chose "Keep existing data" during onboard, they had to re-type all values even if they wanted to keep them.
+
+**Root cause**: The prompt functions didn't receive or display existing configuration values as defaults.
+
+**Fix**: 
+1. Load existing config when reconfiguring
+2. Show current values (masked for secrets) as defaults
+3. Allow pressing Enter to keep existing values
+4. For Telegram: offer Keep/Change/Disable options when already configured
+
+**Prevention rule**: Always show current values as defaults when offering to "keep" or "reconfigure" existing settings.

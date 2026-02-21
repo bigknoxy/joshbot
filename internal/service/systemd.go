@@ -10,6 +10,18 @@ import (
 	"strings"
 )
 
+// ErrSystemdNotDetected is returned when systemd is not available on the system.
+var ErrSystemdNotDetected = fmt.Errorf("systemd not detected. You may need to use a different init system or run 'joshbot gateway' manually")
+
+// checkSystemctl checks if systemctl exists in PATH.
+func checkSystemctl() error {
+	_, err := exec.LookPath("systemctl")
+	if err != nil {
+		return ErrSystemdNotDetected
+	}
+	return nil
+}
+
 type systemdManager struct {
 	config      Config
 	servicePath string
@@ -17,6 +29,11 @@ type systemdManager struct {
 }
 
 func newSystemd(cfg Config) (*systemdManager, error) {
+	// Check if systemctl is available before proceeding
+	if err := checkSystemctl(); err != nil {
+		return nil, err
+	}
+
 	if cfg.Name == "" {
 		cfg.Name = "joshbot"
 	}

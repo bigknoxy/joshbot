@@ -210,6 +210,8 @@ improved error handling with `%w`, and context-aware cancellation throughout.
 
 ## Lessons Learned
 
+> **IMPORTANT**: Always check `docs/MEMORY.md` when encountering issues. This file captures detailed failure modes, root causes, and prevention rules from past mistakes. Avoid repeating errors by reviewing learned lessons first.
+
 ### Cross-Platform Factory Pattern (Go)
 
 When using build tags for platform-specific implementations:

@@ -616,6 +616,17 @@ func runOnboard(c *cli.Context) error {
 	// Track whether we should skip file creation
 	skipFileCreation := false
 
+	// Load existing config for reconfiguration mode
+	var existingCfg *config.Config
+	if hasExisting && (keepData || force) {
+		// Try to load existing config for defaults
+		var err error
+		existingCfg, err = config.Load()
+		if err != nil {
+			log.Warn("Failed to load existing config, will use defaults", "error", err)
+		}
+	}
+
 	if hasExisting {
 		if force {
 			// --force: backup and continue with full onboarding (no prompts)
@@ -657,8 +668,13 @@ func runOnboard(c *cli.Context) error {
 			fmt.Println()
 
 			if choice == "1" {
-				// Keep existing data: skip file creation but run prompts
+				// Keep existing data: load config and run prompts with defaults
 				skipFileCreation = true
+				var err error
+				existingCfg, err = config.Load()
+				if err != nil {
+					log.Warn("Failed to load existing config, will use defaults", "error", err)
+				}
 			} else {
 				// Delete and start fresh: backup then continue
 				fmt.Println("Backing up existing installation...")
@@ -683,12 +699,12 @@ func runOnboard(c *cli.Context) error {
 		soulContent = getPersonalitySoul(personalityChoice)
 		model = config.DefaultModel
 	} else {
-		// Interactive prompts
-		apiKey = promptAPIKey()
-		personalityChoice = selectPersonality()
+		// Interactive prompts - pass existing config for defaults
+		apiKey = promptAPIKey(existingCfg)
+		personalityChoice = selectPersonality(existingCfg)
 		soulContent = getPersonalitySoul(personalityChoice)
-		model = selectModel()
-		telegramConfig = setupTelegram()
+		model = selectModel(existingCfg)
+		telegramConfig = setupTelegram(existingCfg)
 	}
 
 	// Build config
@@ -751,11 +767,28 @@ func runOnboard(c *cli.Context) error {
 }
 
 // promptAPIKey prompts the user for their OpenRouter API key.
-func promptAPIKey() string {
+func promptAPIKey(existingCfg *config.Config) string {
 	fmt.Println("\n[Step 1] LLM Provider")
 	fmt.Println("joshbot uses OpenRouter by default (supports many models with one API key).")
 	fmt.Println("Get a free key at: https://openrouter.ai/keys")
-	fmt.Print("Enter your OpenRouter API key (or press Enter to skip): ")
+
+	// Show existing API key if available
+	var defaultKey string
+	if existingCfg != nil {
+		for _, p := range existingCfg.Providers {
+			if p.APIKey != "" {
+				defaultKey = maskAPIKey(p.APIKey)
+				break
+			}
+		}
+	}
+
+	if defaultKey != "" {
+		fmt.Printf("Current API key: %s\n", defaultKey)
+		fmt.Print("Enter new API key (or press Enter to keep current): ")
+	} else {
+		fmt.Print("Enter your OpenRouter API key (or press Enter to skip): ")
+	}
 
 	var apiKey string
 	fmt.Scanln(&apiKey)
@@ -763,7 +796,7 @@ func promptAPIKey() string {
 }
 
 // selectPersonality prompts the user to choose a personality and returns the choice.
-func selectPersonality() string {
+func selectPersonality(existingCfg *config.Config) string {
 	fmt.Println("\n[Step 2] Personality")
 	fmt.Println("Choose joshbot's personality:")
 	fmt.Println("  1. Professional - Concise, task-focused, minimal small talk")
@@ -772,18 +805,27 @@ func selectPersonality() string {
 	fmt.Println("  4. Minimal - Extremely terse, just the facts")
 	fmt.Println("  5. Custom - Write your own SOUL.md")
 
-	fmt.Print("Choose personality (1-5) [2]: ")
+	// Default to "2" (Friendly) - personality isn't stored in config
+	defaultChoice := "2"
+
+	fmt.Printf("Choose personality (1-5) [%s]: ", defaultChoice)
 	var personalityChoice string
 	fmt.Scanln(&personalityChoice)
 	if personalityChoice == "" {
-		personalityChoice = "2"
+		personalityChoice = defaultChoice
 	}
 	return personalityChoice
 }
 
 // selectModel prompts the user to select a model and returns the choice.
-func selectModel() string {
+func selectModel(existingCfg *config.Config) string {
 	defaultModel := config.DefaultModel
+
+	// Use existing model as default if available
+	if existingCfg != nil && existingCfg.Agents.Defaults.Model != "" {
+		defaultModel = existingCfg.Agents.Defaults.Model
+	}
+
 	fmt.Println("\n[Step 3] Model")
 	fmt.Printf("Default model: %s\n", defaultModel)
 	fmt.Printf("Model name [%s]: ", defaultModel)
@@ -796,25 +838,75 @@ func selectModel() string {
 	return model
 }
 
-func setupTelegram() *config.TelegramConfig {
+func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 	fmt.Println("\n[Step 4] Telegram Setup")
-	fmt.Println("Would you like to set up Telegram for joshbot?")
-	fmt.Println("This allows you to chat with joshbot via Telegram.")
-	fmt.Println()
-	fmt.Println("  1. Yes, set up Telegram")
-	fmt.Println("  2. No, skip for now")
-	fmt.Println()
-	fmt.Printf("Choice [2]: ")
 
-	var choice string
-	fmt.Scanln(&choice)
-
-	if choice != "1" {
-		fmt.Println("\nSkipping Telegram setup. You can configure it later by editing:")
-		fmt.Printf("  %s\n", filepath.Join(config.DefaultHome, "config.json"))
-		return nil
+	// Check if Telegram is already configured
+	existingToken := ""
+	existingEnabled := false
+	existingAllowFrom := []string{}
+	if existingCfg != nil {
+		existingEnabled = existingCfg.Channels.Telegram.Enabled
+		existingToken = existingCfg.Channels.Telegram.Token
+		existingAllowFrom = existingCfg.Channels.Telegram.AllowFrom
 	}
 
+	if existingEnabled && existingToken != "" {
+		// Already configured - ask if they want to keep or change
+		maskedToken := maskToken(existingToken)
+		fmt.Printf("Telegram is currently configured.\n")
+		fmt.Printf("Current bot token: %s\n", maskedToken)
+		fmt.Println()
+		fmt.Println("  1. Keep current token")
+		fmt.Println("  2. Change token")
+		fmt.Println("  3. Disable Telegram")
+		fmt.Println()
+		fmt.Printf("Choice [1]: ")
+
+		var choice string
+		fmt.Scanln(&choice)
+		fmt.Println()
+
+		if choice == "3" {
+			fmt.Println("Telegram disabled.")
+			return &config.TelegramConfig{
+				Enabled:   false,
+				Token:     "",
+				AllowFrom: []string{},
+			}
+		}
+
+		if choice == "1" || choice == "" {
+			// Keep existing token
+			fmt.Println("Keeping current Telegram configuration.")
+			return &config.TelegramConfig{
+				Enabled:   true,
+				Token:     existingToken,
+				AllowFrom: existingAllowFrom,
+			}
+		}
+		// choice == "2" - proceed to get new token
+	} else {
+		// Not configured yet
+		fmt.Println("Would you like to set up Telegram for joshbot?")
+		fmt.Println("This allows you to chat with joshbot via Telegram.")
+		fmt.Println()
+		fmt.Println("  1. Yes, set up Telegram")
+		fmt.Println("  2. No, skip for now")
+		fmt.Println()
+		fmt.Printf("Choice [2]: ")
+
+		var choice string
+		fmt.Scanln(&choice)
+
+		if choice != "1" {
+			fmt.Println("\nSkipping Telegram setup. You can configure it later by editing:")
+			fmt.Printf("  %s\n", filepath.Join(config.DefaultHome, "config.json"))
+			return nil
+		}
+	}
+
+	// Get new token
 	fmt.Println("\n" + strings.Repeat("─", 45))
 	fmt.Println("Telegram Bot Setup")
 	fmt.Println(strings.Repeat("─", 45))
@@ -839,6 +931,9 @@ func setupTelegram() *config.TelegramConfig {
 		return nil
 	}
 
+	// Sanitize token: strip control characters and escape sequences
+	token = sanitizeToken(token)
+
 	fmt.Println("\nValidating token...")
 	if err := channels.ValidateToken(token); err != nil {
 		fmt.Printf("Token validation failed: %v\n", err)
@@ -851,13 +946,19 @@ func setupTelegram() *config.TelegramConfig {
 	fmt.Println("Restrict bot access to specific Telegram usernames.")
 	fmt.Println("Leave empty to allow anyone to use the bot.")
 	fmt.Println()
-	fmt.Printf("Usernames (comma-separated, or press Enter to skip): ")
+
+	// Show existing allow from as default
+	defaultUsernames := strings.Join(existingAllowFrom, ", ")
+	fmt.Printf("Usernames (comma-separated) [current: %s]: ", defaultUsernames)
 
 	var usernamesRaw string
 	fmt.Scanln(&usernamesRaw)
 
 	var allowFrom []string
-	if usernamesRaw != "" {
+	// Use existing if no new input
+	if usernamesRaw == "" && len(existingAllowFrom) > 0 {
+		allowFrom = existingAllowFrom
+	} else if usernamesRaw != "" {
 		for _, u := range strings.Split(usernamesRaw, ",") {
 			u = strings.TrimSpace(u)
 			if u != "" {
@@ -1188,6 +1289,62 @@ func statusBool(b bool) string {
 		return "(exists)"
 	}
 	return "(missing)"
+}
+
+// maskAPIKey masks an API key for display, showing only the first few and last few characters.
+// Example: "sk-or-v1-abc123...xyz789" -> "sk-or-v1-****...****4c0"
+func maskAPIKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 16 {
+		return key[:2] + "****" + key[len(key)-4:]
+	}
+	// Show first 8 and last 4 characters
+	prefix := key[:8]
+	suffix := key[len(key)-4:]
+	return prefix + "****...****" + suffix
+}
+
+// maskToken masks a Telegram bot token for display.
+// Example: "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz" -> "1234567890:****...****wxyz"
+func maskToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	if len(token) <= 16 {
+		return token[:4] + "****" + token[len(token)-4:]
+	}
+	// Show first 4 and last 4 characters (tokens are like "id:secret")
+	parts := strings.SplitN(token, ":", 2)
+	if len(parts) == 2 {
+		// Show id and last 4 of secret
+		return parts[0] + ":****...****" + parts[1][len(parts[1])-4:]
+	}
+	// No colon - just show first 4 and last 4
+	return token[:4] + "****...****" + token[len(token)-4:]
+}
+
+// sanitizeToken removes control characters and escape sequences from input.
+// This fixes issues where terminal escape sequences (like \x1b[C) get into the token.
+func sanitizeToken(token string) string {
+	// Remove common control characters except printable ASCII
+	var result strings.Builder
+	result.Grow(len(token))
+
+	for _, r := range token {
+		// Keep: printable ASCII (32-126), and common non-ASCII that might be valid
+		// Remove: control characters (0-31 except tab=9, newline=10, carriage return=13)
+		if r >= 32 && r <= 126 {
+			result.WriteRune(r)
+		}
+		// Also keep tab, newline, carriage return if somehow present
+		if r == 9 || r == 10 || r == 13 {
+			result.WriteRune(r)
+		}
+	}
+
+	return result.String()
 }
 
 // checkExistingInstall checks for existing joshbot installation files.

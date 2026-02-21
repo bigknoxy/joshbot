@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-21
+
+### Added
+
+#### Interactive Telegram Setup
+- Telegram setup wizard integrated into `joshbot onboard` (Step 4)
+- Guides users through @BotFather bot creation
+- Validates bot token via `getMe` API before saving
+- Optional allowed usernames configuration
+- Auto-saves to config without manual editing
+
+#### Service Management
+- `joshbot service install`: Install joshbot as a system service
+- `joshbot service uninstall`: Remove the system service
+- `joshbot service status`: Check service status
+- **Systemd support** (Linux): Service installed to `/etc/systemd/system/joshbot.service`
+- **Launchd support** (macOS): Service installed to `~/Library/LaunchAgents/com.joshbot.plist`
+- Auto-start on boot with proper logging
+
+#### Enhanced Onboard Flow
+- Step 1: API key setup
+- Step 2: Personality selection
+- Step 3: Model selection
+- Step 4: Telegram setup (optional)
+- Step 5: Service installation (recommended for Telegram users)
+- Explains why service install is needed for Telegram bots
+
+### Changed
+
+- Onboard now offers to start gateway automatically after Telegram setup
+- Telegram token validation happens during setup (not at runtime)
+
 ## [1.0.0] - 2026-02-21
 
 ### Migration Notes

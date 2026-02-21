@@ -796,6 +796,8 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		return fmt.Errorf("bot not initialized")
 	}
 
+	log.Debug("Send called", "channelID", msg.ChannelID, "metadata_chat_id", msg.Metadata["chat_id"])
+
 	// Determine recipient - ChannelID is the chat ID
 	var recipient telebot.Recipient
 
@@ -803,6 +805,7 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 	if msg.ChannelID != "" {
 		if chatID, err := strconv.ParseInt(msg.ChannelID, 10, 64); err == nil {
 			recipient = telebot.ChatID(chatID)
+			log.Debug("Using ChannelID as recipient", "chatID", chatID)
 		}
 	}
 
@@ -1008,9 +1011,12 @@ func (t *TelegramChannel) consumeOutbound(ctx context.Context) {
 		case <-t.stopCh:
 			return
 		case msg := <-ch:
+			log.Debug("consumeOutbound received message", "msg_channel", msg.Channel, "my_name", t.name, "channelID", msg.ChannelID)
 			if msg.Channel == t.name || msg.Channel == "all" {
 				if err := t.Send(msg); err != nil {
-					log.Error("failed to send outbound message", "error", err, "channel", msg.Channel)
+					log.Error("failed to send outbound message", "error", err, "channel", msg.Channel, "channelID", msg.ChannelID)
+				} else {
+					log.Info("Successfully sent message to Telegram", "channelID", msg.ChannelID)
 				}
 			}
 		}

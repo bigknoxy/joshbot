@@ -8,6 +8,7 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
+	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/session"
@@ -52,6 +53,8 @@ type Agent struct {
 	memory        MemoryLoader
 	skills        SkillsLoader
 	logger        *log.Logger
+	budget        *ctxpkg.BudgetManager
+	compressor    *ctxpkg.Compressor
 	maxIterations int
 	timeout       time.Duration
 }
@@ -86,6 +89,10 @@ func NewAgent(
 	logger *log.Logger,
 	opts ...Option,
 ) *Agent {
+	if logger == nil {
+		logger = log.Get()
+	}
+
 	a := &Agent{
 		cfg:           cfg,
 		provider:      provider,
@@ -107,6 +114,42 @@ func NewAgent(
 	}
 
 	return a
+}
+
+// WithMemoryLoader injects a memory loader implementation.
+func WithMemoryLoader(loader MemoryLoader) Option {
+	return func(a *Agent) {
+		if loader != nil {
+			a.memory = loader
+		}
+	}
+}
+
+// WithSkillsLoader injects a skills loader implementation.
+func WithSkillsLoader(loader SkillsLoader) Option {
+	return func(a *Agent) {
+		if loader != nil {
+			a.skills = loader
+		}
+	}
+}
+
+// WithBudgetManager injects a BudgetManager for context budgeting.
+func WithBudgetManager(budget *ctxpkg.BudgetManager) Option {
+	return func(a *Agent) {
+		if budget != nil {
+			a.budget = budget
+		}
+	}
+}
+
+// WithCompressor injects a Compressor used to compact messages when needed.
+func WithCompressor(c *ctxpkg.Compressor) Option {
+	return func(a *Agent) {
+		if c != nil {
+			a.compressor = c
+		}
+	}
 }
 
 // Process handles an inbound message and returns the response content.
@@ -330,6 +373,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 	}
 
 	// Convert session messages to provider messages
+	providerMsgs := make([]providers.Message, 0, len(sess.Messages))
 	for _, msg := range sess.Messages {
 		providerMsg := providers.Message{
 			Role:    providers.MessageRole(msg.Role),
@@ -352,7 +396,36 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 			providerMsg.ToolCalls = providerToolCalls
 		}
 
-		msgs = append(msgs, providerMsg)
+		providerMsgs = append(providerMsgs, providerMsg)
+	}
+
+	// If we have a budget manager and compressor, consider compressing older messages
+	if a.budget != nil && a.compressor != nil {
+		model := a.cfg.Agents.Defaults.Model
+		maxCompletion := a.cfg.Agents.Defaults.MaxTokens
+		budget := a.budget.ComputeBudget(model, maxCompletion)
+
+		// Estimate total tokens for providerMsgs
+		totalTokens := 0
+		for _, m := range providerMsgs {
+			totalTokens += ctxpkg.TokenEstimator(m.Content)
+		}
+
+		if totalTokens > budget {
+			// Compress messages to fit within budget
+			compressed, err := a.compressor.CompressMessages(model, providerMsgs, budget)
+			if err == nil && compressed != "" {
+				// Append a single summarized user message instead of full history
+				msgs = append(msgs, providers.Message{Role: providers.RoleUser, Content: "<conversation_summary>\n" + compressed})
+				return msgs
+			}
+			// on error, fallthrough and append full messages (best-effort)
+		}
+	}
+
+	// No compression required or compressor not available: append all messages
+	for _, pm := range providerMsgs {
+		msgs = append(msgs, pm)
 	}
 
 	return msgs

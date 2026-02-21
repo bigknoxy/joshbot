@@ -133,9 +133,12 @@ func (mb *MessageBus) Start() {
 		return
 	}
 	mb.started = true
-	mb.wg.Add(2)
+	mb.wg.Add(1)
 	go mb.processInbound(mb.ctx)
-	go mb.processOutbound(mb.ctx)
+	// Note: processOutbound is not started here because channel implementations
+	// (e.g., Telegram, CLI) consume outbound messages directly via OutboundChannel().
+	// The bus acts as a pub/sub broker - publishers send to outboundCh, and
+	// channel implementations subscribe by reading from OutboundChannel().
 }
 
 // Subscribe registers a handler for inbound messages on a topic.

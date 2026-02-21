@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/bigknoxy/joshbot#readme
+    about: Check the README and docs for usage guides and configuration.
+  - name: Discussions
+    url: https://github.com/bigknoxy/joshbot/discussions
+    about: Ask questions and engage with the community.

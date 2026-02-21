@@ -1,46 +1,48 @@
 # joshbot
 
-A lightweight personal AI assistant with self-learning, long-term memory, skill creation, and Telegram integration. Inspired by [nanobot](https://github.com/HKUDS/nanobot).
+[![Go Report Card](https://goreportcard.com/badge/github.com/bigknoxy/joshbot)](https://goreportcard.com/report/github.com/bigknoxy/joshbot)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/dl/)
+[![GitHub release](https://img.shields.io/github/v/release/bigknoxy/joshbot?include_prereleases)](https://github.com/bigknoxy/joshbot/releases/latest)
+
+A lightweight personal AI assistant written in Go, featuring self-learning memory, skill self-creation, subagent delegation, and Telegram integration. Inspired by [nanobot](https://github.com/HKUDS/nanobot).
 
 ## Features
 
-- **Self-Learning Memory** - Automatically remembers important facts across conversations
-- **Long-Term History** - Searchable event log of past conversations
+- **Self-Learning Memory** - Automatically remembers important facts across conversations (MEMORY.md + HISTORY.md)
+- **Context Compression** - Summarizes old context to stay within token limits; works well with small local models
 - **Skill Self-Creation** - Creates new capabilities for itself as markdown files
+- **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
 - **Telegram Integration** - Chat from your phone with full media support
 - **Interactive CLI** - Rich terminal interface with markdown rendering
-- **Multi-Provider LLM** - OpenRouter, Anthropic, OpenAI, Groq, DeepSeek, Gemini, and more via litellm
+- **Multi-Provider LLM** - OpenRouter, Anthropic, OpenAI, Groq, DeepSeek, Gemini, and more
 - **Tool Use** - File operations, shell commands, web search, scheduling, and more
 - **Proactive Tasks** - Heartbeat system for autonomous task processing
 - **Scheduled Reminders** - Cron-based task scheduling with natural delay syntax
 
 ## Requirements
 
-- **Python 3.11+** (required — uses modern syntax like `str | None`)
+- **Go 1.24+** (for building from source)
 - **An LLM API key** — OpenRouter free tier works, no credit card needed
-- **Linux or macOS** recommended (Windows may require extra setup for `readability-lxml` C dependencies)
-
-> **Note:** On Debian/Ubuntu, you may need system libraries for lxml: `sudo apt install libxml2-dev libxslt-dev`
+- **Linux or macOS** recommended
 
 ## Quick Start
 
-### Quick Install
-
-### Using curl (Recommended)
+### Install with Go
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
+go install github.com/bigknoxy/joshbot/cmd/joshbot@latest
 ```
 
-This installs joshbot via [pipx](https://pipx.pypa.io/) in an isolated environment. Requires Python 3.11+.
+Ensure `$GOPATH/bin` or `$HOME/go/bin` is in your PATH.
 
-### Using Go Install (For Go Developers)
+### Build from Source
 
 ```bash
-go install github.com/bigknoxy/joshbot@latest
+git clone https://github.com/bigknoxy/joshbot.git
+cd joshbot
+go build -o joshbot ./cmd/joshbot
 ```
-
-Make sure your Go binary is in your PATH. Requires Python 3.11+.
 
 ### Docker
 
@@ -49,234 +51,7 @@ docker build -t joshbot .
 docker run -it -v ~/.joshbot:/root/.joshbot joshbot onboard
 ```
 
-### Manual Build From Source
-
-```bash
-git clone https://github.com/bigknoxy/joshbot.git
-cd joshbot
-
-# Create a virtual environment (recommended)
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install
-pip install .
-
-# Or install in dev mode
-pip install -e .
-```
-
-After install, run:
-
-```bash
-joshbot onboard
-```
-
-### 2. Onboard
-
-```bash
-joshbot onboard
-```
-
-This will:
-- Ask for your OpenRouter API key (free at [openrouter.ai/keys](https://openrouter.ai/keys)) — you can press Enter to skip and configure later
-- Let you choose a personality (Professional, Friendly, Sarcastic, Minimal, or Custom)
-- Set up your workspace and memory files
-
-### 3. Chat
-
-```bash
-# Interactive terminal
-joshbot agent
-
-# Gateway mode (Telegram + all channels)
-joshbot gateway
-```
-
-## Configuration
-
-Config file: `~/.joshbot/config.json`
-
-```json
-{
-  "providers": {
-    "openrouter": {
-      "api_key": "sk-or-v1-your-key-here",
-      "api_base": "",
-      "extra_headers": {}
-    }
-  },
-  "agents": {
-    "defaults": {
-      "workspace": "~/.joshbot/workspace",
-      "model": "google/gemma-2-9b-it:free",
-      "max_tokens": 8192,
-      "temperature": 0.7,
-      "max_tool_iterations": 20,
-      "memory_window": 50
-    }
-  },
-  "channels": {
-    "telegram": {
-      "enabled": false,
-      "token": "",
-      "allow_from": [],
-      "proxy": ""
-    }
-  },
-  "tools": {
-    "web": {
-      "search": { "api_key": "" }
-    },
-    "exec": { "timeout": 60 },
-    "restrict_to_workspace": false
-  },
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18790
-  }
-}
-```
-
-> **Security note:** `allow_from: []` (empty) means **anyone** can message your bot. Add your Telegram user ID to restrict access. `restrict_to_workspace: false` means tools can access files outside the workspace — set to `true` for sandboxed operation.
-
-### Changing the LLM Model
-
-The default model is `google/gemma-2-9b-it:free` via OpenRouter (free, no credit card needed).
-
-**To use a better model** (requires OpenRouter credits):
-```json
-"model": "anthropic/claude-sonnet-4-20250514"
-```
-
-**To use Anthropic directly:**
-```json
-{
-  "providers": {
-    "anthropic": { "api_key": "sk-ant-..." }
-  },
-  "agents": {
-    "defaults": { "model": "claude-sonnet-4-20250514" }
-  }
-}
-```
-
-**To use OpenAI directly:**
-```json
-{
-  "providers": {
-    "openai": { "api_key": "sk-..." }
-  },
-  "agents": {
-    "defaults": { "model": "gpt-4o" }
-  }
-}
-```
-
-**To use Groq (fast inference):**
-```json
-{
-  "providers": {
-    "groq": { "api_key": "gsk_..." }
-  },
-  "agents": {
-    "defaults": { "model": "groq/llama-3.3-70b-versatile" }
-  }
-}
-```
-
-**To use a custom OpenAI-compatible endpoint (e.g., local vLLM, Ollama):**
-```json
-{
-  "providers": {
-    "custom": {
-      "api_key": "your-key-or-empty",
-      "api_base": "http://localhost:8000/v1"
-    }
-  },
-  "agents": {
-    "defaults": { "model": "openai/your-model-name" }
-  }
-}
-```
-
-### Voice Transcription Setup
-
-Voice messages from Telegram are transcribed using Groq's Whisper API. To enable this, add a Groq provider **alongside** your main LLM provider:
-
-```json
-{
-  "providers": {
-    "openrouter": { "api_key": "sk-or-..." },
-    "groq": { "api_key": "gsk_..." }
-  }
-}
-```
-
-Get a free Groq API key at [console.groq.com](https://console.groq.com). Without this, voice messages are saved as files but not transcribed.
-
-### Proxy Configuration
-
-If you're behind a firewall or in a restricted region, configure a proxy for Telegram:
-
-```json
-{
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "...",
-      "proxy": "socks5://user:pass@proxy-host:1080"
-    }
-  }
-}
-```
-
-Supports HTTP and SOCKS5 proxies.
-
-### Environment Variables
-
-All config values can be set via environment variables with `JOSHBOT_` prefix and `__` for nesting:
-
-```bash
-export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-..."
-export JOSHBOT_CHANNELS__TELEGRAM__ENABLED="true"
-export JOSHBOT_CHANNELS__TELEGRAM__TOKEN="123456:ABC..."
-```
-
-## Telegram Setup
-
-1. Open Telegram and message [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` and follow the prompts to create your bot
-3. Copy the bot token
-4. Find your Telegram user ID by messaging [@userinfobot](https://t.me/userinfobot) — it returns a **number** like `123456789`
-5. Add to config:
-
-```json
-{
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
-      "allow_from": ["123456789"]
-    }
-  }
-}
-```
-
-> **Important:** `allow_from` takes Telegram **user IDs** (numbers as strings), not usernames. An empty list allows anyone to use your bot.
-
-6. Start the gateway: `joshbot gateway`
-7. Message your bot on Telegram!
-
-**Supported media:**
-- Text messages
-- Photos (downloaded and available as attachments)
-- Voice messages (transcribed via Groq Whisper — see [Voice Transcription Setup](#voice-transcription-setup))
-- Documents (downloaded and referenced)
-
-## Commands
-
-### CLI
+## Usage
 
 ```bash
 joshbot onboard   # First-time setup
@@ -285,72 +60,58 @@ joshbot gateway   # Start all channels (Telegram, etc.)
 joshbot status    # Show configuration and status
 ```
 
-### Chat Commands
+### Onboard Command
 
-These work in both CLI and Telegram:
+```bash
+joshbot onboard              # Interactive setup
+joshbot onboard --force      # Overwrite existing config
+joshbot onboard --keep-data  # Reconfigure but preserve memory/skills
+```
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Start a conversation |
-| `/new` | Start fresh (saves memory first) |
-| `/help` | Show available commands |
-| `/status` | Show system status |
+The onboard flow will:
+- Ask for your OpenRouter API key (free at [openrouter.ai/keys](https://openrouter.ai/keys))
+- Let you choose a personality (Professional, Friendly, Sarcastic, Minimal, or Custom)
+- Set up your workspace and memory files
 
 ## Memory System
 
-joshbot has a two-file memory system that learns from your conversations:
+joshbot uses a two-file memory system that learns from your conversations:
 
-### MEMORY.md (Long-Term Facts)
-- Location: `~/.joshbot/workspace/memory/MEMORY.md` (default)
-- **Always loaded** into context
-- Contains: user preferences, project context, decisions, important notes
-- Updated automatically during memory consolidation
-
-### HISTORY.md (Event Log)
-- Location: `~/.joshbot/workspace/memory/HISTORY.md` (default)
-- Append-only log of timestamped conversation summaries
-- Searchable (joshbot uses `grep` to search past events)
-- Each entry is 2-5 sentences with `[YYYY-MM-DD HH:MM]` timestamp
+| File | Purpose |
+|------|---------|
+| `MEMORY.md` | Long-term facts (always in context) |
+| `HISTORY.md` | Searchable event log with timestamps |
 
 ### Memory Consolidation
-When a conversation exceeds the memory window (default: 50 messages):
-1. Older messages are summarized by the LLM
+
+When conversations grow large:
+1. Old messages are summarized by the LLM
 2. Key facts are extracted to MEMORY.md
 3. A summary is appended to HISTORY.md
-4. The session is trimmed to recent messages
+4. Context is compressed to stay within limits
 
-### Heartbeat (Proactive Tasks)
-
-The heartbeat service (active in gateway mode) reads `~/.joshbot/workspace/HEARTBEAT.md` every 30 minutes. Add tasks in checkbox format and joshbot will process them autonomously:
-
-```markdown
-- [ ] Check if the server is still running
-- [ ] Summarize today's news about AI
-```
+**Context Compression** works efficiently with small local models (e.g., `gemma-2-9b`, `llama-3.2-3b`) — the summarization task is simple enough that you don't need a large model.
 
 ## Skills System
 
 Skills are markdown files that extend joshbot's capabilities without code changes.
 
 ### Bundled Skills
+
 | Skill | Description |
 |-------|-------------|
-| `memory` | Memory system usage (always loaded into context) |
+| `memory` | Memory system usage (always loaded) |
 | `skill-creator` | How to create new skills |
 | `github` | GitHub CLI patterns (requires `gh` binary) |
 | `cron` | Scheduling guidance |
 
 ### Creating Custom Skills
 
-joshbot can create its own skills! Ask it to learn something, and it will:
-
-1. Create `~/.joshbot/workspace/skills/{name}/SKILL.md`
-2. Write instructions with YAML frontmatter
-3. Auto-discover the skill in future conversations
+joshbot can create its own skills! Ask it to learn something, and it will create `~/.joshbot/workspace/skills/{name}/SKILL.md` with YAML frontmatter.
 
 Skills use **progressive loading**:
-- **Level 1:** Name + description always in context (~100 tokens each)
-- **Level 2:** Full content loaded on demand via `read_file`
+- **Level 1:** Name + description always in context (~100 tokens)
+- **Level 2:** Full content loaded on demand
 - **Level 3:** Scripts/assets loaded as needed
 
 ### Skill Format
@@ -369,7 +130,120 @@ tags: [development]
 Instructions and examples...
 ```
 
-The `requirements` field supports `bin:name` (checks for binary in PATH) and `env:VAR` (checks for environment variable). Skills with unmet requirements are listed as unavailable.
+## Subagent Delegation
+
+For complex tasks, joshbot can spawn focused subagents that:
+- Keep the main context clean
+- Handle one specific objective
+- Report back with results
+
+Subagents are useful for:
+- File exploration and pattern discovery
+- Multi-step implementation tasks
+- Parallel independent work
+
+## Heartbeat (Proactive Tasks)
+
+The heartbeat service (active in gateway mode) reads `~/.joshbot/workspace/HEARTBEAT.md` periodically. Add tasks in checkbox format:
+
+```markdown
+- [ ] Check if the server is still running
+- [ ] Summarize today's news about AI
+```
+
+## Configuration
+
+Config file: `~/.joshbot/config.json`
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "api_key": "sk-or-v1-your-key-here"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "~/.joshbot/workspace",
+      "model": "openai/gpt-4",
+      "max_tokens": 8192,
+      "temperature": 0.7,
+      "max_tool_iterations": 20,
+      "memory_window": 50
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": false,
+      "token": "",
+      "allow_from": []
+    }
+  }
+}
+```
+
+### Environment Variables
+
+All config values can be set via environment variables with `JOSHBOT_` prefix:
+
+```bash
+export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-..."
+export JOSHBOT_CHANNELS__TELEGRAM__ENABLED="true"
+```
+
+### Changing the LLM Model
+
+The default model is `openai/gpt-4`. For free alternatives via OpenRouter, try `arcee-ai/trinity-large-preview:free` or browse available models at openrouter.ai.
+
+**To use Anthropic directly:**
+```json
+{
+  "providers": { "anthropic": { "api_key": "sk-ant-..." } },
+  "agents": { "defaults": { "model": "claude-sonnet-4-20250514" } }
+}
+```
+
+**To use OpenAI directly:**
+```json
+{
+  "providers": { "openai": { "api_key": "sk-..." } },
+  "agents": { "defaults": { "model": "gpt-4o" } }
+}
+```
+
+**To use a local model (Ollama, vLLM):**
+```json
+{
+  "providers": {
+    "custom": {
+      "api_key": "",
+      "api_base": "http://localhost:11434/v1"
+    }
+  },
+  "agents": { "defaults": { "model": "openai/llama3.2" } }
+}
+```
+
+## Telegram Setup
+
+1. Message [@BotFather](https://t.me/BotFather) and send `/newbot` to create your bot
+2. Copy the bot token
+3. Find your user ID from [@userinfobot](https://t.me/userinfobot)
+4. Add to config:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "123456789:ABCdef...",
+      "allow_from": ["123456789"]
+    }
+  }
+}
+```
+
+5. Run: `joshbot gateway`
 
 ## Built-in Tools
 
@@ -380,149 +254,52 @@ The `requirements` field supports `bin:name` (checks for binary in PATH) and `en
 | `edit_file` | Find-and-replace editing |
 | `list_dir` | List directory contents |
 | `exec` | Execute shell commands (with safety guards) |
-| `web_search` | Search the web (requires [Brave API key](https://brave.com/search/api/)) |
+| `web_search` | Search the web (requires Brave API key) |
 | `web_fetch` | Fetch and extract web page content |
 | `message` | Send messages to channels |
 | `spawn` | Create background tasks |
 | `cron` | Schedule reminders/tasks |
 
-### Shell Safety
+## Chat Commands
 
-The `exec` tool blocks dangerous commands including:
-- `rm -rf /`, `dd`, `mkfs` (destructive operations)
-- `shutdown`, `reboot`, `halt` (system commands)
-- Fork bombs and other malicious patterns
-- Optional workspace sandboxing via `restrict_to_workspace: true`
-
-## Docker
-
-### Build and Run
-
-```bash
-docker build -t joshbot .
-
-# First-time setup (interactive)
-docker run -it -v ~/.joshbot:/root/.joshbot joshbot onboard
-
-# Run gateway
-docker run -d -v ~/.joshbot:/root/.joshbot joshbot gateway
-```
-
-### Docker Compose
-
-```bash
-# Configure ~/.joshbot/config.json first, then:
-docker compose up -d
-```
-
-The `-v` mount persists config, sessions, memory, and skills across container restarts. You can also pass API keys via environment variables in `docker-compose.yml` — see the comments in that file.
+| Command | Description |
+|---------|-------------|
+| `/start` | Start a conversation |
+| `/new` | Start fresh (saves memory first) |
+| `/help` | Show available commands |
+| `/status` | Show system status |
 
 ## Architecture
 
 ```
 joshbot/
-├── agent/          # Core brain (loop, context, memory, skills)
-├── tools/          # Built-in tools (filesystem, shell, web, etc.)
-├── channels/       # Chat integrations (CLI, Telegram)
-├── bus/            # Async message bus (decouples channels from agent)
-├── providers/      # LLM provider layer (litellm + registry)
-├── session/        # Conversation persistence (JSONL)
-├── cron/           # Task scheduling
-├── heartbeat/      # Proactive wake-ups
-└── config/         # Configuration (Pydantic)
+├── cmd/joshbot/     # CLI entry point
+├── internal/
+│   ├── agent/       # Core brain (loop, context, memory, skills)
+│   ├── tools/       # Built-in tools
+│   ├── channels/    # Chat integrations (CLI, Telegram)
+│   ├── bus/         # Message bus (decouples channels from agent)
+│   ├── providers/   # LLM provider layer
+│   ├── session/     # Conversation persistence (JSONL)
+│   ├── cron/        # Task scheduling
+│   └── heartbeat/   # Proactive wake-ups
+└── config/          # Configuration
 ```
 
 **Key patterns:**
-- **Message bus**: Async queues decouple channels from agent logic
-- **ReAct loop**: LLM -> tools -> reflect -> repeat (max 20 iterations)
+- **Message bus**: Channels decoupled from agent via async queues
+- **ReAct loop**: LLM → tools → reflect → repeat (max 20 iterations)
 - **Progressive skill loading**: Minimal context overhead, full content on demand
-- **Plain-file memory**: No databases, just markdown. Simple, debuggable, portable.
-- **Heartbeat**: Reads HEARTBEAT.md every 30 minutes for proactive autonomous tasks
-
-## Upgrading
-
-The easiest way to update joshbot:
-
-```bash
-joshbot update
-```
-
-Check for updates without installing:
-
-```bash
-joshbot update --check
-```
-
-Check your current version:
-
-```bash
-joshbot --version
-```
-
-### Manual upgrade methods
-
-**pipx (quick install):**
-
-```bash
-pipx upgrade joshbot --pip-args='--force-reinstall'
-```
-
-**Source install:**
-
-```bash
-cd joshbot
-git pull
-pip install .
-```
-
-**Docker:**
-
-```bash
-docker compose build
-docker compose up -d
-```
-
-Your config, sessions, and memory in `~/.joshbot/` are preserved across upgrades. See [CHANGELOG.md](CHANGELOG.md) for release notes.
-
-## Uninstall
-
-### Quick Uninstall
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/scripts/uninstall.sh | bash
-```
-
-### Using the CLI
-
-```bash
-joshbot uninstall
-```
-
-### Manual Uninstall
-
-```bash
-# Remove binary
-rm $(which joshbot)
-
-# Optionally remove configuration
-rm -rf ~/.joshbot
-```
-
-This will:
-- Remove the joshbot binary
-- Ask if you want to remove ~/.joshbot (with all configs, memories, sessions)
+- **Plain-file memory**: No databases, just markdown — simple and portable
+- **Context compression**: Summarizes old context to stay within token limits
 
 ## Troubleshooting
 
-**"No providers configured"** — Run `joshbot onboard` or manually create `~/.joshbot/config.json` with at least one provider and API key.
+**"No providers configured"** — Run `joshbot onboard` or create `~/.joshbot/config.json` with at least one provider.
 
-**LLM calls failing** — Check your API key is valid. Run `joshbot status` to verify configuration. Ensure your model name matches the provider (e.g., `claude-sonnet-4-20250514` for Anthropic, `openrouter/...` prefix for OpenRouter).
+**LLM calls failing** — Check your API key. Run `joshbot status` to verify configuration.
 
-**Telegram bot not responding** — Verify `channels.telegram.enabled` is `true` and the token is correct. Check that your user ID is in `allow_from` (or that the list is empty). If behind a firewall, configure the `proxy` field.
-
-**`readability-lxml` install fails** — Install system dependencies: `sudo apt install libxml2-dev libxslt-dev` (Debian/Ubuntu) or `pkg install libxml2 libxslt` (macOS).
-
-**`web_search` returns errors** — This tool requires a Brave Search API key. Get one at [brave.com/search/api](https://brave.com/search/api/) and set it in `tools.web.search.api_key`.
+**Telegram bot not responding** — Verify `channels.telegram.enabled` is `true` and check your user ID is in `allow_from`.
 
 ## License
 

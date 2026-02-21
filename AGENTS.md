@@ -207,3 +207,35 @@ that publishes `InboundMessage` to the bus and subscribes to `OutboundMessage`.
 
 Requires **Go 1.24+**. Uses modern features: generic types, structured logging,
 improved error handling with `%w`, and context-aware cancellation throughout.
+
+## Lessons Learned
+
+### Cross-Platform Factory Pattern (Go)
+
+When using build tags for platform-specific implementations:
+
+1. **Each platform factory file MUST export the same function signature**
+   - `factory_linux.go` → `func NewManager(cfg Config) (Manager, error)`
+   - `factory_darwin.go` → `func NewManager(cfg Config) (Manager, error)`
+   - `factory_other.go` → `func NewManager(cfg Config) (Manager, error)`
+
+2. **Never put the factory function in the interface/struct file**
+   - ❌ Bad: `service.go` defines `NewManager()`
+   - ✅ Good: `service.go` defines interface only; `factory_*.go` files provide implementations
+
+3. **Build tags must be exclusive per file**
+   - `//go:build linux` for Linux
+   - `//go:build darwin` for macOS
+   - `//go:build !linux && !darwin` for fallback
+
+4. **Test cross-platform builds locally before release**
+   ```bash
+   GOOS=linux GOARCH=amd64 go build ./...
+   GOOS=darwin GOARCH=arm64 go build ./...
+   GOOS=windows GOARCH=amd64 go build ./...
+   ```
+
+5. **Running as root: sudo not available**
+   - When user is root (uid 0), `sudo` command doesn't exist
+   - Detect with `os.Getuid() == 0` and skip sudo prefix
+   - Applies to systemd service installation, file operations needing elevated permissions

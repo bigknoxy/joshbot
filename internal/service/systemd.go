@@ -13,6 +13,7 @@ import (
 type systemdManager struct {
 	config      Config
 	servicePath string
+	isRoot      bool
 }
 
 func newSystemd(cfg Config) (*systemdManager, error) {
@@ -33,7 +34,38 @@ func newSystemd(cfg Config) (*systemdManager, error) {
 	return &systemdManager{
 		config:      cfg,
 		servicePath: fmt.Sprintf("/etc/systemd/system/%s.service", cfg.Name),
+		isRoot:      os.Geteuid() == 0,
 	}, nil
+}
+
+func (s *systemdManager) runCommand(name string, args ...string) error {
+	var cmd *exec.Cmd
+	if s.isRoot {
+		cmd = exec.Command(name, args...)
+	} else {
+		cmd = exec.Command("sudo", append([]string{name}, args...)...)
+	}
+	return cmd.Run()
+}
+
+func (s *systemdManager) runCommandOutput(name string, args ...string) ([]byte, error) {
+	var cmd *exec.Cmd
+	if s.isRoot {
+		cmd = exec.Command(name, args...)
+	} else {
+		cmd = exec.Command("sudo", append([]string{name}, args...)...)
+	}
+	return cmd.Output()
+}
+
+func (s *systemdManager) runCommandCombined(name string, args ...string) ([]byte, error) {
+	var cmd *exec.Cmd
+	if s.isRoot {
+		cmd = exec.Command(name, args...)
+	} else {
+		cmd = exec.Command("sudo", append([]string{name}, args...)...)
+	}
+	return cmd.CombinedOutput()
 }
 
 func (s *systemdManager) Name() string {
@@ -76,11 +108,11 @@ WantedBy=multi-user.target
 	}
 	tmpFile.Close()
 
-	if err := exec.Command("sudo", "cp", tmpFile.Name(), s.servicePath).Run(); err != nil {
-		return Result{}, fmt.Errorf("failed to copy service file (need sudo): %w", err)
+	if err := s.runCommand("cp", tmpFile.Name(), s.servicePath); err != nil {
+		return Result{}, fmt.Errorf("failed to copy service file: %w", err)
 	}
 
-	if err := exec.Command("sudo", "systemctl", "daemon-reload").Run(); err != nil {
+	if err := s.runCommand("systemctl", "daemon-reload"); err != nil {
 		return Result{}, fmt.Errorf("failed to reload systemd: %w", err)
 	}
 
@@ -97,20 +129,20 @@ func (s *systemdManager) Uninstall() (Result, error) {
 	}
 
 	if s.isRunning() {
-		if err := exec.Command("sudo", "systemctl", "stop", s.config.Name).Run(); err != nil {
+		if err := s.runCommand("systemctl", "stop", s.config.Name); err != nil {
 			return Result{}, fmt.Errorf("failed to stop service: %w", err)
 		}
 	}
 
-	if err := exec.Command("sudo", "systemctl", "disable", s.config.Name).Run(); err != nil {
+	if err := s.runCommand("systemctl", "disable", s.config.Name); err != nil {
 		return Result{}, fmt.Errorf("failed to disable service: %w", err)
 	}
 
-	if err := exec.Command("sudo", "rm", s.servicePath).Run(); err != nil {
+	if err := s.runCommand("rm", s.servicePath); err != nil {
 		return Result{}, fmt.Errorf("failed to remove service file: %w", err)
 	}
 
-	if err := exec.Command("sudo", "systemctl", "daemon-reload").Run(); err != nil {
+	if err := s.runCommand("systemctl", "daemon-reload"); err != nil {
 		return Result{}, fmt.Errorf("failed to reload systemd: %w", err)
 	}
 
@@ -125,11 +157,11 @@ func (s *systemdManager) Start() error {
 		return fmt.Errorf("service not installed")
 	}
 
-	if err := exec.Command("sudo", "systemctl", "enable", s.config.Name).Run(); err != nil {
+	if err := s.runCommand("systemctl", "enable", s.config.Name); err != nil {
 		return fmt.Errorf("failed to enable service: %w", err)
 	}
 
-	if err := exec.Command("sudo", "systemctl", "start", s.config.Name).Run(); err != nil {
+	if err := s.runCommand("systemctl", "start", s.config.Name); err != nil {
 		return fmt.Errorf("failed to start service: %w", err)
 	}
 
@@ -141,7 +173,7 @@ func (s *systemdManager) Stop() error {
 		return fmt.Errorf("service not installed")
 	}
 
-	return exec.Command("sudo", "systemctl", "stop", s.config.Name).Run()
+	return s.runCommand("systemctl", "stop", s.config.Name)
 }
 
 func (s *systemdManager) Status() (Status, error) {

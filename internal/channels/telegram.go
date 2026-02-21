@@ -2,7 +2,9 @@ package channels
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -1150,6 +1152,54 @@ func (t *TelegramChannel) ParseMarkdown(text string) (string, error) {
 	text = linkRegex.ReplaceAllString(text, `<a href="$2">$1</a>`)
 
 	return text, nil
+}
+
+// ValidateToken validates a Telegram bot token by making a getMe API call.
+// Returns nil if the token is valid, or an error describing the failure.
+func ValidateToken(token string) error {
+	if token == "" {
+		return fmt.Errorf("token is empty")
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Telegram API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			ID       int64  `json:"id"`
+			IsBot    bool   `json:"is_bot"`
+			Username string `json:"username"`
+		} `json:"result"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !result.OK {
+		if result.Description != "" {
+			return fmt.Errorf("token validation failed: %s", result.Description)
+		}
+		return fmt.Errorf("token validation failed: unknown error")
+	}
+
+	if !result.Result.IsBot {
+		return fmt.Errorf("token does not belong to a bot")
+	}
+
+	return nil
 }
 
 // Ensure TelegramChannel implements Channel interface

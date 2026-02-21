@@ -22,6 +22,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/memory"
 	"github.com/bigknoxy/joshbot/internal/providers"
+	"github.com/bigknoxy/joshbot/internal/service"
 	"github.com/bigknoxy/joshbot/internal/session"
 	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/urfave/cli/v2"
@@ -109,6 +110,27 @@ func runApp() error {
 					},
 				},
 				Action: runUninstall,
+			},
+			{
+				Name:  "service",
+				Usage: "Manage joshbot as a system service",
+				Subcommands: []*cli.Command{
+					{
+						Name:   "install",
+						Usage:  "Install joshbot as a system service",
+						Action: runServiceInstall,
+					},
+					{
+						Name:   "uninstall",
+						Usage:  "Uninstall the joshbot system service",
+						Action: runServiceUninstall,
+					},
+					{
+						Name:   "status",
+						Usage:  "Check joshbot service status",
+						Action: runServiceStatus,
+					},
+				},
 			},
 		},
 		Before: func(c *cli.Context) error {
@@ -653,6 +675,7 @@ func runOnboard(c *cli.Context) error {
 	// Run prompts (skip if --force)
 	var apiKey, personalityChoice, model string
 	var soulContent string
+	var telegramConfig *config.TelegramConfig
 
 	if force {
 		// Use defaults for non-interactive setup
@@ -665,6 +688,7 @@ func runOnboard(c *cli.Context) error {
 		personalityChoice = selectPersonality()
 		soulContent = getPersonalitySoul(personalityChoice)
 		model = selectModel()
+		telegramConfig = setupTelegram()
 	}
 
 	// Build config
@@ -675,6 +699,9 @@ func runOnboard(c *cli.Context) error {
 		}
 	}
 	cfg.Agents.Defaults.Model = model
+	if telegramConfig != nil {
+		cfg.Channels.Telegram = *telegramConfig
+	}
 
 	// Ensure directories and save config
 	if err := cfg.EnsureDirs(); err != nil {
@@ -689,6 +716,15 @@ func runOnboard(c *cli.Context) error {
 	if !skipFileCreation {
 		if err := createWorkspaceFiles(cfg, soulContent); err != nil {
 			return err
+		}
+	}
+
+	// Step 5: Service install
+	installService := promptServiceInstall()
+	if installService {
+		if err := doServiceInstall(); err != nil {
+			fmt.Printf("Warning: Could not install service: %v\n", err)
+			fmt.Println("You can run 'joshbot service install' manually later.")
 		}
 	}
 
@@ -758,6 +794,144 @@ func selectModel() string {
 		model = defaultModel
 	}
 	return model
+}
+
+func setupTelegram() *config.TelegramConfig {
+	fmt.Println("\n[Step 4] Telegram Setup")
+	fmt.Println("Would you like to set up Telegram for joshbot?")
+	fmt.Println("This allows you to chat with joshbot via Telegram.")
+	fmt.Println()
+	fmt.Println("  1. Yes, set up Telegram")
+	fmt.Println("  2. No, skip for now")
+	fmt.Println()
+	fmt.Printf("Choice [2]: ")
+
+	var choice string
+	fmt.Scanln(&choice)
+
+	if choice != "1" {
+		fmt.Println("\nSkipping Telegram setup. You can configure it later by editing:")
+		fmt.Printf("  %s\n", filepath.Join(config.DefaultHome, "config.json"))
+		return nil
+	}
+
+	fmt.Println("\n" + strings.Repeat("─", 45))
+	fmt.Println("Telegram Bot Setup")
+	fmt.Println(strings.Repeat("─", 45))
+	fmt.Println()
+	fmt.Println("To create a Telegram bot:")
+	fmt.Println()
+	fmt.Println("  1. Open Telegram and search for @BotFather")
+	fmt.Println("  2. Send the command: /newbot")
+	fmt.Println("  3. Follow the prompts to name your bot")
+	fmt.Println("  4. BotFather will give you a token (keep it secret!)")
+	fmt.Println()
+	fmt.Println("Enter your bot token when ready.")
+	fmt.Println("(Type 'cancel' to abort)")
+	fmt.Println()
+	fmt.Printf("Bot token: ")
+
+	var token string
+	fmt.Scanln(&token)
+
+	if token == "cancel" || token == "" {
+		fmt.Println("\nTelegram setup cancelled.")
+		return nil
+	}
+
+	fmt.Println("\nValidating token...")
+	if err := channels.ValidateToken(token); err != nil {
+		fmt.Printf("Token validation failed: %v\n", err)
+		fmt.Println("Please check your token and try again.")
+		return nil
+	}
+	fmt.Println("Token validated successfully!")
+
+	fmt.Println("\nAllowed usernames (optional)")
+	fmt.Println("Restrict bot access to specific Telegram usernames.")
+	fmt.Println("Leave empty to allow anyone to use the bot.")
+	fmt.Println()
+	fmt.Printf("Usernames (comma-separated, or press Enter to skip): ")
+
+	var usernamesRaw string
+	fmt.Scanln(&usernamesRaw)
+
+	var allowFrom []string
+	if usernamesRaw != "" {
+		for _, u := range strings.Split(usernamesRaw, ",") {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				if !strings.HasPrefix(u, "@") {
+					u = "@" + u
+				}
+				allowFrom = append(allowFrom, u)
+			}
+		}
+	}
+
+	fmt.Println("\nTelegram configured!")
+
+	return &config.TelegramConfig{
+		Enabled:   true,
+		Token:     token,
+		AllowFrom: allowFrom,
+	}
+}
+
+func promptServiceInstall() bool {
+	fmt.Println("\n[Step 5] Service Installation")
+	fmt.Println("Install joshbot as a background service?")
+	fmt.Println()
+	fmt.Println("This allows joshbot to:")
+	fmt.Println("  - Start automatically on boot")
+	fmt.Println("  - Run in the background continuously")
+	fmt.Println("  - Be managed with: joshbot service start/stop/status")
+	fmt.Println()
+	fmt.Println("  1. Yes, install as service")
+	fmt.Println("  2. No, I'll run it manually")
+	fmt.Println()
+	fmt.Printf("Choice [2]: ")
+
+	var choice string
+	fmt.Scanln(&choice)
+
+	return choice == "1"
+}
+
+func doServiceInstall() error {
+	svc, err := service.NewManager(service.Config{
+		Name:        "joshbot",
+		DisplayName: "joshbot AI Assistant",
+		Description: "Personal AI assistant with Telegram integration",
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("\nInstalling service...")
+	result, err := svc.Install()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Service installed successfully!")
+	if result.Message != "" {
+		fmt.Printf("  %s\n", result.Message)
+	}
+
+	fmt.Println("\nStarting service...")
+	if err := svc.Start(); err != nil {
+		fmt.Printf("Warning: Could not start service: %v\n", err)
+		fmt.Println("Try: joshbot service start")
+	} else {
+		fmt.Println("Service started!")
+	}
+
+	if result.LogPath != "" {
+		fmt.Printf("\nLogs: %s\n", result.LogPath)
+	}
+
+	return nil
 }
 
 // createWorkspaceFiles creates the workspace files (SOUL.md, USER.md, etc.)
@@ -904,6 +1078,97 @@ func runStatus(c *cli.Context) error {
 	if memorySize > 0 || historySize > 0 {
 		fmt.Printf("MEMORY.md:  %d bytes\n", memorySize)
 		fmt.Printf("HISTORY.md: %d bytes\n", historySize)
+	}
+
+	return nil
+}
+
+// runServiceInstall installs joshbot as a system service.
+func runServiceInstall(c *cli.Context) error {
+	svc, err := service.NewManager(service.Config{
+		Name:        "joshbot",
+		DisplayName: "Joshbot AI Assistant",
+		Description: "Personal AI assistant with Telegram integration",
+	})
+	if err != nil {
+		return fmt.Errorf("service not supported on this platform: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║      Installing joshbot service          ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+
+	result, err := svc.Install()
+	if err != nil {
+		return fmt.Errorf("failed to install service: %w", err)
+	}
+
+	fmt.Println(result.Message)
+	fmt.Println()
+
+	if result.LogPath != "" {
+		fmt.Printf("Logs: %s\n", result.LogPath)
+	}
+
+	return nil
+}
+
+// runServiceUninstall uninstalls the joshbot system service.
+func runServiceUninstall(c *cli.Context) error {
+	svc, err := service.NewManager(service.Config{
+		Name:        "joshbot",
+		DisplayName: "Joshbot AI Assistant",
+		Description: "Personal AI assistant with Telegram integration",
+	})
+	if err != nil {
+		return fmt.Errorf("service not supported on this platform: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║     Uninstalling joshbot service         ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+
+	result, err := svc.Uninstall()
+	if err != nil {
+		return fmt.Errorf("failed to uninstall service: %w", err)
+	}
+
+	fmt.Println(result.Message)
+	return nil
+}
+
+// runServiceStatus checks the joshbot service status.
+func runServiceStatus(c *cli.Context) error {
+	svc, err := service.NewManager(service.Config{
+		Name:        "joshbot",
+		DisplayName: "Joshbot AI Assistant",
+		Description: "Personal AI assistant with Telegram integration",
+	})
+	if err != nil {
+		return fmt.Errorf("service not supported on this platform: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║        joshbot service status            ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+
+	status, err := svc.Status()
+	if err != nil {
+		fmt.Printf("Status: Unable to determine (%v)\n", err)
+		return nil
+	}
+
+	fmt.Printf("Status: %s\n", status.Status)
+	if status.Running {
+		fmt.Println("The service is currently running.")
+	} else {
+		fmt.Println("The service is not running.")
 	}
 
 	return nil

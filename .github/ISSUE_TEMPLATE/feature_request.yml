@@ -1,0 +1,45 @@
+name: Feature Request
+description: Suggest a new feature or improvement for joshbot.
+labels: ["enhancement", "feature"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature Description
+      description: A clear and concise description of the feature.
+      placeholder: Describe the feature you would like...
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case / Problem
+      description: |
+        Describe the use case or problem this feature would solve.
+        Why is this needed? What problem does it solve?
+      placeholder: |
+        As a user, I want to...
+        So that I can...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe your proposed solution or implementation approach.
+      placeholder: Describe how you think this should work...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: |
+        Describe any alternative solutions or features you've considered.
+        Why did you choose this over others?
+      placeholder: I considered X but...
+    validations:
+      required: false

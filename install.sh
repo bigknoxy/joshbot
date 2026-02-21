@@ -1,138 +1,329 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+#
+# joshbot install script
+# One-line installer for joshbot Go binary
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/v0.1.0/install.sh | bash
+#
+# Options:
+#   -b, --bin-dir DIR       Install binary to DIR (default: ~/.local/bin or /usr/local/bin)
+#   -v, --version VERSION  Install specific version (default: latest)
+#   -f, --force            Overwrite existing installation
+#   -h, --help            Show this help message
+#
 
-# Colors with fallback for non-tty
-if tput setaf 1 >/dev/null 2>&1; then
-    GREEN=$(tput setaf 2)
-    RED=$(tput setaf 1)
-    YELLOW=$(tput setaf 3)
-    RESET=$(tput sgr0)
-else
-    GREEN='\033[0;32m'
-    RED='\033[0;31m'
-    YELLOW='\033[0;33m'
-    RESET='\033[0m'
-fi
+set -e
 
-info()  { printf "${GREEN}[INFO]${RESET} %s\n" "$1"; }
-success(){ printf "${GREEN}[OK]${RESET} %s\n" "$1"; }
-warn()  { printf "${YELLOW}[WARN]${RESET} %s\n" "$1"; }
-error() { printf "${RED}[ERROR]${RESET} %s\n" "$1" >&2; }
+# Configuration
+REPO="bigknoxy/joshbot"
+BINARY_NAME="joshbot"
 
-# Use sudo only when needed and available
-SUDO=""
-if [[ $(id -u) -ne 0 ]]; then
-    if command -v sudo >/dev/null 2>&1; then
-        SUDO="sudo"
+# Default values
+INSTALL_DIR=""
+VERSION="latest"
+FORCE=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -b|--bin-dir)
+            INSTALL_DIR="$2"
+            shift 2
+            ;;
+        -v|--version)
+            VERSION="$2"
+            shift 2
+            ;;
+        -f|--force)
+            FORCE=true
+            shift
+            ;;
+        -h|--help)
+            cat << 'EOF'
+joshbot installer
+
+Usage:
+    curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- --version v0.1.0
+
+Options:
+    -b, --bin-dir DIR       Install binary to DIR (default: ~/.local/bin or /usr/local/bin)
+    -v, --version VERSION  Install specific version (default: latest)
+    -f, --force            Overwrite existing installation
+    -h, --help            Show this help message
+
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Detect OS and architecture
+detect_os() {
+    local os
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$os" in
+        linux*) echo "linux" ;;
+        darwin*) echo "darwin" ;;
+        msys*|mingw*|cygwin*) echo "windows" ;;
+        *) echo "$os" ;;
+    esac
+}
+
+detect_arch() {
+    local arch
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64) echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        armv7) echo "armv7" ;;
+        *) echo "$arch" ;;
+    esac
+}
+
+# Get latest version from GitHub API
+get_latest_version() {
+    if [ "$VERSION" != "latest" ]; then
+        echo "$VERSION"
+        return
     fi
-fi
+    
+    local version
+    version=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" | grep -o '"tag_name": "[^"]*' | cut -d'"' -f4)
+    
+    if [ -z "$version" ]; then
+        echo "Error: Could not determine latest version" >&2
+        exit 1
+    fi
+    
+    echo "$version"
+}
 
-# Check Python 3.11+
-info "Checking Python version..."
-if ! command -v python3 >/dev/null 2>&1; then
-    error "python3 not found. Install Python 3.11+ from https://python.org"
-    exit 1
-fi
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-PYTHON_MAJOR=${PYTHON_VERSION%%.*}
-PYTHON_MINOR=${PYTHON_VERSION##*.}
-if [[ "$PYTHON_MAJOR" -lt 3 ]] || [[ "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -lt 11 ]]; then
-    error "Python 3.11+ required, found $PYTHON_VERSION"
-    exit 1
-fi
-success "Python $PYTHON_VERSION"
-
-# Check/install pipx
-info "Checking pipx..."
-PIPX="pipx"
-if ! command -v pipx >/dev/null 2>&1; then
-    if python3 -m pipx --version >/dev/null 2>&1; then
-        PIPX="python3 -m pipx"
-    else
-        warn "pipx not found, installing..."
-        PIPX_INSTALLED=false
-
-        # Method 1: system package manager (most reliable)
-        if command -v apk >/dev/null 2>&1; then
-            info "Installing pipx via apk..."
-            ${SUDO:+$SUDO} apk add pipx 2>&1 && PIPX_INSTALLED=true || true
-        elif command -v apt-get >/dev/null 2>&1; then
-            info "Installing pipx via apt-get..."
-            ( ${SUDO:+$SUDO} apt-get update -qq && ${SUDO:+$SUDO} apt-get install -y pipx ) 2>&1 && PIPX_INSTALLED=true || true
-        elif command -v dnf >/dev/null 2>&1; then
-            info "Installing pipx via dnf..."
-            ${SUDO:+$SUDO} dnf install -y pipx 2>&1 && PIPX_INSTALLED=true || true
-        elif command -v brew >/dev/null 2>&1; then
-            info "Installing pipx via brew..."
-            brew install pipx 2>&1 && PIPX_INSTALLED=true || true
-        fi
-
-        # Method 2: pip (if package manager failed or unavailable)
-        if [[ "$PIPX_INSTALLED" != "true" ]] && python3 -m pip --version >/dev/null 2>&1; then
-            info "Installing pipx via pip..."
-            python3 -m pip install --user --break-system-packages pipx 2>&1 && PIPX_INSTALLED=true || true
-        fi
-
-        # Method 3: bootstrap pip via ensurepip, then install pipx
-        if [[ "$PIPX_INSTALLED" != "true" ]] && python3 -c "import ensurepip" 2>/dev/null; then
-            info "Bootstrapping pip via ensurepip..."
-            python3 -m ensurepip --user --break-system-packages 2>&1 || true
-            if python3 -m pip --version >/dev/null 2>&1; then
-                info "Installing pipx via pip..."
-                python3 -m pip install --user --break-system-packages pipx 2>&1 && PIPX_INSTALLED=true || true
+# Determine install directory
+get_install_dir() {
+    if [ -n "$INSTALL_DIR" ]; then
+        echo "$INSTALL_DIR"
+        return
+    fi
+    
+    # Check for explicit PATH directory
+    for dir in "$HOME/.local/bin" "/usr/local/bin" "/opt/joshbot/bin"; do
+        if [ -d "$dir" ] || [ -w "$(dirname "$dir")" ]; then
+            # Prefer ~/.local/bin if it exists or we can create it
+            if [ "$dir" = "$HOME/.local/bin" ]; then
+                if [ ! -d "$dir" ]; then
+                    mkdir -p "$dir"
+                fi
+                echo "$dir"
+                return
+            fi
+            # Otherwise use /usr/local/bin if writable
+            if [ -w "/usr/local/bin" ]; then
+                echo "/usr/local/bin"
+                return
             fi
         fi
+    done
+    
+    # Fallback to ~/.local/bin (create if needed)
+    mkdir -p "$HOME/.local/bin"
+    echo "$HOME/.local/bin"
+}
 
-        if [[ "$PIPX_INSTALLED" != "true" ]]; then
-            error "Could not install pipx. Please install manually:"
-            error "  apk add pipx                   # Alpine"
-            error "  sudo apt-get install -y pipx   # Debian/Ubuntu"
-            error "  sudo dnf install -y pipx       # Fedora/RHEL"
-            error "  brew install pipx              # macOS"
-            error "  https://pipx.pypa.io/stable/installation/"
-            exit 1
-        fi
-
-        # Determine how to invoke pipx
-        if command -v pipx >/dev/null 2>&1; then
-            PIPX="pipx"
+# Download and verify binary
+download_binary() {
+    local version="$1"
+    local os="$2"
+    local arch="$3"
+    local install_dir="$4"
+    
+    # Normalize version (remove 'v' prefix if present)
+    local version_normalized="${version#v}"
+    
+    # Build download URLs (try multiple naming patterns)
+    # Pattern 1: Archive with version (preferred)
+    local archive_filename="${BINARY_NAME}_${version_normalized}_${os}_${arch}"
+    # Pattern 2: Raw binary without version (GoReleaser default)
+    local binary_filename="${BINARY_NAME}_${os}_${arch}"
+    # Pattern 3: Binary with double underscore (GoReleaser bug)
+    local binary_filename_alt="${BINARY_NAME}__${os}_${arch}"
+    
+    local extension=""
+    if [ "$os" = "windows" ]; then
+        extension=".zip"
+    else
+        extension=".tar.gz"
+    fi
+    local archive="${archive_filename}${extension}"
+    
+    local archive_url="https://github.com/${REPO}/releases/download/${version}/${archive}"
+    local binary_url="https://github.com/${REPO}/releases/download/${version}/${binary_filename}"
+    local binary_url_alt="https://github.com/${REPO}/releases/download/${version}/${binary_filename_alt}"
+    
+    echo "Downloading joshbot ${version} for ${os}/${arch}..."
+    
+    # Create temp directory
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap "rm -rf $temp_dir" EXIT
+    
+    # Try to download archive first, fall back to raw binary
+    local use_archive=false
+    local downloaded_file=""
+    
+    # Try archive download first
+    echo "  Trying archive: ${archive}..."
+    if curl -fsSL -o "${temp_dir}/${archive}" "$archive_url" 2>/dev/null; then
+        use_archive=true
+        downloaded_file="${temp_dir}/${archive}"
+        echo "  ✓ Archive downloaded"
+    else
+        # Fall back to raw binary (try several naming patterns)
+        echo "  Archive not found, trying raw binary..."
+        # Try default binary name
+        local dest1="${temp_dir}/$(basename "$binary_url")"
+        if curl -fsSL -o "$dest1" "$binary_url" 2>/dev/null; then
+            downloaded_file="$dest1"
+            echo "  ✓ Binary downloaded: $(basename "$dest1")"
         else
-            PIPX="python3 -m pipx"
+            # Try alternate binary name (double underscore)
+            local dest2="${temp_dir}/$(basename "$binary_url_alt")"
+            if curl -fsSL -o "$dest2" "$binary_url_alt" 2>/dev/null; then
+                downloaded_file="$dest2"
+                echo "  ✓ Binary downloaded: $(basename "$dest2")"
+            else
+                echo "Error: Failed to download joshbot ${version} for ${os}/${arch}" >&2
+                echo "Tried:" >&2
+                echo "  - ${archive_url}" >&2
+                echo "  - ${binary_url}" >&2
+                echo "  - ${binary_url_alt}" >&2
+                exit 1
+            fi
         fi
-        $PIPX ensurepath >/dev/null 2>&1 || true
-        warn "You may need to restart your shell for PATH changes."
     fi
-fi
-success "pipx ready"
-
-# Check if already installed
-if command -v joshbot >/dev/null 2>&1; then
-    warn "joshbot is already installed."
-    info "To upgrade: pipx upgrade joshbot --pip-args='--force-reinstall'"
-    exit 0
-fi
-
-# Install joshbot
-info "Installing joshbot from GitHub (this may take a minute)..."
-$PIPX install "joshbot @ git+https://github.com/bigknoxy/joshbot.git" 2>&1 | tail -5
-
-# Verify
-JOSHBOT_BIN=""
-if command -v joshbot >/dev/null 2>&1; then
-    JOSHBOT_BIN="joshbot"
-elif [[ -x "$HOME/.local/bin/joshbot" ]]; then
-    JOSHBOT_BIN="$HOME/.local/bin/joshbot"
-fi
-
-if [[ -n "$JOSHBOT_BIN" ]]; then
-    success "joshbot installed!"
-    printf "\n  Next steps:\n"
-    printf "    joshbot onboard    # First-time setup\n"
-    printf "    joshbot agent      # Start chatting\n\n"
-    if ! command -v joshbot >/dev/null 2>&1; then
-        warn "Add ~/.local/bin to your PATH, then restart your shell."
+    
+    # Verify checksum if available
+    echo "Checking for checksums..."
+    local checksum_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
+    local checksums
+    if checksums=$(curl -fsSL "$checksum_url" 2>/dev/null); then
+        local checksum=""
+        if [ "$use_archive" = true ]; then
+            checksum=$(echo "$checksums" | grep -i "${archive}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+        else
+            checksum=$(echo "$checksums" | grep -i "${binary_filename}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+        fi
+        
+        if [ -n "$checksum" ]; then
+            local actual_checksum
+            actual_checksum=$(shasum -a 256 "$downloaded_file" 2>/dev/null | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+            
+            if [ "$checksum" = "$actual_checksum" ]; then
+                echo "  ✓ Checksum verified"
+            else
+                echo "Warning: Checksum mismatch (continuing anyway)" >&2
+            fi
+        else
+            echo "  Checksum not found in release"
+        fi
+    else
+        echo "  No checksums available"
     fi
-else
-    error "Installation may have failed. Try: python3 -m pipx run joshbot --help"
-    exit 1
-fi
+    
+    # Extract or prepare binary
+    echo "Installing to ${install_dir}..."
+    
+    local binary=""
+    if [ "$use_archive" = true ]; then
+        # Extract from archive
+        if [ "$os" = "windows" ]; then
+            unzip -j -o "$downloaded_file" "${BINARY_NAME}.exe" -d "$temp_dir" > /dev/null 2>&1 || true
+            binary="${temp_dir}/${BINARY_NAME}.exe"
+        else
+            tar -xzf "$downloaded_file" -C "$temp_dir" "$BINARY_NAME" 2>/dev/null || true
+            binary="${temp_dir}/${BINARY_NAME}"
+        fi
+    else
+        # Use raw binary directly (use the downloaded file path)
+        binary="${downloaded_file}"
+    fi
+    
+    # Check if binary exists
+    if [ ! -f "$binary" ]; then
+        echo "Error: Failed to locate binary after download" >&2
+        exit 1
+    fi
+    
+    # Make executable
+    chmod +x "$binary"
+    
+    # Check if binary already exists
+    local target="${install_dir}/${BINARY_NAME}"
+    if [ "$os" = "windows" ]; then
+        target="${install_dir}/${BINARY_NAME}.exe"
+    fi
+    
+    if [ -f "$target" ] && [ "$FORCE" = "false" ]; then
+        echo "Error: Binary already exists at ${target}. Use --force to overwrite." >&2
+        exit 1
+    fi
+    
+    # Move binary to install directory
+    mv -f "$binary" "$target"
+    
+    echo ""
+    echo "✓ Successfully installed joshbot ${version} to ${install_dir}"
+}
+
+# Main
+main() {
+    local os arch version install_dir
+    
+    os=$(detect_os)
+    arch=$(detect_arch)
+    version=$(get_latest_version)
+    install_dir=$(get_install_dir)
+    
+    echo "Detected: ${os}/${arch}"
+    echo "Installing to: ${install_dir}"
+    
+    download_binary "$version" "$os" "$arch" "$install_dir"
+    
+    # Check if directory is in PATH
+    if [[ ":$PATH:" != *":${install_dir}:"* ]]; then
+        echo ""
+        echo "IMPORTANT: ${install_dir} is not in your PATH."
+        echo ""
+        echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
+        echo ""
+        if [ "$install_dir" = "$HOME/.local/bin" ]; then
+            echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+        else
+            echo "    export PATH=\"${install_dir}:\$PATH\""
+        fi
+        echo ""
+    fi
+    
+    # Try to run joshbot to verify installation
+    if [ "$os" = "windows" ]; then
+        local verify_bin="${install_dir}/${BINARY_NAME}.exe"
+    else
+        local verify_bin="${install_dir}/${BINARY_NAME}"
+    fi
+    
+    if "$verify_bin" --version > /dev/null 2>&1; then
+        echo ""
+        echo "Verification: OK"
+    fi
+    
+    echo ""
+    echo "Run 'joshbot onboard' to configure joshbot!"
+}
+
+main "$@"

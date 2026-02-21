@@ -13,10 +13,17 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/channels"
 	"github.com/bigknoxy/joshbot/internal/config"
+	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
+	"github.com/bigknoxy/joshbot/internal/cron"
+	"github.com/bigknoxy/joshbot/internal/heartbeat"
+	"github.com/bigknoxy/joshbot/internal/learning"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/memory"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/session"
+	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/urfave/cli/v2"
 )
 
@@ -69,8 +76,18 @@ func runApp() error {
 				Action: runGateway,
 			},
 			{
-				Name:   "onboard",
-				Usage:  "First-time setup wizard",
+				Name:  "onboard",
+				Usage: "First-time setup wizard",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "force",
+						Usage: "Start fresh without prompting (backs up existing)",
+					},
+					&cli.BoolFlag{
+						Name:  "keep-data",
+						Usage: "Reconfigure while preserving all existing data",
+					},
+				},
 				Action: runOnboard,
 			},
 			{
@@ -135,6 +152,23 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 		return nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
 	}
 
+	// Initialize memory manager
+	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
+	}
+	if err := memoryManager.Initialize(context.Background()); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
+	}
+
+	// Initialize skills loader
+	skillsLoader, err := skills.NewLoader(cfg.Agents.Defaults.Workspace)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
+	}
+	// Discover skills now so agent has summaries available
+	_ = skillsLoader.Discover()
+
 	// Initialize message bus
 	msgBus := bus.NewMessageBus()
 
@@ -161,6 +195,11 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 	// Get logger
 	logger := log.Get()
 
+	// Build context budgeting/compression components
+	registry := ctxpkg.NewRegistry()
+	budget := ctxpkg.NewBudgetManager(registry, 100)
+	compressor := &ctxpkg.Compressor{Provider: provider}
+
 	// Create agent (tools will be added later)
 	agentInstance := agent.NewAgent(
 		cfg,
@@ -168,7 +207,24 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 		nil, // tools - to be implemented
 		sessionMgr,
 		logger,
+		agent.WithMemoryLoader(memoryManager),
+		agent.WithSkillsLoader(skillsLoader),
+		agent.WithBudgetManager(budget),
+		agent.WithCompressor(compressor),
 	)
+
+	// Start background services (best-effort)
+	cronSvc := cron.NewService(msgBus, cfg.Agents.Defaults.Workspace)
+	cronSvc.Start()
+	hb := heartbeat.NewService(msgBus, cfg.Agents.Defaults.Workspace)
+	hb.SetInterval(5 * time.Minute) // shorter default for local setups
+	hb.Start()
+
+	// Start consolidator (self-learning memory consolidation)
+	consolidator := learning.NewConsolidator(memoryManager, provider, 10*time.Minute)
+	consolidator.Start()
+
+	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
 	return msgBus, provider, sessionMgr, agentInstance, nil
 }
@@ -445,34 +501,28 @@ func runGateway(c *cli.Context) error {
 		}
 
 		// Send response back to the appropriate channel
+		channelID := getChannelID(msg)
+		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
 		outbound := bus.OutboundMessage{
 			Content:   response,
 			Channel:   msg.Channel,
-			ChannelID: getChannelID(msg),
+			ChannelID: channelID,
 			SenderID:  msg.SenderID,
 			Timestamp: time.Now(),
 		}
 		msgBus.Publish(outbound)
 	})
 
-	// Handle outbound messages (route to appropriate channel)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg := <-msgBus.OutboundChannel():
-				switch msg.Channel {
-				case "telegram":
-					sendTelegramMessage(msg)
-				case "cli":
-					fmt.Println(msg.Content)
-				default:
-					log.Warn("Unknown channel", "channel", msg.Channel)
-				}
-			}
+	// Start Telegram channel if enabled
+	var tgChannel *channels.TelegramChannel
+	if cfg.Channels.Telegram.Enabled && cfg.Channels.Telegram.Token != "" {
+		tgChannel = channels.NewTelegramChannel(msgBus, &cfg.Channels.Telegram)
+		if err := tgChannel.Start(ctx); err != nil {
+			log.Error("Failed to start Telegram channel", "error", err)
+		} else {
+			log.Info("Telegram channel started")
 		}
-	}()
+	}
 
 	// Print startup banner
 	fmt.Println()
@@ -487,6 +537,12 @@ func runGateway(c *cli.Context) error {
 
 	// Wait for shutdown
 	<-done
+
+	// Stop Telegram channel
+	if tgChannel != nil {
+		tgChannel.Stop()
+	}
+
 	log.Info("Gateway stopped")
 	return nil
 }
@@ -503,8 +559,15 @@ func sendTelegramMessage(msg bus.OutboundMessage) {
 // getChannelID extracts the chat ID from message metadata.
 func getChannelID(msg bus.InboundMessage) string {
 	if chatID, ok := msg.Metadata["chat_id"]; ok {
-		if str, ok := chatID.(string); ok {
-			return str
+		switch v := chatID.(type) {
+		case string:
+			return v
+		case int64:
+			return fmt.Sprintf("%d", v)
+		case float64:
+			return fmt.Sprintf("%.0f", v)
+		case int:
+			return fmt.Sprintf("%d", v)
 		}
 	}
 	return ""
@@ -512,6 +575,11 @@ func getChannelID(msg bus.InboundMessage) string {
 
 // runOnboard executes the first-time setup wizard.
 func runOnboard(c *cli.Context) error {
+	force := c.Bool("force")
+	keepData := c.Bool("keep-data")
+	homeDir := config.DefaultHome
+
+	// Welcome banner
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════╗")
 	fmt.Println("║       Welcome to joshbot!                 ║")
@@ -519,54 +587,84 @@ func runOnboard(c *cli.Context) error {
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
 
-	// Check if config already exists
-	configPath := filepath.Join(config.DefaultHome, "config.json")
-	if _, err := os.Stat(configPath); err == nil {
-		fmt.Print("Configuration already exists. Overwrite? (y/N): ")
-		var response string
-		fmt.Scanln(&response)
-		if strings.ToLower(response) != "y" {
-			fmt.Println("Onboarding cancelled.")
-			return nil
+	// Check for existing installation
+	configExists, workspaceExists, _ := checkExistingInstall(homeDir)
+	hasExisting := configExists || workspaceExists
+
+	// Track whether we should skip file creation
+	skipFileCreation := false
+
+	if hasExisting {
+		if force {
+			// --force: backup and continue with full onboarding (no prompts)
+			fmt.Println("Existing installation found. Backing up...")
+			backupPath, err := backupExisting(homeDir)
+			if err != nil {
+				return fmt.Errorf("failed to backup existing installation: %w", err)
+			}
+			fmt.Printf("Backed up to: %s\n", backupPath)
+			fmt.Println()
+		} else if keepData {
+			// --keep-data: skip file creation, just run prompts
+			skipFileCreation = true
+			fmt.Println("Keeping existing data, will reconfigure...")
+			fmt.Println()
+		} else {
+			// Interactive mode: show two-choice menu
+			fmt.Println("╔═══════════════════════════════════════════╗")
+			fmt.Println("║        Existing Installation Found        ║")
+			fmt.Println("╚═══════════════════════════════════════════╝")
+			fmt.Println()
+
+			// Display existing files with status
+			fmt.Printf("  Config:     %s %s\n", filepath.Join(homeDir, "config.json"), statusBool(configExists))
+			fmt.Printf("  Workspace:  %s %s\n", filepath.Join(homeDir, "workspace/"), statusBool(workspaceExists))
+			memoryPath := filepath.Join(homeDir, "workspace", "memory")
+			if _, err := os.Stat(memoryPath); err == nil {
+				fmt.Printf("  Memory:     %s %s\n", memoryPath, statusBool(true))
+			}
+			fmt.Println()
+
+			fmt.Println("  [1] Keep existing data and reconfigure")
+			fmt.Println("  [2] Delete and start fresh (backup created)")
+			fmt.Println()
+			fmt.Print("  Choose [1-2] (default: 1): ")
+
+			var choice string
+			fmt.Scanln(&choice)
+			fmt.Println()
+
+			if choice == "1" {
+				// Keep existing data: skip file creation but run prompts
+				skipFileCreation = true
+			} else {
+				// Delete and start fresh: backup then continue
+				fmt.Println("Backing up existing installation...")
+				backupPath, err := backupExisting(homeDir)
+				if err != nil {
+					return fmt.Errorf("failed to backup existing installation: %w", err)
+				}
+				fmt.Printf("Backed up to: %s\n", backupPath)
+				fmt.Println()
+			}
 		}
 	}
 
-	// Step 1: API Key
-	fmt.Println("\n[Step 1] LLM Provider")
-	fmt.Println("joshbot uses OpenRouter by default (supports many models with one API key).")
-	fmt.Println("Get a free key at: https://openrouter.ai/keys")
-	fmt.Print("Enter your OpenRouter API key (or press Enter to skip): ")
+	// Run prompts (skip if --force)
+	var apiKey, personalityChoice, model string
+	var soulContent string
 
-	var apiKey string
-	fmt.Scanln(&apiKey)
-
-	// Step 2: Personality
-	fmt.Println("\n[Step 2] Personality")
-	fmt.Println("Choose joshbot's personality:")
-	fmt.Println("  1. Professional - Concise, task-focused, minimal small talk")
-	fmt.Println("  2. Friendly - Warm, conversational, uses humor")
-	fmt.Println("  3. Sarcastic - Witty, dry humor, still helpful underneath")
-	fmt.Println("  4. Minimal - Extremely terse, just the facts")
-	fmt.Println("  5. Custom - Write your own SOUL.md")
-
-	fmt.Print("Choose personality (1-5) [2]: ")
-	var personalityChoice string
-	fmt.Scanln(&personalityChoice)
-	if personalityChoice == "" {
-		personalityChoice = "2"
-	}
-
-	soulContent := getPersonalitySoul(personalityChoice)
-
-	// Step 3: Model
-	fmt.Println("\n[Step 3] Model")
-	fmt.Println("Default model: google/gemma-2-9b-it:free (free via OpenRouter)")
-	fmt.Print("Model name [google/gemma-2-9b-it:free]: ")
-
-	var model string
-	fmt.Scanln(&model)
-	if model == "" {
-		model = "google/gemma-2-9b-it:free"
+	if force {
+		// Use defaults for non-interactive setup
+		personalityChoice = "2" // Friendly
+		soulContent = getPersonalitySoul(personalityChoice)
+		model = config.DefaultModel
+	} else {
+		// Interactive prompts
+		apiKey = promptAPIKey()
+		personalityChoice = selectPersonality()
+		soulContent = getPersonalitySoul(personalityChoice)
+		model = selectModel()
 	}
 
 	// Build config
@@ -587,13 +685,92 @@ func runOnboard(c *cli.Context) error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	// Write workspace files
+	// Only create workspace files if NOT keeping existing data
+	if !skipFileCreation {
+		if err := createWorkspaceFiles(cfg, soulContent); err != nil {
+			return err
+		}
+	}
+
+	// Print completion banner
+	configPath := filepath.Join(homeDir, "config.json")
 	wsDir := cfg.WorkspaceDir()
 
-	// SOUL.md
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║           Setup complete!                  ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Printf("Config: %s\n", configPath)
+	fmt.Printf("Workspace: %s\n", wsDir)
+	fmt.Println()
+	fmt.Println("Quick start:")
+	fmt.Println("  joshbot agent    - Chat in the terminal")
+	fmt.Println("  joshbot gateway - Start Telegram + all channels")
+	fmt.Println("  joshbot status  - Check configuration")
+	fmt.Println()
+	fmt.Println("Edit ~/.joshbot/config.json to configure Telegram and other settings.")
+
+	return nil
+}
+
+// promptAPIKey prompts the user for their OpenRouter API key.
+func promptAPIKey() string {
+	fmt.Println("\n[Step 1] LLM Provider")
+	fmt.Println("joshbot uses OpenRouter by default (supports many models with one API key).")
+	fmt.Println("Get a free key at: https://openrouter.ai/keys")
+	fmt.Print("Enter your OpenRouter API key (or press Enter to skip): ")
+
+	var apiKey string
+	fmt.Scanln(&apiKey)
+	return apiKey
+}
+
+// selectPersonality prompts the user to choose a personality and returns the choice.
+func selectPersonality() string {
+	fmt.Println("\n[Step 2] Personality")
+	fmt.Println("Choose joshbot's personality:")
+	fmt.Println("  1. Professional - Concise, task-focused, minimal small talk")
+	fmt.Println("  2. Friendly - Warm, conversational, uses humor")
+	fmt.Println("  3. Sarcastic - Witty, dry humor, still helpful underneath")
+	fmt.Println("  4. Minimal - Extremely terse, just the facts")
+	fmt.Println("  5. Custom - Write your own SOUL.md")
+
+	fmt.Print("Choose personality (1-5) [2]: ")
+	var personalityChoice string
+	fmt.Scanln(&personalityChoice)
+	if personalityChoice == "" {
+		personalityChoice = "2"
+	}
+	return personalityChoice
+}
+
+// selectModel prompts the user to select a model and returns the choice.
+func selectModel() string {
+	defaultModel := config.DefaultModel
+	fmt.Println("\n[Step 3] Model")
+	fmt.Printf("Default model: %s\n", defaultModel)
+	fmt.Printf("Model name [%s]: ", defaultModel)
+
+	var model string
+	fmt.Scanln(&model)
+	if model == "" {
+		model = defaultModel
+	}
+	return model
+}
+
+// createWorkspaceFiles creates the workspace files (SOUL.md, USER.md, etc.)
+// and memory files in the workspace directory.
+func createWorkspaceFiles(cfg *config.Config, soulContent string) error {
+	wsDir := cfg.WorkspaceDir()
+
+	// SOUL.md - write the personality content
 	soulPath := filepath.Join(wsDir, "SOUL.md")
-	if err := os.WriteFile(soulPath, []byte(soulContent), 0644); err != nil {
-		return fmt.Errorf("failed to write SOUL.md: %w", err)
+	if _, err := os.Stat(soulPath); os.IsNotExist(err) {
+		if err := os.WriteFile(soulPath, []byte(soulContent), 0644); err != nil {
+			return fmt.Errorf("failed to write SOUL.md: %w", err)
+		}
 	}
 
 	// USER.md
@@ -662,22 +839,6 @@ I can create new skills to extend my capabilities.
 	if err := os.WriteFile(filepath.Join(memDir, "HISTORY.md"), []byte("# History\n\n"), 0644); err != nil {
 		return fmt.Errorf("failed to write HISTORY.md: %w", err)
 	}
-
-	// Print success message
-	fmt.Println()
-	fmt.Println("╔═══════════════════════════════════════════╗")
-	fmt.Println("║           Setup complete!                  ║")
-	fmt.Println("╚═══════════════════════════════════════════╝")
-	fmt.Println()
-	fmt.Printf("Config: %s\n", configPath)
-	fmt.Printf("Workspace: %s\n", wsDir)
-	fmt.Println()
-	fmt.Println("Quick start:")
-	fmt.Println("  joshbot agent    - Chat in the terminal")
-	fmt.Println("  joshbot gateway - Start Telegram + all channels")
-	fmt.Println("  joshbot status  - Check configuration")
-	fmt.Println()
-	fmt.Println("Edit ~/.joshbot/config.json to configure Telegram and other settings.")
 
 	return nil
 }
@@ -762,6 +923,54 @@ func statusBool(b bool) string {
 		return "(exists)"
 	}
 	return "(missing)"
+}
+
+// checkExistingInstall checks for existing joshbot installation files.
+// Returns whether config.json and workspace directory exist, plus a list of found items.
+func checkExistingInstall(homeDir string) (configExists, workspaceExists bool, files []string) {
+	// Check for config.json
+	configPath := filepath.Join(homeDir, "config.json")
+	if _, err := os.Stat(configPath); err == nil {
+		configExists = true
+		files = append(files, "config.json")
+	}
+
+	// Check for workspace directory
+	workspacePath := filepath.Join(homeDir, "workspace")
+	if _, err := os.Stat(workspacePath); err == nil {
+		workspaceExists = true
+		files = append(files, "workspace/")
+	}
+
+	// Check for memory directory
+	memoryPath := filepath.Join(workspacePath, "memory")
+	if _, err := os.Stat(memoryPath); err == nil {
+		files = append(files, "memory/")
+	}
+
+	return configExists, workspaceExists, files
+}
+
+// backupExisting creates a timestamped backup of the joshbot home directory.
+// Returns the backup path on success, or an error.
+func backupExisting(homeDir string) (string, error) {
+	// Create backup directory name with timestamp
+	backupDir := filepath.Dir(homeDir)
+	backupName := fmt.Sprintf(".joshbot.backup.%s", time.Now().Format("2006-01-02-150405"))
+	backupPath := filepath.Join(backupDir, backupName)
+
+	// Check if homeDir exists
+	if _, err := os.Stat(homeDir); os.IsNotExist(err) {
+		return "", fmt.Errorf("directory does not exist: %s", homeDir)
+	}
+
+	// Use os.Rename for atomic move on same filesystem
+	if err := os.Rename(homeDir, backupPath); err != nil {
+		return "", fmt.Errorf("failed to backup directory: %w", err)
+	}
+
+	log.Info("Backed up existing installation", "from", homeDir, "to", backupPath)
+	return backupPath, nil
 }
 
 func getPersonalitySoul(choice string) string {

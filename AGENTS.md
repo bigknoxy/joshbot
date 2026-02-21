@@ -2,199 +2,208 @@
 
 ## Project Overview
 
-joshbot is a lightweight personal AI assistant (~3,600 LOC Python) with self-learning
-memory, skill self-creation, and Telegram integration. Architecture: async message bus
-decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via litellm.
+joshbot is a lightweight personal AI assistant (~3,600 LOC Go) with self-learning
+memory, skill self-creation, and Telegram integration. Architecture: goroutine-based
+message bus decoupling chat channels from a ReAct agent loop backed by multi-provider
+LLM via OpenRouter-compatible APIs.
 
 ## Build & Run Commands
 
 ```bash
-# Install (use a venv)
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
+# Build
+go build -o joshbot ./cmd/joshbot
+
+# Install to $GOPATH/bin
+go install ./cmd/joshbot
 
 # Run
-joshbot onboard          # First-time setup
-joshbot agent            # Interactive CLI mode
-joshbot gateway          # Telegram + all channels
-joshbot status           # Show config/status
+./joshbot onboard          # First-time setup
+./joshbot agent            # Interactive CLI mode
+./joshbot gateway          # Telegram + all channels
+./joshbot status           # Show config/status
+
+# Run directly (development)
+go run ./cmd/joshbot agent
 
 # Docker
 docker build -t joshbot .
-docker compose up -d
+docker run -it joshbot gateway
 ```
 
 ## Testing
 
-No test framework is configured yet. When adding tests:
+Tests are colocated with source files using `_test.go` suffix:
 
 ```bash
-pip install pytest pytest-asyncio
-pytest                          # Run all tests
-pytest tests/test_tools.py      # Run one file
-pytest tests/test_tools.py::test_shell_safety -xvs  # Run single test, verbose, no capture
+go test ./...                              # Run all tests
+go test ./internal/tools                   # Run one package
+go test ./internal/tools -run TestShell    # Run specific test
+go test -v ./internal/agent                # Verbose output
+go test -race ./...                        # With race detector
 ```
 
-Place tests in `tests/` with `test_` prefix. Use `pytest-asyncio` for async tests.
+Place tests in the same directory as the code being tested with `_test.go` suffix.
 Most components are testable in isolation (tools, config, bus, session, memory, skills).
 
 ## Linting & Formatting
 
-Ruff is the preferred linter/formatter (cache exists for v0.12.5). No config is committed
-yet. When running:
+Go tooling is built-in. Use these commands:
 
 ```bash
-pip install ruff mypy
-ruff check .               # Lint
-ruff format .              # Format
-ruff check --fix .         # Autofix
-mypy joshbot/              # Type checking
+go fmt ./...              # Format code
+go vet ./...              # Static analysis
+go mod tidy               # Clean up go.mod/go.sum
+
+# Optional: install additional linters
+go install honnef.co/go/tools/cmd/staticcheck@latest
+staticcheck ./...         # Advanced static analysis
 ```
 
 ## Code Style
 
-### Module Structure
+### Package Structure
 
-Every `.py` file follows this order:
-1. Module docstring (single line)
-2. `from __future__ import annotations`
+The project follows standard Go project layout:
+- `cmd/joshbot/` - Main application entry point
+- `internal/` - Private application code (not importable externally)
+- `pkg/` - Public packages (importable by external projects)
+
+Every `.go` file follows this order:
+1. Package comment (starts with "Package X ...")
+2. Package declaration
 3. Stdlib imports
 4. Third-party imports (blank line separator)
-5. Local imports using **relative paths** (blank line separator)
+5. Local imports (blank line separator)
 
-```python
-"""Shell execution tool with safety guards."""
+```go
+// Package tools provides the tool system for joshbot's agent.
+package tools
 
-from __future__ import annotations
+import (
+	"context"
+	"fmt"
+	"sync"
 
-import asyncio
-import re
-from typing import Any
-
-from loguru import logger
-
-from .base import Tool
+	"github.com/bigknoxy/joshbot/internal/providers"
+)
 ```
 
 ### Imports
 
-- **Always relative** for local imports (`from ..bus.events import ...`, `from .base import ...`)
-- **Never absolute** (`from joshbot.bus.events import ...` -- don't do this)
-- **Lazy imports** for heavy/optional deps inside functions (litellm, telegram, httpx, readability)
-- **`TYPE_CHECKING` guard** for imports only needed at type-check time (avoids circular imports)
+- **Group imports** by stdlib, third-party, then local (separated by blank lines)
+- **Use import aliases** for clarity when needed (e.g., `ctxpkg "github.com/bigknoxy/joshbot/internal/context"`)
+- **Avoid blank imports** except for drivers/side effects
 
-### Type Annotations
+### Error Handling
 
-- **Required** on all function/method signatures (parameters and return types)
-- Modern syntax enabled by `from __future__ import annotations`:
-  - `str | None` not `Optional[str]`
-  - `list[str]` not `List[str]`
-  - `dict[str, Any]` not `Dict[str, Any]`
-- Use `-> None` for void returns
-- Use `Any` sparingly (LLM response data, generic dicts)
+- **Return errors as values** - don't panic in library code
+- **Wrap errors with context** using `fmt.Errorf("operation failed: %w", err)`
+- **Tools return error strings** (`return fmt.Sprintf("Error: File not found: %s", path)`) - don't return errors that require handling
+- **Graceful degradation** with fallbacks
+- **Check errors explicitly** - don't ignore return values
 
 ### Naming Conventions
 
 | Element          | Convention         | Example                          |
 |------------------|--------------------|----------------------------------|
-| Classes          | PascalCase         | `AgentLoop`, `WebFetchTool`      |
-| Functions/methods| snake_case         | `build_system_prompt`            |
-| Private members  | `_prefix`          | `self._config`, `self._running`  |
-| Private methods  | `_prefix`          | `_parse_response`, `_resolve_path`|
-| Constants        | UPPER_SNAKE_CASE   | `MAX_OUTPUT`, `DANGEROUS_PATTERNS`|
-| Module variables | lowercase          | `app`, `console`                 |
+| Packages         | lowercase, single  | `tools`, `bus`, `config`         |
+| Types            | PascalCase         | `Agent`, `WebFetchTool`          |
+| Functions/methods| PascalCase (exported), camelCase (unexported) | `BuildSystemPrompt`, `parseResponse` |
+| Private fields   | camelCase          | `cfg`, `running`                 |
+| Constants        | PascalCase or UPPER_SNAKE_CASE | `MaxOutput`, `MAX_QUEUE_SIZE` |
+| Interfaces       | PascalCase + "er" suffix | `Provider`, `ToolExecutor` |
 
 ### Data Modeling
 
-- **`@dataclass`** for internal data types (InboundMessage, LLMResponse, Session, CronJob, etc.)
-- **Pydantic `BaseModel`** for config/validation only (Config, ProviderConfig, TelegramConfig)
-- Root `Config` extends `pydantic_settings.BaseSettings` for env var support
+- **Structs** for data types (InboundMessage, LLMResponse, Session, etc.)
+- **Embed interfaces** for composition
+- **Use struct tags** for JSON/field mapping (`json:"field_name"`)
+- **Functional options pattern** for complex configuration
 
 ### Interfaces & Extension Points
 
-- **`abc.ABC` + `@abstractmethod`** for base classes: `Tool`, `BaseChannel`, `LLMProvider`
-- **Registry pattern** for tools (`ToolRegistry`) and providers (`PROVIDERS` dict)
-- **Deferred initialization** via `set_*()` methods when dependencies aren't available at construction
+- **Small, focused interfaces** (prefer 1-3 methods)
+- **Interface segregation** - define interfaces where they're used
+- **Registry pattern** for tools (`Registry`) and providers
+- **Functional options** for flexible construction (`Option func(*Type)`)
 
-### Async Patterns
+### Concurrency Patterns
 
-- **Async-first**: all I/O-bound operations are `async def`
-- `asyncio.Queue` for message bus decoupling
-- `asyncio.create_task()` for background work (typing indicators, cron timers, heartbeat)
-- `asyncio.gather()` for concurrent service startup
-- `asyncio.wait_for()` with timeouts for queue processing and shell execution
-- `run_in_executor(None, ...)` for blocking operations (stdin input)
-
-### Error Handling
-
-- **Try/except with loguru** at service boundaries -- never silently swallow errors
-- **Tools return error strings** (`return f"Error: File not found: {path}"`) -- never raise
-- **Graceful degradation** with fallbacks (rich -> plain text, HTML -> plain text)
-- **No custom exception classes** -- use standard Python exceptions
-- **`asyncio.CancelledError`** handled explicitly in long-running loops
+- **Goroutines** for concurrent operations
+- **Channels** for message bus (`chan InboundMessage`, `chan OutboundMessage`)
+- **sync.Mutex/sync.RWMutex** for shared state
+- **sync.WaitGroup** for goroutine coordination
+- **context.Context** for cancellation and timeouts
+- **select** for multiplexing channel operations
 
 ### Logging
 
-- **loguru** exclusively (`from loguru import logger`) -- no stdlib `logging`
-- `logger.debug()` for routine operations
-- `logger.info()` for significant events (tool execution, service start/stop)
-- `logger.warning()` for recoverable issues
-- `logger.error()` for failures
+- **charmbracelet/log** for structured logging (`log.Info`, `log.Debug`, `log.Warn`, `log.Error`)
+- `log.Debug()` for routine operations
+- `log.Info()` for significant events (tool execution, service start/stop)
+- `log.Warn()` for recoverable issues
+- `log.Error()` for failures
 
 ### String Formatting
 
-- **f-strings exclusively** -- no `.format()` or `%` formatting
+- **fmt.Sprintf** for formatted strings
+- **String concatenation** with `+` for simple cases
+- **strings.Builder** for building complex strings efficiently
 
-### Docstrings
+### Documentation
 
-- Google-style when multi-line (with `Args:` sections)
-- Single-line for simple classes/methods
-- Module docstrings required (single line at top of every file)
+- **Package comments** at top of file (starts with "Package X ...")
+- **Exported types/functions** must have doc comments
+- **Example functions** for usage documentation (`ExampleTool_Execute`)
 
 ## Architecture Quick Reference
 
 ```
-channels/ --> bus/MessageBus --> agent/AgentLoop --> providers/LiteLLMProvider
-(CLI,          (async queues)    (ReAct loop)        (litellm -> LLM API)
- Telegram)                           |
-                                tools/ToolRegistry
-                                (filesystem, shell,
-                                 web, message, cron)
+channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
+(CLI,         (chan-based)      (ReAct loop)    (HTTP -> LLM API)
+ Telegram)                          |
+                              tools/Registry
+                              (filesystem, shell,
+                               web, message)
 ```
 
-- **Message bus** decouples channels from agent via `InboundMessage`/`OutboundMessage`
+- **Message bus** decouples channels from agent via `InboundMessage`/`OutboundMessage` channels
 - **ReAct loop**: LLM -> tool calls -> reflect -> repeat (max 20 iterations)
 - **Memory**: `MEMORY.md` (always in context) + `HISTORY.md` (grep-searchable event log)
 - **Skills**: Markdown files with YAML frontmatter, progressive loading (summary -> full content)
 - **Sessions**: JSONL files in `~/.joshbot/sessions/`
-- **Config**: `~/.joshbot/config.json`, Pydantic-validated, env vars with `JOSHBOT_` prefix
+- **Config**: `~/.joshbot/config.json`, JSON-validated, env vars with `JOSHBOT_` prefix
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `joshbot/main.py` | CLI entry point, service wiring, onboard flow |
-| `joshbot/agent/loop.py` | Core ReAct agent loop, memory consolidation |
-| `joshbot/agent/context.py` | System prompt assembly |
-| `joshbot/agent/memory.py` | MEMORY.md + HISTORY.md management |
-| `joshbot/agent/skills.py` | Skill discovery and progressive loading |
-| `joshbot/tools/base.py` | Tool ABC (implement this to add new tools) |
-| `joshbot/tools/shell.py` | Shell exec with safety deny-list |
-| `joshbot/channels/base.py` | Channel ABC (implement this to add new channels) |
-| `joshbot/config/schema.py` | All Pydantic config models |
-| `joshbot/bus/queue.py` | Async message bus |
+| `cmd/joshbot/main.go` | CLI entry point, service wiring, onboard flow |
+| `internal/agent/agent.go` | Core ReAct agent loop, message processing |
+| `internal/agent/context.go` | System prompt assembly |
+| `internal/memory/memory.go` | MEMORY.md + HISTORY.md management |
+| `internal/skills/skills.go` | Skill discovery and progressive loading |
+| `internal/tools/tool.go` | Tool interface (implement this to add new tools) |
+| `internal/tools/registry.go` | Tool registration and execution |
+| `internal/tools/shell.go` | Shell exec with safety deny-list |
+| `internal/channels/telegram.go` | Telegram channel implementation |
+| `internal/config/config.go` | All configuration structs and loading |
+| `internal/bus/bus.go` | Channel-based message bus |
+| `internal/providers/provider.go` | Provider interface and types |
+| `internal/providers/litellm.go` | OpenRouter-compatible HTTP provider |
 
 ## Adding New Components
 
-**New tool**: Create `joshbot/tools/my_tool.py`, extend `Tool` ABC (implement `name`,
-`description`, `parameters`, `execute`), register in `_build_tools()` in `main.py`.
+**New tool**: Create `internal/tools/my_tool.go`, implement the `Tool` interface
+(methods: `Name()`, `Description()`, `Parameters()`, `Execute()`), register via
+`RegistryWithDefaults()` in `main.go` or create custom registry setup.
 
-**New channel**: Create `joshbot/channels/my_channel.py`, extend `BaseChannel` (implement
-`name`, `start`, `stop`, `send`), add setup logic in `ChannelManager.setup_channels()`.
+**New channel**: Create `internal/channels/my_channel.go`, implement channel logic
+that publishes `InboundMessage` to the bus and subscribes to `OutboundMessage`.
 
-**New skill**: Create `skills/{name}/SKILL.md` with YAML frontmatter. Auto-discovered.
+**New skill**: Create `workspace/skills/{name}/SKILL.md` with YAML frontmatter. Auto-discovered.
 
-## Python Version
+## Go Version
 
-Requires **Python 3.11+**. Uses modern syntax: union types (`X | Y`), generic builtins
-(`list[str]`), `match` statements are permitted.
+Requires **Go 1.24+**. Uses modern features: generic types, structured logging,
+improved error handling with `%w`, and context-aware cancellation throughout.

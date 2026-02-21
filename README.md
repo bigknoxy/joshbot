@@ -28,6 +28,19 @@ A lightweight personal AI assistant written in Go, featuring self-learning memor
 
 ## Quick Start
 
+### One-Line Install (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
+```
+
+Downloads the latest binary release for your platform. Supports Linux and macOS (amd64/arm64).
+
+For specific versions:
+```bash
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- -v v1.0.0
+```
+
 ### Install with Go
 
 ```bash
@@ -54,10 +67,11 @@ docker run -it -v ~/.joshbot:/root/.joshbot joshbot onboard
 ## Usage
 
 ```bash
-joshbot onboard   # First-time setup
-joshbot agent     # Interactive CLI chat
-joshbot gateway   # Start all channels (Telegram, etc.)
-joshbot status    # Show configuration and status
+joshbot onboard     # First-time setup
+joshbot agent       # Interactive CLI chat
+joshbot gateway     # Start all channels (Telegram, etc.)
+joshbot status      # Show configuration and status
+joshbot uninstall   # Remove joshbot binary and config
 ```
 
 ### Onboard Command

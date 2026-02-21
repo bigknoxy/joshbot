@@ -15,3 +15,7 @@ func newLaunchdManager(cfg Config) (Manager, error) {
 func newUnsupportedManager() (Manager, error) {
 	return nil, fmt.Errorf("unsupported platform")
 }
+
+func NewManager(cfg Config) (Manager, error) {
+	return newLaunchdManager(cfg)
+}

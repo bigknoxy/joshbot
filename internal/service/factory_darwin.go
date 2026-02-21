@@ -2,6 +2,8 @@
 
 package service
 
+import "fmt"
+
 func newSystemdManager(cfg Config) (Manager, error) {
 	return nil, fmt.Errorf("systemd not available on darwin")
 }

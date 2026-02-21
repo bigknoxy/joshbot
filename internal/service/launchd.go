@@ -17,7 +17,7 @@ type launchdManager struct {
 	errorPath string
 }
 
-func newLaunchdManager(cfg Config) (Manager, error) {
+func newLaunchd(cfg Config) (Manager, error) {
 	if cfg.Name == "" {
 		cfg.Name = "joshbot"
 	}
@@ -53,20 +53,20 @@ func (s *launchdManager) IsInstalled() bool {
 	return err == nil
 }
 
-func (s *launchdManager) Install() error {
+func (s *launchdManager) Install() (Result, error) {
 	if s.IsInstalled() {
-		return fmt.Errorf("service already installed at %s", s.plistPath)
+		return Result{}, fmt.Errorf("service already installed at %s", s.plistPath)
 	}
 
 	home, _ := os.UserHomeDir()
 	agentsDir := filepath.Join(home, "Library", "LaunchAgents")
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
-		return fmt.Errorf("failed to create LaunchAgents directory: %w", err)
+		return Result{}, fmt.Errorf("failed to create LaunchAgents directory: %w", err)
 	}
 
 	logDir := filepath.Dir(s.logPath)
 	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return fmt.Errorf("failed to create logs directory: %w", err)
+		return Result{}, fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -102,28 +102,35 @@ func (s *launchdManager) Install() error {
 `, s.config.Name, s.config.DisplayName, s.config.ExecPath, s.config.WorkingDir, s.logPath, s.errorPath, home)
 
 	if err := os.WriteFile(s.plistPath, []byte(plist), 0644); err != nil {
-		return fmt.Errorf("failed to write plist: %w", err)
+		return Result{}, fmt.Errorf("failed to write plist: %w", err)
 	}
 
-	return nil
+	return Result{
+		Success: true,
+		Message: "Service installed successfully",
+		LogPath: s.logPath,
+	}, nil
 }
 
-func (s *launchdManager) Uninstall() error {
+func (s *launchdManager) Uninstall() (Result, error) {
 	if !s.IsInstalled() {
-		return fmt.Errorf("service not installed")
+		return Result{}, fmt.Errorf("service not installed")
 	}
 
 	if s.isRunning() {
 		if err := exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/dev.joshbot.%s", os.Getuid(), s.config.Name)).Run(); err != nil {
-			return fmt.Errorf("failed to unload service: %w", err)
+			return Result{}, fmt.Errorf("failed to unload service: %w", err)
 		}
 	}
 
 	if err := os.Remove(s.plistPath); err != nil {
-		return fmt.Errorf("failed to remove plist: %w", err)
+		return Result{}, fmt.Errorf("failed to remove plist: %w", err)
 	}
 
-	return nil
+	return Result{
+		Success: true,
+		Message: "Service uninstalled successfully",
+	}, nil
 }
 
 func (s *launchdManager) Start() error {

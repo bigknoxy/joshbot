@@ -9,7 +9,7 @@ import (
 
 type unsupportedManager struct{}
 
-func newUnsupportedManager() (Manager, error) {
+func newUnsupported() (Manager, error) {
 	return &unsupportedManager{}, nil
 }
 
@@ -21,12 +21,12 @@ func (s *unsupportedManager) IsInstalled() bool {
 	return false
 }
 
-func (s *unsupportedManager) Install() error {
-	return fmt.Errorf("service management not supported on %s", runtime.GOOS)
+func (s *unsupportedManager) Install() (Result, error) {
+	return Result{}, fmt.Errorf("service management not supported on %s", runtime.GOOS)
 }
 
-func (s *unsupportedManager) Uninstall() error {
-	return fmt.Errorf("service management not supported on %s", runtime.GOOS)
+func (s *unsupportedManager) Uninstall() (Result, error) {
+	return Result{}, fmt.Errorf("service management not supported on %s", runtime.GOOS)
 }
 
 func (s *unsupportedManager) Start() error {

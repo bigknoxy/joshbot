@@ -7,12 +7,32 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/log"
 )
+
+// SearchEngine represents a search engine endpoint.
+type SearchEngine struct {
+	Name   string
+	URL    string
+	UseGET bool // Some engines require GET instead of POST-style URL
+}
+
+// Default search engines in order of preference.
+var searchEngines = []SearchEngine{
+	{Name: "DuckDuckGo HTML", URL: "https://html.duckduckgo.com/html/?q=%s"},
+	{Name: "DuckDuckGo Lite", URL: "https://lite.duckduckgo.com/lite/?q=%s"},
+	{Name: "SearXNG", URL: "https://searx.be/search?q=%s"},
+}
 
 // WebTool provides web search and fetch capabilities.
 type WebTool struct {
 	httpClient *http.Client
 	searchAPI  string
+	// maxRetries is the maximum number of retries for 202 responses
+	maxRetries int
+	// baseDelay is the base delay for exponential backoff
+	baseDelay time.Duration
 }
 
 // NewWebTool creates a new WebTool.
@@ -20,8 +40,14 @@ func NewWebTool(timeout time.Duration, searchAPI string) *WebTool {
 	return &WebTool{
 		httpClient: &http.Client{
 			Timeout: timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				// Don't follow redirects automatically - let us handle them
+				return http.ErrUseLastResponse
+			},
 		},
-		searchAPI: searchAPI,
+		searchAPI:  searchAPI,
+		maxRetries: 3,
+		baseDelay:  1 * time.Second,
 	}
 }
 
@@ -82,7 +108,7 @@ func (t *WebTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	}
 }
 
-// webSearch performs a web search using DuckDuckGo.
+// webSearch performs a web search using DuckDuckGo with fallbacks.
 func (t *WebTool) webSearch(args map[string]any) ToolResult {
 	query, _ := args["query"].(string)
 	if query == "" {
@@ -94,54 +120,170 @@ func (t *WebTool) webSearch(args map[string]any) ToolResult {
 		maxResults = int(mr)
 	}
 
-	// Use DuckDuckGo HTML search (no API key required)
-	searchURL := fmt.Sprintf(
-		"https://html.duckduckgo.com/html/?q=%s",
-		strings.ReplaceAll(query, " ", "+"),
-	)
+	// Try each search engine in order
+	var lastError error
+	engines := searchEngines
 
+	// If custom searchAPI is configured, try it first
+	if t.searchAPI != "" {
+		engines = append([]SearchEngine{{Name: "Custom", URL: t.searchAPI}}, engines...)
+	}
+
+	for _, engine := range engines {
+		searchURL := fmt.Sprintf(
+			engine.URL,
+			strings.ReplaceAll(query, " ", "+"),
+		)
+
+		log.Debug("Trying search engine", "engine", engine.Name, "url", searchURL)
+
+		result := t.doSearch(searchURL, maxResults)
+		if result.Error == nil && result.Output != "" {
+			// Success - add engine name to output
+			return ToolResult{Output: result.Output + fmt.Sprintf("\n(Search engine: %s)", engine.Name)}
+		}
+
+		// Check if it's a retryable error (202, 429, 5xx)
+		errStr := result.Error.Error()
+		if strings.Contains(errStr, "status 202") || strings.Contains(errStr, "status 429") ||
+			strings.Contains(errStr, "status 5") {
+			log.Warn("Search engine returned retryable status", "engine", engine.Name, "error", errStr)
+		} else {
+			log.Debug("Search engine failed", "engine", engine.Name, "error", errStr)
+		}
+		lastError = result.Error
+	}
+
+	// All engines failed
+	return ToolResult{Error: fmt.Errorf(
+		"all search engines failed. Last error: %v. "+
+			"Try using web_fetch to directly access a URL, or check your network connection.",
+		lastError,
+	)}
+}
+
+// doSearch performs a single search request with retry logic.
+func (t *WebTool) doSearch(searchURL string, maxResults int) ToolResult {
 	req, err := http.NewRequest("GET", searchURL, nil)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to create request: %w", err)}
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; joshbot/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 
-	resp, err := t.httpClient.Do(req)
-	if err != nil {
-		return ToolResult{Error: fmt.Errorf("search request failed: %w", err)}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return ToolResult{Error: fmt.Errorf("search returned status %d", resp.StatusCode)}
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ToolResult{Error: fmt.Errorf("failed to read response: %w", err)}
-	}
-
-	// Parse results from HTML
-	results := t.parseSearchResults(string(body), maxResults)
-
-	if len(results) == 0 {
-		return ToolResult{Output: "No search results found"}
-	}
-
-	var output strings.Builder
-	output.WriteString(fmt.Sprintf("Search results for: %s\n\n", query))
-
-	for i, r := range results {
-		output.WriteString(fmt.Sprintf("%d. %s\n", i+1, r.Title))
-		output.WriteString(fmt.Sprintf("   %s\n", r.URL))
-		if r.Snippet != "" {
-			output.WriteString(fmt.Sprintf("   %s\n", r.Snippet))
+	// Retry loop with exponential backoff for 202/redirect responses
+	var lastResp *http.Response
+	for attempt := 0; attempt <= t.maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 1s, 2s, 4s
+			delay := t.baseDelay * time.Duration(1<<(attempt-1))
+			log.Debug("Retrying search after delay", "attempt", attempt, "delay", delay)
+			time.Sleep(delay)
 		}
-		output.WriteString("\n")
+
+		resp, err := t.httpClient.Do(req)
+		if err != nil {
+			return ToolResult{Error: fmt.Errorf("search request failed: %w", err)}
+		}
+
+		lastResp = resp
+
+		// Handle different status codes
+		switch resp.StatusCode {
+		case http.StatusOK:
+			// Success - parse and return results
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return ToolResult{Error: fmt.Errorf("failed to read response: %w", err)}
+			}
+
+			// Parse results from HTML
+			results := t.parseSearchResults(string(body), maxResults)
+
+			if len(results) == 0 {
+				return ToolResult{Output: "No search results found"}
+			}
+
+			var output strings.Builder
+			output.WriteString(fmt.Sprintf("Search results:\n\n"))
+
+			for i, r := range results {
+				output.WriteString(fmt.Sprintf("%d. %s\n", i+1, r.Title))
+				output.WriteString(fmt.Sprintf("   %s\n", r.URL))
+				if r.Snippet != "" {
+					output.WriteString(fmt.Sprintf("   %s\n", r.Snippet))
+				}
+				output.WriteString("\n")
+			}
+
+			return ToolResult{Output: output.String()}
+
+		case http.StatusAccepted, http.StatusFound, http.StatusSeeOther:
+			// 202 Accepted, 302 Found, 303 See Other - check for redirect
+			defer resp.Body.Close()
+
+			// Check for Location header (redirect)
+			location := resp.Header.Get("Location")
+			if location != "" {
+				log.Debug("Following redirect", "location", location)
+				// Update request URL to redirect location
+				req.URL, err = req.URL.Parse(location)
+				if err != nil {
+					return ToolResult{Error: fmt.Errorf("failed to parse redirect location: %w", err)}
+				}
+				req.URL.Scheme = "https" // Force HTTPS for redirects
+				continue                 // Retry with new URL
+			}
+
+			// No Location header - retry after delay
+			if attempt < t.maxRetries {
+				log.Debug("Received 202/302 without Location, retrying", "status", resp.StatusCode)
+				continue
+			}
+
+			return ToolResult{Error: fmt.Errorf(
+				"search returned status %d (Accepted/Redirect) without Location header after %d retries",
+				resp.StatusCode, t.maxRetries,
+			)}
+
+		case http.StatusTooManyRequests:
+			// 429 - Too many requests, try next engine or retry
+			defer resp.Body.Close()
+			if attempt < t.maxRetries {
+				// Longer delay for rate limiting
+				delay := t.baseDelay * time.Duration(1<<attempt) * 2
+				log.Debug("Rate limited, waiting longer", "delay", delay)
+				time.Sleep(delay)
+				continue
+			}
+			return ToolResult{Error: fmt.Errorf("search returned status 429 (Too Many Requests)")}
+
+		case http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			// 503, 504 - Server errors, retry
+			defer resp.Body.Close()
+			if attempt < t.maxRetries {
+				continue
+			}
+			return ToolResult{Error: fmt.Errorf("search engine temporarily unavailable (status %d)", resp.StatusCode)}
+
+		default:
+			defer resp.Body.Close()
+			return ToolResult{Error: fmt.Errorf(
+				"search returned status %d %s. "+
+					"Try using web_fetch to directly access a search engine URL.",
+				resp.StatusCode, http.StatusText(resp.StatusCode),
+			)}
+		}
 	}
 
-	return ToolResult{Output: output.String()}
+	// Should not reach here, but safety net
+	if lastResp != nil {
+		defer lastResp.Body.Close()
+	}
+	return ToolResult{Error: fmt.Errorf("search failed after %d retries", t.maxRetries)}
 }
 
 // searchResult represents a single search result.

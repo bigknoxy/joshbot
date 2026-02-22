@@ -25,6 +25,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/service"
 	"github.com/bigknoxy/joshbot/internal/session"
 	"github.com/bigknoxy/joshbot/internal/skills"
+	"github.com/bigknoxy/joshbot/internal/tools"
 	"github.com/urfave/cli/v2"
 )
 
@@ -168,31 +169,34 @@ func loadConfig(cfgPath string) (*config.Config, error) {
 }
 
 // setupComponents initializes all required components.
-func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMProvider, *session.Manager, *agent.Agent, error) {
+func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMProvider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, error) {
 	// Ensure directories exist
 	if err := cfg.EnsureDirs(); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
 	}
 
 	// Initialize memory manager
 	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
 	}
 	if err := memoryManager.Initialize(context.Background()); err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
 	}
 
 	// Initialize skills loader
 	skillsLoader, err := skills.NewLoader(cfg.Agents.Defaults.Workspace)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
 	}
 	// Discover skills now so agent has summaries available
 	_ = skillsLoader.Discover()
 
 	// Initialize message bus
 	msgBus := bus.NewMessageBus()
+
+	// Create BusMessageSender for tools that need to send messages
+	messageSender := tools.NewBusMessageSender(msgBus)
 
 	// Initialize provider - convert config to provider config
 	providerCfg := providers.DefaultConfig()
@@ -211,7 +215,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 	// Initialize session manager
 	sessionMgr, err := session.NewManager(cfg.SessionsDir())
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to create session manager: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create session manager: %w", err)
 	}
 
 	// Get logger
@@ -222,11 +226,20 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 	budget := ctxpkg.NewBudgetManager(registry, 100)
 	compressor := &ctxpkg.Compressor{Provider: provider}
 
-	// Create agent (tools will be added later)
+	// Create tools registry with defaults
+	toolsRegistry := tools.RegistryWithDefaults(
+		cfg.Agents.Defaults.Workspace,
+		cfg.Tools.RestrictToWorkspace,
+		cfg.Tools.Exec.Timeout,
+		0, // webTimeout - not configurable in config yet
+		messageSender,
+	)
+
+	// Create agent with tools registry
 	agentInstance := agent.NewAgent(
 		cfg,
 		provider,
-		nil, // tools - to be implemented
+		toolsRegistry,
 		sessionMgr,
 		logger,
 		agent.WithMemoryLoader(memoryManager),
@@ -248,7 +261,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 
 	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
-	return msgBus, provider, sessionMgr, agentInstance, nil
+	return msgBus, provider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
 }
 
 // getProviderAPIKey extracts the first available API key from config.
@@ -288,7 +301,7 @@ func runAgent(c *cli.Context) error {
 	log.Info("Starting agent mode", "model", cfg.Agents.Defaults.Model)
 
 	// Setup components
-	msgBus, _, _, agentInstance, err := setupComponents(cfg)
+	msgBus, _, _, agentInstance, _, _, err := setupComponents(cfg)
 	if err != nil {
 		return err
 	}
@@ -487,7 +500,7 @@ func runGateway(c *cli.Context) error {
 	)
 
 	// Setup components
-	msgBus, _, _, agentInstance, err := setupComponents(cfg)
+	msgBus, _, _, agentInstance, _, sender, err := setupComponents(cfg)
 	if err != nil {
 		return err
 	}
@@ -504,6 +517,11 @@ func runGateway(c *cli.Context) error {
 
 	// Subscribe agent to all channels
 	msgBus.Subscribe("all", func(ctx context.Context, msg bus.InboundMessage) {
+		// Store the chat ID for this channel to enable proactive messaging
+		if sender != nil {
+			sender.SetChatID(msg.Channel, getChannelID(msg))
+		}
+
 		log.Debug("Processing message",
 			"channel", msg.Channel,
 			"content", msg.Content,

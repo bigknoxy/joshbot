@@ -13,7 +13,8 @@ import (
 
 // BuildPrompt builds the full system prompt from workspace files and injected context.
 // This follows the Python implementation's build_system_prompt function.
-func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader) string {
+// userName is optional - if provided, it will be included for personalization.
+func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, userName string) string {
 	parts := []string{}
 
 	// Core identity
@@ -25,6 +26,11 @@ func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader) str
 		if content != "" {
 			parts = append(parts, fmt.Sprintf("<%s>\n%s\n</%s>", name, content, name))
 		}
+	}
+
+	// User name context - add after identity but before memory
+	if userName != "" {
+		parts = append(parts, fmt.Sprintf(`The user's name is %s. Use their name sparingly and naturally - occasional greetings, sign-offs, or personal touches are appropriate. Do not overuse it.`, userName))
 	}
 
 	// Memory context (always loaded)

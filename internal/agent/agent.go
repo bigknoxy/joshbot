@@ -223,7 +223,7 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 
 // BuildSystemPrompt builds the system prompt with memory and skills context.
 func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
-	return BuildPrompt(a.cfg.Agents.Defaults.Workspace, a.skills, a.memory)
+	return BuildPrompt(a.cfg.Agents.Defaults.Workspace, a.skills, a.memory, a.cfg.User.Name)
 }
 
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.

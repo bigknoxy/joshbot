@@ -625,3 +625,97 @@ func TestToolsConfig(t *testing.T) {
 		t.Error("expected restrict_to_workspace to be true")
 	}
 }
+
+func TestLoadSanitizesWhitespace(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Temporarily override DefaultHome
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+
+	defer func() {
+		DefaultHome = oldHome
+	}()
+
+	// Create a config file with whitespace in API key
+	configPath := filepath.Join(tmpDir, "config.json")
+	configContent := `{
+		"schema_version": 1,
+		"providers": {
+			"openrouter": {
+				"api_key": "sk-test-key-with-trailing-space   ",
+				"api_base": "  https://example.com  "
+			}
+		},
+		"channels": {
+			"telegram": {
+				"token": "  12345:ABCDE  "
+			}
+		},
+		"agents": {
+			"defaults": {
+				"model": "  test/model  ",
+				"max_tokens": 4096
+			}
+		}
+	}`
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// Check that API key was trimmed
+	if cfg.Providers["openrouter"].APIKey != "sk-test-key-with-trailing-space" {
+		t.Errorf("expected trimmed API key, got %q", cfg.Providers["openrouter"].APIKey)
+	}
+
+	// Check that API base was trimmed
+	if cfg.Providers["openrouter"].APIBase != "https://example.com" {
+		t.Errorf("expected trimmed API base, got %q", cfg.Providers["openrouter"].APIBase)
+	}
+
+	// Check that Telegram token was trimmed
+	if cfg.Channels.Telegram.Token != "12345:ABCDE" {
+		t.Errorf("expected trimmed Telegram token, got %q", cfg.Channels.Telegram.Token)
+	}
+
+	// Check that model was trimmed
+	if cfg.Agents.Defaults.Model != "test/model" {
+		t.Errorf("expected trimmed model, got %q", cfg.Agents.Defaults.Model)
+	}
+}
+
+func TestLoadSanitizesEnvVarWhitespace(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Temporarily override DefaultHome
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+	defer func() {
+		DefaultHome = oldHome
+	}()
+
+	// Set env var with whitespace
+	envKey := "JOSHBOT_PROVIDERS__OPENROUTER__API_KEY"
+	oldVal := os.Getenv(envKey)
+	os.Setenv(envKey, "sk-env-key-with-space ")
+	defer os.Setenv(envKey, oldVal)
+
+	// Load config (no config file exists)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// Check that API key from env was trimmed
+	if cfg.Providers["openrouter"].APIKey != "sk-env-key-with-space" {
+		t.Errorf("expected trimmed API key from env, got %q", cfg.Providers["openrouter"].APIKey)
+	}
+}

@@ -999,7 +999,7 @@ func runOnboard(c *cli.Context) error {
 	}
 
 	// Run prompts (skip if --force)
-	var apiKey, personalityChoice, model string
+	var apiKey, personalityChoice, model, userName string
 	var soulContent string
 	var telegramConfig *config.TelegramConfig
 
@@ -1013,6 +1013,7 @@ func runOnboard(c *cli.Context) error {
 		apiKey = promptAPIKey(existingCfg)
 		personalityChoice = selectPersonality(existingCfg)
 		soulContent = getPersonalitySoul(personalityChoice)
+		userName = promptUserName(existingCfg)
 		model = selectModel(existingCfg)
 		telegramConfig = setupTelegram(existingCfg)
 	}
@@ -1025,6 +1026,9 @@ func runOnboard(c *cli.Context) error {
 		}
 	}
 	cfg.Agents.Defaults.Model = model
+	if userName != "" {
+		cfg.User.Name = userName
+	}
 	if telegramConfig != nil {
 		cfg.Channels.Telegram = *telegramConfig
 	}
@@ -1045,7 +1049,7 @@ func runOnboard(c *cli.Context) error {
 		}
 	}
 
-	// Step 5: Service install
+	// Step 6: Service install
 	installService := promptServiceInstall()
 	if installService {
 		if err := doServiceInstall(); err != nil {
@@ -1127,6 +1131,25 @@ func selectPersonality(existingCfg *config.Config) string {
 	return personalityChoice
 }
 
+// promptUserName prompts the user for their name.
+func promptUserName(existingCfg *config.Config) string {
+	fmt.Println("\n[Step 3] Personalization")
+
+	// Show existing name if available
+	var defaultName string
+	if existingCfg != nil && existingCfg.User.Name != "" {
+		defaultName = existingCfg.User.Name
+		fmt.Printf("Current name: %s\n", defaultName)
+		fmt.Print("Enter your name (or press Enter to keep current): ")
+	} else {
+		fmt.Print("What should I call you? (optional, press Enter to skip): ")
+	}
+
+	var name string
+	fmt.Scanln(&name)
+	return strings.TrimSpace(name)
+}
+
 // selectModel prompts the user to select a model and returns the choice.
 func selectModel(existingCfg *config.Config) string {
 	defaultModel := config.DefaultModel
@@ -1136,7 +1159,7 @@ func selectModel(existingCfg *config.Config) string {
 		defaultModel = existingCfg.Agents.Defaults.Model
 	}
 
-	fmt.Println("\n[Step 3] Model")
+	fmt.Println("\n[Step 4] Model")
 	fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
 
 	var model string
@@ -1149,7 +1172,7 @@ func selectModel(existingCfg *config.Config) string {
 }
 
 func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
-	fmt.Println("\n[Step 4] Telegram Setup")
+	fmt.Println("\n[Step 5] Telegram Setup")
 
 	// Check if Telegram is already configured
 	existingToken := ""
@@ -1290,7 +1313,7 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 }
 
 func promptServiceInstall() bool {
-	fmt.Println("\n[Step 5] Service Installation")
+	fmt.Println("\n[Step 6] Service Installation")
 	fmt.Println("Install joshbot as a background service?")
 	fmt.Println()
 	fmt.Println("This allows joshbot to:")

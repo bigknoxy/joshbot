@@ -125,6 +125,11 @@ type GatewayConfig struct {
 	Port int    `mapstructure:"port" json:"port" yaml:"port"`
 }
 
+// UserConfig holds user preferences for personalization.
+type UserConfig struct {
+	Name string `mapstructure:"name" json:"name,omitempty" yaml:"name,omitempty"`
+}
+
 // Config is the root configuration for joshbot.
 type Config struct {
 	SchemaVersion int                       `mapstructure:"schema_version" json:"schema_version" yaml:"schema_version"`
@@ -134,6 +139,7 @@ type Config struct {
 	Tools         ToolsConfig               `mapstructure:"tools" json:"tools" yaml:"tools"`
 	Gateway       GatewayConfig             `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
 	LogLevel      string                    `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User          UserConfig                `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
 }
 
 // parseConfigFromFile parses JSON config data into the Config struct.

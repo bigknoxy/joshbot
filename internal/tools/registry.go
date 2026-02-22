@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/bigknoxy/joshbot/internal/providers"
+	"github.com/charmbracelet/log"
 )
 
 // Registry manages tool registration and execution.
@@ -245,7 +246,28 @@ func RegistryWithDefaults(
 		Workspace: workspace,
 		Restrict:  restrictToWorkspace,
 	})
-	_ = registry.Register(fsTool)
+	if err := registry.Register(fsTool); err != nil {
+		log.Error("failed to register filesystem tool", "error", err)
+	}
+
+	// Register filesystem operation aliases for LLMs that call them directly
+	aliases := []struct {
+		name string
+		op   string
+	}{
+		{"read_file", "read_file"},
+		{"write_file", "write_file"},
+		{"edit_file", "edit_file"},
+		{"list_dir", "list_dir"},
+		{"glob", "glob"},
+		{"grep", "grep"},
+	}
+
+	for _, alias := range aliases {
+		if err := registry.Register(&filesystemAlias{fs: fsTool, name: alias.name, op: alias.op}); err != nil {
+			log.Warn("failed to register filesystem alias", "name", alias.name, "error", err)
+		}
+	}
 
 	// Shell tool
 	shellTool := NewShellToolFromConfig(ShellToolConfig{

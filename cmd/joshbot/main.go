@@ -1102,7 +1102,7 @@ func promptAPIKey(existingCfg *config.Config) string {
 
 	var apiKey string
 	fmt.Scanln(&apiKey)
-	return apiKey
+	return strings.TrimSpace(apiKey)
 }
 
 // selectPersonality prompts the user to choose a personality and returns the choice.
@@ -1141,6 +1141,7 @@ func selectModel(existingCfg *config.Config) string {
 
 	var model string
 	fmt.Scanln(&model)
+	model = strings.TrimSpace(model)
 	if model == "" {
 		model = defaultModel
 	}
@@ -1241,7 +1242,7 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 	}
 
 	// Sanitize token: strip control characters and escape sequences
-	token = sanitizeToken(token)
+	token = strings.TrimSpace(sanitizeToken(token))
 
 	fmt.Println("\nValidating token...")
 	if err := channels.ValidateToken(token); err != nil {

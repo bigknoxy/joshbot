@@ -430,6 +430,15 @@ func Load() (*Config, error) {
 		// Apply environment variable overrides
 		applyEnvOverrides(cfg)
 
+		// Sanitize string fields that may have whitespace from user input
+		for name, p := range cfg.Providers {
+			p.APIKey = strings.TrimSpace(p.APIKey)
+			p.APIBase = strings.TrimSpace(p.APIBase)
+			cfg.Providers[name] = p
+		}
+		cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
+		cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)
+
 		// Apply migrations if needed
 		if cfg.SchemaVersion < CurrentSchemaVersion {
 			if err := migrateConfig(cfg); err != nil {
@@ -452,6 +461,15 @@ func Load() (*Config, error) {
 
 	// Apply environment variable overrides even without config file
 	applyEnvOverrides(cfg)
+
+	// Sanitize string fields that may have whitespace from user input
+	for name, p := range cfg.Providers {
+		p.APIKey = strings.TrimSpace(p.APIKey)
+		p.APIBase = strings.TrimSpace(p.APIBase)
+		cfg.Providers[name] = p
+	}
+	cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
+	cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err

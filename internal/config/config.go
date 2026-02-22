@@ -37,7 +37,7 @@ func SetLogger(l Logger) {
 
 const (
 	// DefaultModel is the default LLM model.
-	DefaultModel = "openai/gpt-4"
+	DefaultModel = "z-ai/glm-4.5-air:free"
 	// DefaultExecTimeout is the default shell execution timeout in seconds.
 	DefaultExecTimeout = 60
 	// DefaultGatewayHost is the default gateway host.

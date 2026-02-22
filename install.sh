@@ -87,6 +87,20 @@ detect_arch() {
     esac
 }
 
+# Version comparison (returns 0 if $1 < $2)
+version_lt() {
+    [ "$1" != "$2" ] && [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" = "$1" ]
+}
+
+# Get current installed version (if any)
+get_current_version() {
+    if command -v joshbot &> /dev/null; then
+        joshbot --version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo ""
+    else
+        echo ""
+    fi
+}
+
 # Get latest version from GitHub API
 get_latest_version() {
     if [ "$VERSION" != "latest" ]; then
@@ -142,6 +156,7 @@ download_binary() {
     local os="$2"
     local arch="$3"
     local install_dir="$4"
+    local current_version="${5:-}"
     
     # Normalize version (remove 'v' prefix if present)
     local version_normalized="${version#v}"
@@ -269,6 +284,16 @@ download_binary() {
         target="${install_dir}/${BINARY_NAME}.exe"
     fi
     
+    if [ -f "$target" ] && [ "$FORCE" = "false" ] && [ -z "$current_version" ]; then
+        echo "Error: Binary already exists at ${target}. Use --force to overwrite." >&2
+        exit 1
+    fi
+    
+    # Force overwrite during upgrade
+    if [ -f "$target" ] && [ -n "$current_version" ]; then
+        FORCE=true
+    fi
+    
     if [ -f "$target" ] && [ "$FORCE" = "false" ]; then
         echo "Error: Binary already exists at ${target}. Use --force to overwrite." >&2
         exit 1
@@ -278,22 +303,54 @@ download_binary() {
     mv -f "$binary" "$target"
     
     echo ""
-    echo "✓ Successfully installed joshbot ${version} to ${install_dir}"
+    if [ -n "$current_version" ]; then
+        echo "✓ Successfully upgraded joshbot to ${version} in ${install_dir}"
+    else
+        echo "✓ Successfully installed joshbot ${version} to ${install_dir}"
+    fi
 }
 
 # Main
 main() {
-    local os arch version install_dir
+    local os arch version install_dir current_version
     
     os=$(detect_os)
     arch=$(detect_arch)
+    
+    # Get current installed version
+    current_version=$(get_current_version)
+    
+    # Get latest version
     version=$(get_latest_version)
+    
+    # Check if already up to date
+    if [ -n "$current_version" ] && [ "$current_version" = "$version" ]; then
+        echo "joshbot $current_version is already installed and up to date"
+        exit 0
+    fi
+    
+    # Show upgrade message if applicable
+    if [ -n "$current_version" ]; then
+        echo "Upgrading joshbot $current_version → $version..."
+    fi
+    
     install_dir=$(get_install_dir)
     
     echo "Detected: ${os}/${arch}"
-    echo "Installing to: ${install_dir}"
+    if [ -z "$current_version" ]; then
+        echo "Installing to: ${install_dir}"
+    else
+        echo "Installing to: ${install_dir} (upgrading)"
+    fi
     
-    download_binary "$version" "$os" "$arch" "$install_dir"
+    # Check write permission to install directory
+    if [ ! -w "$install_dir" ] && [ ! -w "$(dirname "$install_dir")" ]; then
+        echo "Error: No write permission to install directory: ${install_dir}" >&2
+        echo "Try running with sudo or use --bin-dir to specify a writable location" >&2
+        exit 1
+    fi
+    
+    download_binary "$version" "$os" "$arch" "$install_dir" "$current_version"
     
     # Check if directory is in PATH
     if [[ ":$PATH:" != *":${install_dir}:"* ]]; then
@@ -323,7 +380,11 @@ main() {
     fi
     
     echo ""
-    echo "Run 'joshbot onboard' to configure joshbot!"
+    if [ -n "$current_version" ]; then
+        echo "Upgrade complete! Run 'joshbot --version' to verify."
+    else
+        echo "Run 'joshbot onboard' to configure joshbot!"
+    fi
 }
 
 main "$@"

@@ -335,7 +335,7 @@ func TestConfigString(t *testing.T) {
 	cfg := Defaults()
 	str := cfg.String()
 
-	expected := "Config{SchemaVersion: 1, Model: openai/gpt-4, LogLevel: info, Gateway: 0.0.0.0:18790}"
+	expected := "Config{SchemaVersion: 1, Model: z-ai/glm-4.5-air:free, LogLevel: info, Gateway: 0.0.0.0:18790}"
 	if str != expected {
 		t.Errorf("String() = %v, want %v", str, expected)
 	}

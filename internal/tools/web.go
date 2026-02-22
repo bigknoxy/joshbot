@@ -1,6 +1,9 @@
 package tools
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +26,132 @@ var searchEngines = []SearchEngine{
 	{Name: "DuckDuckGo HTML", URL: "https://html.duckduckgo.com/html/?q=%s"},
 	{Name: "DuckDuckGo Lite", URL: "https://lite.duckduckgo.com/lite/?q=%s"},
 	{Name: "SearXNG", URL: "https://searx.be/search?q=%s"},
+}
+
+// exaSearchRequest for JSON-RPC request
+type exaSearchRequest struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      int    `json:"id"`
+	Method  string `json:"method"`
+	Params  struct {
+		Name      string `json:"name"`
+		Arguments struct {
+			Query      string `json:"query"`
+			NumResults int    `json:"numResults"`
+			Type       string `json:"type"`
+		} `json:"arguments"`
+	} `json:"params"`
+}
+
+// exaSearchResponse for JSON-RPC response (SSE format)
+type exaSearchResponse struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      int    `json:"id"`
+	Result  struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"result"`
+}
+
+// SearchResult represents a structured search result.
+type SearchResult struct {
+	Title   string
+	URL     string
+	Snippet string
+	Source  string
+}
+
+// exaSearch performs search via Exa MCP (free, no API key required)
+func (t *WebTool) exaSearch(query string, numResults int) ([]SearchResult, error) {
+	// Build JSON-RPC request
+	req := exaSearchRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+	}
+	req.Params.Name = "web_search_exa"
+	req.Params.Arguments.Query = query
+	req.Params.Arguments.NumResults = numResults
+	req.Params.Arguments.Type = "auto"
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	// Create HTTP request
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://mcp.exa.ai/mcp", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+
+	// Execute request
+	resp, err := t.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("exa returned status %d", resp.StatusCode)
+	}
+
+	// Parse SSE response
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	// Parse SSE format: lines starting with "data: "
+	lines := strings.Split(string(respBody), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var exaResp exaSearchResponse
+			if err := json.Unmarshal([]byte(data), &exaResp); err != nil {
+				continue
+			}
+			if len(exaResp.Result.Content) > 0 {
+				// Parse the text field which contains JSON array of results
+				return parseExaResults(exaResp.Result.Content[0].Text)
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no results in response")
+}
+
+// parseExaResults parses Exa's JSON result string
+func parseExaResults(text string) ([]SearchResult, error) {
+	// Exa returns results as JSON array in the text field
+	var results []struct {
+		Title   string `json:"title"`
+		URL     string `json:"url"`
+		Text    string `json:"text"`
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		return nil, fmt.Errorf("parse results: %w", err)
+	}
+
+	var searchResults []SearchResult
+	for _, r := range results {
+		searchResults = append(searchResults, SearchResult{
+			Title:   r.Title,
+			URL:     r.URL,
+			Snippet: r.Text,
+			Source:  "Exa",
+		})
+	}
+	return searchResults, nil
 }
 
 // WebTool provides web search and fetch capabilities.
@@ -108,7 +237,7 @@ func (t *WebTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	}
 }
 
-// webSearch performs a web search using DuckDuckGo with fallbacks.
+// webSearch performs a web search using Exa MCP (primary) or DuckDuckGo (fallback)
 func (t *WebTool) webSearch(args map[string]any) ToolResult {
 	query, _ := args["query"].(string)
 	if query == "" {
@@ -120,6 +249,49 @@ func (t *WebTool) webSearch(args map[string]any) ToolResult {
 		maxResults = int(mr)
 	}
 
+	// Try Exa MCP first (free, no API key)
+	log.Debug("Trying Exa MCP search", "query", query)
+	results, err := t.exaSearch(query, maxResults)
+	if err == nil && len(results) > 0 {
+		log.Debug("Exa search succeeded", "results", len(results))
+		return t.formatResults(results)
+	}
+
+	// Log Exa failure and fall back to DuckDuckGo
+	if err != nil {
+		log.Debug("Exa search failed, falling back to DuckDuckGo", "error", err)
+	} else {
+		log.Debug("Exa returned no results, falling back to DuckDuckGo")
+	}
+
+	// Fallback to DuckDuckGo
+	return t.duckDuckGoSearch(query, maxResults)
+}
+
+// formatResults formats search results into a ToolResult
+func (t *WebTool) formatResults(results []SearchResult) ToolResult {
+	if len(results) == 0 {
+		return ToolResult{Output: "No search results found"}
+	}
+
+	var output strings.Builder
+	output.WriteString("Search results:\n\n")
+
+	for i, r := range results {
+		output.WriteString(fmt.Sprintf("%d. %s\n", i+1, r.Title))
+		output.WriteString(fmt.Sprintf("   %s\n", r.URL))
+		if r.Snippet != "" {
+			output.WriteString(fmt.Sprintf("   %s\n", r.Snippet))
+		}
+		output.WriteString(fmt.Sprintf("   (Source: %s)\n", r.Source))
+		output.WriteString("\n")
+	}
+
+	return ToolResult{Output: output.String()}
+}
+
+// duckDuckGoSearch performs a web search using DuckDuckGo with fallbacks.
+func (t *WebTool) duckDuckGoSearch(query string, maxResults int) ToolResult {
 	// Try each search engine in order
 	var lastError error
 	engines := searchEngines

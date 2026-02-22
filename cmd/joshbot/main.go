@@ -3,10 +3,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -96,6 +101,11 @@ func runApp() error {
 				Name:   "status",
 				Usage:  "Show configuration and status",
 				Action: runStatus,
+			},
+			{
+				Name:   "update",
+				Usage:  "Update joshbot to the latest version",
+				Action: runUpdate,
 			},
 			{
 				Name:  "uninstall",
@@ -353,6 +363,288 @@ func runAgent(c *cli.Context) error {
 			}
 		}
 	}
+}
+
+// runUpdate checks for updates and installs the latest version of joshbot.
+func runUpdate(c *cli.Context) error {
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║           Update joshbot                 ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+
+	// 1. Get current version
+	currentVersion := getVersion()
+	fmt.Printf("Current version: %s\n", currentVersion)
+
+	// 2. Get latest stable release from GitHub API
+	fmt.Println("Checking for updates...")
+	latestVersion, err := getLatestVersion()
+	if err != nil {
+		fmt.Printf("Error checking for updates: %v\n", err)
+		fmt.Println("You can manually download from: https://github.com/bigknoxy/joshbot/releases")
+		return nil
+	}
+
+	fmt.Printf("Latest stable release: %s\n", latestVersion)
+
+	// 3. Compare versions
+	cmp := compareVersions(currentVersion, latestVersion)
+	if cmp >= 0 {
+		fmt.Printf("Already up to date (%s)\n", currentVersion)
+		return nil
+	}
+
+	// 4. Download new binary
+	fmt.Println()
+	fmt.Println("Downloading update...")
+
+	// Get current binary path
+	exePath, err := getBinaryPath()
+	if err != nil {
+		return fmt.Errorf("could not determine executable path: %w", err)
+	}
+
+	// Check if running from source
+	if strings.Contains(exePath, "go-build") || strings.Contains(exePath, "/tmp/") {
+		fmt.Println()
+		fmt.Println("Error: Cannot update when running from source with 'go run'.")
+		fmt.Println("To update, install joshbot first (e.g., 'go install' or build a binary),")
+		fmt.Println("then run 'joshbot update' from the installed binary.")
+		return nil
+	}
+
+	// Download to a temp file
+	tmpDir := filepath.Dir(exePath)
+	tmpFile := filepath.Join(tmpDir, ".joshbot_new")
+
+	// Build download URL
+	downloadURL := fmt.Sprintf(
+		"https://github.com/bigknoxy/joshbot/releases/download/%s/joshbot_%s_%s",
+		latestVersion, runtime.GOOS, runtime.GOARCH,
+	)
+
+	if err := downloadBinary(downloadURL, tmpFile); err != nil {
+		fmt.Printf("Error downloading: %v\n", err)
+		fmt.Println("You can manually download from: https://github.com/bigknoxy/joshbot/releases")
+		return nil
+	}
+
+	// 5. Make temp binary executable
+	if err := os.Chmod(tmpFile, 0755); err != nil {
+		os.Remove(tmpFile)
+		return fmt.Errorf("failed to make binary executable: %w", err)
+	}
+
+	// 6. Atomic replacement
+	// First, try a simple rename (works if same filesystem and we have permissions)
+	backupFile := exePath + ".bak"
+
+	// Backup current binary
+	if err := os.Rename(exePath, backupFile); err != nil {
+		// If rename fails (e.g., different filesystem), try copying
+		if copyErr := copyFile(tmpFile, exePath); copyErr != nil {
+			os.Remove(tmpFile)
+			return fmt.Errorf("failed to replace binary: %w", err)
+		}
+		// Clean up temp file after copy
+		os.Remove(tmpFile)
+	} else {
+		// Rename succeeded - now rename temp to final location
+		if err := os.Rename(tmpFile, exePath); err != nil {
+			// Restore backup
+			os.Rename(backupFile, exePath)
+			os.Remove(tmpFile)
+			return fmt.Errorf("failed to install update: %w", err)
+		}
+		// Remove backup
+		os.Remove(backupFile)
+	}
+
+	fmt.Printf("Updated joshbot %s → %s\n", currentVersion, latestVersion)
+	fmt.Println()
+	fmt.Println("Restart joshbot to use the new version.")
+
+	return nil
+}
+
+// getVersion returns the current version string.
+func getVersion() string {
+	if Version == "dev" {
+		return "v0.0.0"
+	}
+	// Ensure version has v prefix
+	if !strings.HasPrefix(Version, "v") {
+		return "v" + Version
+	}
+	return Version
+}
+
+// GitHubRelease represents a GitHub release response.
+type GitHubRelease struct {
+	TagName string `json:"tag_name"`
+}
+
+// getLatestVersion fetches the latest stable release tag from GitHub API.
+func getLatestVersion() (string, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/bigknoxy/joshbot/releases/latest", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "joshbot-update-check")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("network error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var release GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if release.TagName == "" {
+		return "", fmt.Errorf("no release tag found")
+	}
+
+	return release.TagName, nil
+}
+
+// compareVersions compares two semantic version strings.
+// Returns -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2.
+// Only compares stable releases (ignores prerelease suffixes like -beta, -rc).
+func compareVersions(v1, v2 string) int {
+	// Normalize versions - strip v prefix
+	v1 = strings.TrimPrefix(v1, "v")
+	v2 = strings.TrimPrefix(v2, "v")
+
+	// Strip prerelease suffixes for comparison
+	v1 = stripPrerelease(v1)
+	v2 = stripPrerelease(v2)
+
+	v1Parts := strings.Split(v1, ".")
+	v2Parts := strings.Split(v2, ".")
+
+	// Compare major, minor, patch
+	for i := 0; i < 3; i++ {
+		var n1, n2 int
+		if i < len(v1Parts) {
+			n1, _ = strconv.Atoi(v1Parts[i])
+		}
+		if i < len(v2Parts) {
+			n2, _ = strconv.Atoi(v2Parts[i])
+		}
+
+		if n1 < n2 {
+			return -1
+		}
+		if n1 > n2 {
+			return 1
+		}
+	}
+
+	return 0
+}
+
+// stripPrerelease removes prerelease suffixes like -beta, -rc, -alpha.
+func stripPrerelease(v string) string {
+	if idx := strings.Index(v, "-"); idx != -1 {
+		return v[:idx]
+	}
+	return v
+}
+
+// downloadBinary downloads a file from URL to destPath.
+func downloadBinary(url, destPath string) error {
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "joshbot-update")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("network error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("release not found for this platform/architecture")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed with status %d", resp.StatusCode)
+	}
+
+	// Create temp file
+	tmpFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer tmpFile.Close()
+
+	// Copy response body to file
+	_, err = io.Copy(tmpFile, resp.Body)
+	if err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("failed to save downloaded file: %w", err)
+	}
+
+	return nil
+}
+
+// copyFile copies a file from src to dst.
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	if err != nil {
+		return err
+	}
+
+	return dstFile.Sync()
+}
+
+// getBinaryPath returns the path to the current executable.
+func getBinaryPath() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+
+	// Resolve symlinks
+	realPath, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return exePath, nil
+	}
+
+	return realPath, nil
 }
 
 // runUninstall uninstalls joshbot and optionally removes configuration.
@@ -845,8 +1137,7 @@ func selectModel(existingCfg *config.Config) string {
 	}
 
 	fmt.Println("\n[Step 3] Model")
-	fmt.Printf("Default model: %s\n", defaultModel)
-	fmt.Printf("Model name [%s]: ", defaultModel)
+	fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
 
 	var model string
 	fmt.Scanln(&model)

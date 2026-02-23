@@ -35,6 +35,41 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+// runningContext describes how joshbot is running.
+type runningContext struct {
+	IsService bool
+	IsDocker  bool
+	IsGoRun   bool
+}
+
+// detectRunningContext determines how joshbot is currently running.
+func detectRunningContext() runningContext {
+	ctx := runningContext{}
+
+	// Check for go run
+	exePath, _ := os.Executable()
+	if strings.Contains(exePath, "go-build") || strings.Contains(exePath, "/tmp/") {
+		ctx.IsGoRun = true
+		return ctx
+	}
+
+	// Check for Docker
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		ctx.IsDocker = true
+	}
+
+	// Check for service installation
+	svc, err := service.NewManager(service.Config{Name: "joshbot"})
+	if err == nil && svc.IsInstalled() {
+		status, _ := svc.Status()
+		if status.Running {
+			ctx.IsService = true
+		}
+	}
+
+	return ctx
+}
+
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
@@ -102,6 +137,21 @@ func runApp() error {
 				Name:   "status",
 				Usage:  "Show configuration and status",
 				Action: runStatus,
+			},
+			{
+				Name:  "configure",
+				Usage: "Configure LLM providers and settings",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "list",
+						Usage: "List configured providers",
+					},
+					&cli.BoolFlag{
+						Name:  "default",
+						Usage: "Set default provider",
+					},
+				},
+				Action: runConfigure,
 			},
 			{
 				Name:   "update",
@@ -180,7 +230,7 @@ func loadConfig(cfgPath string) (*config.Config, error) {
 }
 
 // setupComponents initializes all required components.
-func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMProvider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, error) {
+func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, error) {
 	// Ensure directories exist
 	if err := cfg.EnsureDirs(); err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
@@ -209,19 +259,61 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 	// Create BusMessageSender for tools that need to send messages
 	messageSender := tools.NewBusMessageSender(msgBus)
 
-	// Initialize provider - convert config to provider config
-	providerCfg := providers.DefaultConfig()
-	providerCfg.APIKey = getProviderAPIKey(cfg)
-	providerCfg.Model = cfg.Agents.Defaults.Model
-	providerCfg.MaxTokens = cfg.Agents.Defaults.MaxTokens
-	providerCfg.Temperature = cfg.Agents.Defaults.Temperature
+	// Get logger
+	logger := log.Get()
 
-	// Get API base from provider config
-	if p, ok := cfg.Providers["openrouter"]; ok {
-		providerCfg.APIBase = p.APIBase
+	// Create MultiProvider instead of single provider
+	multiProvider := providers.NewMultiProvider(providers.MultiProviderConfig{
+		DefaultProvider: cfg.ProviderDefaults.Default,
+		Logger:          &providers.DefaultLogger{},
+	})
+	if cfg.ProviderDefaults.Default == "" {
+		multiProvider.SetDefault("openrouter")
 	}
 
-	provider := providers.NewLiteLLMProvider(providerCfg)
+	// Register OpenRouter (always registered if configured)
+	if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" {
+		openrouterProvider := providers.NewLiteLLMProvider(providers.Config{
+			APIKey:       p.APIKey,
+			APIBase:      p.APIBase,
+			ExtraHeaders: p.ExtraHeaders,
+			Model:        cfg.Agents.Defaults.Model,
+			MaxTokens:    cfg.Agents.Defaults.MaxTokens,
+			Temperature:  cfg.Agents.Defaults.Temperature,
+		})
+		multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0)
+	}
+
+	// Register Groq (if configured)
+	if p, ok := cfg.Providers["groq"]; ok && p.APIKey != "" && p.Enabled {
+		groqProvider := providers.NewLiteLLMProvider(providers.Config{
+			APIKey:       p.APIKey,
+			APIBase:      p.APIBase,
+			ExtraHeaders: p.ExtraHeaders,
+		})
+		priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+		if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "groq"); idx >= 0 {
+			priority = idx + 1
+		}
+		multiProvider.Register("groq", groqProvider, "", priority)
+	}
+
+	// Register Ollama (if configured)
+	if p, ok := cfg.Providers["ollama"]; ok && p.Enabled {
+		apiBase := p.APIBase
+		if apiBase == "" {
+			apiBase = "http://localhost:11434"
+		}
+		ollamaProvider := providers.NewLiteLLMProvider(providers.Config{
+			APIBase:      apiBase,
+			ExtraHeaders: p.ExtraHeaders,
+		})
+		priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+		if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "ollama"); idx >= 0 {
+			priority = idx + 1
+		}
+		multiProvider.Register("ollama", ollamaProvider, "", priority)
+	}
 
 	// Initialize session manager
 	sessionMgr, err := session.NewManager(cfg.SessionsDir())
@@ -229,13 +321,10 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create session manager: %w", err)
 	}
 
-	// Get logger
-	logger := log.Get()
-
 	// Build context budgeting/compression components
 	registry := ctxpkg.NewRegistry()
 	budget := ctxpkg.NewBudgetManager(registry, 100)
-	compressor := &ctxpkg.Compressor{Provider: provider}
+	compressor := &ctxpkg.Compressor{Provider: multiProvider}
 
 	// Create tools registry with defaults
 	toolsRegistry := tools.RegistryWithDefaults(
@@ -249,7 +338,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 	// Create agent with tools registry
 	agentInstance := agent.NewAgent(
 		cfg,
-		provider,
+		multiProvider,
 		toolsRegistry,
 		sessionMgr,
 		logger,
@@ -268,22 +357,22 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, *providers.LiteLLMPro
 	hb.Start()
 
 	// Start consolidator (self-learning memory consolidation)
-	consolidator := learning.NewConsolidator(memoryManager, provider, 10*time.Minute)
+	consolidator := learning.NewConsolidator(memoryManager, multiProvider, 10*time.Minute)
 	consolidator.Start()
 
 	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
-	return msgBus, provider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
+	return msgBus, multiProvider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
 }
 
-// getProviderAPIKey extracts the first available API key from config.
-func getProviderAPIKey(cfg *config.Config) string {
-	for _, p := range cfg.Providers {
-		if p.APIKey != "" {
-			return p.APIKey
+// indexOf returns the index of needle in haystack, or -1 if not found.
+func indexOf(haystack []string, needle string) int {
+	for i, s := range haystack {
+		if s == needle {
+			return i
 		}
 	}
-	return ""
+	return -1
 }
 
 // setupGracefulShutdown sets up signal handling for graceful shutdown.
@@ -397,7 +486,10 @@ func runUpdate(c *cli.Context) error {
 		return nil
 	}
 
-	// 4. Download new binary
+	// 4. Detect running context before any state changes
+	runCtx := detectRunningContext()
+
+	// 5. Download new binary
 	fmt.Println()
 	fmt.Println("Downloading update...")
 
@@ -421,9 +513,13 @@ func runUpdate(c *cli.Context) error {
 	tmpFile := filepath.Join(tmpDir, ".joshbot_new")
 
 	// Build download URL
+	extension := ""
+	if runtime.GOOS == "windows" {
+		extension = ".exe"
+	}
 	downloadURL := fmt.Sprintf(
-		"https://github.com/bigknoxy/joshbot/releases/download/%s/joshbot_%s_%s",
-		latestVersion, runtime.GOOS, runtime.GOARCH,
+		"https://github.com/bigknoxy/joshbot/releases/download/%s/joshbot_%s_%s_%s%s",
+		latestVersion, latestVersion, runtime.GOOS, runtime.GOARCH, extension,
 	)
 
 	if err := downloadBinary(downloadURL, tmpFile); err != nil {
@@ -465,7 +561,39 @@ func runUpdate(c *cli.Context) error {
 
 	fmt.Printf("Updated joshbot %s → %s\n", currentVersion, latestVersion)
 	fmt.Println()
-	fmt.Println("Restart joshbot to use the new version.")
+
+	// Auto-restart after successful update
+	if runCtx.IsDocker {
+		fmt.Println("Update complete. Restart your Docker container to use the new version.")
+		return nil
+	}
+
+	if runCtx.IsService {
+		svc, err := service.NewManager(service.Config{
+			Name:        "joshbot",
+			DisplayName: "Joshbot AI Assistant",
+			Description: "Personal AI assistant with Telegram integration",
+		})
+		if err == nil {
+			fmt.Println("Restarting joshbot service...")
+			if err := svc.Restart(); err != nil {
+				fmt.Printf("Warning: Could not restart service: %v\n", err)
+				fmt.Println("Please restart manually: systemctl restart joshbot")
+				return nil
+			}
+			fmt.Println("Service restarted successfully!")
+			return nil
+		}
+	}
+
+	// Interactive restart via exec
+	fmt.Println("Restarting joshbot...")
+	args := os.Args[1:]
+	err = syscall.Exec(exePath, append([]string{exePath}, args...), os.Environ())
+	if err != nil {
+		fmt.Printf("Warning: Could not auto-restart: %v\n", err)
+		fmt.Println("Please restart joshbot manually.")
+	}
 
 	return nil
 }
@@ -473,7 +601,7 @@ func runUpdate(c *cli.Context) error {
 // getVersion returns the current version string.
 func getVersion() string {
 	if Version == "dev" {
-		return "v0.0.0"
+		return "dev"
 	}
 	// Ensure version has v prefix
 	if !strings.HasPrefix(Version, "v") {
@@ -708,6 +836,44 @@ func runUninstall(c *cli.Context) error {
 	}
 	fmt.Println()
 
+	// Check for installed service
+	svcCfg := service.Config{
+		Name:        "joshbot",
+		DisplayName: "Joshbot AI Assistant",
+		Description: "Personal AI assistant with Telegram integration",
+		ExecPath:    absPath,
+	}
+
+	svc, svcErr := service.NewManager(svcCfg)
+	serviceUninstalled := false
+
+	if svcErr == nil && svc.IsInstalled() {
+		fmt.Printf("Service detected:  joshbot (%s)\n", svc.Name())
+		fmt.Println()
+
+		// Prompt for service uninstall (default yes since binary is being removed)
+		uninstallService := true
+		if !c.Bool("force") {
+			fmt.Print("Uninstall service? (Y/n): ")
+			var response string
+			fmt.Scanln(&response)
+			uninstallService = strings.ToLower(response) != "n"
+		}
+
+		if uninstallService {
+			fmt.Printf("Uninstalling service (%s)...\n", svc.Name())
+			result, err := svc.Uninstall()
+			if err != nil {
+				fmt.Printf("Warning: Failed to uninstall service: %v\n", err)
+				fmt.Println("You may need to uninstall it manually.")
+			} else {
+				serviceUninstalled = true
+				fmt.Println(result.Message)
+			}
+		}
+		fmt.Println()
+	}
+
 	// Check if running from the directory being removed - warn user
 	dirToRemove := filepath.Dir(absPath)
 	currentDir, err := os.Getwd()
@@ -763,13 +929,13 @@ func runUninstall(c *cli.Context) error {
 	fmt.Println("║           Uninstallation complete!         ║")
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
+	fmt.Println("Removed:")
+	fmt.Printf("  - Binary: %s\n", absPath)
 	if removeConfig {
-		fmt.Println("Removed:")
-		fmt.Printf("  - Binary: %s\n", absPath)
 		fmt.Printf("  - Config: %s\n", configDir)
-	} else {
-		fmt.Println("Removed:")
-		fmt.Printf("  - Binary: %s\n", absPath)
+	}
+	if serviceUninstalled {
+		fmt.Println("  - Service: joshbot")
 	}
 	fmt.Println()
 	fmt.Println("Thank you for using joshbot!")
@@ -1594,6 +1760,391 @@ func runStatus(c *cli.Context) error {
 	}
 
 	return nil
+}
+
+// runConfigure handles the configure command.
+func runConfigure(c *cli.Context) error {
+	// Load existing config
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	// --list flag: show providers and exit
+	if c.Bool("list") {
+		return listProviders(cfg)
+	}
+
+	// Interactive wizard
+	return runConfigureWizard(cfg)
+}
+
+// listProviders displays the configured providers.
+func listProviders(cfg *config.Config) error {
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║        Configured Providers              ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+
+	providers := []string{"openrouter", "groq", "ollama"}
+	defaultProvider := cfg.ProviderDefaults.Default
+
+	for _, name := range providers {
+		p, exists := cfg.Providers[name]
+		isDefault := name == defaultProvider
+		statusIcon := "○"
+		statusText := "not configured"
+
+		if exists && p.APIKey != "" {
+			statusIcon = "✓"
+			statusText = "configured"
+		}
+		if isDefault {
+			statusText += " (default)"
+		}
+
+		fmt.Printf("  %s %-12s %s\n", statusIcon, name, statusText)
+	}
+
+	fmt.Println()
+	return nil
+}
+
+// runConfigureWizard runs the interactive provider configuration wizard.
+func runConfigureWizard(cfg *config.Config) error {
+	providers := []string{"openrouter", "groq", "ollama"}
+
+	for {
+		// Display current state
+		fmt.Println()
+		fmt.Println("╔═══════════════════════════════════════════╗")
+		fmt.Println("║        Configure LLM Providers           ║")
+		fmt.Println("╚═══════════════════════════════════════════╝")
+		fmt.Println()
+		fmt.Println("Current providers:")
+
+		defaultProvider := cfg.ProviderDefaults.Default
+		for _, name := range providers {
+			p, exists := cfg.Providers[name]
+			isDefault := name == defaultProvider
+			icon := "○"
+			status := "not configured"
+
+			if exists && p.APIKey != "" {
+				icon = "✓"
+				status = "configured"
+			}
+			if isDefault {
+				status += " (default)"
+			}
+
+			fmt.Printf("  %s %s (%s)\n", icon, getProviderDisplayName(name), status)
+		}
+
+		fmt.Println()
+		fmt.Println("What would you like to do?")
+		fmt.Println("  1. Configure OpenRouter")
+		fmt.Println("  2. Configure Groq")
+		fmt.Println("  3. Configure Ollama")
+		fmt.Println("  4. Set default provider")
+		fmt.Println("  5. Configure fallback order")
+		fmt.Println("  6. Done")
+		fmt.Println()
+
+		fmt.Print("Choice [6]: ")
+
+		var choice string
+		fmt.Scanln(&choice)
+		if choice == "" {
+			choice = "6"
+		}
+
+		switch choice {
+		case "1":
+			cfg = configureProvider(cfg, "openrouter")
+		case "2":
+			cfg = configureProvider(cfg, "groq")
+		case "3":
+			cfg = configureProvider(cfg, "ollama")
+		case "4":
+			cfg = setDefaultProvider(cfg)
+		case "5":
+			cfg = configureFallbackOrder(cfg)
+		case "6":
+			// Save and exit
+			if err := config.Save(cfg); err != nil {
+				return fmt.Errorf("failed to save config: %w", err)
+			}
+			fmt.Println("\nConfiguration saved.")
+			return nil
+		default:
+			fmt.Println("Invalid choice. Please try again.")
+		}
+	}
+}
+
+// getProviderDisplayName returns the display name for a provider.
+func getProviderDisplayName(name string) string {
+	switch name {
+	case "openrouter":
+		return "OpenRouter"
+	case "groq":
+		return "Groq"
+	case "ollama":
+		return "Ollama"
+	default:
+		return name
+	}
+}
+
+// configureProvider prompts the user to configure a specific provider.
+func configureProvider(cfg *config.Config, provider string) *config.Config {
+	// Initialize providers map if needed
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]config.ProviderConfig)
+	}
+
+	p, exists := cfg.Providers[provider]
+
+	fmt.Printf("\n=== Configure %s ===\n", getProviderDisplayName(provider))
+	fmt.Println()
+
+	// Get API key
+	fmt.Print("API key")
+	if exists && p.APIKey != "" {
+		fmt.Printf(" [%s]", maskAPIKey(p.APIKey))
+	}
+	fmt.Print(": ")
+
+	var apiKey string
+	fmt.Scanln(&apiKey)
+	apiKey = strings.TrimSpace(apiKey)
+
+	// If user entered something, use it; otherwise keep existing
+	if apiKey != "" {
+		p.APIKey = apiKey
+	}
+
+	// Get API base URL (different for each provider)
+	var apiBase string
+	switch provider {
+	case "openrouter":
+		if exists && p.APIBase != "" {
+			fmt.Printf("API base URL [%s]: ", p.APIBase)
+		} else {
+			fmt.Print("API base URL [https://openrouter.ai/api/v1]: ")
+		}
+		fmt.Scanln(&apiBase)
+		if apiBase == "" {
+			if p.APIBase == "" {
+				apiBase = "https://openrouter.ai/api/v1"
+			} else {
+				apiBase = p.APIBase
+			}
+		}
+		p.APIBase = strings.TrimSpace(apiBase)
+	case "groq":
+		if exists && p.APIBase != "" {
+			fmt.Printf("API base URL [%s]: ", p.APIBase)
+		} else {
+			fmt.Print("API base URL [https://api.groq.com/openai/v1]: ")
+		}
+		fmt.Scanln(&apiBase)
+		if apiBase == "" {
+			if p.APIBase == "" {
+				apiBase = "https://api.groq.com/openai/v1"
+			} else {
+				apiBase = p.APIBase
+			}
+		}
+		p.APIBase = strings.TrimSpace(apiBase)
+	case "ollama":
+		if exists && p.APIBase != "" {
+			fmt.Printf("Ollama base URL [%s]: ", p.APIBase)
+		} else {
+			fmt.Print("Ollama base URL [http://localhost:11434]: ")
+		}
+		fmt.Scanln(&apiBase)
+		if apiBase == "" {
+			if p.APIBase == "" {
+				apiBase = "http://localhost:11434"
+			} else {
+				apiBase = p.APIBase
+			}
+		}
+		p.APIBase = strings.TrimSpace(apiBase)
+	}
+
+	// Validate credentials if API key was provided
+	if p.APIKey != "" {
+		fmt.Println("\nValidating credentials...")
+		if err := validateProviderCredentials(provider, p.APIKey, p.APIBase); err != nil {
+			fmt.Printf("Warning: %v\n", err)
+			fmt.Print("Save anyway? (y/N): ")
+			var confirm string
+			fmt.Scanln(&confirm)
+			if strings.ToLower(confirm) != "y" {
+				return cfg
+			}
+		} else {
+			fmt.Println("Credentials validated successfully!")
+		}
+	}
+
+	p.Enabled = true
+	cfg.Providers[provider] = p
+
+	// If this is the first provider, set it as default
+	if cfg.ProviderDefaults.Default == "" {
+		cfg.ProviderDefaults.Default = provider
+	}
+
+	fmt.Println()
+	return cfg
+}
+
+// validateProviderCredentials tests the API credentials for a provider.
+func validateProviderCredentials(provider, apiKey, apiBase string) error {
+	switch provider {
+	case "openrouter", "groq":
+		// Test call to list models
+		req, err := http.NewRequest("GET", apiBase+"/models", nil)
+		if err != nil {
+			return fmt.Errorf("connection failed: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("connection failed: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == 401 {
+			return fmt.Errorf("invalid API key")
+		}
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+		return nil
+	case "ollama":
+		resp, err := http.Get(apiBase + "/api/tags")
+		if err != nil {
+			return fmt.Errorf("cannot connect to Ollama at %s", apiBase)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+		return nil
+	}
+	return nil
+}
+
+// setDefaultProvider prompts the user to select the default provider.
+func setDefaultProvider(cfg *config.Config) *config.Config {
+	// Find configured providers
+	var configured []string
+	for name, p := range cfg.Providers {
+		if p.APIKey != "" {
+			configured = append(configured, name)
+		}
+	}
+
+	if len(configured) == 0 {
+		fmt.Println("\nNo providers configured yet. Configure a provider first.")
+		return cfg
+	}
+
+	fmt.Println("\n=== Set Default Provider ===")
+	fmt.Println()
+
+	for i, name := range configured {
+		marker := " "
+		if name == cfg.ProviderDefaults.Default {
+			marker = "*"
+		}
+		fmt.Printf("  %d. %s %s\n", i+1, marker, getProviderDisplayName(name))
+	}
+	fmt.Println()
+
+	fmt.Print("Select default provider: ")
+
+	var choice int
+	fmt.Scanln(&choice)
+
+	if choice < 1 || choice > len(configured) {
+		fmt.Println("Invalid choice.")
+		return cfg
+	}
+
+	cfg.ProviderDefaults.Default = configured[choice-1]
+	fmt.Printf("\nDefault provider set to: %s\n", getProviderDisplayName(cfg.ProviderDefaults.Default))
+
+	return cfg
+}
+
+// configureFallbackOrder prompts the user to configure the fallback order.
+func configureFallbackOrder(cfg *config.Config) *config.Config {
+	// Find configured providers
+	var configured []string
+	for name, p := range cfg.Providers {
+		if p.APIKey != "" {
+			configured = append(configured, name)
+		}
+	}
+
+	if len(configured) < 2 {
+		fmt.Println("\nNeed at least 2 configured providers for fallback.")
+		return cfg
+	}
+
+	fmt.Println("\n=== Configure Fallback Order ===")
+	fmt.Println()
+	fmt.Println("Current fallback order:")
+	if len(cfg.ProviderDefaults.FallbackOrder) == 0 {
+		fmt.Println("  (not set - will use providers as configured)")
+	} else {
+		for i, name := range cfg.ProviderDefaults.FallbackOrder {
+			fmt.Printf("  %d. %s\n", i+1, getProviderDisplayName(name))
+		}
+	}
+	fmt.Println()
+	fmt.Println("Available providers:")
+	for i, name := range configured {
+		fmt.Printf("  %d. %s\n", i+1, getProviderDisplayName(name))
+	}
+	fmt.Println()
+	fmt.Print("Enter fallback order (e.g., 1,2,3): ")
+
+	var orderStr string
+	fmt.Scanln(&orderStr)
+	orderStr = strings.TrimSpace(orderStr)
+
+	if orderStr == "" {
+		cfg.ProviderDefaults.FallbackOrder = nil
+		fmt.Println("\nFallback order cleared.")
+		return cfg
+	}
+
+	// Parse order
+	var order []string
+	parts := strings.Split(orderStr, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if idx, err := strconv.Atoi(part); err == nil && idx >= 1 && idx <= len(configured) {
+			order = append(order, configured[idx-1])
+		}
+	}
+
+	if len(order) == 0 {
+		fmt.Println("Invalid order, keeping current.")
+		return cfg
+	}
+
+	cfg.ProviderDefaults.FallbackOrder = order
+	fmt.Println("\nFallback order updated.")
+
+	return cfg
 }
 
 // runServiceInstall installs joshbot as a system service.

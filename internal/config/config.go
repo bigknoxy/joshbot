@@ -37,7 +37,7 @@ func SetLogger(l Logger) {
 
 const (
 	// DefaultModel is the default LLM model.
-	DefaultModel = "z-ai/glm-4.5-air:free"
+	DefaultModel = "arcee-ai/trinity-large-preview:free"
 	// DefaultExecTimeout is the default shell execution timeout in seconds.
 	DefaultExecTimeout = 60
 	// DefaultGatewayHost is the default gateway host.
@@ -53,7 +53,7 @@ const (
 	// DefaultMemoryWindow is the default memory window size.
 	DefaultMemoryWindow = 50
 	// CurrentSchemaVersion is the current config schema version.
-	CurrentSchemaVersion = 1
+	CurrentSchemaVersion = 2
 )
 
 // DefaultHome is the default joshbot home directory.
@@ -64,9 +64,16 @@ var DefaultWorkspace = filepath.Join(DefaultHome, "workspace")
 
 // ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
-	APIKey       string            `mapstructure:"api_key" json:"api_key" yaml:"api_key"`
-	APIBase      string            `mapstructure:"api_base" json:"api_base" yaml:"api_base"`
-	ExtraHeaders map[string]string `mapstructure:"extra_headers" json:"extra_headers" yaml:"extra_headers"`
+	APIKey       string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIBase      string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
+	ExtraHeaders map[string]string `mapstructure:"extra_headers" json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
+	Enabled      bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
+}
+
+// ProviderDefaults holds default provider settings
+type ProviderDefaults struct {
+	Default       string   `mapstructure:"default" json:"default" yaml:"default"`
+	FallbackOrder []string `mapstructure:"fallback_order" json:"fallback_order" yaml:"fallback_order"`
 }
 
 // AgentDefaults holds default agent configuration.
@@ -132,14 +139,15 @@ type UserConfig struct {
 
 // Config is the root configuration for joshbot.
 type Config struct {
-	SchemaVersion int                       `mapstructure:"schema_version" json:"schema_version" yaml:"schema_version"`
-	Providers     map[string]ProviderConfig `mapstructure:"providers" json:"providers" yaml:"providers"`
-	Agents        AgentsConfig              `mapstructure:"agents" json:"agents" yaml:"agents"`
-	Channels      ChannelsConfig            `mapstructure:"channels" json:"channels" yaml:"channels"`
-	Tools         ToolsConfig               `mapstructure:"tools" json:"tools" yaml:"tools"`
-	Gateway       GatewayConfig             `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
-	LogLevel      string                    `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
-	User          UserConfig                `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+	SchemaVersion    int                       `mapstructure:"schema_version" json:"schema_version" yaml:"schema_version"`
+	Providers        map[string]ProviderConfig `mapstructure:"providers" json:"providers" yaml:"providers"`
+	ProviderDefaults ProviderDefaults          `mapstructure:"provider_defaults" json:"provider_defaults,omitempty" yaml:"provider_defaults,omitempty"`
+	Agents           AgentsConfig              `mapstructure:"agents" json:"agents" yaml:"agents"`
+	Channels         ChannelsConfig            `mapstructure:"channels" json:"channels" yaml:"channels"`
+	Tools            ToolsConfig               `mapstructure:"tools" json:"tools" yaml:"tools"`
+	Gateway          GatewayConfig             `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
+	LogLevel         string                    `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User             UserConfig                `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
 }
 
 // parseConfigFromFile parses JSON config data into the Config struct.
@@ -525,6 +533,19 @@ func migrateConfig(cfg *Config) error {
 				logger.Info("Backed up config", "to", backupPath)
 			}
 		}
+	}
+
+	// Migration from v1 to v2
+	if cfg.SchemaVersion < 2 {
+		// Initialize ProviderDefaults if not present
+		if cfg.ProviderDefaults.Default == "" && len(cfg.ProviderDefaults.FallbackOrder) == 0 {
+			cfg.ProviderDefaults = ProviderDefaults{
+				Default:       "",
+				FallbackOrder: []string{},
+			}
+			logger.Info("Migrated config to v2: initialized ProviderDefaults")
+		}
+		cfg.SchemaVersion = 2
 	}
 
 	return nil

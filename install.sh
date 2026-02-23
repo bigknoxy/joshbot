@@ -162,21 +162,26 @@ download_binary() {
     local version_normalized="${version#v}"
     
     # Build download URLs (try multiple naming patterns)
-    # Pattern 1: Archive with version (preferred)
+    # Pattern 1: Binary with v-prefixed version (current format: joshbot_v1.3.0_linux_amd64)
+    local binary_filename_v="${BINARY_NAME}_${version}_${os}_${arch}"
+    # Pattern 2: Archive with version (normalized, no v prefix)
     local archive_filename="${BINARY_NAME}_${version_normalized}_${os}_${arch}"
-    # Pattern 2: Raw binary without version (GoReleaser default)
+    # Pattern 3: Binary without version (GoReleaser default)
     local binary_filename="${BINARY_NAME}_${os}_${arch}"
-    # Pattern 3: Binary with double underscore (GoReleaser bug)
+    # Pattern 4: Binary with double underscore (old format)
     local binary_filename_alt="${BINARY_NAME}__${os}_${arch}"
     
     local extension=""
+    local binary_ext=""
     if [ "$os" = "windows" ]; then
         extension=".zip"
+        binary_ext=".exe"
     else
         extension=".tar.gz"
     fi
     local archive="${archive_filename}${extension}"
     
+    local binary_url_v="https://github.com/${REPO}/releases/download/${version}/${binary_filename_v}${binary_ext}"
     local archive_url="https://github.com/${REPO}/releases/download/${version}/${archive}"
     local binary_url="https://github.com/${REPO}/releases/download/${version}/${binary_filename}"
     local binary_url_alt="https://github.com/${REPO}/releases/download/${version}/${binary_filename_alt}"
@@ -201,24 +206,32 @@ download_binary() {
     else
         # Fall back to raw binary (try several naming patterns)
         echo "  Archive not found, trying raw binary..."
-        # Try default binary name
-        local dest1="${temp_dir}/$(basename "$binary_url")"
-        if curl -fsSL -o "$dest1" "$binary_url" 2>/dev/null; then
-            downloaded_file="$dest1"
-            echo "  ✓ Binary downloaded: $(basename "$dest1")"
+        # Try v-prefixed binary first (current format)
+        local dest0="${temp_dir}/$(basename "$binary_url_v")"
+        if curl -fsSL -o "$dest0" "$binary_url_v" 2>/dev/null; then
+            downloaded_file="$dest0"
+            echo "  ✓ Binary downloaded: $(basename "$dest0")"
         else
-            # Try alternate binary name (double underscore)
-            local dest2="${temp_dir}/$(basename "$binary_url_alt")"
-            if curl -fsSL -o "$dest2" "$binary_url_alt" 2>/dev/null; then
-                downloaded_file="$dest2"
-                echo "  ✓ Binary downloaded: $(basename "$dest2")"
+            # Try default binary name
+            local dest1="${temp_dir}/$(basename "$binary_url")"
+            if curl -fsSL -o "$dest1" "$binary_url" 2>/dev/null; then
+                downloaded_file="$dest1"
+                echo "  ✓ Binary downloaded: $(basename "$dest1")"
             else
-                echo "Error: Failed to download joshbot ${version} for ${os}/${arch}" >&2
-                echo "Tried:" >&2
-                echo "  - ${archive_url}" >&2
-                echo "  - ${binary_url}" >&2
-                echo "  - ${binary_url_alt}" >&2
-                exit 1
+                # Try alternate binary name (double underscore)
+                local dest2="${temp_dir}/$(basename "$binary_url_alt")"
+                if curl -fsSL -o "$dest2" "$binary_url_alt" 2>/dev/null; then
+                    downloaded_file="$dest2"
+                    echo "  ✓ Binary downloaded: $(basename "$dest2")"
+                else
+                    echo "Error: Failed to download joshbot ${version} for ${os}/${arch}" >&2
+                    echo "Tried:" >&2
+                    echo "  - ${binary_url_v}" >&2
+                    echo "  - ${archive_url}" >&2
+                    echo "  - ${binary_url}" >&2
+                    echo "  - ${binary_url_alt}" >&2
+                    exit 1
+                fi
             fi
         fi
     fi
@@ -232,7 +245,17 @@ download_binary() {
         if [ "$use_archive" = true ]; then
             checksum=$(echo "$checksums" | grep -i "${archive}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
         else
-            checksum=$(echo "$checksums" | grep -i "${binary_filename}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+            # Try to match the downloaded file name in checksums
+            local downloaded_basename
+            downloaded_basename=$(basename "$downloaded_file")
+            checksum=$(echo "$checksums" | grep -i "${downloaded_basename}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+            # Fallback to old pattern matching
+            if [ -z "$checksum" ]; then
+                checksum=$(echo "$checksums" | grep -i "${binary_filename_v}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+            fi
+            if [ -z "$checksum" ]; then
+                checksum=$(echo "$checksums" | grep -i "${binary_filename}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+            fi
         fi
         
         if [ -n "$checksum" ]; then

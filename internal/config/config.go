@@ -307,7 +307,7 @@ func Defaults() *Config {
 			Exec: ExecConfig{
 				Timeout: DefaultExecTimeout,
 			},
-			RestrictToWorkspace: false,
+			RestrictToWorkspace: true,
 		},
 		Gateway: GatewayConfig{
 			Host: DefaultGatewayHost,

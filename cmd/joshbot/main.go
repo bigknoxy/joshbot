@@ -415,59 +415,68 @@ func runAgent(c *cli.Context) error {
 	done := make(chan struct{})
 	setupGracefulShutdown(ctx, cancel, done)
 
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("joshbot agent mode. Type 'exit' to quit.")
+	if err := runAgentLoop(ctx, cancel, done, os.Stdin, os.Stdout, agentInstance); err != nil {
+		return err
+	}
+	return nil
+}
+
+type agentProcessor interface {
+	Process(context.Context, bus.InboundMessage) (string, error)
+}
+
+func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor) error {
+	reader := bufio.NewReader(input)
+	fmt.Fprintln(output, "joshbot agent mode. Type 'exit' to quit.")
 	for {
 		select {
 		case <-done:
 			log.Info("Agent shutdown complete")
 			return nil
 		default:
-			fmt.Print("> ")
-			line, readErr := reader.ReadString('\n')
-			if readErr != nil && readErr != io.EOF {
-				return fmt.Errorf("failed to read input: %w", readErr)
-			}
-			input := strings.TrimSpace(line)
-			if input == "" {
-				if readErr == io.EOF {
-					cancel()
-					<-done
-					return nil
-				}
-				continue
-			}
+		}
 
-			if strings.ToLower(input) == "exit" {
-				cancel()
-				<-done
-				return nil
-			}
-
-			msg := bus.InboundMessage{
-				SenderID:  "cli_user",
-				Content:   input,
-				Channel:   "cli",
-				Timestamp: time.Now(),
-				Metadata: map[string]any{
-					"username": "user",
-				},
-			}
-
-			response, procErr := agentInstance.Process(ctx, msg)
-			if procErr != nil {
-				log.Error("Agent error", "error", procErr)
-				fmt.Printf("Error: %v\n", procErr)
-				continue
-			}
-
-			fmt.Printf("\n%s\n\n", strings.TrimSpace(response))
-
+		fmt.Fprint(output, "> ")
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && readErr != io.EOF {
+			return fmt.Errorf("failed to read input: %w", readErr)
+		}
+		inputLine := strings.TrimSpace(line)
+		if inputLine == "" {
 			if readErr == io.EOF {
 				cancel()
-				<-done
 				return nil
 			}
+			continue
+		}
+
+		if strings.EqualFold(inputLine, "exit") {
+			cancel()
+			return nil
+		}
+
+		msg := bus.InboundMessage{
+			SenderID:  "cli_user",
+			Content:   inputLine,
+			Channel:   "cli",
+			Timestamp: time.Now(),
+			Metadata: map[string]any{
+				"username": "user",
+			},
+		}
+
+		response, procErr := agentInstance.Process(ctx, msg)
+		if procErr != nil {
+			log.Error("Agent error", "error", procErr)
+			fmt.Fprintf(output, "Error: %v\n", procErr)
+			continue
+		}
+
+		fmt.Fprintf(output, "\n%s\n\n", strings.TrimSpace(response))
+
+		if readErr == io.EOF {
+			cancel()
+			return nil
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -1055,6 +1056,9 @@ func runOnboard(c *cli.Context) error {
 		if err := doServiceInstall(); err != nil {
 			fmt.Printf("Warning: Could not install service: %v\n", err)
 			fmt.Println("You can run 'joshbot service install' manually later.")
+			if err := promptCronStartupFallback(); err != nil {
+				fmt.Printf("Warning: Could not configure cron startup fallback: %v\n", err)
+			}
 		}
 	}
 
@@ -1330,6 +1334,80 @@ func promptServiceInstall() bool {
 	fmt.Scanln(&choice)
 
 	return choice == "1"
+}
+
+func promptCronStartupFallback() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+
+	fmt.Println("\nAutomatic startup fallback")
+	fmt.Println("I can install a cron @reboot entry to start joshbot on boot.")
+	fmt.Println("  1. Yes, install cron startup fallback")
+	fmt.Println("  2. No, I will configure startup manually")
+	fmt.Printf("Choice [2]: ")
+
+	var choice string
+	fmt.Scanln(&choice)
+	if choice != "1" {
+		return nil
+	}
+
+	if err := installCronStartupEntry(); err != nil {
+		return err
+	}
+
+	fmt.Println("Cron startup fallback installed.")
+	return nil
+}
+
+func installCronStartupEntry() error {
+	if _, err := exec.LookPath("crontab"); err != nil {
+		return fmt.Errorf("crontab not found")
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to detect executable path: %w", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to detect home directory: %w", err)
+	}
+
+	logPath := filepath.Join(home, ".joshbot", "logs", "gateway.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		return fmt.Errorf("failed to create log directory: %w", err)
+	}
+
+	entry := fmt.Sprintf("@reboot %s gateway >> %s 2>&1", execPath, logPath)
+
+	existing, err := exec.Command("crontab", "-l").CombinedOutput()
+	existingText := strings.TrimSpace(string(existing))
+	if err != nil && existingText != "" && !strings.Contains(existingText, "no crontab for") {
+		return fmt.Errorf("failed to read existing crontab: %w", err)
+	}
+
+	if strings.Contains(existingText, entry) {
+		return nil
+	}
+
+	var newCron string
+	if existingText == "" || strings.Contains(existingText, "no crontab for") {
+		newCron = entry + "\n"
+	} else {
+		newCron = existingText + "\n" + entry + "\n"
+	}
+
+	cmd := exec.Command("crontab", "-")
+	cmd.Stdin = strings.NewReader(newCron)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to install cron entry: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
 }
 
 func doServiceInstall() error {

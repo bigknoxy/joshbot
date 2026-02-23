@@ -1232,7 +1232,7 @@ func runOnboard(c *cli.Context) error {
 	cfg := config.Defaults()
 	if apiKey != "" || provider == "ollama" {
 		cfg.Providers = map[string]config.ProviderConfig{
-			provider: {APIKey: apiKey},
+			provider: {APIKey: apiKey, Enabled: true},
 		}
 		cfg.ProviderDefaults.Default = provider
 	}

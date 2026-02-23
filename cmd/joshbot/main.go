@@ -2039,12 +2039,12 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 		if exists && p.APIBase != "" {
 			fmt.Printf("API base URL [%s]: ", p.APIBase)
 		} else {
-			fmt.Print("API base URL [https://integrate.api.nvidia.com]: ")
+			fmt.Print("API base URL [https://integrate.api.nvidia.com/v1]: ")
 		}
 		fmt.Scanln(&apiBase)
 		if apiBase == "" {
 			if p.APIBase == "" {
-				apiBase = "https://integrate.api.nvidia.com"
+				apiBase = "https://integrate.api.nvidia.com/v1"
 			} else {
 				apiBase = p.APIBase
 			}

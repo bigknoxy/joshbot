@@ -157,7 +157,7 @@ func init() {
 	RegisterProvider("nvidia", func(cfg Config) (Provider, error) {
 		// Set default API base for NVIDIA NIM API if not specified
 		if cfg.APIBase == "" {
-			cfg.APIBase = "https://integrate.api.nvidia.com"
+			cfg.APIBase = "https://integrate.api.nvidia.com/v1"
 		}
 		return NewLiteLLMProvider(cfg), nil
 	})

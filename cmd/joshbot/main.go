@@ -766,6 +766,44 @@ func runUninstall(c *cli.Context) error {
 	}
 	fmt.Println()
 
+	// Check for installed service
+	svcCfg := service.Config{
+		Name:        "joshbot",
+		DisplayName: "Joshbot AI Assistant",
+		Description: "Personal AI assistant with Telegram integration",
+		ExecPath:    absPath,
+	}
+
+	svc, svcErr := service.NewManager(svcCfg)
+	serviceUninstalled := false
+
+	if svcErr == nil && svc.IsInstalled() {
+		fmt.Printf("Service detected:  joshbot (%s)\n", svc.Name())
+		fmt.Println()
+
+		// Prompt for service uninstall (default yes since binary is being removed)
+		uninstallService := true
+		if !c.Bool("force") {
+			fmt.Print("Uninstall service? (Y/n): ")
+			var response string
+			fmt.Scanln(&response)
+			uninstallService = strings.ToLower(response) != "n"
+		}
+
+		if uninstallService {
+			fmt.Printf("Uninstalling service (%s)...\n", svc.Name())
+			result, err := svc.Uninstall()
+			if err != nil {
+				fmt.Printf("Warning: Failed to uninstall service: %v\n", err)
+				fmt.Println("You may need to uninstall it manually.")
+			} else {
+				serviceUninstalled = true
+				fmt.Println(result.Message)
+			}
+		}
+		fmt.Println()
+	}
+
 	// Check if running from the directory being removed - warn user
 	dirToRemove := filepath.Dir(absPath)
 	currentDir, err := os.Getwd()
@@ -821,13 +859,13 @@ func runUninstall(c *cli.Context) error {
 	fmt.Println("║           Uninstallation complete!         ║")
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
+	fmt.Println("Removed:")
+	fmt.Printf("  - Binary: %s\n", absPath)
 	if removeConfig {
-		fmt.Println("Removed:")
-		fmt.Printf("  - Binary: %s\n", absPath)
 		fmt.Printf("  - Config: %s\n", configDir)
-	} else {
-		fmt.Println("Removed:")
-		fmt.Printf("  - Binary: %s\n", absPath)
+	}
+	if serviceUninstalled {
+		fmt.Println("  - Service: joshbot")
 	}
 	fmt.Println()
 	fmt.Println("Thank you for using joshbot!")

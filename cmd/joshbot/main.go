@@ -285,6 +285,20 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0)
 	}
 
+	// Register NVIDIA NIM (if configured) - first fallback
+	if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
+		nvidiaProvider := providers.NewLiteLLMProvider(providers.Config{
+			APIKey:       p.APIKey,
+			APIBase:      p.APIBase,
+			ExtraHeaders: p.ExtraHeaders,
+		})
+		priority := 1
+		if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "nvidia"); idx >= 0 {
+			priority = idx + 1
+		}
+		multiProvider.Register("nvidia", nvidiaProvider, "", priority)
+	}
+
 	// Register Groq (if configured)
 	if p, ok := cfg.Providers["groq"]; ok && p.APIKey != "" && p.Enabled {
 		groqProvider := providers.NewLiteLLMProvider(providers.Config{

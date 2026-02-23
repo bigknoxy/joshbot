@@ -91,6 +91,8 @@ func normalizeProviderName(name string) string {
 		return "ollama"
 	case "groq":
 		return "groq"
+	case "nvidia", "nim":
+		return "nvidia"
 	default:
 		return name
 	}
@@ -148,6 +150,14 @@ func init() {
 		// Set default API base for Groq if not specified
 		if cfg.APIBase == "" {
 			cfg.APIBase = "https://api.groq.com/openai/v1"
+		}
+		return NewLiteLLMProvider(cfg), nil
+	})
+
+	RegisterProvider("nvidia", func(cfg Config) (Provider, error) {
+		// Set default API base for NVIDIA NIM API if not specified
+		if cfg.APIBase == "" {
+			cfg.APIBase = "https://integrate.api.nvidia.com"
 		}
 		return NewLiteLLMProvider(cfg), nil
 	})

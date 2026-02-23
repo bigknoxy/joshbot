@@ -140,8 +140,9 @@ func runApp() error {
 				Action: runStatus,
 			},
 			{
-				Name:  "configure",
-				Usage: "Configure LLM providers and settings",
+				Name:    "configure",
+				Aliases: []string{"config"},
+				Usage:   "Configure LLM providers and settings",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{
 						Name:  "list",
@@ -1207,6 +1208,7 @@ func runOnboard(c *cli.Context) error {
 
 	// Run prompts (skip if --force)
 	var apiKey, personalityChoice, model, userName string
+	var provider string
 	var soulContent string
 	var telegramConfig *config.TelegramConfig
 
@@ -1217,7 +1219,8 @@ func runOnboard(c *cli.Context) error {
 		model = config.DefaultModel
 	} else {
 		// Interactive prompts - pass existing config for defaults
-		apiKey = promptAPIKey(existingCfg)
+		provider = selectProvider(existingCfg)
+		apiKey = promptProviderAPIKey(provider, existingCfg)
 		personalityChoice = selectPersonality(existingCfg)
 		soulContent = getPersonalitySoul(personalityChoice)
 		userName = promptUserName(existingCfg)
@@ -1227,10 +1230,11 @@ func runOnboard(c *cli.Context) error {
 
 	// Build config
 	cfg := config.Defaults()
-	if apiKey != "" {
+	if apiKey != "" || provider == "ollama" {
 		cfg.Providers = map[string]config.ProviderConfig{
-			"openrouter": {APIKey: apiKey},
+			provider: {APIKey: apiKey},
 		}
+		cfg.ProviderDefaults.Default = provider
 	}
 	cfg.Agents.Defaults.Model = model
 	if userName != "" {
@@ -1290,28 +1294,71 @@ func runOnboard(c *cli.Context) error {
 	return nil
 }
 
-// promptAPIKey prompts the user for their OpenRouter API key.
-func promptAPIKey(existingCfg *config.Config) string {
+// selectProvider prompts the user to choose an LLM provider.
+func selectProvider(existingCfg *config.Config) string {
 	fmt.Println("\n[Step 1] LLM Provider")
-	fmt.Println("joshbot uses OpenRouter by default (supports many models with one API key).")
-	fmt.Println("Get a free key at: https://openrouter.ai/keys")
+	fmt.Println("Choose your LLM provider:")
+	fmt.Println("  1. NVIDIA NIM (Recommended - Free tier available)")
+	fmt.Println("  2. OpenRouter (Many models, one API key)")
+	fmt.Println("  3. Groq (Fast inference)")
+	fmt.Println("  4. Ollama (Local, no API key needed)")
 
-	// Show existing API key if available
-	var defaultKey string
-	if existingCfg != nil {
-		for _, p := range existingCfg.Providers {
-			if p.APIKey != "" {
-				defaultKey = maskAPIKey(p.APIKey)
-				break
-			}
-		}
+	// Show current default if exists
+	if existingCfg != nil && existingCfg.ProviderDefaults.Default != "" {
+		fmt.Printf("\nCurrent provider: %s\n", getProviderDisplayName(existingCfg.ProviderDefaults.Default))
 	}
 
-	if defaultKey != "" {
-		fmt.Printf("Current API key: %s\n", defaultKey)
-		fmt.Print("Enter new API key (or press Enter to keep current): ")
+	fmt.Print("\nChoice [1]: ")
+	var choice string
+	fmt.Scanln(&choice)
+	if choice == "" {
+		choice = "1"
+	}
+
+	switch choice {
+	case "1":
+		return "nvidia"
+	case "2":
+		return "openrouter"
+	case "3":
+		return "groq"
+	case "4":
+		return "ollama"
+	default:
+		return "nvidia"
+	}
+}
+
+// promptProviderAPIKey prompts for the API key based on the selected provider.
+func promptProviderAPIKey(provider string, existingCfg *config.Config) string {
+	var keyURL, keyName string
+	switch provider {
+	case "nvidia":
+		keyURL = "https://build.nvidia.com"
+		keyName = "NVIDIA API key"
+	case "openrouter":
+		keyURL = "https://openrouter.ai/keys"
+		keyName = "OpenRouter API key"
+	case "groq":
+		keyURL = "https://console.groq.com/keys"
+		keyName = "Groq API key"
+	case "ollama":
+		fmt.Println("\nOllama runs locally - no API key needed.")
+		return ""
+	}
+
+	fmt.Printf("\nGet your %s at: %s\n", keyName, keyURL)
+
+	// Show existing key if available
+	if existingCfg != nil {
+		if p, ok := existingCfg.Providers[provider]; ok && p.APIKey != "" {
+			fmt.Printf("Current API key: %s\n", maskAPIKey(p.APIKey))
+			fmt.Print("Enter new API key (or press Enter to keep current): ")
+		} else {
+			fmt.Printf("Enter your %s (or press Enter to skip): ", keyName)
+		}
 	} else {
-		fmt.Print("Enter your OpenRouter API key (or press Enter to skip): ")
+		fmt.Printf("Enter your %s (or press Enter to skip): ", keyName)
 	}
 
 	var apiKey string
@@ -1826,7 +1873,7 @@ func listProviders(cfg *config.Config) error {
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
 
-	providers := []string{"openrouter", "groq", "ollama"}
+	providers := []string{"nvidia", "openrouter", "groq", "ollama"}
 	defaultProvider := cfg.ProviderDefaults.Default
 
 	for _, name := range providers {
@@ -1852,7 +1899,7 @@ func listProviders(cfg *config.Config) error {
 
 // runConfigureWizard runs the interactive provider configuration wizard.
 func runConfigureWizard(cfg *config.Config) error {
-	providers := []string{"openrouter", "groq", "ollama"}
+	providers := []string{"nvidia", "openrouter", "groq", "ollama"}
 
 	for {
 		// Display current state
@@ -1883,34 +1930,37 @@ func runConfigureWizard(cfg *config.Config) error {
 
 		fmt.Println()
 		fmt.Println("What would you like to do?")
-		fmt.Println("  1. Configure OpenRouter")
-		fmt.Println("  2. Configure Groq")
-		fmt.Println("  3. Configure Ollama")
-		fmt.Println("  4. Set default provider")
-		fmt.Println("  5. Configure fallback order")
-		fmt.Println("  6. Done")
+		fmt.Println("  1. Configure NVIDIA NIM")
+		fmt.Println("  2. Configure OpenRouter")
+		fmt.Println("  3. Configure Groq")
+		fmt.Println("  4. Configure Ollama")
+		fmt.Println("  5. Set default provider")
+		fmt.Println("  6. Configure fallback order")
+		fmt.Println("  7. Done")
 		fmt.Println()
 
-		fmt.Print("Choice [6]: ")
+		fmt.Print("Choice [7]: ")
 
 		var choice string
 		fmt.Scanln(&choice)
 		if choice == "" {
-			choice = "6"
+			choice = "7"
 		}
 
 		switch choice {
 		case "1":
-			cfg = configureProvider(cfg, "openrouter")
+			cfg = configureProvider(cfg, "nvidia")
 		case "2":
-			cfg = configureProvider(cfg, "groq")
+			cfg = configureProvider(cfg, "openrouter")
 		case "3":
-			cfg = configureProvider(cfg, "ollama")
+			cfg = configureProvider(cfg, "groq")
 		case "4":
-			cfg = setDefaultProvider(cfg)
+			cfg = configureProvider(cfg, "ollama")
 		case "5":
-			cfg = configureFallbackOrder(cfg)
+			cfg = setDefaultProvider(cfg)
 		case "6":
+			cfg = configureFallbackOrder(cfg)
+		case "7":
 			// Save and exit
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("failed to save config: %w", err)
@@ -1926,6 +1976,8 @@ func runConfigureWizard(cfg *config.Config) error {
 // getProviderDisplayName returns the display name for a provider.
 func getProviderDisplayName(name string) string {
 	switch name {
+	case "nvidia":
+		return "NVIDIA NIM"
 	case "openrouter":
 		return "OpenRouter"
 	case "groq":
@@ -1978,6 +2030,21 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 		if apiBase == "" {
 			if p.APIBase == "" {
 				apiBase = "https://openrouter.ai/api/v1"
+			} else {
+				apiBase = p.APIBase
+			}
+		}
+		p.APIBase = strings.TrimSpace(apiBase)
+	case "nvidia":
+		if exists && p.APIBase != "" {
+			fmt.Printf("API base URL [%s]: ", p.APIBase)
+		} else {
+			fmt.Print("API base URL [https://integrate.api.nvidia.com]: ")
+		}
+		fmt.Scanln(&apiBase)
+		if apiBase == "" {
+			if p.APIBase == "" {
+				apiBase = "https://integrate.api.nvidia.com"
 			} else {
 				apiBase = p.APIBase
 			}
@@ -2046,7 +2113,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 // validateProviderCredentials tests the API credentials for a provider.
 func validateProviderCredentials(provider, apiKey, apiBase string) error {
 	switch provider {
-	case "openrouter", "groq":
+	case "openrouter", "groq", "nvidia":
 		// Test call to list models
 		req, err := http.NewRequest("GET", apiBase+"/models", nil)
 		if err != nil {

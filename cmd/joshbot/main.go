@@ -308,6 +308,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		sessionMgr,
 		logger,
 		agent.WithMemoryLoader(memoryManager),
+		agent.WithHistoryAppender(memoryManager),
 		agent.WithSkillsLoader(skillsLoader),
 		agent.WithBudgetManager(budget),
 		agent.WithCompressor(compressor),

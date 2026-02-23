@@ -130,6 +130,22 @@ func (m *mockMemoryLoader) LoadHistory(ctx context.Context, query string) (strin
 	return "", nil
 }
 
+type mockHistoryAppender struct {
+	entries []string
+	err     error
+	mu      sync.Mutex
+}
+
+func (m *mockHistoryAppender) AppendHistory(ctx context.Context, entry string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	m.entries = append(m.entries, entry)
+	return nil
+}
+
 // mockSkillsLoader is a mock skills loader for testing.
 type mockSkillsLoader struct {
 	summaryFn func(ctx context.Context) (string, error)
@@ -793,6 +809,51 @@ func TestBuildSystemPrompt(t *testing.T) {
 		if !found {
 			t.Errorf("expected prompt to contain %q", expected)
 		}
+	}
+}
+
+func TestAgentProcessSignificantTurnAppendsHistory(t *testing.T) {
+	cfg := config.Defaults()
+	provider := &mockProvider{
+		chatFn: func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+			return &providers.ChatResponse{
+				Choices: []providers.Choice{{
+					Message: providers.Message{Role: providers.RoleAssistant, Content: "I decided we should use SQLite and remember this preference."},
+				}},
+			}, nil
+		},
+	}
+	history := &mockHistoryAppender{}
+	agent := NewAgent(cfg, provider, &mockToolExecutor{}, newMockSessionManager(), newMockLogger(), WithHistoryAppender(history))
+
+	_, err := agent.Process(context.Background(), bus.InboundMessage{
+		SenderID:  "user1",
+		Content:   "Important: I prefer sqlite for local dev",
+		Channel:   "cli",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Process error: %v", err)
+	}
+
+	if len(history.entries) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history.entries))
+	}
+}
+
+func TestAgentBuildMessagesMemoryWindowApplied(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.MemoryWindow = 3
+	agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+
+	sess := session.NewSession("k")
+	for i := 0; i < 8; i++ {
+		sess.AddMessage(session.Message{Role: session.RoleUser, Content: "msg"})
+	}
+
+	msgs := agent.buildMessages("sys", sess)
+	if got := len(msgs); got != 4 { // system + 3 from window
+		t.Fatalf("expected 4 messages, got %d", got)
 	}
 }
 

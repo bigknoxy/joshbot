@@ -31,6 +31,13 @@ func newLaunchd(cfg Config) (Manager, error) {
 		home, _ := os.UserHomeDir()
 		cfg.WorkingDir = filepath.Join(home, ".joshbot")
 	}
+	if cfg.ExecPath == "" {
+		execPath, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect executable path: %w", err)
+		}
+		cfg.ExecPath = execPath
+	}
 
 	home, _ := os.UserHomeDir()
 	agentsDir := filepath.Join(home, "Library", "LaunchAgents")

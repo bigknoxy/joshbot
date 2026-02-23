@@ -11,7 +11,7 @@ import (
 )
 
 // ErrSystemdNotDetected is returned when systemd is not available on the system.
-var ErrSystemdNotDetected = fmt.Errorf("systemd not detected. You may need to use a different init system or run 'joshbot gateway' manually")
+var ErrSystemdNotDetected = fmt.Errorf("systemd not detected. On Alpine/OpenRC systems use an OpenRC service, a crond @reboot entry, or run joshbot in a container with --restart unless-stopped")
 
 // checkSystemctl checks if systemctl exists in PATH.
 func checkSystemctl() error {
@@ -46,6 +46,13 @@ func newSystemd(cfg Config) (*systemdManager, error) {
 	if cfg.WorkingDir == "" {
 		home, _ := os.UserHomeDir()
 		cfg.WorkingDir = filepath.Join(home, ".joshbot")
+	}
+	if cfg.ExecPath == "" {
+		execPath, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect executable path: %w", err)
+		}
+		cfg.ExecPath = execPath
 	}
 
 	return &systemdManager{

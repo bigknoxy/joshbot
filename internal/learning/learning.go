@@ -130,10 +130,12 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 
 func mergeConsolidatedFacts(memoryText, consolidatedSection string) string {
 	base := strings.TrimRight(memoryText, "\n")
-	marker := "\n## Consolidated Facts\n"
-
-	if idx := strings.Index(base, marker); idx >= 0 {
-		base = strings.TrimRight(base[:idx], "\n")
+	lines := strings.Split(base, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "## Consolidated Facts" {
+			base = strings.TrimRight(strings.Join(lines[:i], "\n"), "\n")
+			break
+		}
 	}
 
 	if base == "" {

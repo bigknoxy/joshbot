@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -402,7 +403,7 @@ func runAgent(c *cli.Context) error {
 	log.Info("Starting agent mode", "model", cfg.Agents.Defaults.Model)
 
 	// Setup components
-	msgBus, _, _, agentInstance, _, _, err := setupComponents(cfg)
+	_, _, _, agentInstance, _, _, err := setupComponents(cfg)
 	if err != nil {
 		return err
 	}
@@ -414,28 +415,7 @@ func runAgent(c *cli.Context) error {
 	done := make(chan struct{})
 	setupGracefulShutdown(ctx, cancel, done)
 
-	// Start the message bus
-	msgBus.Start()
-
-	// Subscribe to CLI messages
-	msgBus.Subscribe("cli", func(ctx context.Context, msg bus.InboundMessage) {
-		log.Debug("Processing message", "content", msg.Content)
-		response, err := agentInstance.Process(ctx, msg)
-		if err != nil {
-			log.Error("Agent error", "error", err)
-			return
-		}
-
-		// Send response back to CLI
-		outbound := bus.OutboundMessage{
-			Content:   response,
-			Channel:   "cli",
-			Timestamp: time.Now(),
-		}
-		msgBus.Publish(outbound)
-	})
-
-	// Simple CLI loop
+	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("joshbot agent mode. Type 'exit' to quit.")
 	for {
 		select {
@@ -444,10 +424,46 @@ func runAgent(c *cli.Context) error {
 			return nil
 		default:
 			fmt.Print("> ")
-			var input string
-			fmt.Scanln(&input)
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil && readErr != io.EOF {
+				return fmt.Errorf("failed to read input: %w", readErr)
+			}
+			input := strings.TrimSpace(line)
+			if input == "" {
+				if readErr == io.EOF {
+					cancel()
+					<-done
+					return nil
+				}
+				continue
+			}
 
 			if strings.ToLower(input) == "exit" {
+				cancel()
+				<-done
+				return nil
+			}
+
+			msg := bus.InboundMessage{
+				SenderID:  "cli_user",
+				Content:   input,
+				Channel:   "cli",
+				Timestamp: time.Now(),
+				Metadata: map[string]any{
+					"username": "user",
+				},
+			}
+
+			response, procErr := agentInstance.Process(ctx, msg)
+			if procErr != nil {
+				log.Error("Agent error", "error", procErr)
+				fmt.Printf("Error: %v\n", procErr)
+				continue
+			}
+
+			fmt.Printf("\n%s\n\n", strings.TrimSpace(response))
+
+			if readErr == io.EOF {
 				cancel()
 				<-done
 				return nil

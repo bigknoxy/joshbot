@@ -89,6 +89,8 @@ func normalizeProviderName(name string) string {
 		return "azure"
 	case "local", "ollama":
 		return "ollama"
+	case "groq":
+		return "groq"
 	default:
 		return name
 	}
@@ -138,6 +140,14 @@ func init() {
 		// Default to local Ollama instance
 		if cfg.APIBase == "" {
 			cfg.APIBase = "http://localhost:11434"
+		}
+		return NewLiteLLMProvider(cfg), nil
+	})
+
+	RegisterProvider("groq", func(cfg Config) (Provider, error) {
+		// Set default API base for Groq if not specified
+		if cfg.APIBase == "" {
+			cfg.APIBase = "https://api.groq.com/openai/v1"
 		}
 		return NewLiteLLMProvider(cfg), nil
 	})

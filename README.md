@@ -267,7 +267,7 @@ The default model is `openai/gpt-4`. For free alternatives via OpenRouter, try `
 | `write_file` | Write/create files |
 | `edit_file` | Find-and-replace editing |
 | `list_dir` | List directory contents |
-| `exec` | Execute shell commands (with safety guards) |
+| `shell` | Execute shell commands (with safety guards) |
 | `web_search` | Search the web (requires Brave API key) |
 | `web_fetch` | Fetch and extract web page content |
 | `message` | Send messages to channels |

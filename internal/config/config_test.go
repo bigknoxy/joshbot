@@ -37,6 +37,10 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("expected exec timeout %d, got %d", DefaultExecTimeout, cfg.Tools.Exec.Timeout)
 	}
 
+	if !cfg.Tools.RestrictToWorkspace {
+		t.Error("expected restrict_to_workspace to be true by default")
+	}
+
 	if cfg.Gateway.Host != DefaultGatewayHost {
 		t.Errorf("expected gateway host %s, got %s", DefaultGatewayHost, cfg.Gateway.Host)
 	}

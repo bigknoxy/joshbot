@@ -156,6 +156,19 @@ func (s *launchdManager) Stop() error {
 	return exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/dev.joshbot.%s", os.Getuid(), s.config.Name)).Run()
 }
 
+func (s *launchdManager) Restart() error {
+	if !s.IsInstalled() {
+		return fmt.Errorf("service not installed")
+	}
+	// launchd doesn't have direct restart, so stop then start
+	if s.isRunning() {
+		if err := s.Stop(); err != nil {
+			return fmt.Errorf("failed to stop service: %w", err)
+		}
+	}
+	return s.Start()
+}
+
 func (s *launchdManager) Status() (Status, error) {
 	status := Status{
 		Installed: s.IsInstalled(),

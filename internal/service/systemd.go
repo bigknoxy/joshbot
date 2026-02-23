@@ -200,6 +200,13 @@ func (s *systemdManager) Stop() error {
 	return s.runCommand("systemctl", "stop", s.config.Name)
 }
 
+func (s *systemdManager) Restart() error {
+	if !s.IsInstalled() {
+		return fmt.Errorf("service not installed")
+	}
+	return s.runCommand("systemctl", "restart", s.config.Name)
+}
+
 func (s *systemdManager) Status() (Status, error) {
 	status := Status{
 		Installed: s.IsInstalled(),

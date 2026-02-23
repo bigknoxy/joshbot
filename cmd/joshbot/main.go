@@ -35,6 +35,41 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+// runningContext describes how joshbot is running.
+type runningContext struct {
+	IsService bool
+	IsDocker  bool
+	IsGoRun   bool
+}
+
+// detectRunningContext determines how joshbot is currently running.
+func detectRunningContext() runningContext {
+	ctx := runningContext{}
+
+	// Check for go run
+	exePath, _ := os.Executable()
+	if strings.Contains(exePath, "go-build") || strings.Contains(exePath, "/tmp/") {
+		ctx.IsGoRun = true
+		return ctx
+	}
+
+	// Check for Docker
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		ctx.IsDocker = true
+	}
+
+	// Check for service installation
+	svc, err := service.NewManager(service.Config{Name: "joshbot"})
+	if err == nil && svc.IsInstalled() {
+		status, _ := svc.Status()
+		if status.Running {
+			ctx.IsService = true
+		}
+	}
+
+	return ctx
+}
+
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
@@ -451,7 +486,10 @@ func runUpdate(c *cli.Context) error {
 		return nil
 	}
 
-	// 4. Download new binary
+	// 4. Detect running context before any state changes
+	runCtx := detectRunningContext()
+
+	// 5. Download new binary
 	fmt.Println()
 	fmt.Println("Downloading update...")
 
@@ -523,7 +561,39 @@ func runUpdate(c *cli.Context) error {
 
 	fmt.Printf("Updated joshbot %s → %s\n", currentVersion, latestVersion)
 	fmt.Println()
-	fmt.Println("Restart joshbot to use the new version.")
+
+	// Auto-restart after successful update
+	if runCtx.IsDocker {
+		fmt.Println("Update complete. Restart your Docker container to use the new version.")
+		return nil
+	}
+
+	if runCtx.IsService {
+		svc, err := service.NewManager(service.Config{
+			Name:        "joshbot",
+			DisplayName: "Joshbot AI Assistant",
+			Description: "Personal AI assistant with Telegram integration",
+		})
+		if err == nil {
+			fmt.Println("Restarting joshbot service...")
+			if err := svc.Restart(); err != nil {
+				fmt.Printf("Warning: Could not restart service: %v\n", err)
+				fmt.Println("Please restart manually: systemctl restart joshbot")
+				return nil
+			}
+			fmt.Println("Service restarted successfully!")
+			return nil
+		}
+	}
+
+	// Interactive restart via exec
+	fmt.Println("Restarting joshbot...")
+	args := os.Args[1:]
+	err = syscall.Exec(exePath, append([]string{exePath}, args...), os.Environ())
+	if err != nil {
+		fmt.Printf("Warning: Could not auto-restart: %v\n", err)
+		fmt.Println("Please restart joshbot manually.")
+	}
 
 	return nil
 }

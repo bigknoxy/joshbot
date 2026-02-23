@@ -16,7 +16,8 @@ type ModelInfo struct {
 
 // Registry provides heuristics to map model names to context windows.
 type Registry struct {
-	defaults []ModelInfo
+	defaults  []ModelInfo
+	overrides map[string]int
 }
 
 // NewRegistry returns a registry pre-seeded with common model classes.
@@ -25,12 +26,25 @@ func NewRegistry() *Registry {
 		{Name: "small", ContextWindow: 4096},
 		{Name: "medium", ContextWindow: 8192},
 		{Name: "large", ContextWindow: 32768},
+	}, overrides: map[string]int{
+		"openai/gpt-4o":                    128000,
+		"openai/gpt-4.1":                   128000,
+		"claude-sonnet-4-20250514":         200000,
+		"anthropic/claude-3.5-sonnet":      200000,
+		"openai/gpt-4":                     8192,
+		"z-ai/glm-4.5-air:free":            8192,
+		"openai/llama3.2":                  8192,
+		"meta-llama/llama-3.2-3b-instruct": 8192,
 	}}
 }
 
 // Lookup returns the best-fit ModelInfo for a given model name.
 func (r *Registry) Lookup(model string) ModelInfo {
 	m := strings.ToLower(model)
+	if window, ok := r.overrides[m]; ok {
+		return ModelInfo{Name: model, ContextWindow: window}
+	}
+
 	// heuristics
 	switch {
 	case strings.Contains(m, "gemma") || strings.Contains(m, "llama"):
@@ -42,6 +56,17 @@ func (r *Registry) Lookup(model string) ModelInfo {
 	default:
 		return r.defaults[1]
 	}
+}
+
+// SetOverride sets/updates an exact model override for context window.
+func (r *Registry) SetOverride(model string, contextWindow int) {
+	if contextWindow <= 0 {
+		return
+	}
+	if r.overrides == nil {
+		r.overrides = map[string]int{}
+	}
+	r.overrides[strings.ToLower(strings.TrimSpace(model))] = contextWindow
 }
 
 // TokenEstimator approximates tokens from text length. Default: 1 token ~= 4 chars

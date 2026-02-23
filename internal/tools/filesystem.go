@@ -169,10 +169,11 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 
 	// If path is absolute, check restrictions
 	if filepath.IsAbs(path) {
-		if t.restrict && !strings.HasPrefix(path, workspace) {
+		cleaned := filepath.Clean(path)
+		if t.restrict && !isWithinBase(cleaned, workspace) {
 			return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
 		}
-		return filepath.Clean(path), nil
+		return cleaned, nil
 	}
 
 	// Resolve relative path
@@ -180,7 +181,7 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 	cleaned := filepath.Clean(resolved)
 
 	// Check workspace restriction
-	if t.restrict && !strings.HasPrefix(cleaned, workspace) {
+	if t.restrict && !isWithinBase(cleaned, workspace) {
 		return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
 	}
 
@@ -420,14 +421,6 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 	}
 
 	return ToolResult{Output: output}
-}
-
-func isWithinBase(path, base string) bool {
-	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(path))
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, "..") && rel != "")
 }
 
 // FilesystemToolConfig holds configuration for the filesystem tool.

@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,5 +50,46 @@ func TestConsolidator_RunOnce(t *testing.T) {
 	}
 	if got == "" {
 		t.Fatalf("expected memory to have consolidated facts")
+	}
+}
+
+func TestMergeConsolidatedFacts_ReplacesExistingSection(t *testing.T) {
+	original := "# Long-Term Memory\n\n## Preferences\n- Likes concise responses\n\n## Consolidated Facts\nold fact\n"
+	replacement := "\n## Consolidated Facts\nnew fact\n"
+
+	got := mergeConsolidatedFacts(original, replacement)
+	if strings.Count(got, "## Consolidated Facts") != 1 {
+		t.Fatalf("expected one consolidated section, got: %q", got)
+	}
+	if !strings.Contains(got, "new fact") {
+		t.Fatalf("expected new fact in merged content, got: %q", got)
+	}
+	if strings.Contains(got, "old fact") {
+		t.Fatalf("did not expect old fact after replace, got: %q", got)
+	}
+}
+
+func TestMergeConsolidatedFacts_ReplacesWhenSectionAtTop(t *testing.T) {
+	original := "## Consolidated Facts\nold fact\n"
+	replacement := "\n## Consolidated Facts\nnew fact\n"
+
+	got := mergeConsolidatedFacts(original, replacement)
+	if strings.Count(got, "## Consolidated Facts") != 1 {
+		t.Fatalf("expected one consolidated section, got: %q", got)
+	}
+	if strings.Contains(got, "old fact") {
+		t.Fatalf("did not expect old fact after replace, got: %q", got)
+	}
+	if !strings.Contains(got, "new fact") {
+		t.Fatalf("expected new fact in merged content, got: %q", got)
+	}
+}
+
+func TestMergeConsolidatedFacts_EmptyMemory(t *testing.T) {
+	replacement := "\n## Consolidated Facts\nnew fact\n"
+
+	got := mergeConsolidatedFacts("", replacement)
+	if got != "## Consolidated Facts\nnew fact\n" {
+		t.Fatalf("unexpected merged output for empty memory: %q", got)
 	}
 }

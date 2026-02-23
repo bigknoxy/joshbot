@@ -8,7 +8,7 @@ tags: [development, git]
 
 # GitHub CLI Skill
 
-Use the `gh` CLI tool for GitHub operations. All commands run via the `exec` tool.
+Use the `gh` CLI tool for GitHub operations. All commands run via the `shell` tool.
 
 ## Common Operations
 

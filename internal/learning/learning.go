@@ -120,10 +120,27 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	newText := strings.TrimRight(memText, "\n") + "\n" + content
+	newText := mergeConsolidatedFacts(memText, content)
 	if err := c.mem.WriteMemory(ctx, newText); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func mergeConsolidatedFacts(memoryText, consolidatedSection string) string {
+	base := strings.TrimRight(memoryText, "\n")
+	lines := strings.Split(base, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "## Consolidated Facts" {
+			base = strings.TrimRight(strings.Join(lines[:i], "\n"), "\n")
+			break
+		}
+	}
+
+	if base == "" {
+		return strings.TrimLeft(consolidatedSection, "\n")
+	}
+
+	return base + consolidatedSection
 }

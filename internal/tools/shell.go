@@ -98,12 +98,15 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	if wd, ok := args["working_dir"].(string); ok && wd != "" {
 		// Resolve working directory
 		if filepath.IsAbs(wd) {
-			if t.restrict && !strings.HasPrefix(wd, t.workspace) {
+			if t.restrict && !isWithinBase(wd, t.workspace) {
 				return ToolResult{Error: fmt.Errorf("working directory outside workspace not allowed")}
 			}
 			workingDir = wd
 		} else {
-			workingDir = filepath.Join(t.workspace, wd)
+			workingDir = filepath.Clean(filepath.Join(t.workspace, wd))
+			if t.restrict && !isWithinBase(workingDir, t.workspace) {
+				return ToolResult{Error: fmt.Errorf("working directory outside workspace not allowed")}
+			}
 		}
 	}
 

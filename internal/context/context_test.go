@@ -55,3 +55,22 @@ func TestCompressMessages_WithProvider_ExceedsBudget(t *testing.T) {
 		t.Fatalf("expected provider summary, got %q", out)
 	}
 }
+
+func TestRegistryLookup_Override(t *testing.T) {
+	r := NewRegistry()
+	r.SetOverride("custom/small-model", 16384)
+
+	info := r.Lookup("custom/small-model")
+	if info.ContextWindow != 16384 {
+		t.Fatalf("expected override context window 16384, got %d", info.ContextWindow)
+	}
+}
+
+func TestRegistryLookup_DefaultHeuristic(t *testing.T) {
+	r := NewRegistry()
+
+	info := r.Lookup("unknown-model")
+	if info.ContextWindow != 8192 {
+		t.Fatalf("expected medium fallback 8192, got %d", info.ContextWindow)
+	}
+}

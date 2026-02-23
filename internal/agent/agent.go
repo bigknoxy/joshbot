@@ -442,6 +442,13 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 			budget = 256
 		}
 
+		a.logger.Debug("Context budgeting",
+			"model", model,
+			"history_messages", len(providerMsgs),
+			"system_tokens", ctxpkg.TokenEstimator(systemPrompt),
+			"budget_tokens", budget,
+		)
+
 		// Estimate total tokens for providerMsgs
 		totalTokens := 0
 		for _, m := range providerMsgs {
@@ -449,6 +456,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 		}
 
 		if totalTokens > budget {
+			a.logger.Debug("Compressing context", "estimated_tokens", totalTokens, "budget_tokens", budget)
 			// Compress messages to fit within budget
 			compressed, err := a.compressor.CompressMessages(model, providerMsgs, budget)
 			if err == nil && compressed != "" {

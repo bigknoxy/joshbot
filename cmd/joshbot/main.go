@@ -113,6 +113,13 @@ func runApp() error {
 				Name:   "agent",
 				Usage:  "Start joshbot in interactive CLI mode",
 				Action: runAgent,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "message",
+						Aliases: []string{"m"},
+						Usage:   "Send a single message and exit (non-interactive mode)",
+					},
+				},
 			},
 			{
 				Name:   "gateway",
@@ -275,7 +282,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 
 	// Register OpenRouter (always registered if configured)
 	if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" {
-		openrouterProvider := providers.NewLiteLLMProvider(providers.Config{
+		openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
 			APIKey:       p.APIKey,
 			APIBase:      p.APIBase,
 			ExtraHeaders: p.ExtraHeaders,
@@ -283,52 +290,64 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 			MaxTokens:    cfg.Agents.Defaults.MaxTokens,
 			Temperature:  cfg.Agents.Defaults.Temperature,
 		})
-		multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0)
+		if err != nil {
+			log.Warn("Failed to create OpenRouter provider", "error", err)
+		} else {
+			multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0)
+		}
 	}
 
 	// Register NVIDIA NIM (if configured) - first fallback
 	if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
-		nvidiaProvider := providers.NewLiteLLMProvider(providers.Config{
+		nvidiaProvider, err := providers.GetProvider("nvidia", providers.Config{
 			APIKey:       p.APIKey,
 			APIBase:      p.APIBase,
 			ExtraHeaders: p.ExtraHeaders,
 		})
-		priority := 1
-		if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "nvidia"); idx >= 0 {
-			priority = idx + 1
+		if err != nil {
+			log.Warn("Failed to create NVIDIA provider", "error", err)
+		} else {
+			priority := 1
+			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "nvidia"); idx >= 0 {
+				priority = idx + 1
+			}
+			multiProvider.Register("nvidia", nvidiaProvider, "", priority)
 		}
-		multiProvider.Register("nvidia", nvidiaProvider, "", priority)
 	}
 
 	// Register Groq (if configured)
 	if p, ok := cfg.Providers["groq"]; ok && p.APIKey != "" && p.Enabled {
-		groqProvider := providers.NewLiteLLMProvider(providers.Config{
+		groqProvider, err := providers.GetProvider("groq", providers.Config{
 			APIKey:       p.APIKey,
 			APIBase:      p.APIBase,
 			ExtraHeaders: p.ExtraHeaders,
 		})
-		priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
-		if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "groq"); idx >= 0 {
-			priority = idx + 1
+		if err != nil {
+			log.Warn("Failed to create Groq provider", "error", err)
+		} else {
+			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "groq"); idx >= 0 {
+				priority = idx + 1
+			}
+			multiProvider.Register("groq", groqProvider, "", priority)
 		}
-		multiProvider.Register("groq", groqProvider, "", priority)
 	}
 
 	// Register Ollama (if configured)
 	if p, ok := cfg.Providers["ollama"]; ok && p.Enabled {
-		apiBase := p.APIBase
-		if apiBase == "" {
-			apiBase = "http://localhost:11434"
-		}
-		ollamaProvider := providers.NewLiteLLMProvider(providers.Config{
-			APIBase:      apiBase,
+		ollamaProvider, err := providers.GetProvider("ollama", providers.Config{
+			APIBase:      p.APIBase,
 			ExtraHeaders: p.ExtraHeaders,
 		})
-		priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
-		if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "ollama"); idx >= 0 {
-			priority = idx + 1
+		if err != nil {
+			log.Warn("Failed to create Ollama provider", "error", err)
+		} else {
+			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "ollama"); idx >= 0 {
+				priority = idx + 1
+			}
+			multiProvider.Register("ollama", ollamaProvider, "", priority)
 		}
-		multiProvider.Register("ollama", ollamaProvider, "", priority)
 	}
 
 	// Initialize session manager
@@ -427,6 +446,11 @@ func runAgent(c *cli.Context) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Non-interactive mode: send single message and exit
+	if message := c.String("message"); message != "" {
+		return runAgentSingleMessage(ctx, agentInstance, message, os.Stdout)
+	}
+
 	done := make(chan struct{})
 	setupGracefulShutdown(ctx, cancel, done)
 
@@ -494,6 +518,27 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 			return nil
 		}
 	}
+}
+
+// runAgentSingleMessage sends a single message and prints the response.
+func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, message string, output io.Writer) error {
+	msg := bus.InboundMessage{
+		SenderID:  "cli_user",
+		Content:   message,
+		Channel:   "cli",
+		Timestamp: time.Now(),
+		Metadata: map[string]any{
+			"username": "user",
+		},
+	}
+
+	response, err := agentInstance.Process(ctx, msg)
+	if err != nil {
+		return fmt.Errorf("failed to process message: %w", err)
+	}
+
+	fmt.Fprintln(output, strings.TrimSpace(response))
+	return nil
 }
 
 // runUpdate checks for updates and installs the latest version of joshbot.

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +45,10 @@ type exaSearchRequest struct {
 	} `json:"params"`
 }
 
+const exaCLINotAvailableMsg = `exa-cli is not installed. To use this feature, install exa-cli:
+  npm install -g exa-cli
+or visit https://github.com/exa-dev/exa-cli`
+
 // exaSearchResponse for JSON-RPC response (SSE format)
 type exaSearchResponse struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -61,6 +67,50 @@ type SearchResult struct {
 	URL     string
 	Snippet string
 	Source  string
+}
+
+// exaCLISearch performs search via exa-cli binary (primary)
+func (t *WebTool) exaCLISearch(ctx context.Context, query string, numResults int) ([]SearchResult, error) {
+	if !t.exaCLIAvailable {
+		return nil, fmt.Errorf("exa-cli not available")
+	}
+
+	cmd := exec.CommandContext(ctx, "exa", "search", query, "--num", strconv.Itoa(numResults), "--format", "json", "--type", "auto")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("exa search failed: %w", err)
+	}
+
+	return parseExaCLISearchResults(string(output))
+}
+
+// parseExaCLISearchResults parses the line-delimited JSON from exa-cli
+func parseExaCLISearchResults(output string) ([]SearchResult, error) {
+	var results []SearchResult
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var r struct {
+			Title         string `json:"title"`
+			URL           string `json:"url"`
+			PublishedDate string `json:"publishedDate"`
+			Text          string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			log.Debug("Failed to parse exa-cli JSON line", "error", err, "line", line[:min(len(line), 100)])
+			continue
+		}
+		results = append(results, SearchResult{
+			Title:   r.Title,
+			URL:     r.URL,
+			Snippet: r.Text,
+			Source:  "Exa",
+		})
+	}
+	return results, nil
 }
 
 // exaSearch performs search via Exa MCP (free, no API key required)
@@ -156,27 +206,32 @@ func parseExaResults(text string) ([]SearchResult, error) {
 
 // WebTool provides web search and fetch capabilities.
 type WebTool struct {
-	httpClient *http.Client
-	searchAPI  string
-	// maxRetries is the maximum number of retries for 202 responses
-	maxRetries int
-	// baseDelay is the base delay for exponential backoff
-	baseDelay time.Duration
+	httpClient      *http.Client
+	searchAPI       string
+	maxRetries      int
+	baseDelay       time.Duration
+	exaCLIAvailable bool
 }
 
 // NewWebTool creates a new WebTool.
 func NewWebTool(timeout time.Duration, searchAPI string) *WebTool {
+	_, err := exec.LookPath("exa")
+	exaAvailable := err == nil
+	if !exaAvailable {
+		log.Debug("exa-cli not found, will use HTTP fallback")
+	}
+
 	return &WebTool{
 		httpClient: &http.Client{
 			Timeout: timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				// Don't follow redirects automatically - let us handle them
 				return http.ErrUseLastResponse
 			},
 		},
-		searchAPI:  searchAPI,
-		maxRetries: 3,
-		baseDelay:  1 * time.Second,
+		searchAPI:       searchAPI,
+		maxRetries:      3,
+		baseDelay:       1 * time.Second,
+		exaCLIAvailable: exaAvailable,
 	}
 }
 
@@ -188,7 +243,9 @@ func (t *WebTool) Name() string {
 // Description returns a description of the tool.
 func (t *WebTool) Description() string {
 	return `Web tools for searching the internet and fetching web content. ` +
-		`Use web_search to find information and web_fetch to retrieve specific URLs.`
+		`Use web_search to find information, web_code for code search, ` +
+		`web_company for company research, web_research for deep research, ` +
+		`and web_fetch to retrieve specific URLs.`
 }
 
 // Parameters returns the parameters for the tool.
@@ -197,14 +254,14 @@ func (t *WebTool) Parameters() []Parameter {
 		{
 			Name:        "operation",
 			Type:        ParamString,
-			Description: "The operation to perform: web_search or web_fetch",
+			Description: "The operation to perform: web_search, web_code, web_company, web_research, or web_fetch",
 			Required:    true,
-			Enum:        []string{"web_search", "web_fetch"},
+			Enum:        []string{"web_search", "web_code", "web_company", "web_research", "web_fetch"},
 		},
 		{
 			Name:        "query",
 			Type:        ParamString,
-			Description: "Search query (for web_search)",
+			Description: "Search query (for web_search, web_code, web_company, web_research)",
 			Required:    false,
 		},
 		{
@@ -224,12 +281,23 @@ func (t *WebTool) Parameters() []Parameter {
 }
 
 // Execute runs the web operation.
-func (t *WebTool) Execute(ctx interface{}, args map[string]any) ToolResult {
+func (t *WebTool) Execute(ctxArg interface{}, args map[string]any) ToolResult {
+	ctx, ok := ctxArg.(context.Context)
+	if !ok {
+		ctx = context.Background()
+	}
+
 	operation, _ := args["operation"].(string)
 
 	switch operation {
 	case "web_search":
-		return t.webSearch(args)
+		return t.webSearch(ctx, args)
+	case "web_code":
+		return t.webCode(ctx, args)
+	case "web_company":
+		return t.webCompany(ctx, args)
+	case "web_research":
+		return t.webResearch(ctx, args)
 	case "web_fetch":
 		return t.webFetch(args)
 	default:
@@ -237,8 +305,8 @@ func (t *WebTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	}
 }
 
-// webSearch performs a web search using Exa MCP (primary) or DuckDuckGo (fallback)
-func (t *WebTool) webSearch(args map[string]any) ToolResult {
+// webSearch performs a web search using exa-cli (primary), Exa MCP (fallback), or DuckDuckGo (last resort)
+func (t *WebTool) webSearch(ctx context.Context, args map[string]any) ToolResult {
 	query, _ := args["query"].(string)
 	if query == "" {
 		return ToolResult{Error: errors.New("query is required for web_search")}
@@ -249,23 +317,142 @@ func (t *WebTool) webSearch(args map[string]any) ToolResult {
 		maxResults = int(mr)
 	}
 
-	// Try Exa MCP first (free, no API key)
+	// Try exa-cli first (if available)
+	if t.exaCLIAvailable {
+		log.Debug("Trying exa-cli search", "query", query)
+		results, err := t.exaCLISearch(ctx, query, maxResults)
+		if err == nil && len(results) > 0 {
+			log.Debug("exa-cli search succeeded", "results", len(results))
+			return t.formatResults(results)
+		}
+		log.Debug("exa-cli search failed, falling back to Exa MCP", "error", err)
+	}
+
+	// Try Exa MCP (HTTP)
 	log.Debug("Trying Exa MCP search", "query", query)
 	results, err := t.exaSearch(query, maxResults)
 	if err == nil && len(results) > 0 {
-		log.Debug("Exa search succeeded", "results", len(results))
+		log.Debug("Exa MCP search succeeded", "results", len(results))
 		return t.formatResults(results)
 	}
 
 	// Log Exa failure and fall back to DuckDuckGo
 	if err != nil {
-		log.Debug("Exa search failed, falling back to DuckDuckGo", "error", err)
+		log.Debug("Exa MCP search failed, falling back to DuckDuckGo", "error", err)
 	} else {
-		log.Debug("Exa returned no results, falling back to DuckDuckGo")
+		log.Debug("Exa MCP returned no results, falling back to DuckDuckGo")
 	}
 
 	// Fallback to DuckDuckGo
 	return t.duckDuckGoSearch(query, maxResults)
+}
+
+// webCode performs a code search using exa-cli
+func (t *WebTool) webCode(ctx context.Context, args map[string]any) ToolResult {
+	query, _ := args["query"].(string)
+	if query == "" {
+		return ToolResult{Error: errors.New("query is required for web_code")}
+	}
+
+	maxResults := 5
+	if mr, ok := args["max_results"].(float64); ok {
+		maxResults = int(mr)
+	}
+
+	if !t.exaCLIAvailable {
+		return ToolResult{Error: errors.New(exaCLINotAvailableMsg)}
+	}
+
+	log.Debug("Running exa code search", "query", query)
+	cmd := exec.CommandContext(ctx, "exa", "code", query, "--tokens", strconv.Itoa(maxResults*1000), "--format", "json")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Warn("exa code search failed", "error", err)
+		return ToolResult{Error: fmt.Errorf("exa code search failed: %w", err)}
+	}
+
+	results, err := parseExaCLISearchResults(string(output))
+	if err != nil {
+		return ToolResult{Error: fmt.Errorf("parse exa code results: %w", err)}
+	}
+
+	if len(results) == 0 {
+		return ToolResult{Output: "No code search results found"}
+	}
+
+	return t.formatResults(results)
+}
+
+// webCompany performs company research using exa-cli
+func (t *WebTool) webCompany(ctx context.Context, args map[string]any) ToolResult {
+	query, _ := args["query"].(string)
+	if query == "" {
+		return ToolResult{Error: errors.New("query is required for web_company")}
+	}
+
+	maxResults := 5
+	if mr, ok := args["max_results"].(float64); ok {
+		maxResults = int(mr)
+	}
+
+	if !t.exaCLIAvailable {
+		return ToolResult{Error: errors.New(exaCLINotAvailableMsg)}
+	}
+
+	log.Debug("Running exa company search", "query", query)
+	cmd := exec.CommandContext(ctx, "exa", "company", query, "--num", strconv.Itoa(maxResults), "--format", "json")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Warn("exa company search failed", "error", err)
+		return ToolResult{Error: fmt.Errorf("exa company search failed: %w", err)}
+	}
+
+	results, err := parseExaCLISearchResults(string(output))
+	if err != nil {
+		return ToolResult{Error: fmt.Errorf("parse exa company results: %w", err)}
+	}
+
+	if len(results) == 0 {
+		return ToolResult{Output: "No company research results found"}
+	}
+
+	return t.formatResults(results)
+}
+
+// webResearch performs deep research using exa-cli
+func (t *WebTool) webResearch(ctx context.Context, args map[string]any) ToolResult {
+	query, _ := args["query"].(string)
+	if query == "" {
+		return ToolResult{Error: errors.New("query is required for web_research")}
+	}
+
+	maxResults := 5
+	if mr, ok := args["max_results"].(float64); ok {
+		maxResults = int(mr)
+	}
+
+	if !t.exaCLIAvailable {
+		return ToolResult{Error: errors.New(exaCLINotAvailableMsg)}
+	}
+
+	log.Debug("Running exa research", "query", query)
+	cmd := exec.CommandContext(ctx, "exa", "research", "start", query, "--format", "json", "--num", strconv.Itoa(maxResults))
+	output, err := cmd.Output()
+	if err != nil {
+		log.Warn("exa research failed", "error", err)
+		return ToolResult{Error: fmt.Errorf("exa research failed: %w", err)}
+	}
+
+	results, err := parseExaCLISearchResults(string(output))
+	if err != nil {
+		return ToolResult{Error: fmt.Errorf("parse exa research results: %w", err)}
+	}
+
+	if len(results) == 0 {
+		return ToolResult{Output: "No research results found"}
+	}
+
+	return t.formatResults(results)
 }
 
 // formatResults formats search results into a ToolResult

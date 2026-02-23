@@ -121,30 +121,44 @@ func (t *FilesystemTool) Execute(ctx interface{}, args map[string]any) ToolResul
 	}
 
 	operation, _ := args["operation"].(string)
-	path, _ := args["path"].(string)
-
-	// Resolve path with workspace restriction
-	resolvedPath, err := t.resolvePath(workspace, path)
-	if err != nil {
-		return ToolResult{Error: err}
-	}
 
 	switch operation {
 	case "read_file":
+		resolvedPath, err := t.resolveRequiredPath(workspace, args)
+		if err != nil {
+			return ToolResult{Error: err}
+		}
 		return t.readFile(resolvedPath, args)
 	case "write_file":
+		resolvedPath, err := t.resolveRequiredPath(workspace, args)
+		if err != nil {
+			return ToolResult{Error: err}
+		}
 		return t.writeFile(resolvedPath, args)
 	case "edit_file":
+		resolvedPath, err := t.resolveRequiredPath(workspace, args)
+		if err != nil {
+			return ToolResult{Error: err}
+		}
 		return t.editFile(resolvedPath, args)
 	case "list_dir":
+		resolvedPath, err := t.resolveRequiredPath(workspace, args)
+		if err != nil {
+			return ToolResult{Error: err}
+		}
 		return t.listDir(resolvedPath)
 	case "glob":
 		return t.glob(workspace, args)
 	case "grep":
-		return t.grep(resolvedPath, args)
+		return t.grep(workspace, args)
 	default:
 		return ToolResult{Error: fmt.Errorf("unknown operation: %s", operation)}
 	}
+}
+
+func (t *FilesystemTool) resolveRequiredPath(workspace string, args map[string]any) (string, error) {
+	path, _ := args["path"].(string)
+	return t.resolvePath(workspace, path)
 }
 
 // resolvePath resolves a path with workspace restriction.
@@ -155,10 +169,11 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 
 	// If path is absolute, check restrictions
 	if filepath.IsAbs(path) {
-		if t.restrict && !strings.HasPrefix(path, workspace) {
+		cleaned := filepath.Clean(path)
+		if t.restrict && !isWithinBase(cleaned, workspace) {
 			return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
 		}
-		return filepath.Clean(path), nil
+		return cleaned, nil
 	}
 
 	// Resolve relative path
@@ -166,7 +181,7 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 	cleaned := filepath.Clean(resolved)
 
 	// Check workspace restriction
-	if t.restrict && !strings.HasPrefix(cleaned, workspace) {
+	if t.restrict && !isWithinBase(cleaned, workspace) {
 		return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
 	}
 
@@ -294,8 +309,13 @@ func (t *FilesystemTool) glob(workspace string, args map[string]any) ToolResult 
 		return ToolResult{Error: errors.New("pattern is required")}
 	}
 
-	// Resolve pattern relative to workspace
-	if !filepath.IsAbs(pattern) {
+	if filepath.IsAbs(pattern) {
+		pattern = filepath.Clean(pattern)
+		if t.restrict && !isWithinBase(pattern, workspace) {
+			return ToolResult{Error: fmt.Errorf("access denied: pattern %s is outside workspace %s", pattern, workspace)}
+		}
+	} else {
+		// Resolve pattern relative to workspace
 		pattern = filepath.Join(workspace, pattern)
 	}
 
@@ -310,6 +330,9 @@ func (t *FilesystemTool) glob(workspace string, args map[string]any) ToolResult 
 
 	output := fmt.Sprintf("Found %d files matching %s:\n", len(matches), args["pattern"])
 	for _, match := range matches {
+		if t.restrict && !isWithinBase(match, workspace) {
+			continue
+		}
 		// Make paths relative to workspace
 		rel, err := filepath.Rel(workspace, match)
 		if err != nil {
@@ -335,7 +358,11 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 	// If path is empty, search the entire workspace
 	searchPath := workspace
 	if path != "" {
-		searchPath = filepath.Join(workspace, path)
+		resolvedPath, err := t.resolvePath(workspace, path)
+		if err != nil {
+			return ToolResult{Error: err}
+		}
+		searchPath = resolvedPath
 	}
 
 	var matches []string

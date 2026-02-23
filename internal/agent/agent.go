@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
@@ -44,6 +45,11 @@ type SkillsLoader interface {
 	LoadSummary(ctx context.Context) (string, error)
 }
 
+// HistoryAppender appends condensed high-signal turns to HISTORY.md.
+type HistoryAppender interface {
+	AppendHistory(ctx context.Context, entry string) error
+}
+
 // Agent represents the main agent that processes messages using ReAct loop.
 type Agent struct {
 	cfg           *config.Config
@@ -51,6 +57,7 @@ type Agent struct {
 	tools         ToolExecutor
 	sessions      SessionManager
 	memory        MemoryLoader
+	history       HistoryAppender
 	skills        SkillsLoader
 	logger        *log.Logger
 	budget        *ctxpkg.BudgetManager
@@ -125,6 +132,15 @@ func WithMemoryLoader(loader MemoryLoader) Option {
 	}
 }
 
+// WithHistoryAppender injects a history appender implementation.
+func WithHistoryAppender(appender HistoryAppender) Option {
+	return func(a *Agent) {
+		if appender != nil {
+			a.history = appender
+		}
+	}
+}
+
 // WithSkillsLoader injects a skills loader implementation.
 func WithSkillsLoader(loader SkillsLoader) Option {
 	return func(a *Agent) {
@@ -182,6 +198,8 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 		return fmt.Sprintf("Error: Failed to load session: %v", err), nil
 	}
 
+	startSessionLen := len(sess.Messages)
+
 	// Build system prompt
 	systemPrompt := a.BuildSystemPrompt(ctx)
 
@@ -205,6 +223,16 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 			return "I'm sorry, but processing your request took too long. Please try again or simplify your request.", nil
 		}
 		return fmt.Sprintf("Error processing request: %v", err), nil
+	}
+
+	if a.history != nil {
+		newMessages := sess.Messages[startSessionLen:]
+		if shouldRecordSignificantTurn(newMessages, msg.Content, responseContent) {
+			entry := formatHistoryEntry(msg.Content, responseContent, newMessages)
+			if err := a.history.AppendHistory(ctx, entry); err != nil {
+				a.logger.Warn("Failed to append history", "error", err)
+			}
+		}
 	}
 
 	// Save session
@@ -399,11 +427,27 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 		providerMsgs = append(providerMsgs, providerMsg)
 	}
 
+	window := a.cfg.Agents.Defaults.MemoryWindow
+	if window > 0 && len(providerMsgs) > window {
+		providerMsgs = providerMsgs[len(providerMsgs)-window:]
+	}
+
 	// If we have a budget manager and compressor, consider compressing older messages
 	if a.budget != nil && a.compressor != nil {
 		model := a.cfg.Agents.Defaults.Model
 		maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 		budget := a.budget.ComputeBudget(model, maxCompletion)
+		budget -= ctxpkg.TokenEstimator(systemPrompt)
+		if budget < 256 {
+			budget = 256
+		}
+
+		a.logger.Debug("Context budgeting",
+			"model", model,
+			"history_messages", len(providerMsgs),
+			"system_tokens", ctxpkg.TokenEstimator(systemPrompt),
+			"budget_tokens", budget,
+		)
 
 		// Estimate total tokens for providerMsgs
 		totalTokens := 0
@@ -412,6 +456,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 		}
 
 		if totalTokens > budget {
+			a.logger.Debug("Compressing context", "estimated_tokens", totalTokens, "budget_tokens", budget)
 			// Compress messages to fit within budget
 			compressed, err := a.compressor.CompressMessages(model, providerMsgs, budget)
 			if err == nil && compressed != "" {
@@ -429,6 +474,58 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 	}
 
 	return msgs
+}
+
+func shouldRecordSignificantTurn(newMessages []session.Message, userContent, assistantContent string) bool {
+	if strings.TrimSpace(userContent) == "" || strings.TrimSpace(assistantContent) == "" {
+		return false
+	}
+
+	for _, m := range newMessages {
+		if m.Role == session.RoleTool {
+			return true
+		}
+	}
+
+	if len(userContent) > 220 || len(assistantContent) > 320 {
+		return true
+	}
+
+	signals := []string{"important", "decision", "decided", "preference", "prefer", "always", "never", "remember"}
+	text := strings.ToLower(userContent + " " + assistantContent)
+	for _, signal := range signals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func formatHistoryEntry(userContent, assistantContent string, newMessages []session.Message) string {
+	toolCalls := 0
+	for _, m := range newMessages {
+		if m.Role == session.RoleTool {
+			toolCalls++
+		}
+	}
+
+	entry := fmt.Sprintf("User: %s | Assistant: %s", compactSnippet(userContent, 180), compactSnippet(assistantContent, 220))
+	if toolCalls > 0 {
+		entry += fmt.Sprintf(" | Tools used: %d", toolCalls)
+	}
+	return entry
+}
+
+func compactSnippet(s string, maxLen int) string {
+	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // formatToolResult formats a tool result as a message for the LLM.

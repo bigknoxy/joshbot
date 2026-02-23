@@ -346,7 +346,7 @@ The main config file is `~/.joshbot/config.json`:
       "search": { "api_key": "" }
     },
     "exec": { "timeout": 60 },
-    "restrict_to_workspace": false
+    "restrict_to_workspace": true
   },
   "gateway": {
     "host": "0.0.0.0",

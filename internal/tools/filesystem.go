@@ -423,14 +423,6 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 	return ToolResult{Output: output}
 }
 
-func isWithinBase(path, base string) bool {
-	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(path))
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, "..") && rel != "")
-}
-
 // FilesystemToolConfig holds configuration for the filesystem tool.
 type FilesystemToolConfig struct {
 	Workspace string

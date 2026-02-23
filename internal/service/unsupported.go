@@ -37,6 +37,10 @@ func (s *unsupportedManager) Stop() error {
 	return fmt.Errorf("service management not supported on %s", runtime.GOOS)
 }
 
+func (s *unsupportedManager) Restart() error {
+	return fmt.Errorf("service restart not supported on this platform")
+}
+
 func (s *unsupportedManager) Status() (Status, error) {
 	return Status{}, fmt.Errorf("service management not supported on %s", runtime.GOOS)
 }

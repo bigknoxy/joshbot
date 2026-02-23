@@ -127,6 +127,13 @@ func (o *openrcManager) Stop() error {
 	return o.runCommand("rc-service", o.config.Name, "stop")
 }
 
+func (o *openrcManager) Restart() error {
+	if !o.IsInstalled() {
+		return fmt.Errorf("service not installed")
+	}
+	return o.runCommand("rc-service", o.config.Name, "restart")
+}
+
 func (o *openrcManager) Status() (Status, error) {
 	if !o.IsInstalled() {
 		return Status{Installed: false, Running: false, Status: "not installed"}, nil

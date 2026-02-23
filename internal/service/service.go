@@ -9,6 +9,7 @@ type Manager interface {
 	Status() (Status, error)
 	Start() error
 	Stop() error
+	Restart() error
 	IsInstalled() bool
 	Name() string
 }

@@ -110,16 +110,20 @@ func runApp() error {
 		},
 		Commands: []*cli.Command{
 			{
-				Name:   "agent",
-				Usage:  "Start joshbot in interactive CLI mode",
-				Action: runAgent,
+				Name:  "agent",
+				Usage: "Start joshbot in interactive CLI mode",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "model",
+						Usage: "Model to use (overrides config)",
+					},
 					&cli.StringFlag{
 						Name:    "message",
 						Aliases: []string{"m"},
 						Usage:   "Send a single message and exit (non-interactive mode)",
 					},
 				},
+				Action: runAgent,
 			},
 			{
 				Name:   "gateway",
@@ -137,6 +141,11 @@ func runApp() error {
 					&cli.BoolFlag{
 						Name:  "keep-data",
 						Usage: "Reconfigure while preserving all existing data",
+					},
+					&cli.StringFlag{
+						Name:    "model",
+						Aliases: []string{"m"},
+						Usage:   "Model to use (overrides config)",
 					},
 				},
 				Action: runOnboard,
@@ -335,9 +344,18 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 
 	// Register Ollama (if configured)
 	if p, ok := cfg.Providers["ollama"]; ok && p.Enabled {
+		apiBase := p.APIBase
+		if apiBase == "" {
+			apiBase = providers.GetDefaultAPIBase()
+		}
+		timeout := p.Timeout
+		if timeout == 0 {
+			timeout = 120 * time.Second
+		}
 		ollamaProvider, err := providers.GetProvider("ollama", providers.Config{
-			APIBase:      p.APIBase,
+			APIBase:      apiBase,
 			ExtraHeaders: p.ExtraHeaders,
+			Timeout:      timeout,
 		})
 		if err != nil {
 			log.Warn("Failed to create Ollama provider", "error", err)
@@ -432,6 +450,11 @@ func runAgent(c *cli.Context) error {
 
 	if len(cfg.Providers) == 0 {
 		return fmt.Errorf("no providers configured. Run 'joshbot onboard' first")
+	}
+
+	// Override model from CLI flag if provided
+	if modelFlag := c.String("model"); modelFlag != "" {
+		cfg.Agents.Defaults.Model = modelFlag
 	}
 
 	log.Info("Starting agent mode", "model", cfg.Agents.Defaults.Model)
@@ -1172,6 +1195,7 @@ func getChannelID(msg bus.InboundMessage) string {
 func runOnboard(c *cli.Context) error {
 	force := c.Bool("force")
 	keepData := c.Bool("keep-data")
+	modelFlag := c.String("model")
 	homeDir := config.DefaultHome
 
 	// Welcome banner
@@ -1271,7 +1295,11 @@ func runOnboard(c *cli.Context) error {
 		// Use defaults for non-interactive setup
 		personalityChoice = "2" // Friendly
 		soulContent = getPersonalitySoul(personalityChoice)
-		model = config.DefaultModel
+		if modelFlag != "" {
+			model = modelFlag
+		} else {
+			model = config.DefaultModel
+		}
 	} else {
 		// Interactive prompts - pass existing config for defaults
 		provider = selectProvider(existingCfg)
@@ -1279,7 +1307,7 @@ func runOnboard(c *cli.Context) error {
 		personalityChoice = selectPersonality(existingCfg)
 		soulContent = getPersonalitySoul(personalityChoice)
 		userName = promptUserName(existingCfg)
-		model = selectModel(existingCfg, provider)
+		model = selectModel(existingCfg, provider, modelFlag)
 		telegramConfig = setupTelegram(existingCfg)
 	}
 
@@ -1480,15 +1508,18 @@ func promptUserName(existingCfg *config.Config) string {
 }
 
 // selectModel prompts the user to select a model and returns the choice.
-func selectModel(existingCfg *config.Config, provider string) string {
+func selectModel(existingCfg *config.Config, provider string, modelFlag string) string {
 	// Get provider's default model, fall back to config default
 	defaultModel := providers.GetDefaultModel(provider)
 	if defaultModel == "" {
 		defaultModel = config.DefaultModel
 	}
 
-	// Use existing model as default if available
-	if existingCfg != nil && existingCfg.Agents.Defaults.Model != "" {
+	// CLI flag has highest priority
+	if modelFlag != "" {
+		defaultModel = modelFlag
+	} else if existingCfg != nil && existingCfg.Agents.Defaults.Model != "" {
+		// Use existing model as default if available
 		defaultModel = existingCfg.Agents.Defaults.Model
 	}
 
@@ -2156,6 +2187,41 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			}
 		}
 		p.APIBase = strings.TrimSpace(apiBase)
+
+		ollamaClient := providers.NewOllamaClient(p.APIBase)
+		models, err := ollamaClient.ListModels()
+		if err != nil {
+			fmt.Printf("\nCould not fetch models from Ollama: %v\n", err)
+		}
+
+		modelName := promptOllamaModelSelection(models)
+		if modelName == "" && exists && p.Model != "" {
+			modelName = p.Model
+		}
+		if modelName == "" {
+			fmt.Print("Enter model name: ")
+			fmt.Scanln(&modelName)
+			modelName = strings.TrimSpace(modelName)
+		}
+		p.Model = modelName
+
+		timeoutSecs := 300
+		if exists && p.Timeout > 0 {
+			timeoutSecs = int(p.Timeout.Seconds())
+		}
+		fmt.Printf("Timeout in seconds (CPU models need longer) [%d]: ", timeoutSecs)
+		var timeoutInput string
+		fmt.Scanln(&timeoutInput)
+		if timeoutInput != "" {
+			fmt.Sscanf(timeoutInput, "%d", &timeoutSecs)
+		}
+		p.Timeout = time.Duration(timeoutSecs) * time.Second
+
+		fmt.Println(`=== Ollama Tips ===
+• CPU-only: Pull smaller models: ollama pull llama3.2:3b
+• List models: ollama list
+• Test model: ollama run <model-name>
+• Check GPU: ollama run llama3.2 (faster with GPU)`)
 	}
 
 	// Validate credentials if API key was provided
@@ -2184,6 +2250,47 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 
 	fmt.Println()
 	return cfg
+}
+
+func formatSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func promptOllamaModelSelection(models []providers.ModelInfo) string {
+	if len(models) == 0 {
+		return ""
+	}
+
+	fmt.Println("\nAvailable models:")
+	for i, m := range models {
+		sizeStr := ""
+		if m.Size > 0 {
+			sizeStr = fmt.Sprintf(" (%s)", formatSize(m.Size))
+		}
+		fmt.Printf("  %d. %s%s\n", i+1, m.Name, sizeStr)
+	}
+	fmt.Println()
+
+	fmt.Printf("Enter number (1-%d) or model name: ", len(models))
+
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(models) {
+		return models[num-1].Name
+	}
+
+	return input
 }
 
 // validateProviderCredentials tests the API credentials for a provider.

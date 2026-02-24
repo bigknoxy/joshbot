@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-02-24
+
+### Added
+
+#### Enhanced Ollama Integration
+- **Model listing in configure wizard** - Fetches and displays available Ollama models
+- **`--model` flag** for `agent` and `onboard` commands to override model at runtime
+- **Configurable timeout** for Ollama provider (default 300s for CPU-only)
+- **CPU tips** displayed after Ollama configuration
+
+### Changed
+
+- **No fallback on Ollama 404** - "Model not found" errors require user to `ollama pull <model>`
+- Improved error handling with provider-aware fallback logic
+
 ## [1.1.0] - 2026-02-21
 
 ### Added

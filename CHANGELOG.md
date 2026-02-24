@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-02-24
+
+### Added
+
+#### Web Fetch Enhancement
+- **Exa crawl integration** for web_fetch tool to handle JavaScript-rendered pages
+- Improved content extraction from dynamic websites
+
+### Fixed
+
+- **Version display** - Release binaries now show actual version instead of "dev"
+  - Fixed ldflags in GoReleaser, CI workflow, and Dockerfile
+- **Status command** - Telegram and Workspace restricted now show "enabled"/"disabled" instead of "(exists)"
+
 ## [1.11.0] - 2026-02-24
 
 ### Added

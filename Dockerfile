@@ -26,7 +26,7 @@ COPY pkg/ ./pkg/
 ENV CGO_ENABLED=0
 RUN --mount=type=cache,target=/go/pkg/mod \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-    -ldflags="-s -w -X github.com/bigknoxy/joshbot/cmd/joshbot.Version=$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')" \
+    -ldflags="-s -w -X main.Version=$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')" \
     -trimpath \
     -o joshbot ./cmd/joshbot
 

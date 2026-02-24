@@ -115,6 +115,8 @@ gh release edit v<X.Y.Z> --latest
 
 | Version | Date | Description |
 |---------|------|-------------|
+| v1.12.0 | 2026-02-24 | Exa crawl for web_fetch, version/status display fixes |
+| v1.11.0 | 2026-02-24 | Enhanced Ollama integration |
 | v1.9.1 | 2026-02-24 | Provider registration fix, -m flag |
 | v1.9.0 | 2026-02-23 | exa-cli tool |
 | v1.8.2 | 2026-02-23 | NVIDIA API URL fix |

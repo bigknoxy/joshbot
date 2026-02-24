@@ -28,7 +28,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/bigknoxy/joshbot/cmd/joshbot.Version={{.Version}}
+      - -X main.Version={{.Version}}
 
 archives:
   - id: default

@@ -1958,8 +1958,8 @@ func runStatus(c *cli.Context) error {
 		providerNames = []string{"none"}
 	}
 	fmt.Printf("Providers:      %s\n", strings.Join(providerNames, ", "))
-	fmt.Printf("Telegram:       %s\n", statusBool(cfg.Channels.Telegram.Enabled))
-	fmt.Printf("Workspace restricted: %s\n", statusBool(cfg.Tools.RestrictToWorkspace))
+	fmt.Printf("Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
+	fmt.Printf("Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
 	fmt.Println()
 
 	if memorySize > 0 || historySize > 0 {

@@ -85,7 +85,7 @@ jobs:
             EXTENSION=".exe"
           fi
           OUTPUT_NAME="joshbot_${{ steps.version.outputs.version }}_${GOOS}_${GOARCH}${EXTENSION}"
-          go build -ldflags="-s -w -X github.com/bigknoxy/joshbot/cmd/joshbot.Version=${{ steps.version.outputs.version }}" \
+          go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
             -trimpath \
             -o "$OUTPUT_NAME" \
             ./cmd/joshbot

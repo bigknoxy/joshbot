@@ -350,12 +350,13 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 		timeout := p.Timeout
 		if timeout == 0 {
-			timeout = 120 * time.Second
+			timeout = 300 * time.Second
 		}
 		ollamaProvider, err := providers.GetProvider("ollama", providers.Config{
 			APIBase:      apiBase,
 			ExtraHeaders: p.ExtraHeaders,
 			Timeout:      timeout,
+			Model:        p.Model,
 		})
 		if err != nil {
 			log.Warn("Failed to create Ollama provider", "error", err)
@@ -364,7 +365,11 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "ollama"); idx >= 0 {
 				priority = idx + 1
 			}
-			multiProvider.Register("ollama", ollamaProvider, "", priority)
+			model := p.Model
+			if model == "" {
+				model = providers.GetDefaultModel("ollama")
+			}
+			multiProvider.Register("ollama", ollamaProvider, model, priority)
 		}
 	}
 
@@ -1319,14 +1324,24 @@ func runOnboard(c *cli.Context) error {
 		if defaultModel == "" {
 			defaultModel = "arcee-ai/trinity-large-preview:free"
 		}
-		cfg.Providers = map[string]config.ProviderConfig{
-			provider: {APIKey: apiKey, Enabled: true},
-		}
-		cfg.ProviderDefaults.Default = provider
 		// Use selected model, or fall back to provider default
 		if model == "" {
 			model = defaultModel
 		}
+		// Build provider config
+		providerCfg := config.ProviderConfig{
+			APIKey:  apiKey,
+			Enabled: true,
+			Model:   model,
+		}
+		// For Ollama, set appropriate defaults
+		if provider == "ollama" {
+			providerCfg.Timeout = 300 * time.Second
+		}
+		cfg.Providers = map[string]config.ProviderConfig{
+			provider: providerCfg,
+		}
+		cfg.ProviderDefaults.Default = provider
 	}
 	cfg.Agents.Defaults.Model = model
 	if userName != "" {

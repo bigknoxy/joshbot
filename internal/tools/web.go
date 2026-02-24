@@ -84,6 +84,50 @@ func (t *WebTool) exaCLISearch(ctx context.Context, query string, numResults int
 	return parseExaCLISearchResults(string(output))
 }
 
+// exaCLICrawl fetches and extracts content from a URL using exa-cli
+func (t *WebTool) exaCLICrawl(ctx context.Context, url string) (string, error) {
+	if !t.exaCLIAvailable {
+		return "", fmt.Errorf("exa-cli not available")
+	}
+
+	cmd := exec.CommandContext(ctx, "exa", "crawl", url, "--format", "json")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("exa crawl failed: %w", err)
+	}
+
+	return parseExaCLICrawlResult(string(output))
+}
+
+// parseExaCLICrawlResult parses the JSON output from exa crawl
+func parseExaCLICrawlResult(output string) (string, error) {
+	var resp struct {
+		Results []struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+			Text  string `json:"text"`
+		} `json:"results"`
+		Statuses []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"statuses"`
+	}
+
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return "", fmt.Errorf("failed to parse exa crawl JSON: %w", err)
+	}
+
+	if len(resp.Results) == 0 {
+		return "", fmt.Errorf("no content extracted from URL")
+	}
+
+	text := resp.Results[0].Text
+	if len(text) > 15000 {
+		text = text[:15000] + "\n... (truncated)"
+	}
+	return text, nil
+}
+
 // parseExaCLISearchResults parses the line-delimited JSON from exa-cli
 func parseExaCLISearchResults(output string) ([]SearchResult, error) {
 	var results []SearchResult
@@ -747,6 +791,18 @@ func (t *WebTool) webFetch(args map[string]any) ToolResult {
 		url = "https://" + url
 	}
 
+	// Try exa crawl first (handles JS-rendered pages)
+	if t.exaCLIAvailable {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		content, err := t.exaCLICrawl(ctx, url)
+		if err == nil && content != "" {
+			return ToolResult{Output: content}
+		}
+		log.Debug("exa crawl failed, falling back to HTTP fetch", "error", err)
+	}
+
+	// Fallback to basic HTTP fetch
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to create request: %w", err)}

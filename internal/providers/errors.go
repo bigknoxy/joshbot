@@ -33,7 +33,8 @@ func (e *FallbackError) Unwrap() error {
 
 // IsFallbackError returns true if the error should trigger a fallback to another provider.
 // Non-fallback errors (400, 401, 403, context cancelled) are returned immediately.
-func IsFallbackError(err error) bool {
+// The providerName parameter is used to determine provider-specific behavior (e.g., Ollama 404).
+func IsFallbackError(err error, providerName string) bool {
 	if err == nil {
 		return false
 	}
@@ -46,13 +47,13 @@ func IsFallbackError(err error) bool {
 	// Check for FallbackError type
 	var fallbackErr *FallbackError
 	if errors.As(err, &fallbackErr) {
-		return isFallbackStatusCode(fallbackErr.StatusCode)
+		return ShouldFallback(fallbackErr.Provider, fallbackErr.StatusCode, fallbackErr.Message)
 	}
 
 	// Parse HTTP status from error message
 	statusCode := extractStatusCode(err.Error())
 	if statusCode > 0 {
-		return isFallbackStatusCode(statusCode)
+		return ShouldFallback(providerName, statusCode, err.Error())
 	}
 
 	// Network errors (no status code) - fallback
@@ -77,6 +78,18 @@ func isFallbackStatusCode(statusCode int) bool {
 	default:
 		return false
 	}
+}
+
+// ShouldFallback determines if an error should trigger fallback to another provider.
+// For Ollama, 404 (model not found) should NOT trigger fallback - the user needs to pull the model.
+func ShouldFallback(provider string, statusCode int, errMsg string) bool {
+	// For Ollama, don't fallback on 404 (model not found)
+	// User needs to run: ollama pull <model>
+	if provider == "ollama" && statusCode == 404 {
+		return false
+	}
+
+	return isFallbackStatusCode(statusCode)
 }
 
 // extractStatusCode parses HTTP status code from error message.

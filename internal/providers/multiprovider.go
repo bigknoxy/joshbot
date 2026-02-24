@@ -160,7 +160,7 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		)
 
 		// Check if we should fallback
-		if !IsFallbackError(err) {
+		if !IsFallbackError(err, entry.Name) {
 			mp.logger.Debug("Non-fallback error, stopping",
 				"provider", entry.Name,
 				"error_type", fmt.Sprintf("%T", err),
@@ -206,7 +206,7 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 
 		lastErr = err
 
-		if !IsFallbackError(err) {
+		if !IsFallbackError(err, entry.Name) {
 			return nil, err
 		}
 

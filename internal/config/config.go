@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Logger is a simple logger interface for the config package.
@@ -66,8 +67,10 @@ var DefaultWorkspace = filepath.Join(DefaultHome, "workspace")
 type ProviderConfig struct {
 	APIKey       string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
 	APIBase      string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
+	Model        string            `mapstructure:"model" json:"model,omitempty" yaml:"model,omitempty"`
 	ExtraHeaders map[string]string `mapstructure:"extra_headers" json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
 	Enabled      bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Timeout      time.Duration     `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // ProviderDefaults holds default provider settings

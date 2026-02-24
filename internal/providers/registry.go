@@ -9,9 +9,17 @@ import (
 // ProviderFactory is a function that creates a Provider with the given configuration.
 type ProviderFactory func(cfg Config) (Provider, error)
 
+// ProviderInfo contains metadata about a provider.
+type ProviderInfo struct {
+	Factory      ProviderFactory
+	DefaultModel string
+	DisplayName  string
+	Description  string
+}
+
 // registry is the global provider registry.
 var (
-	registry     = make(map[string]ProviderFactory)
+	registry     = make(map[string]ProviderInfo)
 	registryLock sync.RWMutex
 )
 
@@ -26,21 +34,36 @@ func RegisterProvider(name string, factory ProviderFactory) {
 		panic(fmt.Sprintf("provider already registered: %s", name))
 	}
 
-	registry[name] = factory
+	registry[name] = ProviderInfo{
+		Factory: factory,
+	}
+}
+
+// RegisterProviderWithInfo registers a provider with full metadata.
+func RegisterProviderWithInfo(name string, info ProviderInfo) {
+	registryLock.Lock()
+	defer registryLock.Unlock()
+
+	name = normalizeProviderName(name)
+	if _, exists := registry[name]; exists {
+		panic(fmt.Sprintf("provider already registered: %s", name))
+	}
+
+	registry[name] = info
 }
 
 // GetProvider returns a new provider instance by name with the given configuration.
 // Returns an error if the provider is not registered.
 func GetProvider(name string, cfg Config) (Provider, error) {
 	registryLock.RLock()
-	factory, exists := registry[normalizeProviderName(name)]
+	info, exists := registry[normalizeProviderName(name)]
 	registryLock.RUnlock()
 
 	if !exists {
 		return nil, fmt.Errorf("unknown provider: %s (available: %v)", name, AvailableProviders())
 	}
 
-	return factory(cfg)
+	return info.Factory(cfg)
 }
 
 // AvailableProviders returns a list of all registered provider names.
@@ -98,67 +121,138 @@ func normalizeProviderName(name string) string {
 	}
 }
 
+// GetDefaultModel returns the default model for a provider.
+// Returns empty string if provider not found or no default set.
+func GetDefaultModel(name string) string {
+	registryLock.RLock()
+	defer registryLock.RUnlock()
+
+	if info, exists := registry[normalizeProviderName(name)]; exists {
+		return info.DefaultModel
+	}
+	return ""
+}
+
+// GetProviderDisplayName returns a human-readable name for a provider.
+func GetProviderDisplayName(name string) string {
+	registryLock.RLock()
+	defer registryLock.RUnlock()
+
+	if info, exists := registry[normalizeProviderName(name)]; exists {
+		if info.DisplayName != "" {
+			return info.DisplayName
+		}
+		return name
+	}
+	return name
+}
+
+// GetProviderDescription returns the description for a provider.
+func GetProviderDescription(name string) string {
+	registryLock.RLock()
+	defer registryLock.RUnlock()
+
+	if info, exists := registry[normalizeProviderName(name)]; exists {
+		return info.Description
+	}
+	return ""
+}
+
 // init registers the built-in providers.
 func init() {
-	// Register the LiteLLM provider as the default
+	// Register OpenRouter
+	RegisterProviderWithInfo("openrouter", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://openrouter.ai/api/v1"
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "arcee-ai/trinity-large-preview:free",
+		DisplayName:  "OpenRouter",
+		Description:  "Many models, one API key",
+	})
+
+	// Register OpenAI
+	RegisterProviderWithInfo("openai", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://api.openai.com/v1"
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "gpt-4o",
+		DisplayName:  "OpenAI",
+		Description:  "GPT-4 and more",
+	})
+
+	// Register NVIDIA
+	RegisterProviderWithInfo("nvidia", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://integrate.api.nvidia.com/v1"
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "meta/llama-3.3-70b-instruct",
+		DisplayName:  "NVIDIA NIM",
+		Description:  "Free tier available",
+	})
+
+	// Register Groq
+	RegisterProviderWithInfo("groq", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://api.groq.com/openai/v1"
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "llama-3.3-70b-versatile",
+		DisplayName:  "Groq",
+		Description:  "Fast inference",
+	})
+
+	// Register Ollama
+	RegisterProviderWithInfo("ollama", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				cfg.APIBase = "http://localhost:11434"
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "llama3.1:8b",
+		DisplayName:  "Ollama",
+		Description:  "Local, no API key needed",
+	})
+
+	// Register Anthropic
+	RegisterProviderWithInfo("anthropic", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://api.anthropic.com/v1"
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "claude-sonnet-4-20250514",
+		DisplayName:  "Anthropic",
+		Description:  "Claude models",
+	})
+
+	// Register Azure (requires API base, no default model)
+	RegisterProviderWithInfo("azure", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				return nil, fmt.Errorf("azure provider requires api_base to be set")
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "",
+		DisplayName:  "Azure OpenAI",
+		Description:  "Enterprise Azure integration",
+	})
+
+	// Keep litellm as a generic fallback
 	RegisterProvider("litellm", func(cfg Config) (Provider, error) {
-		return NewLiteLLMProvider(cfg), nil
-	})
-
-	// Register common provider aliases that use LiteLLM
-	RegisterProvider("openrouter", func(cfg Config) (Provider, error) {
-		// Set default API base for OpenRouter if not specified
-		if cfg.APIBase == "" {
-			cfg.APIBase = "https://openrouter.ai/api/v1"
-		}
-		return NewLiteLLMProvider(cfg), nil
-	})
-
-	RegisterProvider("openai", func(cfg Config) (Provider, error) {
-		// Set default API base for OpenAI if not specified
-		if cfg.APIBase == "" {
-			cfg.APIBase = "https://api.openai.com/v1"
-		}
-		return NewLiteLLMProvider(cfg), nil
-	})
-
-	RegisterProvider("anthropic", func(cfg Config) (Provider, error) {
-		// Set default API base for Anthropic if not specified
-		if cfg.APIBase == "" {
-			cfg.APIBase = "https://api.anthropic.com/v1"
-		}
-		return NewLiteLLMProvider(cfg), nil
-	})
-
-	RegisterProvider("azure", func(cfg Config) (Provider, error) {
-		// Azure OpenAI requires specific configuration
-		if cfg.APIBase == "" {
-			return nil, fmt.Errorf("azure provider requires api_base to be set")
-		}
-		return NewLiteLLMProvider(cfg), nil
-	})
-
-	RegisterProvider("ollama", func(cfg Config) (Provider, error) {
-		// Default to local Ollama instance
-		if cfg.APIBase == "" {
-			cfg.APIBase = "http://localhost:11434"
-		}
-		return NewLiteLLMProvider(cfg), nil
-	})
-
-	RegisterProvider("groq", func(cfg Config) (Provider, error) {
-		// Set default API base for Groq if not specified
-		if cfg.APIBase == "" {
-			cfg.APIBase = "https://api.groq.com/openai/v1"
-		}
-		return NewLiteLLMProvider(cfg), nil
-	})
-
-	RegisterProvider("nvidia", func(cfg Config) (Provider, error) {
-		// Set default API base for NVIDIA NIM API if not specified
-		if cfg.APIBase == "" {
-			cfg.APIBase = "https://integrate.api.nvidia.com/v1"
-		}
 		return NewLiteLLMProvider(cfg), nil
 	})
 }

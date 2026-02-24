@@ -437,7 +437,7 @@ func runAgent(c *cli.Context) error {
 	log.Info("Starting agent mode", "model", cfg.Agents.Defaults.Model)
 
 	// Setup components
-	_, _, _, agentInstance, _, _, err := setupComponents(cfg)
+	_, _, _, agentInstance, _, messageSender, err := setupComponents(cfg)
 	if err != nil {
 		return err
 	}
@@ -448,13 +448,13 @@ func runAgent(c *cli.Context) error {
 
 	// Non-interactive mode: send single message and exit
 	if message := c.String("message"); message != "" {
-		return runAgentSingleMessage(ctx, agentInstance, message, os.Stdout)
+		return runAgentSingleMessage(ctx, agentInstance, message, os.Stdout, messageSender)
 	}
 
 	done := make(chan struct{})
 	setupGracefulShutdown(ctx, cancel, done)
 
-	if err := runAgentLoop(ctx, cancel, done, os.Stdin, os.Stdout, agentInstance); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, os.Stdin, os.Stdout, agentInstance, messageSender); err != nil {
 		return err
 	}
 	return nil
@@ -464,7 +464,12 @@ type agentProcessor interface {
 	Process(context.Context, bus.InboundMessage) (string, error)
 }
 
-func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor) error {
+func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor, messageSender *tools.BusMessageSender) error {
+	// Set chat ID for CLI mode so message tools can send messages proactively
+	if messageSender != nil {
+		messageSender.SetChatID("cli", "cli_user")
+	}
+
 	reader := bufio.NewReader(input)
 	fmt.Fprintln(output, "joshbot agent mode. Type 'exit' to quit.")
 	for {
@@ -521,7 +526,12 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 }
 
 // runAgentSingleMessage sends a single message and prints the response.
-func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, message string, output io.Writer) error {
+func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, message string, output io.Writer, messageSender *tools.BusMessageSender) error {
+	// Set chat ID for CLI mode so message tools work
+	if messageSender != nil {
+		messageSender.SetChatID("cli", "cli_user")
+	}
+
 	msg := bus.InboundMessage{
 		SenderID:  "cli_user",
 		Content:   message,
@@ -1269,17 +1279,26 @@ func runOnboard(c *cli.Context) error {
 		personalityChoice = selectPersonality(existingCfg)
 		soulContent = getPersonalitySoul(personalityChoice)
 		userName = promptUserName(existingCfg)
-		model = selectModel(existingCfg)
+		model = selectModel(existingCfg, provider)
 		telegramConfig = setupTelegram(existingCfg)
 	}
 
 	// Build config
 	cfg := config.Defaults()
 	if apiKey != "" || provider == "ollama" {
+		// Get provider's default model as fallback
+		defaultModel := providers.GetDefaultModel(provider)
+		if defaultModel == "" {
+			defaultModel = "arcee-ai/trinity-large-preview:free"
+		}
 		cfg.Providers = map[string]config.ProviderConfig{
 			provider: {APIKey: apiKey, Enabled: true},
 		}
 		cfg.ProviderDefaults.Default = provider
+		// Use selected model, or fall back to provider default
+		if model == "" {
+			model = defaultModel
+		}
 	}
 	cfg.Agents.Defaults.Model = model
 	if userName != "" {
@@ -1343,14 +1362,22 @@ func runOnboard(c *cli.Context) error {
 func selectProvider(existingCfg *config.Config) string {
 	fmt.Println("\n[Step 1] LLM Provider")
 	fmt.Println("Choose your LLM provider:")
-	fmt.Println("  1. NVIDIA NIM (Recommended - Free tier available)")
-	fmt.Println("  2. OpenRouter (Many models, one API key)")
-	fmt.Println("  3. Groq (Fast inference)")
-	fmt.Println("  4. Ollama (Local, no API key needed)")
+
+	// Use provider registry for display names and descriptions
+	providerList := []string{"nvidia", "openrouter", "groq", "ollama"}
+	for i, p := range providerList {
+		displayName := providers.GetProviderDisplayName(p)
+		desc := providers.GetProviderDescription(p)
+		if desc != "" {
+			fmt.Printf("  %d. %s (%s)\n", i+1, displayName, desc)
+		} else {
+			fmt.Printf("  %d. %s\n", i+1, displayName)
+		}
+	}
 
 	// Show current default if exists
 	if existingCfg != nil && existingCfg.ProviderDefaults.Default != "" {
-		fmt.Printf("\nCurrent provider: %s\n", getProviderDisplayName(existingCfg.ProviderDefaults.Default))
+		fmt.Printf("\nCurrent provider: %s\n", providers.GetProviderDisplayName(existingCfg.ProviderDefaults.Default))
 	}
 
 	fmt.Print("\nChoice [1]: ")
@@ -1453,8 +1480,12 @@ func promptUserName(existingCfg *config.Config) string {
 }
 
 // selectModel prompts the user to select a model and returns the choice.
-func selectModel(existingCfg *config.Config) string {
-	defaultModel := config.DefaultModel
+func selectModel(existingCfg *config.Config, provider string) string {
+	// Get provider's default model, fall back to config default
+	defaultModel := providers.GetDefaultModel(provider)
+	if defaultModel == "" {
+		defaultModel = config.DefaultModel
+	}
 
 	// Use existing model as default if available
 	if existingCfg != nil && existingCfg.Agents.Defaults.Model != "" {

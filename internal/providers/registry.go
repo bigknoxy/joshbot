@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -216,7 +217,10 @@ func init() {
 	RegisterProviderWithInfo("ollama", ProviderInfo{
 		Factory: func(cfg Config) (Provider, error) {
 			if cfg.APIBase == "" {
-				cfg.APIBase = "http://localhost:11434"
+				cfg.APIBase = "http://localhost:11434/v1"
+			} else if !strings.HasSuffix(cfg.APIBase, "/v1") {
+				// Ensure /v1 suffix for OpenAI compatibility
+				cfg.APIBase = strings.TrimRight(cfg.APIBase, "/") + "/v1"
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},

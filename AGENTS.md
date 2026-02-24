@@ -241,3 +241,62 @@ When using build tags for platform-specific implementations:
    - When user is root (uid 0), `sudo` command doesn't exist
    - Detect with `os.Getuid() == 0` and skip sudo prefix
    - Applies to systemd service installation, file operations needing elevated permissions
+
+## Testing Protocol
+
+**CRITICAL**: Before any release, perform end-to-end testing to catch issues early.
+
+### Pre-Release Testing Checklist
+
+```bash
+# 1. Build and install locally
+go install ./cmd/joshbot
+
+# 2. Clean up previous test config
+rm -rf ~/.joshbot
+
+# 3. Test onboarding with each provider
+joshbot onboard    # Test NVIDIA, OpenRouter, Groq, Ollama
+
+# 4. Test non-interactive mode
+joshbot agent -m "hello"
+
+# 5. Test interactive mode
+joshbot agent      # Send message, verify response, check for tool errors
+
+# 6. Test gateway mode (if Telegram changes)
+joshbot gateway    # Send Telegram message, verify response
+
+# 7. Verify status
+joshbot status
+
+# 8. Cleanup
+rm -rf ~/.joshbot
+```
+
+### Common Issues to Watch For
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "no chat ID stored for channel: cli" | Session.SetChatID() not called in CLI mode | Call `session.SetChatID("cli", "cli_user")` before processing |
+| "no providers configured" | Provider.Enabled=false or missing API key | Set `Enabled: true` when saving config |
+| 401/403 auth errors | Wrong API base URL or missing /v1 path | Use registry defaults via `GetProvider()` |
+| Wrong model suggested | Hardcoded model in onboarding | Use `providers.GetDefaultModel(provider)` |
+
+### Parallel Testing with Subagents
+
+For comprehensive testing, use parallel subagents:
+
+```
+Subagent 1: Run gateway and monitor for errors
+  - Start joshbot gateway
+  - Watch logs for errors
+  - Keep running
+
+Subagent 2: Test CLI commands
+  - joshbot agent -m "test"
+  - Verify response
+  - Check for tool execution errors
+```
+
+This catches issues that single-threaded testing misses.

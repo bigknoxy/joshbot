@@ -31,8 +31,10 @@ func (t *MessageTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *MessageTool) Description() string {
-	return `Send messages to chat channels. Use this tool to communicate back to the user ` +
-		`through the appropriate chat channel.`
+	return `Send a message to a DIFFERENT channel than the current conversation. ` +
+		`Use this to proactively reach out via Telegram while working on a task. ` +
+		`DO NOT use this to respond to the current conversation - just return your response as text. ` +
+		`Example: If the user asks you to notify them on Telegram when a long task is done, use this tool.`
 }
 
 // Parameters returns the parameters for the tool.
@@ -113,8 +115,10 @@ func (t *ChannelMessageTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *ChannelMessageTool) Description() string {
-	return `Channel tools for sending messages to different communication channels. ` +
-		`Use send_message to reply through Telegram, CLI, or other configured channels.`
+	return `Send a message to a DIFFERENT channel than the current conversation. ` +
+		`Use this to proactively reach out via Telegram while working on a task. ` +
+		`DO NOT use this to respond to the current conversation - just return your response as text. ` +
+		`Example: If the user asks you to notify them on Telegram when a long task is done, use this tool.`
 }
 
 // Parameters returns the parameters for the tool.

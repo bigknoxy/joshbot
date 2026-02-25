@@ -115,6 +115,7 @@ gh release edit v<X.Y.Z> --latest
 
 | Version | Date | Description |
 |---------|------|-------------|
+| v1.12.1 | 2026-02-25 | Model/provider sync fix, tool_call_id preservation |
 | v1.12.0 | 2026-02-24 | Exa crawl for web_fetch, version/status display fixes |
 | v1.11.0 | 2026-02-24 | Enhanced Ollama integration |
 | v1.9.1 | 2026-02-24 | Provider registration fix, -m flag |

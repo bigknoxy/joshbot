@@ -25,10 +25,11 @@ type ToolCall struct {
 
 // Message represents a single message in a session.
 type Message struct {
-	Role      Role       `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	Timestamp time.Time  `json:"timestamp"`
+	Role       Role       `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Timestamp  time.Time  `json:"timestamp"`
 }
 
 // Session represents a conversation session.

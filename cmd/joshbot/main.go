@@ -2382,6 +2382,7 @@ func setDefaultProvider(cfg *config.Config) *config.Config {
 	}
 
 	cfg.ProviderDefaults.Default = configured[choice-1]
+	cfg.Agents.Defaults.Model = providers.GetDefaultModel(cfg.ProviderDefaults.Default)
 	fmt.Printf("\nDefault provider set to: %s\n", getProviderDisplayName(cfg.ProviderDefaults.Default))
 
 	return cfg

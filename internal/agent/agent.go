@@ -345,9 +345,10 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 				toolMsg := a.formatToolResult(tc.ID, tc.Function.Name, result)
 				messages = append(messages, toolMsg)
 				sess.AddMessage(session.Message{
-					Role:      session.RoleTool,
-					Content:   result,
-					Timestamp: time.Now(),
+					Role:       session.RoleTool,
+					Content:    result,
+					ToolCallID: tc.ID,
+					Timestamp:  time.Now(),
 				})
 				continue
 			}
@@ -368,9 +369,10 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 
 			// Add to session
 			sess.AddMessage(session.Message{
-				Role:      session.RoleTool,
-				Content:   result,
-				Timestamp: time.Now(),
+				Role:       session.RoleTool,
+				Content:    result,
+				ToolCallID: tc.ID,
+				Timestamp:  time.Now(),
 			})
 		}
 
@@ -404,8 +406,9 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 	providerMsgs := make([]providers.Message, 0, len(sess.Messages))
 	for _, msg := range sess.Messages {
 		providerMsg := providers.Message{
-			Role:    providers.MessageRole(msg.Role),
-			Content: msg.Content,
+			Role:       providers.MessageRole(msg.Role),
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
 		}
 
 		// Convert tool calls

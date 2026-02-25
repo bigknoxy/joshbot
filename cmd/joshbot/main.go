@@ -23,6 +23,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/channels"
 	"github.com/bigknoxy/joshbot/internal/config"
 	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
+	"github.com/bigknoxy/joshbot/internal/copilot"
 	"github.com/bigknoxy/joshbot/internal/cron"
 	"github.com/bigknoxy/joshbot/internal/heartbeat"
 	"github.com/bigknoxy/joshbot/internal/learning"
@@ -212,6 +213,22 @@ func runApp() error {
 					},
 				},
 			},
+			{
+				Name:  "auth",
+				Usage: "Manage OAuth authentication for providers",
+				Subcommands: []*cli.Command{
+					{
+						Name:   "github-copilot",
+						Usage:  "Authenticate with GitHub Copilot",
+						Action: runAuthCopilot,
+					},
+					{
+						Name:   "status",
+						Usage:  "Show authentication status for all providers",
+						Action: runAuthStatus,
+					},
+				},
+			},
 		},
 		Before: func(c *cli.Context) error {
 			// Update log level if verbose is set
@@ -370,6 +387,42 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 				model = providers.GetDefaultModel("ollama")
 			}
 			multiProvider.Register("ollama", ollamaProvider, model, priority)
+		}
+	}
+
+	// Register GitHub Copilot (if configured)
+	if p, ok := cfg.Providers["github-copilot"]; ok && p.Enabled {
+		token, err := copilot.LoadToken(config.DefaultHome)
+		if err != nil || token == nil || token.AccessToken == "" {
+			log.Warn("GitHub Copilot not authenticated", "error", err)
+			log.Warn("Run: joshbot auth github-copilot")
+		} else {
+			copilotCfg := providers.Config{
+				APIKey:      token.AccessToken,
+				Model:       cfg.Agents.Defaults.Model,
+				MaxTokens:   cfg.Agents.Defaults.MaxTokens,
+				Temperature: cfg.Agents.Defaults.Temperature,
+			}
+			if p.Model != "" {
+				copilotCfg.Model = p.Model
+			}
+			if copilotCfg.Model == "" {
+				copilotCfg.Model = "gpt-4o"
+			}
+			copilotProvider, err := providers.GetProvider("github-copilot", copilotCfg)
+			if err != nil {
+				log.Warn("Failed to create GitHub Copilot provider", "error", err)
+			} else {
+				priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+				for i, name := range cfg.ProviderDefaults.FallbackOrder {
+					if name == "github-copilot" {
+						priority = i + 1
+						break
+					}
+				}
+				multiProvider.Register("github-copilot", copilotProvider, copilotCfg.Model, priority)
+				log.Info("Registered provider", "name", "github-copilot", "priority", priority)
+			}
 		}
 	}
 
@@ -1305,10 +1358,29 @@ func runOnboard(c *cli.Context) error {
 		} else {
 			model = config.DefaultModel
 		}
+		// Get provider from existing config or use default
+		if existingCfg != nil && len(existingCfg.Providers) > 0 {
+			for p := range existingCfg.Providers {
+				provider = p
+				break
+			}
+		}
+		if provider == "" {
+			provider = "openrouter"
+		}
+		var err error
+		apiKey, err = promptProviderAPIKey(provider, existingCfg)
+		if err != nil {
+			return err
+		}
 	} else {
 		// Interactive prompts - pass existing config for defaults
 		provider = selectProvider(existingCfg)
-		apiKey = promptProviderAPIKey(provider, existingCfg)
+		var err error
+		apiKey, err = promptProviderAPIKey(provider, existingCfg)
+		if err != nil {
+			return err
+		}
 		personalityChoice = selectPersonality(existingCfg)
 		soulContent = getPersonalitySoul(personalityChoice)
 		userName = promptUserName(existingCfg)
@@ -1407,7 +1479,7 @@ func selectProvider(existingCfg *config.Config) string {
 	fmt.Println("Choose your LLM provider:")
 
 	// Use provider registry for display names and descriptions
-	providerList := []string{"nvidia", "openrouter", "groq", "ollama"}
+	providerList := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
 	for i, p := range providerList {
 		displayName := providers.GetProviderDisplayName(p)
 		desc := providers.GetProviderDescription(p)
@@ -1439,13 +1511,15 @@ func selectProvider(existingCfg *config.Config) string {
 		return "groq"
 	case "4":
 		return "ollama"
+	case "5":
+		return "github-copilot"
 	default:
 		return "nvidia"
 	}
 }
 
 // promptProviderAPIKey prompts for the API key based on the selected provider.
-func promptProviderAPIKey(provider string, existingCfg *config.Config) string {
+func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, error) {
 	var keyURL, keyName string
 	switch provider {
 	case "nvidia":
@@ -1459,7 +1533,20 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) string {
 		keyName = "Groq API key"
 	case "ollama":
 		fmt.Println("\nOllama runs locally - no API key needed.")
-		return ""
+		return "", nil
+	case "github-copilot":
+		fmt.Println("\nGitHub Copilot uses OAuth authentication.")
+		fmt.Println("You will be shown a URL and code to authorize.")
+		fmt.Println()
+
+		ctx := context.Background()
+		if _, err := copilot.RunDeviceFlow(ctx); err != nil {
+			return "", fmt.Errorf("OAuth failed: %w", err)
+		}
+
+		fmt.Println("\nSuccessfully authenticated with GitHub Copilot!")
+		fmt.Println("Token saved to ~/.joshbot/auth.json")
+		return "", nil
 	}
 
 	fmt.Printf("\nGet your %s at: %s\n", keyName, keyURL)
@@ -1478,7 +1565,7 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) string {
 
 	var apiKey string
 	fmt.Scanln(&apiKey)
-	return strings.TrimSpace(apiKey)
+	return strings.TrimSpace(apiKey), nil
 }
 
 // selectPersonality prompts the user to choose a personality and returns the choice.
@@ -1995,7 +2082,7 @@ func listProviders(cfg *config.Config) error {
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
 
-	providers := []string{"nvidia", "openrouter", "groq", "ollama"}
+	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
 	defaultProvider := cfg.ProviderDefaults.Default
 
 	for _, name := range providers {
@@ -2004,9 +2091,20 @@ func listProviders(cfg *config.Config) error {
 		statusIcon := "○"
 		statusText := "not configured"
 
-		if exists && p.APIKey != "" {
-			statusIcon = "✓"
-			statusText = "configured"
+		if exists && p.Enabled {
+			if name == "github-copilot" {
+				token, err := copilot.LoadToken(config.DefaultHome)
+				if err == nil && token != nil && token.AccessToken != "" {
+					statusIcon = "✓"
+					statusText = "authenticated"
+				} else {
+					statusIcon = "○"
+					statusText = "OAuth required"
+				}
+			} else if p.APIKey != "" {
+				statusIcon = "✓"
+				statusText = "configured"
+			}
 		}
 		if isDefault {
 			statusText += " (default)"
@@ -2021,7 +2119,7 @@ func listProviders(cfg *config.Config) error {
 
 // runConfigureWizard runs the interactive provider configuration wizard.
 func runConfigureWizard(cfg *config.Config) error {
-	providers := []string{"nvidia", "openrouter", "groq", "ollama"}
+	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
 
 	for {
 		// Display current state
@@ -2039,9 +2137,20 @@ func runConfigureWizard(cfg *config.Config) error {
 			icon := "○"
 			status := "not configured"
 
-			if exists && p.APIKey != "" {
-				icon = "✓"
-				status = "configured"
+			if exists && p.Enabled {
+				if name == "github-copilot" {
+					token, err := copilot.LoadToken(config.DefaultHome)
+					if err == nil && token != nil && token.AccessToken != "" {
+						icon = "✓"
+						status = "authenticated"
+					} else {
+						icon = "○"
+						status = "OAuth required"
+					}
+				} else if p.APIKey != "" {
+					icon = "✓"
+					status = "configured"
+				}
 			}
 			if isDefault {
 				status += " (default)"
@@ -2056,17 +2165,18 @@ func runConfigureWizard(cfg *config.Config) error {
 		fmt.Println("  2. Configure OpenRouter")
 		fmt.Println("  3. Configure Groq")
 		fmt.Println("  4. Configure Ollama")
-		fmt.Println("  5. Set default provider")
-		fmt.Println("  6. Configure fallback order")
-		fmt.Println("  7. Done")
+		fmt.Println("  5. Configure GitHub Copilot")
+		fmt.Println("  6. Set default provider")
+		fmt.Println("  7. Configure fallback order")
+		fmt.Println("  8. Done")
 		fmt.Println()
 
-		fmt.Print("Choice [7]: ")
+		fmt.Print("Choice [8]: ")
 
 		var choice string
 		fmt.Scanln(&choice)
 		if choice == "" {
-			choice = "7"
+			choice = "8"
 		}
 
 		switch choice {
@@ -2079,10 +2189,12 @@ func runConfigureWizard(cfg *config.Config) error {
 		case "4":
 			cfg = configureProvider(cfg, "ollama")
 		case "5":
-			cfg = setDefaultProvider(cfg)
+			cfg = configureProvider(cfg, "github-copilot")
 		case "6":
-			cfg = configureFallbackOrder(cfg)
+			cfg = setDefaultProvider(cfg)
 		case "7":
+			cfg = configureFallbackOrder(cfg)
+		case "8":
 			// Save and exit
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("failed to save config: %w", err)
@@ -2106,6 +2218,8 @@ func getProviderDisplayName(name string) string {
 		return "Groq"
 	case "ollama":
 		return "Ollama"
+	case "github-copilot":
+		return "GitHub Copilot"
 	default:
 		return name
 	}
@@ -2237,6 +2351,33 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 • List models: ollama list
 • Test model: ollama run <model-name>
 • Check GPU: ollama run llama3.2 (faster with GPU)`)
+	case "github-copilot":
+		fmt.Println("GitHub Copilot uses OAuth authentication.")
+		fmt.Println("You will be shown a URL and code to authorize.")
+		fmt.Println()
+
+		token, err := copilot.LoadToken(config.DefaultHome)
+		if err == nil && token != nil && token.AccessToken != "" {
+			fmt.Println("Already authenticated with GitHub Copilot.")
+			fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate if needed.")
+		} else {
+			ctx := context.Background()
+			token, err = copilot.RunDeviceFlow(ctx)
+			if err != nil {
+				fmt.Printf("OAuth failed: %v\n", err)
+				return cfg
+			}
+
+			if err := copilot.SaveToken(config.DefaultHome, token); err != nil {
+				fmt.Printf("Failed to save token: %v\n", err)
+				return cfg
+			}
+
+			fmt.Println("\nSuccessfully authenticated with GitHub Copilot!")
+		}
+
+		fmt.Println("\nNote: GitHub Copilot is configured via OAuth.")
+		fmt.Println("The access token is stored securely in ~/.joshbot/auth.json")
 	}
 
 	// Validate credentials if API key was provided
@@ -2538,6 +2679,54 @@ func runServiceStatus(c *cli.Context) error {
 		fmt.Println("The service is currently running.")
 	} else {
 		fmt.Println("The service is not running.")
+	}
+
+	return nil
+}
+
+func runAuthCopilot(c *cli.Context) error {
+	homeDir := config.DefaultHome
+
+	token, err := copilot.LoadToken(homeDir)
+	if err == nil && token != nil && token.AccessToken != "" {
+		fmt.Println("Already authenticated with GitHub Copilot.")
+		fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate.")
+		return nil
+	}
+
+	fmt.Println("Starting GitHub Copilot authentication...")
+	fmt.Println()
+
+	ctx := context.Background()
+	token, err = copilot.RunDeviceFlow(ctx)
+	if err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	if err := copilot.SaveToken(homeDir, token); err != nil {
+		return fmt.Errorf("failed to save token: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("Successfully authenticated with GitHub Copilot!")
+	fmt.Println("You can now use 'joshbot agent' with GitHub Copilot.")
+	return nil
+}
+
+func runAuthStatus(c *cli.Context) error {
+	homeDir := config.DefaultHome
+
+	token, err := copilot.LoadToken(homeDir)
+
+	fmt.Println("Authentication Status:")
+	fmt.Println()
+	fmt.Printf("  GitHub Copilot: ")
+
+	if err != nil || token == nil || token.AccessToken == "" {
+		fmt.Println("not authenticated")
+		fmt.Println("    Run 'joshbot auth github-copilot' to authenticate")
+	} else {
+		fmt.Println("authenticated")
 	}
 
 	return nil

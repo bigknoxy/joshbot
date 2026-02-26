@@ -90,7 +90,7 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 			return nil, err
 		}
 		// Show network errors to user for debugging
-		fmt.Printf("\nWarning: %v (will retry)\n", err)
+		fmt.Printf("\n[DEBUG] Token check error: %v (will retry)\n", err)
 		log.Debug("token poll error (initial): %v", err)
 	}
 	if token != nil {
@@ -154,7 +154,8 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	log.Debug("token exchange response status: %d, body: %s", resp.StatusCode, string(body))
+	// Always show response status for debugging
+	fmt.Printf("[DEBUG] Token response: status=%d body=%s\n", resp.StatusCode, string(body))
 
 	var result struct {
 		AccessToken  string `json:"access_token"`

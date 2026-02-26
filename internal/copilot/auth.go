@@ -21,6 +21,8 @@ const (
 	CopilotAPIURL  = "https://api.githubcopilot.com/v1"
 )
 
+var Version = "dev"
+
 type DeviceCodeResponse struct {
 	DeviceCode      string `json:"device_code"`
 	UserCode        string `json:"user_code"`
@@ -48,6 +50,7 @@ func InitiateDeviceFlow(ctx context.Context) (*DeviceCodeResponse, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "joshbot/"+Version)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -122,6 +125,7 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "joshbot/"+Version)
 
 	resp, err := client.Do(req)
 	if err != nil {

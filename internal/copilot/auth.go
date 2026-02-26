@@ -84,7 +84,7 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 	// Immediate check before starting ticker
 	log.Debug("attempting immediate token exchange...")
 	fmt.Print(".")
-	token, err := attemptTokenExchange(ctx, client, deviceCode)
+	token, suggestedInterval, err := attemptTokenExchange(ctx, client, deviceCode)
 	if err != nil {
 		if isAuthError(err) {
 			return nil, err
@@ -97,6 +97,12 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 		log.Debug("token received on initial attempt")
 		fmt.Println(" authorized!")
 		return token, nil
+	}
+
+	// If GitHub suggested a slower interval, use it
+	if suggestedInterval > intervalSec {
+		intervalSec = suggestedInterval
+		fmt.Printf("[DEBUG] Using GitHub suggested interval: %ds\n", intervalSec)
 	}
 
 	log.Debug("authorization pending, starting poll ticker...")
@@ -112,7 +118,7 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 		case <-ticker.C:
 			fmt.Print(".")
 			log.Debug("polling for token...")
-			token, err := attemptTokenExchange(ctx, client, deviceCode)
+			token, suggestedInterval, err := attemptTokenExchange(ctx, client, deviceCode)
 			if err != nil {
 				if isAuthError(err) {
 					log.Debug("auth error, stopping poll: %v", err)
@@ -128,12 +134,19 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 				fmt.Println(" authorized!")
 				return token, nil
 			}
+			// Update interval if GitHub suggested a slower rate
+			if suggestedInterval > intervalSec {
+				intervalSec = suggestedInterval
+				fmt.Printf("\n[DEBUG] Slowing down to %ds interval per GitHub\n", intervalSec)
+				ticker.Stop()
+				ticker = time.NewTicker(time.Duration(intervalSec) * time.Second)
+			}
 			log.Debug("authorization still pending")
 		}
 	}
 }
 
-func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode string) (*TokenInfo, error) {
+func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode string) (*TokenInfo, int, error) {
 	data := url.Values{}
 	data.Set("client_id", ClientID)
 	data.Set("device_code", deviceCode)
@@ -141,7 +154,7 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 
 	req, err := http.NewRequestWithContext(ctx, "POST", AccessTokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
@@ -149,7 +162,7 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("token exchange request failed: %w", err)
+		return nil, 0, fmt.Errorf("token exchange request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -163,29 +176,34 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 		ExpiresIn    int    `json:"expires_in"`
 		Error        string `json:"error"`
 		ErrorDesc    string `json:"error_description"`
+		Interval     int    `json:"interval"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to decode token response: %w", err)
+		return nil, 0, fmt.Errorf("failed to decode token response: %w", err)
 	}
 
 	if result.Error != "" {
 		switch result.Error {
 		case "authorization_pending":
-			return nil, nil
+			return nil, 0, nil
 		case "slow_down":
-			return nil, nil
+			// Return the interval from slow_down so caller can adjust polling
+			if result.Interval > 0 {
+				fmt.Printf("[DEBUG] GitHub requests slower polling: interval=%ds\n", result.Interval)
+			}
+			return nil, result.Interval, nil
 		case "expired_token":
-			return nil, fmt.Errorf("authorization expired, please run auth again")
+			return nil, 0, fmt.Errorf("authorization expired, please run auth again")
 		case "access_denied":
-			return nil, fmt.Errorf("authorization denied")
+			return nil, 0, fmt.Errorf("authorization denied")
 		default:
-			return nil, fmt.Errorf("auth error: %s - %s", result.Error, result.ErrorDesc)
+			return nil, 0, fmt.Errorf("auth error: %s - %s", result.Error, result.ErrorDesc)
 		}
 	}
 
 	if result.AccessToken == "" {
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	expiresAt := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).Unix()
@@ -193,7 +211,7 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 		AccessToken:  result.AccessToken,
 		RefreshToken: result.RefreshToken,
 		ExpiresAt:    expiresAt,
-	}, nil
+	}, 0, nil
 }
 
 func isAuthError(err error) bool {

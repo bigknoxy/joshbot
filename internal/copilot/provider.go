@@ -88,6 +88,7 @@ func (p *CopilotProvider) Chat(ctx context.Context, req providers.ChatRequest) (
 	httpReq.Header.Set("Openai-Intent", "conversation-edits")
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", "joshbot/"+Version)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {

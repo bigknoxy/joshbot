@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -76,19 +77,30 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 		intervalSec = 5
 	}
 
+	log.Debug("starting token poll with interval: %d seconds", intervalSec)
+
 	client := &http.Client{Timeout: 60 * time.Second}
 
 	// Immediate check before starting ticker
+	log.Debug("attempting immediate token exchange...")
+	fmt.Print(".")
 	token, err := attemptTokenExchange(ctx, client, deviceCode)
 	if err != nil {
 		if isAuthError(err) {
 			return nil, err
 		}
+		// Show network errors to user for debugging
+		fmt.Printf("\nWarning: %v (will retry)\n", err)
 		log.Debug("token poll error (initial): %v", err)
 	}
 	if token != nil {
+		log.Debug("token received on initial attempt")
+		fmt.Println(" authorized!")
 		return token, nil
 	}
+
+	log.Debug("authorization pending, starting poll ticker...")
+	fmt.Print("Waiting for authorization")
 
 	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 	defer ticker.Stop()
@@ -98,17 +110,25 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
+			fmt.Print(".")
+			log.Debug("polling for token...")
 			token, err := attemptTokenExchange(ctx, client, deviceCode)
 			if err != nil {
 				if isAuthError(err) {
+					log.Debug("auth error, stopping poll: %v", err)
 					return nil, err
 				}
+				// Show network errors to user for debugging
+				fmt.Printf("\nWarning: %v (will retry)\n", err)
 				log.Debug("token poll error, retrying: %v", err)
 				continue
 			}
 			if token != nil {
+				log.Debug("token received!")
+				fmt.Println(" authorized!")
 				return token, nil
 			}
+			log.Debug("authorization still pending")
 		}
 	}
 }
@@ -133,6 +153,9 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+	log.Debug("token exchange response status: %d, body: %s", resp.StatusCode, string(body))
+
 	var result struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
@@ -141,7 +164,7 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 		ErrorDesc    string `json:"error_description"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode token response: %w", err)
 	}
 

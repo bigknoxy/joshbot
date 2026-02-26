@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	ClientID       = "Ov23li8tweQw6odWQebz"
+	ClientID       = "Ov23liNV83W9jiYnzBdK"
 	DeviceCodeURL  = "https://github.com/login/device/code"
 	AccessTokenURL = "https://github.com/login/oauth/access_token"
 	CopilotAPIURL  = "https://api.githubcopilot.com/v1"
@@ -73,10 +73,22 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 		intervalSec = 5
 	}
 
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	// Immediate check before starting ticker
+	token, err := attemptTokenExchange(ctx, client, deviceCode)
+	if err != nil {
+		if isAuthError(err) {
+			return nil, err
+		}
+		log.Debug("token poll error (initial): %v", err)
+	}
+	if token != nil {
+		return token, nil
+	}
+
 	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 	defer ticker.Stop()
-
-	client := &http.Client{Timeout: 60 * time.Second}
 
 	for {
 		select {

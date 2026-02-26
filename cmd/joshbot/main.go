@@ -2237,20 +2237,22 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 	fmt.Printf("\n=== Configure %s ===\n", getProviderDisplayName(provider))
 	fmt.Println()
 
-	// Get API key
-	fmt.Print("API key")
-	if exists && p.APIKey != "" {
-		fmt.Printf(" [%s]", maskAPIKey(p.APIKey))
-	}
-	fmt.Print(": ")
-
+	// Get API key (skip for OAuth-based providers)
 	var apiKey string
-	fmt.Scanln(&apiKey)
-	apiKey = strings.TrimSpace(apiKey)
+	if provider != "github-copilot" {
+		fmt.Print("API key")
+		if exists && p.APIKey != "" {
+			fmt.Printf(" [%s]", maskAPIKey(p.APIKey))
+		}
+		fmt.Print(": ")
 
-	// If user entered something, use it; otherwise keep existing
-	if apiKey != "" {
-		p.APIKey = apiKey
+		fmt.Scanln(&apiKey)
+		apiKey = strings.TrimSpace(apiKey)
+
+		// If user entered something, use it; otherwise keep existing
+		if apiKey != "" {
+			p.APIKey = apiKey
+		}
 	}
 
 	// Get API base URL (different for each provider)
@@ -2362,17 +2364,12 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate if needed.")
 		} else {
 			ctx := context.Background()
-			token, err = copilot.RunDeviceFlow(ctx)
+			_, err = copilot.RunDeviceFlow(ctx)
 			if err != nil {
 				fmt.Printf("OAuth failed: %v\n", err)
 				return cfg
 			}
-
-			if err := copilot.SaveToken(config.DefaultHome, token); err != nil {
-				fmt.Printf("Failed to save token: %v\n", err)
-				return cfg
-			}
-
+			// Token already saved by RunDeviceFlow
 			fmt.Println("\nSuccessfully authenticated with GitHub Copilot!")
 		}
 

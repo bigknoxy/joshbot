@@ -1391,7 +1391,7 @@ func runOnboard(c *cli.Context) error {
 
 	// Build config
 	cfg := config.Defaults()
-	if apiKey != "" || provider == "ollama" {
+	if apiKey != "" || provider == "ollama" || provider == "github-copilot" {
 		// Get provider's default model as fallback
 		defaultModel := providers.GetDefaultModel(provider)
 		if defaultModel == "" {
@@ -1626,8 +1626,37 @@ func selectModel(existingCfg *config.Config, provider string, modelFlag string) 
 		defaultModel = existingCfg.Agents.Defaults.Model
 	}
 
-	fmt.Println("\n[Step 4] Model")
-	fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
+	// For GitHub Copilot, fetch models from the catalog
+	if provider == "github-copilot" {
+		token, err := copilot.LoadToken(config.DefaultHome)
+		if err == nil && token != nil && token.AccessToken != "" {
+			fmt.Println("\n[Step 4] Model")
+			fmt.Println("Fetching available models from GitHub Copilot...")
+			models, err := copilot.ListModels(token.AccessToken)
+			if err != nil {
+				fmt.Printf("Could not fetch models: %v\n", err)
+				fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
+			} else if len(models) > 0 {
+				// Check if existing config has a saved model
+				if existingCfg != nil {
+					if p, ok := existingCfg.Providers[provider]; ok && p.Model != "" {
+						defaultModel = p.Model
+					}
+				}
+				selected := promptModelSelection(models, defaultModel)
+				return selected
+			} else {
+				fmt.Printf("Could not fetch models, using default.\n")
+				fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
+			}
+		} else {
+			fmt.Printf("Not authenticated with GitHub Copilot, using default.\n")
+			fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
+		}
+	} else {
+		fmt.Println("\n[Step 4] Model")
+		fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
+	}
 
 	var model string
 	fmt.Scanln(&model)

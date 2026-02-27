@@ -429,6 +429,8 @@ func TestRegistryWithDefaults(t *testing.T) {
 		30,   // exec timeout
 		10,   // web timeout
 		nil,  // no message sender
+		nil,  // shell allowlist
+		nil,  // filesystem allowed paths
 	)
 
 	// Should have filesystem, shell, and web tools

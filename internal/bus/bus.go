@@ -10,6 +10,10 @@ import (
 // MaxQueueSize is the maximum number of messages that can be buffered in any channel.
 const MaxQueueSize = 1000
 
+// MaxConcurrentHandlers is the maximum number of concurrent handler executions.
+// This prevents unbounded goroutine creation when dispatching messages.
+const MaxConcurrentHandlers = 100
+
 // InboundMessage represents an incoming message from a chat channel.
 type InboundMessage struct {
 	SenderID  string         // Unique identifier for the sender
@@ -99,17 +103,20 @@ type MessageBus struct {
 	wg         sync.WaitGroup
 	started    bool
 	mu         sync.RWMutex
+	// handlerSemaphore limits concurrent handler executions to prevent unbounded goroutines
+	handlerSemaphore chan struct{}
 }
 
 // NewMessageBus creates a new MessageBus with default buffer sizes.
 func NewMessageBus() *MessageBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MessageBus{
-		inboundCh:  make(chan InboundMessage, MaxQueueSize),
-		outboundCh: make(chan OutboundMessage, MaxQueueSize),
-		registry:   NewHandlerRegistry(),
-		ctx:        ctx,
-		cancel:     cancel,
+		inboundCh:        make(chan InboundMessage, MaxQueueSize),
+		outboundCh:       make(chan OutboundMessage, MaxQueueSize),
+		registry:         NewHandlerRegistry(),
+		ctx:              ctx,
+		cancel:           cancel,
+		handlerSemaphore: make(chan struct{}, MaxConcurrentHandlers),
 	}
 }
 
@@ -117,11 +124,12 @@ func NewMessageBus() *MessageBus {
 func NewMessageBusWithContext(ctx context.Context) *MessageBus {
 	ctx, cancel := context.WithCancel(ctx)
 	return &MessageBus{
-		inboundCh:  make(chan InboundMessage, MaxQueueSize),
-		outboundCh: make(chan OutboundMessage, MaxQueueSize),
-		registry:   NewHandlerRegistry(),
-		ctx:        ctx,
-		cancel:     cancel,
+		inboundCh:        make(chan InboundMessage, MaxQueueSize),
+		outboundCh:       make(chan OutboundMessage, MaxQueueSize),
+		registry:         NewHandlerRegistry(),
+		ctx:              ctx,
+		cancel:           cancel,
+		handlerSemaphore: make(chan struct{}, MaxConcurrentHandlers),
 	}
 }
 
@@ -240,6 +248,7 @@ func (mb *MessageBus) processInbound(ctx context.Context) {
 }
 
 // dispatchInbound sends a message to all registered handlers for the channel.
+// Uses a semaphore to bound the number of concurrent handler executions.
 func (mb *MessageBus) dispatchInbound(msg InboundMessage) {
 	handlers := mb.registry.GetHandlers(msg.Channel)
 	for _, handler := range handlers {
@@ -247,8 +256,13 @@ func (mb *MessageBus) dispatchInbound(msg InboundMessage) {
 		case <-mb.ctx.Done():
 			return
 		default:
-			// Execute handler in a goroutine to avoid blocking
-			go handler(mb.ctx, msg)
+			// Acquire semaphore to bound concurrent handler executions
+			mb.handlerSemaphore <- struct{}{}
+			// Execute handler in a goroutine, release semaphore when done
+			go func(h MessageHandler) {
+				defer func() { <-mb.handlerSemaphore }()
+				h(mb.ctx, msg)
+			}(handler)
 		}
 	}
 	// Also dispatch to "all" topic if different from channel
@@ -259,7 +273,13 @@ func (mb *MessageBus) dispatchInbound(msg InboundMessage) {
 			case <-mb.ctx.Done():
 				return
 			default:
-				go handler(mb.ctx, msg)
+				// Acquire semaphore to bound concurrent handler executions
+				mb.handlerSemaphore <- struct{}{}
+				// Execute handler in a goroutine, release semaphore when done
+				go func(h MessageHandler) {
+					defer func() { <-mb.handlerSemaphore }()
+					h(mb.ctx, msg)
+				}(handler)
 			}
 		}
 	}

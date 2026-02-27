@@ -665,3 +665,201 @@ func BenchmarkPublish(b *testing.B) {
 		mb.Publish(msg)
 	}
 }
+
+// TestBoundedConcurrency verifies that the semaphore limits concurrent handler executions.
+func TestBoundedConcurrency(t *testing.T) {
+	mb := NewMessageBus()
+	mb.Start()
+	defer mb.Stop()
+
+	// Track maximum concurrent handler executions
+	var maxConcurrent int
+	var mu sync.Mutex
+	currentConcurrent := 0
+
+	var wg sync.WaitGroup
+
+	handler := func(ctx context.Context, msg InboundMessage) {
+		mu.Lock()
+		currentConcurrent++
+		if currentConcurrent > maxConcurrent {
+			maxConcurrent = currentConcurrent
+		}
+		mu.Unlock()
+
+		// Hold the handler for a bit to allow concurrency to build up
+		time.Sleep(10 * time.Millisecond)
+
+		mu.Lock()
+		currentConcurrent--
+		mu.Unlock()
+		wg.Done()
+	}
+
+	// Subscribe handler to test topic
+	mb.Subscribe("test", handler)
+
+	// Send multiple messages rapidly to trigger concurrent executions
+	const numMessages = 50
+	wg.Add(numMessages)
+	for i := 0; i < numMessages; i++ {
+		mb.Send(InboundMessage{
+			SenderID:  fmt.Sprintf("user%d", i),
+			Content:   "test",
+			Channel:   "test",
+			Timestamp: time.Now(),
+		})
+	}
+
+	// Wait for all handlers to complete
+	wg.Wait()
+
+	// Verify that concurrency was bounded
+	if maxConcurrent > MaxConcurrentHandlers {
+		t.Errorf("max concurrent handlers %d exceeded limit %d", maxConcurrent, MaxConcurrentHandlers)
+	}
+
+	// Verify some concurrency actually happened (otherwise test is meaningless)
+	if maxConcurrent < 2 {
+		t.Error("expected some concurrent execution, but max was", maxConcurrent)
+	}
+
+	t.Logf("Max concurrent handlers: %d (limit: %d)", maxConcurrent, MaxConcurrentHandlers)
+}
+
+// TestBoundedConcurrencyWithAllTopic verifies bounded concurrency works for "all" topic too.
+func TestBoundedConcurrencyWithAllTopic(t *testing.T) {
+	mb := NewMessageBus()
+	mb.Start()
+	defer mb.Stop()
+
+	var maxConcurrent int
+	var mu sync.Mutex
+	currentConcurrent := 0
+
+	var wg sync.WaitGroup
+
+	handler := func(ctx context.Context, msg InboundMessage) {
+		mu.Lock()
+		currentConcurrent++
+		if currentConcurrent > maxConcurrent {
+			maxConcurrent = currentConcurrent
+		}
+		mu.Unlock()
+
+		time.Sleep(10 * time.Millisecond)
+
+		mu.Lock()
+		currentConcurrent--
+		mu.Unlock()
+		wg.Done()
+	}
+
+	// Subscribe to "all" topic
+	mb.Subscribe("all", handler)
+
+	// Send messages to a specific channel (not "all")
+	const numMessages = 30
+	wg.Add(numMessages)
+	for i := 0; i < numMessages; i++ {
+		mb.Send(InboundMessage{
+			SenderID:  fmt.Sprintf("user%d", i),
+			Content:   "test",
+			Channel:   "telegram", // Different from "all"
+			Timestamp: time.Now(),
+		})
+	}
+
+	wg.Wait()
+
+	if maxConcurrent > MaxConcurrentHandlers {
+		t.Errorf("max concurrent handlers %d exceeded limit %d", maxConcurrent, MaxConcurrentHandlers)
+	}
+
+	t.Logf("Max concurrent handlers (all topic): %d (limit: %d)", maxConcurrent, MaxConcurrentHandlers)
+}
+
+// TestMaxConcurrentHandlersConstant verifies the constant is set to a reasonable value.
+func TestMaxConcurrentHandlersConstant(t *testing.T) {
+	if MaxConcurrentHandlers <= 0 {
+		t.Errorf("MaxConcurrentHandlers should be positive, got %d", MaxConcurrentHandlers)
+	}
+	if MaxConcurrentHandlers > 1000 {
+		t.Errorf("MaxConcurrentHandlers should be reasonable (<1000), got %d", MaxConcurrentHandlers)
+	}
+}
+
+// TestBoundedConcurrencyStrict verifies the semaphore strictly limits concurrency
+// by using handlers that block briefly, allowing us to measure concurrent executions.
+func TestBoundedConcurrencyStrict(t *testing.T) {
+	mb := NewMessageBus()
+	mb.Start()
+	defer mb.Stop()
+
+	// Use a barrier to synchronize handler starts
+	startBarrier := make(chan struct{})
+	continueBarrier := make(chan struct{})
+
+	var maxConcurrent int
+	var mu sync.Mutex
+	currentConcurrent := 0
+
+	handler := func(ctx context.Context, msg InboundMessage) {
+		mu.Lock()
+		currentConcurrent++
+		if currentConcurrent > maxConcurrent {
+			maxConcurrent = currentConcurrent
+		}
+		mu.Unlock()
+
+		// Signal that this handler has started
+		startBarrier <- struct{}{}
+
+		// Wait until told to continue
+		<-continueBarrier
+
+		mu.Lock()
+		currentConcurrent--
+		mu.Unlock()
+	}
+
+	mb.Subscribe("test", handler)
+
+	// Send messages equal to the limit plus some extra
+	numMessages := MaxConcurrentHandlers + 20
+
+	// Start sending messages and waiting for handlers to accumulate
+	for i := 0; i < numMessages; i++ {
+		mb.Send(InboundMessage{
+			SenderID:  fmt.Sprintf("user%d", i),
+			Content:   "test",
+			Channel:   "test",
+			Timestamp: time.Now(),
+		})
+
+		// Wait for each handler to start before sending the next
+		// This ensures we build up concurrent handlers
+		if i < MaxConcurrentHandlers {
+			<-startBarrier
+		}
+	}
+
+	// Now let all accumulated handlers complete
+	close(continueBarrier)
+
+	// Give time for all to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// The max should be bounded by the semaphore limit (or close to it)
+	// We use > not >= because there can be some timing variance
+	if maxConcurrent > MaxConcurrentHandlers {
+		t.Errorf("max concurrent handlers %d exceeded limit %d", maxConcurrent, MaxConcurrentHandlers)
+	}
+
+	// Also verify we actually achieved significant concurrency
+	if maxConcurrent < MaxConcurrentHandlers/2 {
+		t.Logf("Warning: max concurrent %d seems low compared to limit %d", maxConcurrent, MaxConcurrentHandlers)
+	}
+
+	t.Logf("Max concurrent handlers: %d (limit: %d)", maxConcurrent, MaxConcurrentHandlers)
+}

@@ -238,13 +238,16 @@ func RegistryWithDefaults(
 	execTimeout int,
 	webTimeout int,
 	messageSender MessageSender,
+	shellAllowList []string,
+	filesystemAllowedPaths []string,
 ) *Registry {
 	registry := NewRegistry()
 
 	// Filesystem tool
 	fsTool := NewFilesystemToolFromConfig(FilesystemToolConfig{
-		Workspace: workspace,
-		Restrict:  restrictToWorkspace,
+		Workspace:    workspace,
+		Restrict:     restrictToWorkspace,
+		AllowedPaths: filesystemAllowedPaths,
 	})
 	if err := registry.Register(fsTool); err != nil {
 		log.Error("failed to register filesystem tool", "error", err)
@@ -274,6 +277,7 @@ func RegistryWithDefaults(
 		Timeout:   0, // Will default in constructor
 		Workspace: workspace,
 		Restrict:  restrictToWorkspace,
+		AllowList: shellAllowList,
 	})
 	_ = registry.Register(shellTool)
 

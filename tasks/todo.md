@@ -65,3 +65,43 @@ Acceptance criteria checklist (copy to track progress):
 - [ ] Agent loop and provider interfaces + mock provider tests
 - [ ] Integration tests and CI pass
 - [ ] Rollout plan executed and Python gateway decommissioned
+
+---
+
+Prepare joshbot for production users — remediation plan
+
+- Goal: Harden security, fix functional gaps, improve reliability/UX, and ship a production-ready PR for review.
+- Acceptance criteria:
+  - Shell/FS/Web tools are safe by default, allow opt-in for broader access.
+  - `/new` fully resets server-side sessions.
+  - Provider errors are structured and fallback works; timeouts respected.
+  - Message bus concurrency is bounded; Telegram/CLI reliability improvements verified.
+  - Memory/skills prompt bloat reduced with controls.
+  - Tests added/updated; `go test ./...` passes.
+  - PR created with clear summary and verification story.
+
+- Working notes:
+  - Default to workspace-only file access; allow `restrict=false` for broader scope.
+  - Shell access is allowed when user enables it; still avoid obviously dangerous commands.
+  - Keep changes minimal and follow existing patterns.
+
+- Tasks:
+  - [ ] Security hardening: shell allowlist or safer execution, SSRF guard, filesystem restrictions
+  - [ ] Session lifecycle: implement real `/new` reset
+  - [x] Provider reliability: fix `WithTimeout`, structured errors/fallback
+  - [ ] Concurrency: bound message bus dispatch
+  - [ ] UX reliability: CLI full-line input, Telegram reconnect/media handling
+  - [x] Memory/skills: reduce prompt bloat, dedupe/limits
+  - [x] Memory/skills: dedupe consolidated facts, expand history window, skills summary-only
+  - [x] Run go tests for modified packages
+  - [ ] Tests: add coverage for providers/Telegram/memory where needed
+  - [ ] Verification: `go test ./...`
+  - [ ] PR: create ready-for-review PR
+
+Provider reliability subtasks:
+- [x] Fix WithTimeout in registry.go to respect input parameter
+- [x] Update LiteLLM provider to return structured FallbackError
+- [x] Add tests for WithTimeout
+- [x] Add tests for FallbackError in LiteLLM provider
+- [x] Add tests for error fallback logic
+- [x] Run relevant go tests

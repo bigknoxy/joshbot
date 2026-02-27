@@ -54,7 +54,7 @@ const (
 	// DefaultMemoryWindow is the default memory window size.
 	DefaultMemoryWindow = 50
 	// CurrentSchemaVersion is the current config schema version.
-	CurrentSchemaVersion = 2
+	CurrentSchemaVersion = 3
 )
 
 // DefaultHome is the default joshbot home directory.
@@ -124,9 +124,11 @@ type ExecConfig struct {
 
 // ToolsConfig holds tools configuration.
 type ToolsConfig struct {
-	Web                 WebToolsConfig `mapstructure:"web" json:"web" yaml:"web"`
-	Exec                ExecConfig     `mapstructure:"exec" json:"exec" yaml:"exec"`
-	RestrictToWorkspace bool           `mapstructure:"restrict_to_workspace" json:"restrict_to_workspace" yaml:"restrict_to_workspace"`
+	Web                    WebToolsConfig `mapstructure:"web" json:"web" yaml:"web"`
+	Exec                   ExecConfig     `mapstructure:"exec" json:"exec" yaml:"exec"`
+	RestrictToWorkspace    bool           `mapstructure:"restrict_to_workspace" json:"restrict_to_workspace" yaml:"restrict_to_workspace"`
+	ShellAllowList         []string       `mapstructure:"shell_allow_list" json:"shell_allow_list" yaml:"shell_allow_list"`
+	FilesystemAllowedPaths []string       `mapstructure:"filesystem_allowed_paths" json:"filesystem_allowed_paths" yaml:"filesystem_allowed_paths"`
 }
 
 // GatewayConfig holds gateway server configuration.
@@ -235,6 +237,22 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Tools.RestrictToWorkspace = v == "true" || v == "1"
 	}
 
+	// Shell allow list (comma-separated)
+	if v := getEnv("TOOLS__SHELL_ALLOW_LIST"); v != "" {
+		cfg.Tools.ShellAllowList = strings.Split(v, ",")
+		for i := range cfg.Tools.ShellAllowList {
+			cfg.Tools.ShellAllowList[i] = strings.TrimSpace(cfg.Tools.ShellAllowList[i])
+		}
+	}
+
+	// Filesystem allowed paths (comma-separated)
+	if v := getEnv("TOOLS__FILESYSTEM_ALLOWED_PATHS"); v != "" {
+		cfg.Tools.FilesystemAllowedPaths = strings.Split(v, ",")
+		for i := range cfg.Tools.FilesystemAllowedPaths {
+			cfg.Tools.FilesystemAllowedPaths[i] = strings.TrimSpace(cfg.Tools.FilesystemAllowedPaths[i])
+		}
+	}
+
 	// Gateway host
 	if v := getEnv("GATEWAY__HOST"); v != "" {
 		cfg.Gateway.Host = v
@@ -310,7 +328,9 @@ func Defaults() *Config {
 			Exec: ExecConfig{
 				Timeout: DefaultExecTimeout,
 			},
-			RestrictToWorkspace: true,
+			RestrictToWorkspace:    true,
+			ShellAllowList:         []string{},
+			FilesystemAllowedPaths: []string{},
 		},
 		Gateway: GatewayConfig{
 			Host: DefaultGatewayHost,
@@ -549,6 +569,19 @@ func migrateConfig(cfg *Config) error {
 			logger.Info("Migrated config to v2: initialized ProviderDefaults")
 		}
 		cfg.SchemaVersion = 2
+	}
+
+	// Migration from v2 to v3
+	if cfg.SchemaVersion < 3 {
+		// Initialize new tool config fields if not present
+		if cfg.Tools.ShellAllowList == nil {
+			cfg.Tools.ShellAllowList = []string{}
+		}
+		if cfg.Tools.FilesystemAllowedPaths == nil {
+			cfg.Tools.FilesystemAllowedPaths = []string{}
+		}
+		logger.Info("Migrated config to v3: added shell allowlist and filesystem allowed paths")
+		cfg.SchemaVersion = 3
 	}
 
 	return nil

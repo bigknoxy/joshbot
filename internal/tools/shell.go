@@ -17,15 +17,17 @@ type ShellTool struct {
 	workspace string
 	restrict  bool
 	denyList  []string
+	allowList []string // If non-empty, only these commands are allowed
 }
 
 // NewShellTool creates a new ShellTool.
-func NewShellTool(timeout time.Duration, workspace string, restrict bool) *ShellTool {
+func NewShellTool(timeout time.Duration, workspace string, restrict bool, allowList ...string) *ShellTool {
 	return &ShellTool{
 		timeout:   timeout,
 		workspace: workspace,
 		restrict:  restrict,
 		denyList:  defaultDenyList(),
+		allowList: allowList,
 	}
 }
 
@@ -51,8 +53,12 @@ func (t *ShellTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *ShellTool) Description() string {
-	return `Execute shell commands. Use this to run terminal commands, scripts, ` +
-		`and interact with the system. Commands are subject to safety restrictions.`
+	desc := `Execute shell commands. Use this to run terminal commands, scripts, `
+	desc += `and interact with the system. Commands are subject to safety restrictions.`
+	if len(t.allowList) > 0 {
+		desc += ` Only whitelisted commands are allowed.`
+	}
+	return desc
 }
 
 // Parameters returns the parameters for the tool.
@@ -86,6 +92,21 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 
 	if cmd == "" {
 		return ToolResult{Error: errors.New("command is required")}
+	}
+
+	// Check allowlist first - if allowlist is set, only allow listed commands
+	if len(t.allowList) > 0 {
+		allowed := false
+		cmdTrimmed := strings.TrimSpace(cmd)
+		for _, allowedCmd := range t.allowList {
+			if cmdTrimmed == allowedCmd || strings.HasPrefix(cmdTrimmed, allowedCmd+" ") {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return ToolResult{Error: fmt.Errorf("command not in allowlist: %s", cmdTrimmed)}
+		}
 	}
 
 	// Check for dangerous patterns
@@ -266,6 +287,7 @@ type ShellToolConfig struct {
 	Workspace string
 	Restrict  bool
 	DenyList  []string
+	AllowList []string
 }
 
 // NewShellToolFromConfig creates a ShellTool from config.
@@ -283,7 +305,7 @@ func NewShellToolFromConfig(cfg ShellToolConfig) *ShellTool {
 		timeout = 60 * time.Second
 	}
 
-	tool := NewShellTool(timeout, workspace, cfg.Restrict)
+	tool := NewShellTool(timeout, workspace, cfg.Restrict, cfg.AllowList...)
 
 	if len(cfg.DenyList) > 0 {
 		tool.denyList = cfg.DenyList

@@ -22,15 +22,17 @@ const (
 
 // FilesystemTool provides file system operations.
 type FilesystemTool struct {
-	workspace string
-	restrict  bool
+	workspace    string
+	restrict     bool
+	allowedPaths []string // Additional paths allowed outside workspace
 }
 
 // NewFilesystemTool creates a new FilesystemTool.
-func NewFilesystemTool(workspace string, restrict bool) *FilesystemTool {
+func NewFilesystemTool(workspace string, restrict bool, allowedPaths ...string) *FilesystemTool {
 	return &FilesystemTool{
-		workspace: workspace,
-		restrict:  restrict,
+		workspace:    workspace,
+		restrict:     restrict,
+		allowedPaths: allowedPaths,
 	}
 }
 
@@ -170,8 +172,12 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 	// If path is absolute, check restrictions
 	if filepath.IsAbs(path) {
 		cleaned := filepath.Clean(path)
+		// Check workspace restriction
 		if t.restrict && !isWithinBase(cleaned, workspace) {
-			return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
+			// Check allowed paths if workspace restriction is enabled
+			if !t.isAllowedPath(cleaned) {
+				return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
+			}
 		}
 		return cleaned, nil
 	}
@@ -182,10 +188,24 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 
 	// Check workspace restriction
 	if t.restrict && !isWithinBase(cleaned, workspace) {
-		return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
+		// Check allowed paths
+		if !t.isAllowedPath(cleaned) {
+			return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
+		}
 	}
 
 	return cleaned, nil
+}
+
+// isAllowedPath checks if the path is in the allowed paths list.
+func (t *FilesystemTool) isAllowedPath(path string) bool {
+	for _, allowed := range t.allowedPaths {
+		allowedClean := filepath.Clean(allowed)
+		if isWithinBase(path, allowedClean) || path == allowedClean {
+			return true
+		}
+	}
+	return false
 }
 
 // readFile reads a file's contents.
@@ -311,7 +331,7 @@ func (t *FilesystemTool) glob(workspace string, args map[string]any) ToolResult 
 
 	if filepath.IsAbs(pattern) {
 		pattern = filepath.Clean(pattern)
-		if t.restrict && !isWithinBase(pattern, workspace) {
+		if t.restrict && !isWithinBase(pattern, workspace) && !t.isAllowedPath(pattern) {
 			return ToolResult{Error: fmt.Errorf("access denied: pattern %s is outside workspace %s", pattern, workspace)}
 		}
 	} else {
@@ -330,7 +350,7 @@ func (t *FilesystemTool) glob(workspace string, args map[string]any) ToolResult 
 
 	output := fmt.Sprintf("Found %d files matching %s:\n", len(matches), args["pattern"])
 	for _, match := range matches {
-		if t.restrict && !isWithinBase(match, workspace) {
+		if t.restrict && !isWithinBase(match, workspace) && !t.isAllowedPath(match) {
 			continue
 		}
 		// Make paths relative to workspace
@@ -425,8 +445,9 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 
 // FilesystemToolConfig holds configuration for the filesystem tool.
 type FilesystemToolConfig struct {
-	Workspace string
-	Restrict  bool
+	Workspace    string
+	Restrict     bool
+	AllowedPaths []string
 }
 
 // NewFilesystemToolFromConfig creates a FilesystemTool from config.
@@ -438,5 +459,5 @@ func NewFilesystemToolFromConfig(cfg FilesystemToolConfig) *FilesystemTool {
 			workspace = filepath.Join(os.Getenv("HOME"), ".joshbot", "workspace")
 		}
 	}
-	return NewFilesystemTool(workspace, cfg.Restrict)
+	return NewFilesystemTool(workspace, cfg.Restrict, cfg.AllowedPaths...)
 }

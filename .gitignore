@@ -34,3 +34,8 @@ workspace/
 .mypy_cache/
 .coverage
 htmlcov/
+
+# Go
+*.test
+*.out
+

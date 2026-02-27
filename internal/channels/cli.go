@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -219,20 +220,24 @@ func (c *CLIChannel) consumeOutbound(ctx context.Context) {
 	}
 }
 
-// readInput reads a line of input from the terminal.
+// readInput reads a line of input from the terminal using bufio.Reader.
 func (c *CLIChannel) readInput() string {
-	// Simple input handling - in production you'd use a proper readline library
 	fmt.Print(c.styles.Prompt.Render(c.prompt))
 
-	var input strings.Builder
-	for {
-		var line string
-		fmt.Scanln(&line)
-		input.WriteString(line)
-		break
+	// Use bufio.Reader for reliable line reading
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		// On error (including EOF), return empty string
+		if err.Error() != "EOF" {
+			c.printError(fmt.Sprintf("Input error: %v", err))
+		}
+		return ""
 	}
 
-	return input.String()
+	// Trim the trailing newline and carriage return
+	line = strings.TrimRight(line, "\r\n")
+	return line
 }
 
 // processInput handles the user's input.

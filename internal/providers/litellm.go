@@ -320,6 +320,63 @@ func (p *LiteLLMProvider) parseError(body []byte, statusCode int) error {
 	return fmt.Errorf("API request failed with status %d: %s", statusCode, string(body))
 }
 
+// ListModels fetches available models from an OpenAI-compatible API.
+func ListModels(cfg Config) ([]string, error) {
+	apiBase := cfg.APIBase
+	if apiBase == "" {
+		apiBase = "https://openrouter.ai/api/v1"
+	}
+	url := strings.TrimRight(apiBase, "/") + "/models"
+
+	httpReq, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	if cfg.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	for k, v := range cfg.ExtraHeaders {
+		httpReq.Header.Set(k, v)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	models := make([]string, len(result.Data))
+	for i, m := range result.Data {
+		models[i] = m.ID
+	}
+
+	return models, nil
+}
+
 // LiteLLMProviderWithTools extends LiteLLMProvider with tool execution capabilities.
 type LiteLLMProviderWithTools struct {
 	*LiteLLMProvider

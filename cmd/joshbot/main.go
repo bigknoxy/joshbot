@@ -34,6 +34,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/session"
 	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/bigknoxy/joshbot/internal/tools"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/urfave/cli/v2"
 )
 
@@ -2093,8 +2094,8 @@ func listProviders(cfg *config.Config) error {
 
 		if exists && p.Enabled {
 			if name == "github-copilot" {
-				token, err := copilot.LoadToken(config.DefaultHome)
-				if err == nil && token != nil && token.AccessToken != "" {
+				copilotToken, copilotErr := copilot.LoadToken(config.DefaultHome)
+				if copilotErr == nil && copilotToken != nil && copilotToken.AccessToken != "" {
 					statusIcon = "✓"
 					statusText = "authenticated"
 				} else {
@@ -2273,6 +2274,31 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			}
 		}
 		p.APIBase = strings.TrimSpace(apiBase)
+
+		defaultModel := providers.GetDefaultModel("openrouter")
+		if exists && p.Model != "" {
+			defaultModel = p.Model
+		}
+		models, err := providers.ListModels(providers.Config{
+			APIKey:  p.APIKey,
+			APIBase: p.APIBase,
+		})
+		if err != nil {
+			fmt.Printf("\nCould not fetch models: %v\n", err)
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		} else if len(models) > 0 {
+			selected := promptModelSelection(models, defaultModel)
+			p.Model = selected
+		} else {
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		}
+		var modelInput string
+		fmt.Scanln(&modelInput)
+		if modelInput == "" && p.Model == "" {
+			p.Model = defaultModel
+		} else if modelInput != "" {
+			p.Model = strings.TrimSpace(modelInput)
+		}
 	case "nvidia":
 		if exists && p.APIBase != "" {
 			fmt.Printf("API base URL [%s]: ", p.APIBase)
@@ -2288,6 +2314,20 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			}
 		}
 		p.APIBase = strings.TrimSpace(apiBase)
+
+		fmt.Println("\nNote: NVIDIA NIM does not support model listing via API.")
+		fmt.Printf("Available models: https://docs.nvidia.com/nim/large-language-models/1.15.0/models.html\n")
+		defaultModel := providers.GetDefaultModel("nvidia")
+		if exists && p.Model != "" {
+			defaultModel = p.Model
+		}
+		fmt.Printf("Model (default: %s): ", defaultModel)
+		var modelInput string
+		fmt.Scanln(&modelInput)
+		if modelInput == "" {
+			modelInput = defaultModel
+		}
+		p.Model = strings.TrimSpace(modelInput)
 	case "groq":
 		if exists && p.APIBase != "" {
 			fmt.Printf("API base URL [%s]: ", p.APIBase)
@@ -2303,6 +2343,31 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			}
 		}
 		p.APIBase = strings.TrimSpace(apiBase)
+
+		defaultModel := providers.GetDefaultModel("groq")
+		if exists && p.Model != "" {
+			defaultModel = p.Model
+		}
+		models, err := providers.ListModels(providers.Config{
+			APIKey:  p.APIKey,
+			APIBase: p.APIBase,
+		})
+		if err != nil {
+			fmt.Printf("\nCould not fetch models: %v\n", err)
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		} else if len(models) > 0 {
+			selected := promptModelSelection(models, defaultModel)
+			p.Model = selected
+		} else {
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		}
+		var modelInput string
+		fmt.Scanln(&modelInput)
+		if modelInput == "" && p.Model == "" {
+			p.Model = defaultModel
+		} else if modelInput != "" {
+			p.Model = strings.TrimSpace(modelInput)
+		}
 	case "ollama":
 		if exists && p.APIBase != "" {
 			fmt.Printf("Ollama base URL [%s]: ", p.APIBase)
@@ -2375,6 +2440,32 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 
 		fmt.Println("\nNote: GitHub Copilot is configured via OAuth.")
 		fmt.Println("The access token is stored securely in ~/.joshbot/auth.json")
+
+		token, err = copilot.LoadToken(config.DefaultHome)
+		if err == nil && token != nil && token.AccessToken != "" {
+			defaultModel := providers.GetDefaultModel("github-copilot")
+			if exists && p.Model != "" {
+				defaultModel = p.Model
+			}
+			var models []string
+			models, err = copilot.ListModels(token.AccessToken)
+			if err != nil {
+				fmt.Printf("\nCould not fetch models: %v\n", err)
+				fmt.Printf("Model (default: %s): ", defaultModel)
+			} else if len(models) > 0 {
+				selected := promptModelSelection(models, defaultModel)
+				p.Model = selected
+			} else {
+				fmt.Printf("Model (default: %s): ", defaultModel)
+			}
+			var modelInput string
+			fmt.Scanln(&modelInput)
+			if modelInput == "" && p.Model == "" {
+				p.Model = defaultModel
+			} else if modelInput != "" {
+				p.Model = strings.TrimSpace(modelInput)
+			}
+		}
 	}
 
 	// Validate credentials if API key was provided
@@ -2446,6 +2537,94 @@ func promptOllamaModelSelection(models []providers.ModelInfo) string {
 	return input
 }
 
+var modelListStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
+var selectedModelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+var helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+func promptModelSelection(models []string, defaultModel string) string {
+	if len(models) == 0 {
+		return defaultModel
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+
+	filtered := models
+	filter := ""
+
+	for {
+		fmt.Println()
+		fmt.Printf("Available models (default: %s):\n", defaultModel)
+		if filter != "" {
+			fmt.Printf("  Filter: %s (%d matches)\n", filter, len(filtered))
+		}
+		fmt.Println(helpStyle.Render("  Type number to select, or text to filter (Enter for default):"))
+		fmt.Println()
+
+		maxShow := 15
+		if len(filtered) > maxShow {
+			for i, m := range filtered[:maxShow] {
+				if m == defaultModel {
+					fmt.Printf("  %d. %s %s\n", i+1, selectedModelStyle.Render(m), helpStyle.Render("(default)"))
+				} else {
+					fmt.Printf("  %d. %s\n", i+1, modelListStyle.Render(m))
+				}
+			}
+			fmt.Printf("\n  ... and %d more (type more to filter, or number to select)\n", len(filtered)-maxShow)
+		} else {
+			for i, m := range filtered {
+				if m == defaultModel {
+					fmt.Printf("  %d. %s %s\n", i+1, selectedModelStyle.Render(m), helpStyle.Render("(default)"))
+				} else {
+					fmt.Printf("  %d. %s\n", i+1, modelListStyle.Render(m))
+				}
+			}
+		}
+
+		fmt.Println()
+		fmt.Print("> ")
+
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		if input == "" {
+			return defaultModel
+		}
+
+		if num, err := strconv.Atoi(input); err == nil && num >= 1 && num <= len(filtered) {
+			return filtered[num-1]
+		}
+
+		newFilter := input
+		if newFilter == filter {
+			if len(filtered) == 1 {
+				return filtered[0]
+			}
+			fmt.Println(helpStyle.Render("  Press Enter for default or type a number"))
+			continue
+		}
+
+		filtered = filterModels(models, newFilter)
+		filter = newFilter
+
+		if len(filtered) == 0 {
+			fmt.Printf("\n  No models match '%s', showing all\n\n", filter)
+			filtered = models
+			filter = ""
+		}
+	}
+}
+
+func filterModels(models []string, filter string) []string {
+	filterLower := strings.ToLower(filter)
+	var result []string
+	for _, m := range models {
+		if strings.Contains(strings.ToLower(m), filterLower) {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
 // validateProviderCredentials tests the API credentials for a provider.
 func validateProviderCredentials(provider, apiKey, apiBase string) error {
 	switch provider {
@@ -2487,7 +2666,13 @@ func setDefaultProvider(cfg *config.Config) *config.Config {
 	// Find configured providers
 	var configured []string
 	for name, p := range cfg.Providers {
-		if p.APIKey != "" {
+		if name == "github-copilot" {
+			// Check for OAuth token
+			token, err := copilot.LoadToken(config.DefaultHome)
+			if err == nil && token != nil && token.AccessToken != "" {
+				configured = append(configured, name)
+			}
+		} else if p.APIKey != "" {
 			configured = append(configured, name)
 		}
 	}
@@ -2706,6 +2891,42 @@ func runAuthCopilot(c *cli.Context) error {
 
 	fmt.Println()
 	fmt.Println("Successfully authenticated with GitHub Copilot!")
+
+	fmt.Println("\nFetching available models...")
+	models, err := copilot.ListModels(token.AccessToken)
+	if err != nil {
+		fmt.Printf("Could not fetch models: %v\n", err)
+		fmt.Println("You can configure models later with 'joshbot configure'.")
+		return nil
+	}
+
+	if len(models) == 0 {
+		fmt.Println("No models available.")
+		return nil
+	}
+
+	defaultModel := providers.GetDefaultModel("github-copilot")
+	fmt.Println("\nSelect a model:")
+	selected := promptModelSelection(models, defaultModel)
+
+	cfg, _ := loadConfig("")
+	if cfg == nil {
+		cfg = &config.Config{Providers: make(map[string]config.ProviderConfig)}
+	}
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]config.ProviderConfig)
+	}
+	cfg.Providers["github-copilot"] = config.ProviderConfig{
+		Enabled: true,
+		Model:   selected,
+	}
+
+	if err := config.Save(cfg); err != nil {
+		fmt.Printf("Warning: Could not save config: %v\n", err)
+	} else {
+		fmt.Printf("\nModel '%s' saved to config.\n", selected)
+	}
+
 	fmt.Println("You can now use 'joshbot agent' with GitHub Copilot.")
 	return nil
 }

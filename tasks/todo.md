@@ -120,3 +120,25 @@ Provider reliability subtasks:
 - [x] Add Enabled field to ProviderEntry in multiprovider for runtime filtering
 - [x] Add tests for enabled/disabled provider behavior in fallback
 - [x] Run verification: go test ./..., go vet ./..., go build ./cmd/joshbot
+
+---
+
+# Current Task: Create PR and monitor CI
+
+- Goal: Create a new branch, open a PR with current changes, and monitor CI to green. If CI fails, diagnose, fix, and update PR until green.
+- Acceptance criteria:
+  - PR exists from a new branch with a clear summary.
+  - CI checks for the PR are green, or failures are fixed and rerun to green.
+  - Provide PR URL and final CI status.
+
+- Working notes:
+  - Use existing repo conventions for branch naming and PR summary.
+  - Do not modify unrelated files; keep changes minimal if fixes are needed.
+
+- Plan:
+  - [ ] Restate goal + acceptance criteria
+  - [ ] Inspect git status, diffs, and recent commits for PR scope
+  - [ ] Create new branch and open PR with summary
+  - [ ] Monitor CI checks; if failing, diagnose root cause
+  - [ ] Implement minimal fix, update PR, and re-check CI
+  - [ ] Report PR URL and final CI status

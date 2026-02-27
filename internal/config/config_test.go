@@ -355,7 +355,7 @@ func TestConfigString(t *testing.T) {
 	cfg := Defaults()
 	str := cfg.String()
 
-	expected := "Config{SchemaVersion: 3, Model: arcee-ai/trinity-large-preview:free, LogLevel: info, Gateway: 0.0.0.0:18790}"
+	expected := "Config{SchemaVersion: 4, Model: arcee-ai/trinity-large-preview:free, LogLevel: info, Gateway: 0.0.0.0:18790}"
 	if str != expected {
 		t.Errorf("String() = %v, want %v", str, expected)
 	}
@@ -561,6 +561,111 @@ func TestMigrateConfig(t *testing.T) {
 	// Model should be migrated
 	if cfg.Agents.Defaults.Model == "google/gemma-2-9b-it:free" {
 		t.Error("model should have been migrated")
+	}
+}
+
+func TestMigrateConfigV4_OllamaNotAutoEnabled(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Temporarily override DefaultHome
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+
+	defer func() {
+		DefaultHome = oldHome
+	}()
+
+	// Create a config file with v3 schema that has Ollama configured but NOT enabled
+	// This simulates an old config where user set up Ollama base URL but never enabled it
+	configPath := filepath.Join(tmpDir, "config.json")
+	configContent := `{
+		"schema_version": 3,
+		"providers": {
+			"ollama": {
+				"api_base": "http://localhost:11434",
+				"model": "llama3.2"
+			},
+			"openrouter": {
+				"api_key": "sk-test123"
+			}
+		}
+	}`
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Errorf("Load() error = %v", err)
+	}
+
+	// Check migration to v4
+	if cfg.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("expected schema version %d after migration, got %d", CurrentSchemaVersion, cfg.SchemaVersion)
+	}
+
+	// Ollama should NOT be auto-enabled - Enabled should remain false
+	if cfg.Providers["ollama"].Enabled {
+		t.Error("Ollama should NOT be auto-enabled after migration v4")
+	}
+
+	// OpenRouter should also NOT be auto-enabled (no explicit Enabled: true in old config)
+	if cfg.Providers["openrouter"].Enabled {
+		t.Error("OpenRouter should NOT be auto-enabled after migration v4")
+	}
+}
+
+func TestMigrateConfigV4_ExplicitlyEnabledProviders(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Temporarily override DefaultHome
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+
+	defer func() {
+		DefaultHome = oldHome
+	}()
+
+	// Create a config file with v3 schema that has providers explicitly enabled
+	configPath := filepath.Join(tmpDir, "config.json")
+	configContent := `{
+		"schema_version": 3,
+		"providers": {
+			"ollama": {
+				"api_base": "http://localhost:11434",
+				"enabled": true
+			},
+			"openrouter": {
+				"api_key": "sk-test123",
+				"enabled": true
+			}
+		}
+	}`
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Errorf("Load() error = %v", err)
+	}
+
+	// Check migration to v4
+	if cfg.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("expected schema version %d after migration, got %d", CurrentSchemaVersion, cfg.SchemaVersion)
+	}
+
+	// Explicitly enabled providers should remain enabled
+	if !cfg.Providers["ollama"].Enabled {
+		t.Error("Ollama should remain enabled after migration v4")
+	}
+
+	if !cfg.Providers["openrouter"].Enabled {
+		t.Error("OpenRouter should remain enabled after migration v4")
 	}
 }
 
@@ -800,7 +905,7 @@ func TestToolsEnvOverrides(t *testing.T) {
 }
 
 func TestSchemaVersion(t *testing.T) {
-	if CurrentSchemaVersion != 3 {
-		t.Errorf("expected schema version 3, got %d", CurrentSchemaVersion)
+	if CurrentSchemaVersion != 4 {
+		t.Errorf("expected schema version 4, got %d", CurrentSchemaVersion)
 	}
 }

@@ -54,7 +54,7 @@ const (
 	// DefaultMemoryWindow is the default memory window size.
 	DefaultMemoryWindow = 50
 	// CurrentSchemaVersion is the current config schema version.
-	CurrentSchemaVersion = 3
+	CurrentSchemaVersion = 4
 )
 
 // DefaultHome is the default joshbot home directory.
@@ -582,6 +582,34 @@ func migrateConfig(cfg *Config) error {
 		}
 		logger.Info("Migrated config to v3: added shell allowlist and filesystem allowed paths")
 		cfg.SchemaVersion = 3
+	}
+
+	// Migration from v3 to v4
+	if cfg.SchemaVersion < 4 {
+		// Ensure provider Enabled flags are explicitly handled for backward compatibility.
+		// Providers that have configuration (API key, base URL, etc.) but no explicit
+		// Enabled flag should NOT be auto-enabled - they must remain disabled unless
+		// the user explicitly enables them. This applies especially to Ollama which
+		// runs locally and should not be auto-started.
+		//
+		// Note: Go's zero value for bool is false, so existing configs without Enabled
+		// will already have Enabled=false. This migration adds explicit logging
+		// and ensures the field exists for all providers to make the behavior clear.
+		for name, p := range cfg.Providers {
+			// If provider has config but Enabled was not explicitly set (defaulting to false),
+			// log that it remains disabled for backward compatibility
+			if p.Enabled {
+				logger.Info("Provider explicitly enabled in config", "provider", name)
+			} else {
+				hasConfig := p.APIKey != "" || p.APIBase != "" || p.Model != ""
+				if hasConfig {
+					logger.Info("Provider has config but remains disabled (explicit enable required)",
+						"provider", name)
+				}
+			}
+		}
+		logger.Info("Migrated config to v4: provider enabled flag backward compatibility")
+		cfg.SchemaVersion = 4
 	}
 
 	return nil

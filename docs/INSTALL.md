@@ -346,7 +346,9 @@ The main config file is `~/.joshbot/config.json`:
       "search": { "api_key": "" }
     },
     "exec": { "timeout": 60 },
-    "restrict_to_workspace": true
+    "restrict_to_workspace": true,
+    "shell_allow_list": [],
+    "filesystem_allowed_paths": []
   },
   "gateway": {
     "host": "0.0.0.0",
@@ -376,6 +378,8 @@ export JOSHBOT_CHANNELS__TELEGRAM__TOKEN="123456:ABC..."
 # Tool settings
 export JOSHBOT_TOOLS__RESTRICT_TO_WORKSPACE="true"
 export JOSHBOT_TOOLS__EXEC__TIMEOUT="120"
+export JOSHBOT_TOOLS__SHELL_ALLOW_LIST="git,status,go,test"
+export JOSHBOT_TOOLS__FILESYSTEM_ALLOWED_PATHS="/var/log,/opt/shared"
 
 # Logging
 export JOSHBOT_LOG_LEVEL="debug"
@@ -429,6 +433,29 @@ For sandboxed operation (recommended for production):
 ```
 
 This limits file and shell operations to the workspace directory only.
+
+**Fine-grained tool allowances:**
+
+- `tools.shell_allow_list` (array): If set, only these commands (prefix match) are allowed to run.
+- `tools.filesystem_allowed_paths` (array): Additional absolute paths allowed outside the workspace.
+
+Example:
+
+```json
+{
+  "tools": {
+    "restrict_to_workspace": true,
+    "shell_allow_list": ["git", "go", "ls"],
+    "filesystem_allowed_paths": ["/var/log", "/opt/shared"]
+  }
+}
+```
+
+> Tip: When `shell_allow_list` is non-empty, commands must match an entry exactly or use it as a prefix (e.g., `git status`).
+
+#### Web Fetch SSRF Protection
+
+`web_fetch` blocks localhost, private IP ranges, and metadata hostnames (for example: `127.0.0.1`, `10.0.0.0/8`, `169.254.169.254`, and `metadata.google.internal`). If you see **"URL blocked by security policy"**, use a public URL or proxy through a safe external endpoint.
 
 #### Telegram Setup
 
@@ -601,6 +628,23 @@ export PATH=$PATH:$(go env GOPATH)/bin
    ```
 
 #### Permission denied
+
+#### GitHub Copilot not authenticated
+
+**Problem:** Copilot models return "not authenticated" or "requires authentication".
+
+**Solution:**
+```bash
+joshbot auth github-copilot
+```
+
+The device flow saves a token to `~/.joshbot/auth.json` and enables the `github-copilot` provider in `config.json`. If the token expires, rerun the auth command.
+
+#### "URL blocked by security policy"
+
+**Problem:** `web_fetch` refuses a URL.
+
+**Solution:** Use a public URL. `web_fetch` blocks localhost/private IPs and metadata endpoints to prevent SSRF.
 
 **Problem:** Can't write to `~/.joshbot/`.
 

@@ -393,7 +393,8 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 
 	// Register GitHub Copilot (if configured)
 	if p, ok := cfg.Providers["github-copilot"]; ok && p.Enabled {
-		token, err := copilot.LoadToken(config.DefaultHome)
+		homeDir, _ := copilot.GetHomeDir()
+		token, err := copilot.LoadToken(homeDir)
 		if err != nil || token == nil || token.AccessToken == "" {
 			log.Warn("GitHub Copilot not authenticated", "error", err)
 			log.Warn("Run: joshbot auth github-copilot")
@@ -1630,7 +1631,8 @@ func selectModel(existingCfg *config.Config, provider string, modelFlag string) 
 
 	// For GitHub Copilot, fetch models from the catalog
 	if provider == "github-copilot" {
-		token, err := copilot.LoadToken(config.DefaultHome)
+		homeDir, _ := copilot.GetHomeDir()
+		token, err := copilot.LoadToken(homeDir)
 		if err == nil && token != nil && token.AccessToken != "" {
 			fmt.Println("\n[Step 4] Model")
 			fmt.Println("Fetching available models from GitHub Copilot...")
@@ -2125,7 +2127,8 @@ func listProviders(cfg *config.Config) error {
 
 		if exists && p.Enabled {
 			if name == "github-copilot" {
-				copilotToken, copilotErr := copilot.LoadToken(config.DefaultHome)
+				homeDir, _ := copilot.GetHomeDir()
+				copilotToken, copilotErr := copilot.LoadToken(homeDir)
 				if copilotErr == nil && copilotToken != nil && copilotToken.AccessToken != "" {
 					statusIcon = "✓"
 					statusText = "authenticated"
@@ -2171,7 +2174,8 @@ func runConfigureWizard(cfg *config.Config) error {
 
 			if exists && p.Enabled {
 				if name == "github-copilot" {
-					token, err := copilot.LoadToken(config.DefaultHome)
+					homeDir, _ := copilot.GetHomeDir()
+					token, err := copilot.LoadToken(homeDir)
 					if err == nil && token != nil && token.AccessToken != "" {
 						icon = "✓"
 						status = "authenticated"
@@ -2454,7 +2458,8 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 		fmt.Println("You will be shown a URL and code to authorize.")
 		fmt.Println()
 
-		token, err := copilot.LoadToken(config.DefaultHome)
+		homeDir, _ := copilot.GetHomeDir()
+		token, err := copilot.LoadToken(homeDir)
 		if err == nil && token != nil && token.AccessToken != "" {
 			fmt.Println("Already authenticated with GitHub Copilot.")
 			fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate if needed.")
@@ -2472,7 +2477,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 		fmt.Println("\nNote: GitHub Copilot is configured via OAuth.")
 		fmt.Println("The access token is stored securely in ~/.joshbot/auth.json")
 
-		token, err = copilot.LoadToken(config.DefaultHome)
+		token, err = copilot.LoadToken(homeDir)
 		if err == nil && token != nil && token.AccessToken != "" {
 			defaultModel := providers.GetDefaultModel("github-copilot")
 			if exists && p.Model != "" {
@@ -2696,10 +2701,11 @@ func validateProviderCredentials(provider, apiKey, apiBase string) error {
 func setDefaultProvider(cfg *config.Config) *config.Config {
 	// Find configured providers
 	var configured []string
+	homeDir, _ := copilot.GetHomeDir()
 	for name, p := range cfg.Providers {
 		if name == "github-copilot" {
 			// Check for OAuth token
-			token, err := copilot.LoadToken(config.DefaultHome)
+			token, err := copilot.LoadToken(homeDir)
 			if err == nil && token != nil && token.AccessToken != "" {
 				configured = append(configured, name)
 			}
@@ -2898,7 +2904,10 @@ func runServiceStatus(c *cli.Context) error {
 }
 
 func runAuthCopilot(c *cli.Context) error {
-	homeDir := config.DefaultHome
+	homeDir, err := copilot.GetHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
 
 	token, err := copilot.LoadToken(homeDir)
 	if err == nil && token != nil && token.AccessToken != "" {
@@ -2940,7 +2949,11 @@ func runAuthCopilot(c *cli.Context) error {
 	fmt.Println("\nSelect a model:")
 	selected := promptModelSelection(models, defaultModel)
 
-	cfg, _ := loadConfig("")
+	cfg, err := loadConfig("")
+	if err != nil {
+		fmt.Printf("Warning: Could not load existing config: %v\n", err)
+		fmt.Println("Creating new config with GitHub Copilot settings.")
+	}
 	if cfg == nil {
 		cfg = &config.Config{Providers: make(map[string]config.ProviderConfig)}
 	}
@@ -2963,7 +2976,10 @@ func runAuthCopilot(c *cli.Context) error {
 }
 
 func runAuthStatus(c *cli.Context) error {
-	homeDir := config.DefaultHome
+	homeDir, err := copilot.GetHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
 
 	token, err := copilot.LoadToken(homeDir)
 

@@ -106,3 +106,36 @@ Return a helpful error message explaining alternatives when systemctl is not fou
 4. For Telegram: offer Keep/Change/Disable options when already configured
 
 **Prevention rule**: Always show current values as defaults when offering to "keep" or "reconfigure" existing settings.
+
+---
+
+## 2026-02-27 13:45: Tool Config & Security Behavior Documentation Updates
+
+**Context**: Added new tool configuration fields and clarified security behavior for SSRF protection and GitHub Copilot OAuth.
+
+**Decision**:
+- Document `tools.shell_allow_list` and `tools.filesystem_allowed_paths` in configuration docs and README.
+- Explicitly state SSRF protection behavior for `web_fetch` (blocks localhost/private IPs/metadata hosts).
+- Document GitHub Copilot device OAuth flow, token storage, and troubleshooting.
+
+**Reasoning**: These settings and behaviors are safety-critical and frequently referenced during onboarding and troubleshooting.
+
+---
+
+## 2026-02-27 Copilot OAuth Authentication Path Bug
+
+**Context**: Successful OAuth device flow but bot reports "not authenticated" and "provider not configured".
+
+**Root Cause**: 
+- `LoadToken()` and `SaveToken()` in `internal/copilot/auth.go` expect a **home directory** (`~`) as input
+- They internally append `.joshbot` to create the auth file path: `~/.joshbot/auth.json`
+- But callers in `main.go` were passing `config.DefaultHome` which is already `~/.joshbot`
+- This resulted in double `.joshbot` path: `~/.joshbot/.joshbot/auth.json`
+- Token was saved to wrong location and never found on subsequent loads
+
+**Fix**:
+- Added `GetHomeDir()` and `AuthFilePath()` helper functions in `internal/copilot/auth.go`
+- Updated all callers in `main.go` to use `copilot.GetHomeDir()` to get the correct path
+- Also fixed ignored error in `runAuthCopilot` where `loadConfig()` failure would silently overwrite existing config
+
+**Prevention Rule**: When a function expects a home directory (`~`), never pass a path that already contains `.joshbot`. Always verify the input path format matches the function's documented expectations.

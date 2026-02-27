@@ -66,6 +66,17 @@ func (p *LiteLLMProvider) Config() Config {
 	return p.cfg
 }
 
+// newFallbackError creates a FallbackError for network errors.
+func (p *LiteLLMProvider) newFallbackError(err error, model string) error {
+	return &FallbackError{
+		StatusCode: 0,
+		Message:    err.Error(),
+		Provider:   p.Name(),
+		Model:      model,
+		Cause:      err,
+	}
+}
+
 // Chat sends a chat request and returns a chat response.
 func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	// Use default model if not specified
@@ -118,13 +129,7 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		// Wrap network errors in FallbackError to trigger fallback
-		return nil, &FallbackError{
-			StatusCode: 0,
-			Message:    err.Error(),
-			Provider:   p.Name(),
-			Model:      req.Model,
-			Cause:      err,
-		}
+		return nil, p.newFallbackError(err, req.Model)
 	}
 	defer resp.Body.Close()
 
@@ -205,13 +210,7 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		// Wrap network errors in FallbackError to trigger fallback
-		return nil, &FallbackError{
-			StatusCode: 0,
-			Message:    err.Error(),
-			Provider:   p.Name(),
-			Model:      req.Model,
-			Cause:      err,
-		}
+		return nil, p.newFallbackError(err, req.Model)
 	}
 
 	// Check for HTTP errors

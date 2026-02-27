@@ -488,3 +488,138 @@ func TestMultiProvider_TimeoutContext(t *testing.T) {
 		t.Logf("got error: %v", err)
 	}
 }
+
+func TestMultiProvider_DisabledProviderNotInFallbackChain(t *testing.T) {
+	mp := NewMultiProvider(MultiProviderConfig{
+		DefaultProvider: "enabled1",
+	})
+
+	// Register enabled provider
+	enabled1 := &mockProvider{name: "enabled1"}
+	mp.Register("enabled1", enabled1, "model1", 0, true)
+
+	// Register disabled provider
+	disabled := &mockProvider{name: "disabled"}
+	mp.Register("disabled", disabled, "model2", 1, false)
+
+	// Register another enabled provider
+	enabled2 := &mockProvider{name: "enabled2"}
+	mp.Register("enabled2", enabled2, "model3", 2, true)
+
+	// Get fallback chain
+	chain := mp.getFallbackChain("enabled1")
+
+	// Should only have 2 enabled providers
+	if len(chain) != 2 {
+		t.Errorf("getFallbackChain() len = %d, want 2", len(chain))
+	}
+
+	// Check provider names
+	if chain[0].Name != "enabled1" {
+		t.Errorf("first provider = %q, want %q", chain[0].Name, "enabled1")
+	}
+	if chain[1].Name != "enabled2" {
+		t.Errorf("second provider = %q, want %q", chain[1].Name, "enabled2")
+	}
+}
+
+func TestMultiProvider_DisabledProviderNotUsed(t *testing.T) {
+	mp := NewMultiProvider(MultiProviderConfig{
+		DefaultProvider: "primary",
+	})
+
+	// Primary is disabled
+	primary := &mockProvider{
+		name:    "primary",
+		chatErr: &FallbackError{StatusCode: 503, Message: "unavailable", Provider: "primary"},
+	}
+	mp.Register("primary", primary, "model1", 0, false)
+
+	// Secondary is enabled but should fail
+	secondary := &mockProvider{
+		name:    "secondary",
+		chatErr: &FallbackError{StatusCode: 503, Message: "unavailable", Provider: "secondary"},
+	}
+	mp.Register("secondary", secondary, "model2", 1, true)
+
+	// Should skip primary and try secondary
+	_, err := mp.Chat(context.Background(), ChatRequest{
+		Model:    "test",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+
+	// Both should fail, but it should try both (not just primary)
+	if err == nil {
+		t.Error("expected error when all providers fail")
+	}
+
+	// Verify primary was never called (since it's disabled)
+	if primary.chatCalls > 0 {
+		t.Errorf("disabled provider should not be called, but was called %d times", primary.chatCalls)
+	}
+
+	// Secondary should have been called
+	if secondary.chatCalls != 1 {
+		t.Errorf("secondary provider should be called once, was called %d times", secondary.chatCalls)
+	}
+}
+
+func TestMultiProvider_SetEnabled(t *testing.T) {
+	mp := NewMultiProvider(MultiProviderConfig{
+		DefaultProvider: "provider1",
+	})
+
+	p1 := &mockProvider{name: "provider1"}
+	p2 := &mockProvider{name: "provider2"}
+
+	// Register both as enabled initially
+	mp.Register("provider1", p1, "model1", 0, true)
+	mp.Register("provider2", p2, "model2", 1, true)
+
+	// Disable provider2
+	mp.SetEnabled("provider2", false)
+
+	// Check that HasProvider returns false for disabled
+	if mp.HasProvider("provider2") {
+		t.Error("HasProvider should return false for disabled provider")
+	}
+
+	// Check that provider2 is not in fallback chain
+	chain := mp.getFallbackChain("provider1")
+	if len(chain) != 1 {
+		t.Errorf("getFallbackChain() len = %d, want 1", len(chain))
+	}
+
+	// Re-enable provider2
+	mp.SetEnabled("provider2", true)
+
+	// Check that HasProvider returns true
+	if !mp.HasProvider("provider2") {
+		t.Error("HasProvider should return true for re-enabled provider")
+	}
+
+	// Check fallback chain again
+	chain = mp.getFallbackChain("provider1")
+	if len(chain) != 2 {
+		t.Errorf("getFallbackChain() len = %d, want 2", len(chain))
+	}
+}
+
+func TestMultiProvider_DefaultEnabled(t *testing.T) {
+	mp := NewMultiProvider(MultiProviderConfig{
+		DefaultProvider: "provider1",
+	})
+
+	// Register without explicit enabled parameter (should default to true)
+	p1 := &mockProvider{name: "provider1"}
+	mp.Register("provider1", p1, "model1", 0)
+
+	if !mp.HasProvider("provider1") {
+		t.Error("HasProvider should return true for provider registered without explicit enabled")
+	}
+
+	chain := mp.getFallbackChain("provider1")
+	if len(chain) != 1 {
+		t.Errorf("getFallbackChain() len = %d, want 1", len(chain))
+	}
+}

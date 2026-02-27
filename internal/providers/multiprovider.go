@@ -13,6 +13,7 @@ type ProviderEntry struct {
 	Provider Provider // The actual provider instance
 	Model    string   // Default model for this provider
 	Priority int      // Fallback order (0 = primary, higher = later fallback)
+	Enabled  bool     // Whether this provider is enabled for fallback
 }
 
 // MultiProviderConfig holds configuration for the multi-provider.
@@ -49,15 +50,21 @@ func NewMultiProvider(cfg MultiProviderConfig) *MultiProvider {
 }
 
 // Register adds a provider to the fallback chain.
-func (mp *MultiProvider) Register(name string, provider Provider, model string, priority int) {
+func (mp *MultiProvider) Register(name string, provider Provider, model string, priority int, enabled ...bool) {
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
+
+	isEnabled := true
+	if len(enabled) > 0 {
+		isEnabled = enabled[0]
+	}
 
 	entry := &ProviderEntry{
 		Name:     name,
 		Provider: provider,
 		Model:    model,
 		Priority: priority,
+		Enabled:  isEnabled,
 	}
 
 	mp.entries[name] = entry
@@ -265,7 +272,7 @@ func (mp *MultiProvider) resolveModel(entry *ProviderEntry, requestedModel strin
 	return entry.Provider.Config().Model
 }
 
-// getFallbackChain returns providers in fallback order.
+// getFallbackChain returns providers in fallback order, excluding disabled providers.
 func (mp *MultiProvider) getFallbackChain(startProvider string) []*ProviderEntry {
 	mp.mu.RLock()
 	defer mp.mu.RUnlock()
@@ -273,15 +280,15 @@ func (mp *MultiProvider) getFallbackChain(startProvider string) []*ProviderEntry
 	result := make([]*ProviderEntry, 0, len(mp.orderedEntries))
 	seen := make(map[string]bool)
 
-	// Start with specified provider
-	if entry, exists := mp.entries[startProvider]; exists {
+	// Start with specified provider (only if enabled)
+	if entry, exists := mp.entries[startProvider]; exists && entry.Enabled {
 		result = append(result, entry)
 		seen[startProvider] = true
 	}
 
-	// Add remaining by priority
+	// Add remaining enabled providers by priority
 	for _, entry := range mp.orderedEntries {
-		if !seen[entry.Name] {
+		if !seen[entry.Name] && entry.Enabled {
 			result = append(result, entry)
 			seen[entry.Name] = true
 		}
@@ -302,10 +309,20 @@ func (mp *MultiProvider) GetProviderNames() []string {
 	return names
 }
 
-// HasProvider returns true if a provider is registered.
+// HasProvider returns true if a provider is registered and enabled.
 func (mp *MultiProvider) HasProvider(name string) bool {
 	mp.mu.RLock()
 	defer mp.mu.RUnlock()
-	_, exists := mp.entries[name]
-	return exists
+	entry, exists := mp.entries[name]
+	return exists && entry.Enabled
+}
+
+// SetEnabled enables or disables a provider in the fallback chain.
+func (mp *MultiProvider) SetEnabled(name string, enabled bool) {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if entry, exists := mp.entries[name]; exists {
+		entry.Enabled = enabled
+		mp.rebuildOrderedList()
+	}
 }

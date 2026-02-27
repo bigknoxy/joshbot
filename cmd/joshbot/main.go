@@ -307,8 +307,8 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		multiProvider.SetDefault("openrouter")
 	}
 
-	// Register OpenRouter (always registered if configured)
-	if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" {
+	// Register OpenRouter (if configured and enabled)
+	if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" && p.Enabled {
 		openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
 			APIKey:       p.APIKey,
 			APIBase:      p.APIBase,
@@ -320,7 +320,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		if err != nil {
 			log.Warn("Failed to create OpenRouter provider", "error", err)
 		} else {
-			multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0)
+			multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0, p.Enabled)
 		}
 	}
 
@@ -338,7 +338,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "nvidia"); idx >= 0 {
 				priority = idx + 1
 			}
-			multiProvider.Register("nvidia", nvidiaProvider, "", priority)
+			multiProvider.Register("nvidia", nvidiaProvider, "", priority, p.Enabled)
 		}
 	}
 
@@ -356,7 +356,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "groq"); idx >= 0 {
 				priority = idx + 1
 			}
-			multiProvider.Register("groq", groqProvider, "", priority)
+			multiProvider.Register("groq", groqProvider, "", priority, p.Enabled)
 		}
 	}
 
@@ -387,7 +387,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 			if model == "" {
 				model = providers.GetDefaultModel("ollama")
 			}
-			multiProvider.Register("ollama", ollamaProvider, model, priority)
+			multiProvider.Register("ollama", ollamaProvider, model, priority, p.Enabled)
 		}
 	}
 
@@ -422,7 +422,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 						break
 					}
 				}
-				multiProvider.Register("github-copilot", copilotProvider, copilotCfg.Model, priority)
+				multiProvider.Register("github-copilot", copilotProvider, copilotCfg.Model, priority, p.Enabled)
 				log.Info("Registered provider", "name", "github-copilot", "priority", priority)
 			}
 		}

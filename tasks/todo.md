@@ -105,3 +105,18 @@ Provider reliability subtasks:
 - [x] Add tests for FallbackError in LiteLLM provider
 - [x] Add tests for error fallback logic
 - [x] Run relevant go tests
+
+---
+
+# Current Task: Fix fallback logic using providers with enabled=false
+
+## Issue
+- main.go line 311: OpenRouter registered WITHOUT checking `p.Enabled`
+- Other providers (nvidia, groq, ollama, github-copilot) correctly check `p.Enabled`
+- Fallback chain includes all registered providers regardless of config Enabled status
+
+## Plan
+- [x] Fix main.go: Add `p.Enabled` check for OpenRouter registration  
+- [x] Add Enabled field to ProviderEntry in multiprovider for runtime filtering
+- [x] Add tests for enabled/disabled provider behavior in fallback
+- [x] Run verification: go test ./..., go vet ./..., go build ./cmd/joshbot

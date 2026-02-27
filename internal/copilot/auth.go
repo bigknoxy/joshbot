@@ -24,6 +24,30 @@ const (
 
 var Version = "dev"
 
+// GetHomeDir returns the user's home directory for auth file operations.
+// This is separate from config.DefaultHome to avoid double-appending ".joshbot".
+func GetHomeDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback to HOME env var
+		home = os.Getenv("HOME")
+		if home == "" {
+			return "", fmt.Errorf("could not determine home directory: %w", err)
+		}
+	}
+	return home, nil
+}
+
+// AuthFilePath returns the path to the auth.json file.
+// It uses the home directory (not the joshbot config directory).
+func AuthFilePath() (string, error) {
+	home, err := GetHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".joshbot", "auth.json"), nil
+}
+
 type DeviceCodeResponse struct {
 	DeviceCode      string `json:"device_code"`
 	UserCode        string `json:"user_code"`

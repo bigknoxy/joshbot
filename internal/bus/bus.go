@@ -247,10 +247,10 @@ func (mb *MessageBus) processInbound(ctx context.Context) {
 	}
 }
 
-// dispatchInbound sends a message to all registered handlers for the channel.
+// dispatchToHandlers sends a message to all registered handlers for a topic.
 // Uses a semaphore to bound the number of concurrent handler executions.
-func (mb *MessageBus) dispatchInbound(msg InboundMessage) {
-	handlers := mb.registry.GetHandlers(msg.Channel)
+func (mb *MessageBus) dispatchToHandlers(topic string, msg InboundMessage) {
+	handlers := mb.registry.GetHandlers(topic)
 	for _, handler := range handlers {
 		select {
 		case <-mb.ctx.Done():
@@ -265,23 +265,15 @@ func (mb *MessageBus) dispatchInbound(msg InboundMessage) {
 			}(handler)
 		}
 	}
+}
+
+// dispatchInbound sends a message to all registered handlers for the channel.
+func (mb *MessageBus) dispatchInbound(msg InboundMessage) {
+	// Dispatch to channel-specific handlers
+	mb.dispatchToHandlers(msg.Channel, msg)
 	// Also dispatch to "all" topic if different from channel
 	if msg.Channel != "all" {
-		allHandlers := mb.registry.GetHandlers("all")
-		for _, handler := range allHandlers {
-			select {
-			case <-mb.ctx.Done():
-				return
-			default:
-				// Acquire semaphore to bound concurrent handler executions
-				mb.handlerSemaphore <- struct{}{}
-				// Execute handler in a goroutine, release semaphore when done
-				go func(h MessageHandler) {
-					defer func() { <-mb.handlerSemaphore }()
-					h(mb.ctx, msg)
-				}(handler)
-			}
-		}
+		mb.dispatchToHandlers("all", msg)
 	}
 }
 

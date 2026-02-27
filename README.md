@@ -192,6 +192,13 @@ Config file: `~/.joshbot/config.json`
       "token": "",
       "allow_from": []
     }
+  },
+  "tools": {
+    "web": { "search": { "api_key": "" } },
+    "exec": { "timeout": 60 },
+    "restrict_to_workspace": true,
+    "shell_allow_list": [],
+    "filesystem_allowed_paths": []
   }
 }
 ```
@@ -238,6 +245,19 @@ The default model is `openai/gpt-4`. For free alternatives via OpenRouter, try `
 }
 ```
 
+### GitHub Copilot (OAuth)
+
+GitHub Copilot uses a device-code OAuth flow and stores its token in `~/.joshbot/auth.json`.
+
+1. Start authentication:
+   ```bash
+   joshbot auth github-copilot
+   ```
+2. Follow the on-screen device flow instructions.
+3. When prompted, choose a model (saved to `config.json` with `enabled: true`).
+
+After auth, you can run `joshbot agent` or `joshbot gateway` normally.
+
 ## Telegram Setup
 
 1. Message [@BotFather](https://t.me/BotFather) and send `/newbot` to create your bot
@@ -273,6 +293,10 @@ The default model is `openai/gpt-4`. For free alternatives via OpenRouter, try `
 | `message` | Send messages to channels |
 | `spawn` | Create background tasks |
 | `cron` | Schedule reminders/tasks |
+
+**Security defaults:**
+- `web_fetch` blocks localhost, private IP ranges, and metadata hosts (SSRF protection).
+- `restrict_to_workspace` limits file and shell operations to the workspace unless explicitly allowed.
 
 ## Chat Commands
 
@@ -314,6 +338,10 @@ joshbot/
 **LLM calls failing** — Check your API key. Run `joshbot status` to verify configuration.
 
 **Telegram bot not responding** — Verify `channels.telegram.enabled` is `true` and check your user ID is in `allow_from`.
+
+**GitHub Copilot not authenticated** — Run `joshbot auth github-copilot`. If it previously worked, re-run auth to refresh an expired token.
+
+**"URL blocked by security policy"** — `web_fetch` blocks localhost/private IPs and metadata endpoints to prevent SSRF. Use a public URL or proxy through an external service.
 
 ## License
 

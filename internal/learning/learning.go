@@ -165,47 +165,36 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 }
 
 func mergeConsolidatedFacts(memoryText, consolidatedSection string, maxFacts int) string {
-	// Step 1: Parse existing facts from memory for deduplication
-	existingFacts := []string{}
-	hasExistingSection := false
-
 	// Find the consolidated section in memory
 	consolidationIdx := strings.Index(memoryText, "## Consolidated Facts")
-	if consolidationIdx >= 0 {
-		hasExistingSection = true
-		// Extract existing facts after the header
-		sectionStart := consolidationIdx + len("## Consolidated Facts")
-		sectionContent := memoryText[sectionStart:]
+	hasExistingSection := consolidationIdx >= 0
+
+	// Extract existing facts for deduplication
+	seen := map[string]bool{}
+	var existingFacts []string
+
+	if hasExistingSection {
+		sectionContent := memoryText[consolidationIdx+len("## Consolidated Facts"):]
 		for _, line := range strings.Split(sectionContent, "\n") {
 			line = strings.TrimSpace(line)
 			if line != "" {
 				existingFacts = append(existingFacts, line)
-			}
-		}
-	}
-
-	// Step 2: Parse new facts from the consolidated section
-	newFacts := []string{}
-	seen := map[string]bool{}
-
-	// Add existing facts to seen set for deduplication
-	for _, f := range existingFacts {
-		seen[f] = true
-	}
-
-	// Extract new facts, skipping duplicates
-	for _, line := range strings.Split(consolidatedSection, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "##") {
-			if !seen[line] {
-				newFacts = append(newFacts, line)
 				seen[line] = true
 			}
 		}
 	}
 
-	// Step 3: Combine facts - keep most recent up to maxFacts
-	// New facts first (they're more recent), then existing non-duplicates
+	// Extract new facts, skipping duplicates
+	var newFacts []string
+	for _, line := range strings.Split(consolidatedSection, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "##") && !seen[line] {
+			newFacts = append(newFacts, line)
+			seen[line] = true
+		}
+	}
+
+	// Combine: new facts first (more recent), then existing, limited to maxFacts
 	allFacts := newFacts
 	for _, f := range existingFacts {
 		if len(allFacts) >= maxFacts {
@@ -213,26 +202,17 @@ func mergeConsolidatedFacts(memoryText, consolidatedSection string, maxFacts int
 		}
 		allFacts = append(allFacts, f)
 	}
-
-	// If we still have more than maxFacts, truncate to maxFacts (keeping newest)
 	if len(allFacts) > maxFacts {
 		allFacts = allFacts[:maxFacts]
 	}
 
-	// Step 4: Build the new memory text
-	var result string
+	// Build the new memory text
+	factsStr := strings.Join(allFacts, "\n")
 	if hasExistingSection {
-		// Replace existing section
-		beforeSection := memoryText[:consolidationIdx]
-		result = beforeSection + "## Consolidated Facts\n" + strings.Join(allFacts, "\n") + "\n"
-	} else {
-		// Add new section
-		if strings.TrimSpace(memoryText) != "" {
-			result = strings.TrimRight(memoryText, "\n") + "\n## Consolidated Facts\n" + strings.Join(allFacts, "\n") + "\n"
-		} else {
-			result = "## Consolidated Facts\n" + strings.Join(allFacts, "\n") + "\n"
-		}
+		return memoryText[:consolidationIdx] + "## Consolidated Facts\n" + factsStr + "\n"
 	}
-
-	return result
+	if strings.TrimSpace(memoryText) != "" {
+		return strings.TrimRight(memoryText, "\n") + "\n## Consolidated Facts\n" + factsStr + "\n"
+	}
+	return "## Consolidated Facts\n" + factsStr + "\n"
 }

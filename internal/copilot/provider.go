@@ -147,4 +147,55 @@ func (p *CopilotProvider) parseError(body []byte, statusCode int) error {
 	return fmt.Errorf("API request failed with status %d: %s", statusCode, string(body))
 }
 
+const copilotCatalogURL = "https://models.github.ai/catalog/models"
+
+type copilotCatalogModel struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Publisher    string   `json:"publisher"`
+	Summary      string   `json:"summary"`
+	Capabilities []string `json:"capabilities"`
+}
+
+func ListModels(accessToken string) ([]string, error) {
+	httpReq, err := http.NewRequest(http.MethodGet, copilotCatalogURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+	httpReq.Header.Set("Accept", "application/vnd.github+json")
+	httpReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	httpReq.Header.Set("User-Agent", "joshbot/"+Version)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var models []copilotCatalogModel
+	if err := json.Unmarshal(body, &models); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	result := make([]string, len(models))
+	for i, m := range models {
+		result[i] = m.ID
+	}
+
+	return result, nil
+}
+
 var _ providers.Provider = (*CopilotProvider)(nil)

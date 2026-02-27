@@ -195,7 +195,7 @@ func init() {
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},
-		DefaultModel: "meta/llama-3.3-70b-instruct",
+		DefaultModel: "moonshotai/kimi-k2-thinking",
 		DisplayName:  "NVIDIA NIM",
 		Description:  "Free tier available",
 	})

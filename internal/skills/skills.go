@@ -227,6 +227,8 @@ func (l *Loader) parseSkill(dir, defaultName string) *Skill {
 }
 
 // LoadSummary returns XML summary of discovered skills. Implements SkillsLoader interface used by agent.
+// This returns ONLY summaries - not full content - to reduce prompt bloat.
+// Use LoadFullSkillContent() explicitly if you need the full content of a specific skill.
 func (l *Loader) LoadSummary(ctx context.Context) (string, error) {
 	if !l.loaded {
 		if err := l.Discover(); err != nil {
@@ -237,14 +239,21 @@ func (l *Loader) LoadSummary(ctx context.Context) (string, error) {
 	parts := []string{"Available skills (use read_file to load full skill content when needed):"}
 	for _, sk := range l.skills {
 		parts = append(parts, sk.ToSummaryXML())
-		if sk.Always && sk.Available() {
-			content := sk.GetContent()
-			if content != "" {
-				parts = append(parts, fmt.Sprintf("  <skill-content name=\"%s\">\n%s\n  </skill-content>", sk.Name, content))
-			}
-		}
+		// NOTE: Full content is NO LONGER included by default to reduce prompt bloat.
+		// If full content is needed for a specific skill, use GetSkillContent(name) explicitly.
 	}
 	return strings.Join(parts, "\n"), nil
+}
+
+// LoadFullSkillContent returns the full content of a specific skill by name.
+// Use this when the user explicitly requests a skill's full content.
+// Returns empty string if skill not found.
+func (l *Loader) LoadFullSkillContent(ctx context.Context, skillName string) (string, error) {
+	sk := l.GetSkill(skillName)
+	if sk == nil {
+		return "", nil
+	}
+	return sk.GetContent(), nil
 }
 
 // GetSkill returns a discovered skill by name (nil if not found)

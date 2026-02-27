@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ProviderFactory is a function that creates a Provider with the given configuration.
@@ -291,8 +292,9 @@ func WithModel(model string) ProviderOption {
 // WithTimeout sets the request timeout for the provider.
 func WithTimeout(timeoutSeconds int) ProviderOption {
 	return func(cfg *Config) error {
-		cfg.Timeout = 0 // Will be set to default in provider
-		_ = timeoutSeconds
+		if timeoutSeconds > 0 {
+			cfg.Timeout = time.Duration(timeoutSeconds) * time.Second
+		}
 		return nil
 	}
 }

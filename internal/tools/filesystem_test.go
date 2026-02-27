@@ -81,3 +81,60 @@ func TestFilesystemToolGlobRestrictsAbsoluteOutsideWorkspace(t *testing.T) {
 		t.Fatal("expected restriction error for absolute pattern outside workspace")
 	}
 }
+
+func TestFilesystemToolAllowedPaths(t *testing.T) {
+	ws := t.TempDir()
+	// Create a temp directory outside workspace to allow
+	allowedDir := t.TempDir()
+
+	tool := NewFilesystemTool(ws, true, allowedDir)
+
+	// Test reading a file in allowed path
+	testFile := filepath.Join(allowedDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("allowed content"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	res := tool.Execute(context.Background(), map[string]any{
+		"operation": "read_file",
+		"path":      testFile,
+	})
+	if res.Error != nil {
+		t.Fatalf("expected read from allowed path to succeed, got: %v", res.Error)
+	}
+	if !strings.Contains(res.Output, "allowed content") {
+		t.Fatalf("expected output to contain allowed content, got: %s", res.Output)
+	}
+
+	// Test reading a file NOT in allowed path should fail
+	res = tool.Execute(context.Background(), map[string]any{
+		"operation": "read_file",
+		"path":      "/etc/passwd",
+	})
+	if res.Error == nil {
+		t.Fatal("expected access denied for path not in allowed list")
+	}
+}
+
+func TestFilesystemToolAllowedPathsGlob(t *testing.T) {
+	ws := t.TempDir()
+	allowedDir := t.TempDir()
+
+	tool := NewFilesystemTool(ws, true, allowedDir)
+
+	// Create test file
+	if err := os.WriteFile(filepath.Join(allowedDir, "data.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	res := tool.Execute(context.Background(), map[string]any{
+		"operation": "glob",
+		"pattern":   filepath.Join(allowedDir, "*.json"),
+	})
+	if res.Error != nil {
+		t.Fatalf("expected glob in allowed path to succeed, got: %v", res.Error)
+	}
+	if !strings.Contains(res.Output, "data.json") {
+		t.Fatalf("expected output to contain data.json, got: %s", res.Output)
+	}
+}

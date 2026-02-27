@@ -117,7 +117,14 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 	// Send the request
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		// Wrap network errors in FallbackError to trigger fallback
+		return nil, &FallbackError{
+			StatusCode: 0,
+			Message:    err.Error(),
+			Provider:   p.Name(),
+			Model:      req.Model,
+			Cause:      err,
+		}
 	}
 	defer resp.Body.Close()
 
@@ -197,7 +204,14 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 	// Send the request
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		// Wrap network errors in FallbackError to trigger fallback
+		return nil, &FallbackError{
+			StatusCode: 0,
+			Message:    err.Error(),
+			Provider:   p.Name(),
+			Model:      req.Model,
+			Cause:      err,
+		}
 	}
 
 	// Check for HTTP errors
@@ -298,7 +312,8 @@ func (p *LiteLLMProvider) Transcribe(ctx context.Context, audioData []byte, prom
 	return "", fmt.Errorf("transcribe not implemented: requires multipart form upload")
 }
 
-// parseError parses an error response from the API.
+// parseError parses an error response from the API and returns a FallbackError
+// for errors that should trigger fallback (rate limits, server errors, etc.)
 func (p *LiteLLMProvider) parseError(body []byte, statusCode int) error {
 	// Try to parse as an OpenAI-style error response
 	var errResp struct {
@@ -309,15 +324,35 @@ func (p *LiteLLMProvider) parseError(body []byte, statusCode int) error {
 		} `json:"error"`
 	}
 
+	errMsg := "unknown error"
 	if err := json.Unmarshal(body, &errResp); err == nil {
 		if errResp.Error.Message != "" {
-			return fmt.Errorf("API error (%d): %s (type: %s, code: %s)",
-				statusCode, errResp.Error.Message, errResp.Error.Type, errResp.Error.Code)
+			errMsg = errResp.Error.Message
 		}
+	} else {
+		// Fallback to raw body if not JSON
+		errMsg = string(body)
 	}
 
-	// Fallback to a generic error
-	return fmt.Errorf("API request failed with status %d: %s", statusCode, string(body))
+	// Determine if this error should trigger fallback
+	shouldFallback := isFallbackStatusCode(statusCode)
+
+	// Create the fallback error with structured information
+	fallbackErr := &FallbackError{
+		StatusCode: statusCode,
+		Message:    errMsg,
+		Provider:   p.Name(),
+		Model:      p.cfg.Model,
+	}
+
+	// If it's a fallback error, return the FallbackError type
+	// Otherwise, return a plain error that won't trigger fallback
+	if shouldFallback {
+		return fallbackErr
+	}
+
+	// Return a non-fallback error for client errors (400, 401, 403, etc.)
+	return fmt.Errorf("API error (%d): %s", statusCode, errMsg)
 }
 
 // ListModels fetches available models from an OpenAI-compatible API.

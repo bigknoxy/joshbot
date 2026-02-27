@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -15,6 +17,22 @@ import (
 
 	"github.com/charmbracelet/log"
 )
+
+// Private IP ranges to block (SSRF protection)
+var privateIPRanges = []string{
+	"127.0.0.0/8",                 // Loopback
+	"10.0.0.0/8",                  // Private network
+	"172.16.0.0/12",               // Private network
+	"192.168.0.0/16",              // Private network
+	"169.254.169.254/32",          // AWS/GCP/Azure metadata
+	"metadata.google.internal/32", // GCP metadata
+}
+
+// Blocked hosts for SSRF protection
+var blockedHosts = map[string]bool{
+	"localhost":             true,
+	"localhost.localdomain": true,
+}
 
 // SearchEngine represents a search engine endpoint.
 type SearchEngine struct {
@@ -781,21 +799,26 @@ func (t *WebTool) parseSearchResults(html string, maxResults int) []searchResult
 
 // webFetch fetches content from a URL.
 func (t *WebTool) webFetch(args map[string]any) ToolResult {
-	url, _ := args["url"].(string)
-	if url == "" {
+	urlStr, _ := args["url"].(string)
+	if urlStr == "" {
 		return ToolResult{Error: errors.New("url is required for web_fetch")}
 	}
 
-	// Validate URL
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		url = "https://" + url
+	// Validate URL scheme
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		urlStr = "https://" + urlStr
+	}
+
+	// SSRF protection: validate the URL
+	if err := t.validateURLForSSRF(urlStr); err != nil {
+		return ToolResult{Error: fmt.Errorf("URL blocked by security policy: %w", err)}
 	}
 
 	// Try exa crawl first (handles JS-rendered pages)
 	if t.exaCLIAvailable {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		content, err := t.exaCLICrawl(ctx, url)
+		content, err := t.exaCLICrawl(ctx, urlStr)
 		if err == nil && content != "" {
 			return ToolResult{Output: content}
 		}
@@ -803,7 +826,7 @@ func (t *WebTool) webFetch(args map[string]any) ToolResult {
 	}
 
 	// Fallback to basic HTTP fetch
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to create request: %w", err)}
 	}
@@ -830,7 +853,7 @@ func (t *WebTool) webFetch(args map[string]any) ToolResult {
 
 	// For HTML content, extract text
 	if strings.Contains(contentType, "text/html") {
-		return t.extractHTMLContent(url, body)
+		return t.extractHTMLContent(urlStr, body)
 	}
 
 	// For plain text, just return as-is (truncated)
@@ -844,8 +867,112 @@ func (t *WebTool) webFetch(args map[string]any) ToolResult {
 	}
 }
 
+// validateURLForSSRF checks if a URL is safe to fetch (prevents SSRF attacks).
+func (t *WebTool) validateURLForSSRF(urlStr string) error {
+	// Parse URL
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Only allow http and https
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("only http and https URLs are allowed, got: %s", parsedURL.Scheme)
+	}
+
+	hostname := strings.ToLower(parsedURL.Hostname())
+
+	// Check blocked hosts
+	if blockedHosts[hostname] {
+		return fmt.Errorf("access to localhost is blocked")
+	}
+
+	// Check for IP addresses
+	ip := net.ParseIP(hostname)
+	if ip != nil {
+		// Check if it's a private IP
+		if isPrivateIP(ip) {
+			return fmt.Errorf("access to private IP addresses is blocked: %s", ip.String())
+		}
+		// Also block documentation/reserved ranges
+		if ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			return fmt.Errorf("access to reserved IP addresses is blocked: %s", ip.String())
+		}
+		return nil
+	}
+
+	// For hostnames, resolve and check the resolved IP
+	// Only do DNS lookup if the hostname might resolve to a private IP
+	if isPotentiallyPrivateHostname(hostname) {
+		ips, err := net.LookupIP(hostname)
+		if err == nil {
+			for _, resolvedIP := range ips {
+				if isPrivateIP(resolvedIP) {
+					return fmt.Errorf("hostname %s resolves to private IP: %s", hostname, resolvedIP.String())
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// isPrivateIP checks if an IP is in a private range.
+func isPrivateIP(ip net.IP) bool {
+	// Convert to 4-byte representation if possible
+	ip4 := ip.To4()
+	if ip4 != nil {
+		// 127.0.0.0/8 (loopback)
+		if ip4[0] == 127 {
+			return true
+		}
+		// 10.0.0.0/8
+		if ip4[0] == 10 {
+			return true
+		}
+		// 172.16.0.0/12
+		if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+			return true
+		}
+		// 192.168.0.0/16
+		if ip4[0] == 192 && ip4[1] == 168 {
+			return true
+		}
+	}
+	// Check IPv6 private ranges (fc00::/7)
+	if ip[0] == 0xfc || ip[0] == 0xfd {
+		return true
+	}
+	return false
+}
+
+// isPotentiallyPrivateHostname checks if a hostname might resolve to a private IP.
+func isPotentiallyPrivateHostname(hostname string) bool {
+	// Block known internal/ metadata hostnames
+	lowerHost := strings.ToLower(hostname)
+	blockedPatterns := []string{
+		"localhost",
+		"metadata",
+		"metadata.google",
+		"169.254.169.254",
+		"metadata.google.internal",
+		"instancemetadata",
+		"kubernetes",
+		"docker",
+		"consul",
+		"etcd",
+		"zookeeper",
+	}
+	for _, pattern := range blockedPatterns {
+		if strings.Contains(lowerHost, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractHTMLContent extracts readable text from HTML.
-func (t *WebTool) extractHTMLContent(url string, body []byte) ToolResult {
+func (t *WebTool) extractHTMLContent(urlStr string, body []byte) ToolResult {
 	html := string(body)
 
 	// Simple extraction: remove scripts, styles, and comments
@@ -896,7 +1023,7 @@ func (t *WebTool) extractHTMLContent(url string, body []byte) ToolResult {
 	}
 
 	var output strings.Builder
-	output.WriteString(fmt.Sprintf("URL: %s\n", url))
+	output.WriteString(fmt.Sprintf("URL: %s\n", urlStr))
 	if title != "" {
 		output.WriteString(fmt.Sprintf("Title: %s\n\n", title))
 	}

@@ -183,10 +183,58 @@ func (t *TelegramChannel) createBot(ctx context.Context) (*telebot.Bot, error) {
 	return bot, nil
 }
 
-// runBot runs the bot's polling in a way that allows for reconnection.
+// runBot runs the bot's polling with automatic reconnection on failure.
 func (t *TelegramChannel) runBot(ctx context.Context, bot *telebot.Bot) {
-	// Start the bot - this blocks until stopped
-	bot.Start()
+	delay := t.retryDelay
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.stopCh:
+			return
+		default:
+			// Start the bot - this blocks until stopped or error
+			log.Debug("Starting Telegram bot polling")
+			bot.Start()
+
+			// Check if we should reconnect
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.stopCh:
+				return
+			default:
+			}
+
+			// Bot stopped unexpectedly, attempt reconnection
+			log.Warn("Telegram bot polling stopped, attempting to reconnect", "retry_delay", delay)
+
+			select {
+			case <-time.After(delay):
+				// Exponential backoff
+				delay = time.Duration(math.Min(float64(delay*2), float64(t.maxRetryDelay)))
+			case <-ctx.Done():
+				return
+			case <-t.stopCh:
+				return
+			}
+
+			// Create a new bot for reconnection
+			newBot, err := t.createBot(ctx)
+			if err != nil {
+				log.Error("Failed to create bot for reconnection", "error", err)
+				continue
+			}
+
+			t.mu.Lock()
+			t.bot = newBot
+			t.mu.Unlock()
+
+			// Set up handlers on new bot
+			t.setupHandlers(newBot)
+		}
+	}
 }
 
 // setupHandlers registers all message handlers for the bot.
@@ -527,6 +575,9 @@ func (t *TelegramChannel) handleAudio(ctx telebot.Context) error {
 		},
 	}
 
+	// Download audio in background
+	go t.downloadFile(audio.File, "audio", msg.Chat.ID, msg.ID)
+
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send audio message to bus", "error", "queue full")
 	}
@@ -572,6 +623,9 @@ func (t *TelegramChannel) handleVideo(ctx telebot.Context) error {
 			"caption":        video.Caption,
 		},
 	}
+
+	// Download video in background
+	go t.downloadFile(video.File, "video", msg.Chat.ID, msg.ID)
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send video message to bus", "error", "queue full")
@@ -1025,34 +1079,6 @@ func (t *TelegramChannel) consumeOutbound(ctx context.Context) {
 	}
 }
 
-// runWithReconnect handles bot polling with automatic reconnection.
-func (t *TelegramChannel) runWithReconnect(ctx context.Context) {
-	delay := time.Second
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.stopCh:
-			return
-		default:
-			t.mu.RLock()
-			bot := t.bot
-			t.mu.RUnlock()
-
-			if bot == nil {
-				return
-			}
-
-			// Wait a bit before checking again
-			time.Sleep(delay)
-
-			// Exponential backoff for reconnection
-			delay = time.Duration(math.Min(float64(delay*2), float64(30*time.Second)))
-		}
-	}
-}
-
 // SendPhoto sends a photo to a recipient.
 func (t *TelegramChannel) SendPhoto(recipient telebot.Recipient, photo *telebot.Photo, caption string, opts *telebot.SendOptions) error {
 	t.mu.RLock()
@@ -1117,15 +1143,6 @@ type editableMessage struct {
 
 func (e *editableMessage) MessageSig() (string, int64) {
 	return strconv.Itoa(e.messageID), e.chatID
-}
-
-// AnswerCallback answers a callback query.
-// Note: This requires the original callback object. For proper implementation,
-// use the handleCallback method directly which has access to the callback.
-func (t *TelegramChannel) AnswerCallback(callbackID string, text string, showAlert bool) error {
-	// This method is deprecated as it requires the full callback object.
-	// Use handleCallback directly which properly responds to callbacks.
-	return fmt.Errorf("AnswerCallback requires the original callback object - use handleCallback instead")
 }
 
 // ParseMarkdown parses markdown text and returns HTML for Telegram.

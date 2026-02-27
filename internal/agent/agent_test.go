@@ -103,6 +103,16 @@ func (m *mockSessionManager) Save(ctx context.Context, sess *session.Session) er
 	return nil
 }
 
+func (m *mockSessionManager) Load(ctx context.Context, key string) (*session.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if sess, ok := m.sessions[key]; ok {
+		return sess, nil
+	}
+	return nil, session.ErrSessionNotFound
+}
+
 func (m *mockSessionManager) Delete(ctx context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -474,6 +484,54 @@ func TestAgentProcessCommandNew(t *testing.T) {
 
 	agent := NewAgent(cfg, provider, tools, sessions, logger)
 
+	// First, create a session with some messages
+	ctx := context.Background()
+	initialSession, _ := sessions.GetOrCreate(ctx, "cli:user123")
+	initialSession.AddMessage(session.Message{
+		Role:    session.RoleUser,
+		Content: "Hello",
+	})
+	sessions.Save(ctx, initialSession)
+
+	// Verify session exists
+	if _, err := sessions.Load(ctx, "cli:user123"); err != nil {
+		t.Fatalf("setup: expected session to exist: %v", err)
+	}
+
+	// Now send /new command
+	msg := bus.InboundMessage{
+		SenderID:  "user123",
+		Content:   "/new",
+		Channel:   "cli",
+		Timestamp: time.Now(),
+	}
+
+	response, err := agent.Process(ctx, msg)
+	if err != nil {
+		t.Fatalf("process failed: %v", err)
+	}
+
+	if response == "" {
+		t.Error("expected non-empty response")
+	}
+
+	// Verify session was deleted
+	_, err = sessions.Load(ctx, "cli:user123")
+	if err != session.ErrSessionNotFound {
+		t.Errorf("expected session to be deleted, got error: %v", err)
+	}
+}
+
+func TestAgentProcessNewNonExistentSession(t *testing.T) {
+	// Test that /new works even when there's no existing session
+	cfg := config.Defaults()
+	provider := &mockProvider{}
+	tools := &mockToolExecutor{}
+	sessions := newMockSessionManager()
+	logger := newMockLogger()
+
+	agent := NewAgent(cfg, provider, tools, sessions, logger)
+
 	msg := bus.InboundMessage{
 		SenderID:  "user123",
 		Content:   "/new",
@@ -488,6 +546,10 @@ func TestAgentProcessCommandNew(t *testing.T) {
 
 	if response == "" {
 		t.Error("expected non-empty response")
+	}
+	// Should indicate new session started
+	if !contains(response, "new") {
+		t.Errorf("expected response to mention 'new', got: %s", response)
 	}
 }
 

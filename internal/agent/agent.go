@@ -182,9 +182,9 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	// Handle commands
+	// Handle commands (pass context for session deletion)
 	if isCommand(msg.Content) {
-		response := a.handleCommand(msg)
+		response := a.handleCommand(ctx, msg)
 		if response != "" {
 			return response, nil
 		}
@@ -542,15 +542,20 @@ func (a *Agent) formatToolResult(toolCallID, name, result string) providers.Mess
 }
 
 // handleCommand handles slash commands.
-func (a *Agent) handleCommand(msg bus.InboundMessage) string {
+func (a *Agent) handleCommand(ctx context.Context, msg bus.InboundMessage) string {
 	cmd := cleanCommand(msg.Content)
 
 	switch cmd {
 	case "start":
 		return "Hello! I'm joshbot, your personal AI assistant. How can I help you today?"
 	case "new":
-		// Note: In a real implementation, we'd delete the session here
-		return "Started a new conversation. Previous context has been saved to memory."
+		// Delete the session to start fresh
+		sessionKey := getSessionKey(msg)
+		if err := a.sessions.Delete(ctx, sessionKey); err != nil {
+			// Log the error but don't fail - session might not exist
+			a.logger.Debug("Could not delete session for /new", "session", sessionKey, "error", err)
+		}
+		return "🔄 Started a new conversation! All previous context has been cleared."
 	case "help":
 		return `Available commands:
 /start - Start a conversation

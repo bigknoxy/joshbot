@@ -445,6 +445,8 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.Exec.Timeout,
 		0, // webTimeout - not configurable in config yet
 		messageSender,
+		cfg.Tools.ShellAllowList,
+		cfg.Tools.FilesystemAllowedPaths,
 	)
 
 	// Create agent with tools registry

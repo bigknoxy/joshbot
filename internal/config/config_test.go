@@ -41,6 +41,22 @@ func TestDefaults(t *testing.T) {
 		t.Error("expected restrict_to_workspace to be true by default")
 	}
 
+	if cfg.Tools.ShellAllowList == nil {
+		t.Error("expected shell allowlist to be initialized (not nil)")
+	}
+
+	if len(cfg.Tools.ShellAllowList) != 0 {
+		t.Errorf("expected empty shell allowlist by default, got %d entries", len(cfg.Tools.ShellAllowList))
+	}
+
+	if cfg.Tools.FilesystemAllowedPaths == nil {
+		t.Error("expected filesystem allowed paths to be initialized (not nil)")
+	}
+
+	if len(cfg.Tools.FilesystemAllowedPaths) != 0 {
+		t.Errorf("expected empty filesystem allowed paths by default, got %d entries", len(cfg.Tools.FilesystemAllowedPaths))
+	}
+
 	if cfg.Gateway.Host != DefaultGatewayHost {
 		t.Errorf("expected gateway host %s, got %s", DefaultGatewayHost, cfg.Gateway.Host)
 	}
@@ -339,7 +355,7 @@ func TestConfigString(t *testing.T) {
 	cfg := Defaults()
 	str := cfg.String()
 
-	expected := "Config{SchemaVersion: 2, Model: arcee-ai/trinity-large-preview:free, LogLevel: info, Gateway: 0.0.0.0:18790}"
+	expected := "Config{SchemaVersion: 3, Model: arcee-ai/trinity-large-preview:free, LogLevel: info, Gateway: 0.0.0.0:18790}"
 	if str != expected {
 		t.Errorf("String() = %v, want %v", str, expected)
 	}
@@ -614,7 +630,9 @@ func TestToolsConfig(t *testing.T) {
 		Exec: ExecConfig{
 			Timeout: 120,
 		},
-		RestrictToWorkspace: true,
+		RestrictToWorkspace:    true,
+		ShellAllowList:         []string{"ls", "cat", "grep"},
+		FilesystemAllowedPaths: []string{"/tmp/allowed", "/var/data"},
 	}
 
 	if cfg.Tools.Web.Search.APIKey != "search-key" {
@@ -627,6 +645,14 @@ func TestToolsConfig(t *testing.T) {
 
 	if !cfg.Tools.RestrictToWorkspace {
 		t.Error("expected restrict_to_workspace to be true")
+	}
+
+	if len(cfg.Tools.ShellAllowList) != 3 {
+		t.Errorf("expected 3 shell allowlist entries, got %d", len(cfg.Tools.ShellAllowList))
+	}
+
+	if len(cfg.Tools.FilesystemAllowedPaths) != 2 {
+		t.Errorf("expected 2 filesystem allowed paths, got %d", len(cfg.Tools.FilesystemAllowedPaths))
 	}
 }
 
@@ -721,5 +747,60 @@ func TestLoadSanitizesEnvVarWhitespace(t *testing.T) {
 	// Check that API key from env was trimmed
 	if cfg.Providers["openrouter"].APIKey != "sk-env-key-with-space" {
 		t.Errorf("expected trimmed API key from env, got %q", cfg.Providers["openrouter"].APIKey)
+	}
+}
+
+func TestToolsEnvOverrides(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Temporarily override DefaultHome
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+
+	// Set environment variables for new tool config fields
+	os.Setenv("JOSHBOT_TOOLS__SHELL_ALLOW_LIST", "ls,cat,grep,echo")
+	os.Setenv("JOSHBOT_TOOLS__FILESYSTEM_ALLOWED_PATHS", "/tmp/allowed,/var/data")
+	os.Setenv("JOSHBOT_TOOLS__RESTRICT_TO_WORKSPACE", "false")
+
+	defer func() {
+		DefaultHome = oldHome
+		os.Unsetenv("JOSHBOT_TOOLS__SHELL_ALLOW_LIST")
+		os.Unsetenv("JOSHBOT_TOOLS__FILESYSTEM_ALLOWED_PATHS")
+		os.Unsetenv("JOSHBOT_TOOLS__RESTRICT_TO_WORKSPACE")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Errorf("Load() error = %v", err)
+	}
+
+	// Check shell allowlist env override
+	if len(cfg.Tools.ShellAllowList) != 4 {
+		t.Errorf("expected 4 shell allowlist entries, got %d: %v", len(cfg.Tools.ShellAllowList), cfg.Tools.ShellAllowList)
+	}
+
+	if cfg.Tools.ShellAllowList[0] != "ls" {
+		t.Errorf("expected first shell allowlist entry 'ls', got %s", cfg.Tools.ShellAllowList[0])
+	}
+
+	// Check filesystem allowed paths env override
+	if len(cfg.Tools.FilesystemAllowedPaths) != 2 {
+		t.Errorf("expected 2 filesystem allowed paths, got %d: %v", len(cfg.Tools.FilesystemAllowedPaths), cfg.Tools.FilesystemAllowedPaths)
+	}
+
+	if cfg.Tools.FilesystemAllowedPaths[0] != "/tmp/allowed" {
+		t.Errorf("expected first filesystem allowed path '/tmp/allowed', got %s", cfg.Tools.FilesystemAllowedPaths[0])
+	}
+
+	// Check restrict to workspace override
+	if cfg.Tools.RestrictToWorkspace {
+		t.Error("expected restrict_to_workspace to be false from env")
+	}
+}
+
+func TestSchemaVersion(t *testing.T) {
+	if CurrentSchemaVersion != 3 {
+		t.Errorf("expected schema version 3, got %d", CurrentSchemaVersion)
 	}
 }

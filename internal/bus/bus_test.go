@@ -677,6 +677,8 @@ func TestBoundedConcurrency(t *testing.T) {
 	var mu sync.Mutex
 	currentConcurrent := 0
 
+	var wg sync.WaitGroup
+
 	handler := func(ctx context.Context, msg InboundMessage) {
 		mu.Lock()
 		currentConcurrent++
@@ -691,6 +693,7 @@ func TestBoundedConcurrency(t *testing.T) {
 		mu.Lock()
 		currentConcurrent--
 		mu.Unlock()
+		wg.Done()
 	}
 
 	// Subscribe handler to test topic
@@ -698,6 +701,7 @@ func TestBoundedConcurrency(t *testing.T) {
 
 	// Send multiple messages rapidly to trigger concurrent executions
 	const numMessages = 50
+	wg.Add(numMessages)
 	for i := 0; i < numMessages; i++ {
 		mb.Send(InboundMessage{
 			SenderID:  fmt.Sprintf("user%d", i),
@@ -708,7 +712,7 @@ func TestBoundedConcurrency(t *testing.T) {
 	}
 
 	// Wait for all handlers to complete
-	time.Sleep(500 * time.Millisecond)
+	wg.Wait()
 
 	// Verify that concurrency was bounded
 	if maxConcurrent > MaxConcurrentHandlers {
@@ -733,6 +737,8 @@ func TestBoundedConcurrencyWithAllTopic(t *testing.T) {
 	var mu sync.Mutex
 	currentConcurrent := 0
 
+	var wg sync.WaitGroup
+
 	handler := func(ctx context.Context, msg InboundMessage) {
 		mu.Lock()
 		currentConcurrent++
@@ -746,6 +752,7 @@ func TestBoundedConcurrencyWithAllTopic(t *testing.T) {
 		mu.Lock()
 		currentConcurrent--
 		mu.Unlock()
+		wg.Done()
 	}
 
 	// Subscribe to "all" topic
@@ -753,6 +760,7 @@ func TestBoundedConcurrencyWithAllTopic(t *testing.T) {
 
 	// Send messages to a specific channel (not "all")
 	const numMessages = 30
+	wg.Add(numMessages)
 	for i := 0; i < numMessages; i++ {
 		mb.Send(InboundMessage{
 			SenderID:  fmt.Sprintf("user%d", i),
@@ -762,7 +770,7 @@ func TestBoundedConcurrencyWithAllTopic(t *testing.T) {
 		})
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	wg.Wait()
 
 	if maxConcurrent > MaxConcurrentHandlers {
 		t.Errorf("max concurrent handlers %d exceeded limit %d", maxConcurrent, MaxConcurrentHandlers)

@@ -241,6 +241,8 @@ func TestIntegrationWithTools(t *testing.T) {
 		60,    // exec timeout
 		10,    // web timeout
 		nil,   // message sender
+		nil,   // shell allowlist
+		nil,   // filesystem allowed paths
 	)
 
 	// Add custom tool for testing

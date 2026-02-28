@@ -54,7 +54,7 @@ const (
 	// DefaultMemoryWindow is the default memory window size.
 	DefaultMemoryWindow = 50
 	// CurrentSchemaVersion is the current config schema version.
-	CurrentSchemaVersion = 3
+	CurrentSchemaVersion = 4
 )
 
 // DefaultHome is the default joshbot home directory.
@@ -478,7 +478,7 @@ func Load() (*Config, error) {
 
 		// Apply migrations if needed
 		if cfg.SchemaVersion < CurrentSchemaVersion {
-			if err := migrateConfig(cfg); err != nil {
+			if err := migrateConfig(cfg, data); err != nil {
 				logger.Warn("Config migration failed, using defaults", "error", err)
 				cfg = Defaults()
 			}
@@ -536,8 +536,63 @@ func Save(cfg *Config) error {
 	return nil
 }
 
+// parseExplicitDisable parses raw JSON config to detect providers that were
+// explicitly set to enabled: false in the old config format.
+func parseExplicitDisable(rawJSON []byte) map[string]bool {
+	result := make(map[string]bool)
+	if len(rawJSON) == 0 {
+		return result
+	}
+
+	// Parse JSON to get providers map
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(rawJSON, &data); err != nil {
+		return result
+	}
+
+	providersJSON, ok := data["providers"]
+	if !ok {
+		return result
+	}
+
+	// Parse providers map
+	var providers map[string]json.RawMessage
+	if err := json.Unmarshal(providersJSON, &providers); err != nil {
+		return result
+	}
+
+	// Check each provider for explicit enabled: false
+	for name, providerJSON := range providers {
+		var providerConfig struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(providerJSON, &providerConfig); err == nil {
+			// Check if "enabled" was explicitly present and set to false
+			// We need to check if the field was present - if not in JSON, it won't unmarshal
+			// Since Enabled is bool (defaults to false), we need a different approach
+			// Actually, we can check if "enabled" key exists in the raw JSON for this provider
+			if !providerConfig.Enabled && containsEnabledKey(providerJSON) {
+				result[name] = true
+			}
+		}
+	}
+
+	return result
+}
+
+// containsEnabledKey checks if the JSON object contains an "enabled" key.
+func containsEnabledKey(data []byte) bool {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return false
+	}
+	_, hasEnabled := m["enabled"]
+	return hasEnabled
+}
+
 // migrateConfig migrates config from older schema versions to current.
-func migrateConfig(cfg *Config) error {
+// It accepts raw JSON data to detect explicit enable/disable settings.
+func migrateConfig(cfg *Config, rawJSON []byte) error {
 	// Migration from v0 to v1
 	if cfg.SchemaVersion < 1 {
 		// Update defunct model if present
@@ -582,6 +637,50 @@ func migrateConfig(cfg *Config) error {
 		}
 		logger.Info("Migrated config to v3: added shell allowlist and filesystem allowed paths")
 		cfg.SchemaVersion = 3
+	}
+
+	// Migration from v3 to v4
+	if cfg.SchemaVersion < 4 {
+		// Parse raw JSON to detect explicit enable/disable settings
+		explicitDisable := parseExplicitDisable(rawJSON)
+
+		// For backward compatibility: cloud providers configured in old config get auto-enabled,
+		// but local providers (ollama, github-copilot) require explicit enable to avoid
+		// auto-starting local daemons.
+		localProviders := map[string]bool{
+			"ollama":         true,
+			"github-copilot": true,
+		}
+
+		for name, p := range cfg.Providers {
+			hasConfig := p.APIKey != "" || p.APIBase != "" || p.Model != "" || len(p.ExtraHeaders) > 0
+
+			// Already enabled - keep as-is
+			if p.Enabled {
+				logger.Info("Provider explicitly enabled in config", "provider", name)
+				continue
+			}
+			// Was explicitly disabled in old config - keep disabled
+			if explicitDisable[name] {
+				logger.Info("Provider explicitly disabled in old config, remains disabled", "provider", name)
+				continue
+			}
+			// Local providers need explicit enable - don't auto-enable
+			if localProviders[name] {
+				if hasConfig {
+					logger.Info("Local provider remains disabled after migration (explicit enable required)", "provider", name)
+				}
+				continue
+			}
+			// Cloud provider with config - auto-enable for backward compatibility
+			if hasConfig {
+				p.Enabled = true
+				cfg.Providers[name] = p
+				logger.Info("Provider enabled during migration for backward compatibility", "provider", name)
+			}
+		}
+		logger.Info("Migrated config to v4: provider enabled flags")
+		cfg.SchemaVersion = 4
 	}
 
 	return nil

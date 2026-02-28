@@ -63,33 +63,26 @@ func newSystemd(cfg Config) (*systemdManager, error) {
 }
 
 func (s *systemdManager) runCommand(name string, args ...string) error {
-	var cmd *exec.Cmd
-	if s.isRoot {
-		cmd = exec.Command(name, args...)
-	} else {
-		cmd = exec.Command("sudo", append([]string{name}, args...)...)
-	}
+	cmd := s.buildCommand(name, args...)
 	return cmd.Run()
 }
 
 func (s *systemdManager) runCommandOutput(name string, args ...string) ([]byte, error) {
-	var cmd *exec.Cmd
-	if s.isRoot {
-		cmd = exec.Command(name, args...)
-	} else {
-		cmd = exec.Command("sudo", append([]string{name}, args...)...)
-	}
+	cmd := s.buildCommand(name, args...)
 	return cmd.Output()
 }
 
 func (s *systemdManager) runCommandCombined(name string, args ...string) ([]byte, error) {
-	var cmd *exec.Cmd
-	if s.isRoot {
-		cmd = exec.Command(name, args...)
-	} else {
-		cmd = exec.Command("sudo", append([]string{name}, args...)...)
-	}
+	cmd := s.buildCommand(name, args...)
 	return cmd.CombinedOutput()
+}
+
+// buildCommand constructs an exec.Cmd, using sudo if not running as root.
+func (s *systemdManager) buildCommand(name string, args ...string) *exec.Cmd {
+	if s.isRoot {
+		return exec.Command(name, args...)
+	}
+	return exec.Command("sudo", append([]string{name}, args...)...)
 }
 
 func (s *systemdManager) Name() string {
@@ -106,6 +99,12 @@ func (s *systemdManager) Install() (Result, error) {
 		return Result{}, fmt.Errorf("service already installed at %s", s.servicePath)
 	}
 
+	// Get the current user's home directory for HOME environment variable
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = s.config.WorkingDir // Fallback to working directory
+	}
+
 	unit := fmt.Sprintf(`[Unit]
 Description=%s
 After=network.target
@@ -114,12 +113,13 @@ After=network.target
 Type=simple
 ExecStart=%s gateway
 WorkingDirectory=%s
+Environment=HOME=%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-`, s.config.DisplayName, s.config.ExecPath, s.config.WorkingDir)
+`, s.config.DisplayName, s.config.ExecPath, s.config.WorkingDir, homeDir)
 
 	tmpFile, err := os.CreateTemp("", "joshbot-service-*.tmp")
 	if err != nil {
@@ -218,7 +218,8 @@ func (s *systemdManager) Status() (Status, error) {
 
 	status.Running = s.isRunning()
 
-	out, err := exec.Command("systemctl", "status", s.config.Name).CombinedOutput()
+	cmd := s.buildCommand("systemctl", "status", s.config.Name)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		status.Status = "unknown"
 	} else {
@@ -232,7 +233,8 @@ func (s *systemdManager) Status() (Status, error) {
 }
 
 func (s *systemdManager) isRunning() bool {
-	out, err := exec.Command("systemctl", "is-active", s.config.Name).Output()
+	cmd := s.buildCommand("systemctl", "is-active", s.config.Name)
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}

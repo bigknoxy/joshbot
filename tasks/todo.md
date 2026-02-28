@@ -50,12 +50,8 @@ Migrate Python joshbot to Go — plan and acceptance criteria
   3. Working `pkg/bus` and message types with unit tests.
   4. `pkg/channels/telegram` implementing safe sends + webhook/polling toggle.
   5. Agent loop + provider adapters with ReAct skeleton and sample tool.
-
-- Where to look / important files (when I start coding):
-  - New Go workspace: `/root/code/joshbot-go/` (will create if missing)
-  - Live Go binary: `/root/.local/bin/joshbot` (currently running) — I will not stop it unless you ask.
-
-- Estimated calendar timeline: ~3	6 weeks for an initial production-ready parity (assuming single engineer, incremental shipping). Exact timing depends on complexity of LLM adapter and webhook integration.
+  6. Integration tests and CI pass.
+  7. Rollout plan executed and Python gateway decommissioned.
 
 Acceptance criteria checklist (copy to track progress):
 - [ ] Migration map created (`tasks/migration_map.md`)
@@ -142,3 +138,51 @@ Provider reliability subtasks:
   - [ ] Monitor CI checks; if failing, diagnose root cause
   - [ ] Implement minimal fix, update PR, and re-check CI
   - [ ] Report PR URL and final CI status
+
+---
+
+# Current Task: Review PR #43 (fix/systemd-env-ollama-migration)
+
+## Plan
+- [x] Restate goal + acceptance criteria
+- [x] Locate PR scope vs main (diff, commits)
+- [x] Review config migration: provider enabled behavior
+- [x] Review systemd HOME env handling
+- [x] Identify unintended behavior/regressions
+- [x] Implement minimal fixes if needed
+- [x] Add/adjust tests for fixes
+- [x] Run verification (go test ./..., go vet ./..., go build ./cmd/joshbot)
+- [x] Summarize findings + verification story
+
+---
+
+# Current Task: Fix Migration V4 Provider Enabled Behavior - COMPLETED
+
+## Summary
+Fixed the migration v4 logic to properly handle provider enabled behavior:
+
+- **Providers with API keys/config** → Auto-enabled after migration (backward compatibility)
+- **Ollama/GitHub Copilot** → Remain disabled unless explicitly enabled (local daemons)
+- **Explicitly disabled** (`enabled: false`) → Remain disabled (respect user preference)
+
+## Changes Made
+1. `internal/config/config.go`:
+   - Added `parseExplicitDisable()` to detect explicit `enabled: false` in old configs
+   - Added `containsEnabledKey()` helper to check if "enabled" field was present
+   - Updated migration v4 logic with `localProviders` map for Ollama/GitHub Copilot
+   - Modified `migrateConfig()` to accept raw JSON for explicit disable detection
+
+2. `internal/config/config_test.go`:
+   - Updated `TestMigrateConfigV4_OllamaNotAutoEnabled` test expectations
+   - Added `TestMigrateConfigV4_ConfiguredProviderAutoEnabled` test
+   - Added `TestMigrateConfigV4_GitHubCopilotNotAutoEnabled` test
+   - Added `TestMigrateConfigV4_ExplicitDisableStaysDisabled` test
+
+## Verification
+- `go test ./...` ✓
+- `go vet ./...` ✓
+- `go build ./cmd/joshbot` ✓
+
+## Pushed
+- Commit: `b74eda1` to `fix/systemd-env-ollama-migration` branch
+

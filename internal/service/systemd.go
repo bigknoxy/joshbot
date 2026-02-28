@@ -63,33 +63,26 @@ func newSystemd(cfg Config) (*systemdManager, error) {
 }
 
 func (s *systemdManager) runCommand(name string, args ...string) error {
-	var cmd *exec.Cmd
-	if s.isRoot {
-		cmd = exec.Command(name, args...)
-	} else {
-		cmd = exec.Command("sudo", append([]string{name}, args...)...)
-	}
+	cmd := s.buildCommand(name, args...)
 	return cmd.Run()
 }
 
 func (s *systemdManager) runCommandOutput(name string, args ...string) ([]byte, error) {
-	var cmd *exec.Cmd
-	if s.isRoot {
-		cmd = exec.Command(name, args...)
-	} else {
-		cmd = exec.Command("sudo", append([]string{name}, args...)...)
-	}
+	cmd := s.buildCommand(name, args...)
 	return cmd.Output()
 }
 
 func (s *systemdManager) runCommandCombined(name string, args ...string) ([]byte, error) {
-	var cmd *exec.Cmd
-	if s.isRoot {
-		cmd = exec.Command(name, args...)
-	} else {
-		cmd = exec.Command("sudo", append([]string{name}, args...)...)
-	}
+	cmd := s.buildCommand(name, args...)
 	return cmd.CombinedOutput()
+}
+
+// buildCommand constructs an exec.Cmd, using sudo if not running as root.
+func (s *systemdManager) buildCommand(name string, args ...string) *exec.Cmd {
+	if s.isRoot {
+		return exec.Command(name, args...)
+	}
+	return exec.Command("sudo", append([]string{name}, args...)...)
 }
 
 func (s *systemdManager) Name() string {

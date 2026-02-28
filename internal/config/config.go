@@ -644,35 +644,35 @@ func migrateConfig(cfg *Config, rawJSON []byte) error {
 		// Parse raw JSON to detect explicit enable/disable settings
 		explicitDisable := parseExplicitDisable(rawJSON)
 
-		// Ensure provider Enabled flags are explicitly handled for backward compatibility.
-		// Prior versions did not have an enabled toggle, so cloud providers that were
-		// configured should remain enabled after migration. Local providers (ollama,
-		// github-copilot) are special-cased to remain disabled unless explicitly enabled,
-		// to avoid auto-starting local daemons.
+		// For backward compatibility: cloud providers configured in old config get auto-enabled,
+		// but local providers (ollama, github-copilot) require explicit enable to avoid
+		// auto-starting local daemons.
 		localProviders := map[string]bool{
 			"ollama":         true,
 			"github-copilot": true,
 		}
+
 		for name, p := range cfg.Providers {
 			hasConfig := p.APIKey != "" || p.APIBase != "" || p.Model != "" || len(p.ExtraHeaders) > 0
+
+			// Already enabled - keep as-is
 			if p.Enabled {
 				logger.Info("Provider explicitly enabled in config", "provider", name)
 				continue
 			}
-			// Check if provider was explicitly disabled in old config
+			// Was explicitly disabled in old config - keep disabled
 			if explicitDisable[name] {
-				logger.Info("Provider explicitly disabled in old config, remains disabled",
-					"provider", name)
+				logger.Info("Provider explicitly disabled in old config, remains disabled", "provider", name)
 				continue
 			}
-			// Local providers (ollama, github-copilot) should NOT be auto-enabled
+			// Local providers need explicit enable - don't auto-enable
 			if localProviders[name] {
 				if hasConfig {
-					logger.Info("Local provider remains disabled after migration (explicit enable required)",
-						"provider", name)
+					logger.Info("Local provider remains disabled after migration (explicit enable required)", "provider", name)
 				}
 				continue
 			}
+			// Cloud provider with config - auto-enable for backward compatibility
 			if hasConfig {
 				p.Enabled = true
 				cfg.Providers[name] = p

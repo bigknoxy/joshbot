@@ -611,9 +611,9 @@ func TestMigrateConfigV4_OllamaNotAutoEnabled(t *testing.T) {
 		t.Error("Ollama should NOT be auto-enabled after migration v4")
 	}
 
-	// OpenRouter should also NOT be auto-enabled (no explicit Enabled: true in old config)
-	if cfg.Providers["openrouter"].Enabled {
-		t.Error("OpenRouter should NOT be auto-enabled after migration v4")
+	// OpenRouter should be enabled for backward compatibility if configured
+	if !cfg.Providers["openrouter"].Enabled {
+		t.Error("OpenRouter should be enabled after migration v4 when configured")
 	}
 }
 
@@ -666,6 +666,155 @@ func TestMigrateConfigV4_ExplicitlyEnabledProviders(t *testing.T) {
 
 	if !cfg.Providers["openrouter"].Enabled {
 		t.Error("OpenRouter should remain enabled after migration v4")
+	}
+}
+
+func TestMigrateConfigV4_ConfiguredProviderAutoEnabled(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Temporarily override DefaultHome
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+
+	defer func() {
+		DefaultHome = oldHome
+	}()
+
+	// Create a config file with v3 schema that has a configured cloud provider
+	configPath := filepath.Join(tmpDir, "config.json")
+	configContent := `{
+		"schema_version": 3,
+		"providers": {
+			"openrouter": {
+				"api_key": "sk-test123"
+			},
+			"groq": {
+				"api_key": "sk-groq",
+				"api_base": "https://api.groq.com/openai/v1"
+			}
+		}
+	}`
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Errorf("Load() error = %v", err)
+	}
+
+	// Configured providers should be enabled for backward compatibility
+	if !cfg.Providers["openrouter"].Enabled {
+		t.Error("OpenRouter should be enabled after migration when configured")
+	}
+	if !cfg.Providers["groq"].Enabled {
+		t.Error("Groq should be enabled after migration when configured")
+	}
+}
+
+func TestMigrateConfigV4_GitHubCopilotNotAutoEnabled(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Temporarily override DefaultHome
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+
+	defer func() {
+		DefaultHome = oldHome
+	}()
+
+	// Create a config file with v3 schema that has GitHub Copilot configured but NOT enabled
+	configPath := filepath.Join(tmpDir, "config.json")
+	configContent := `{
+		"schema_version": 3,
+		"providers": {
+			"github-copilot": {
+				"model": "gpt-4o"
+			},
+			"openrouter": {
+				"api_key": "sk-test123"
+			}
+		}
+	}`
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Errorf("Load() error = %v", err)
+	}
+
+	// Check migration to v4
+	if cfg.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("expected schema version %d after migration, got %d", CurrentSchemaVersion, cfg.SchemaVersion)
+	}
+
+	// GitHub Copilot should NOT be auto-enabled - Enabled should remain false
+	if cfg.Providers["github-copilot"].Enabled {
+		t.Error("GitHub Copilot should NOT be auto-enabled after migration v4")
+	}
+
+	// OpenRouter should be enabled for backward compatibility if configured
+	if !cfg.Providers["openrouter"].Enabled {
+		t.Error("OpenRouter should be enabled after migration v4 when configured")
+	}
+}
+
+func TestMigrateConfigV4_ExplicitDisableStaysDisabled(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Temporarily override DefaultHome
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+
+	defer func() {
+		DefaultHome = oldHome
+	}()
+
+	// Create a config file with v3 schema that has provider explicitly disabled
+	// Note: This tests backward compatibility - if user explicitly disabled a provider
+	// in old config, it should remain disabled after migration
+	configPath := filepath.Join(tmpDir, "config.json")
+	configContent := `{
+		"schema_version": 3,
+		"providers": {
+			"openrouter": {
+				"api_key": "sk-test123",
+				"enabled": false
+			},
+			"groq": {
+				"api_key": "sk-groq",
+				"enabled": false
+			}
+		}
+	}`
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Errorf("Load() error = %v", err)
+	}
+
+	// Check migration to v4
+	if cfg.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("expected schema version %d after migration, got %d", CurrentSchemaVersion, cfg.SchemaVersion)
+	}
+
+	// Providers explicitly disabled in old config should remain disabled
+	if cfg.Providers["openrouter"].Enabled {
+		t.Error("OpenRouter explicitly disabled should remain disabled after migration")
+	}
+	if cfg.Providers["groq"].Enabled {
+		t.Error("Groq explicitly disabled should remain disabled after migration")
 	}
 }
 

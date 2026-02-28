@@ -478,7 +478,7 @@ func Load() (*Config, error) {
 
 		// Apply migrations if needed
 		if cfg.SchemaVersion < CurrentSchemaVersion {
-			if err := migrateConfig(cfg); err != nil {
+			if err := migrateConfig(cfg, data); err != nil {
 				logger.Warn("Config migration failed, using defaults", "error", err)
 				cfg = Defaults()
 			}
@@ -536,8 +536,63 @@ func Save(cfg *Config) error {
 	return nil
 }
 
+// parseExplicitDisable parses raw JSON config to detect providers that were
+// explicitly set to enabled: false in the old config format.
+func parseExplicitDisable(rawJSON []byte) map[string]bool {
+	result := make(map[string]bool)
+	if len(rawJSON) == 0 {
+		return result
+	}
+
+	// Parse JSON to get providers map
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(rawJSON, &data); err != nil {
+		return result
+	}
+
+	providersJSON, ok := data["providers"]
+	if !ok {
+		return result
+	}
+
+	// Parse providers map
+	var providers map[string]json.RawMessage
+	if err := json.Unmarshal(providersJSON, &providers); err != nil {
+		return result
+	}
+
+	// Check each provider for explicit enabled: false
+	for name, providerJSON := range providers {
+		var providerConfig struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(providerJSON, &providerConfig); err == nil {
+			// Check if "enabled" was explicitly present and set to false
+			// We need to check if the field was present - if not in JSON, it won't unmarshal
+			// Since Enabled is bool (defaults to false), we need a different approach
+			// Actually, we can check if "enabled" key exists in the raw JSON for this provider
+			if !providerConfig.Enabled && containsEnabledKey(providerJSON) {
+				result[name] = true
+			}
+		}
+	}
+
+	return result
+}
+
+// containsEnabledKey checks if the JSON object contains an "enabled" key.
+func containsEnabledKey(data []byte) bool {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return false
+	}
+	_, hasEnabled := m["enabled"]
+	return hasEnabled
+}
+
 // migrateConfig migrates config from older schema versions to current.
-func migrateConfig(cfg *Config) error {
+// It accepts raw JSON data to detect explicit enable/disable settings.
+func migrateConfig(cfg *Config, rawJSON []byte) error {
 	// Migration from v0 to v1
 	if cfg.SchemaVersion < 1 {
 		// Update defunct model if present
@@ -586,29 +641,45 @@ func migrateConfig(cfg *Config) error {
 
 	// Migration from v3 to v4
 	if cfg.SchemaVersion < 4 {
+		// Parse raw JSON to detect explicit enable/disable settings
+		explicitDisable := parseExplicitDisable(rawJSON)
+
 		// Ensure provider Enabled flags are explicitly handled for backward compatibility.
-		// Providers that have configuration (API key, base URL, etc.) but no explicit
-		// Enabled flag should NOT be auto-enabled - they must remain disabled unless
-		// the user explicitly enables them. This applies especially to Ollama which
-		// runs locally and should not be auto-started.
-		//
-		// Note: Go's zero value for bool is false, so existing configs without Enabled
-		// will already have Enabled=false. This migration adds explicit logging
-		// and ensures the field exists for all providers to make the behavior clear.
+		// Prior versions did not have an enabled toggle, so cloud providers that were
+		// configured should remain enabled after migration. Local providers (ollama,
+		// github-copilot) are special-cased to remain disabled unless explicitly enabled,
+		// to avoid auto-starting local daemons.
+		localProviders := map[string]bool{
+			"ollama":         true,
+			"github-copilot": true,
+		}
 		for name, p := range cfg.Providers {
-			// If provider has config but Enabled was not explicitly set (defaulting to false),
-			// log that it remains disabled for backward compatibility
+			hasConfig := p.APIKey != "" || p.APIBase != "" || p.Model != "" || len(p.ExtraHeaders) > 0
 			if p.Enabled {
 				logger.Info("Provider explicitly enabled in config", "provider", name)
-			} else {
-				hasConfig := p.APIKey != "" || p.APIBase != "" || p.Model != ""
+				continue
+			}
+			// Check if provider was explicitly disabled in old config
+			if explicitDisable[name] {
+				logger.Info("Provider explicitly disabled in old config, remains disabled",
+					"provider", name)
+				continue
+			}
+			// Local providers (ollama, github-copilot) should NOT be auto-enabled
+			if localProviders[name] {
 				if hasConfig {
-					logger.Info("Provider has config but remains disabled (explicit enable required)",
+					logger.Info("Local provider remains disabled after migration (explicit enable required)",
 						"provider", name)
 				}
+				continue
+			}
+			if hasConfig {
+				p.Enabled = true
+				cfg.Providers[name] = p
+				logger.Info("Provider enabled during migration for backward compatibility", "provider", name)
 			}
 		}
-		logger.Info("Migrated config to v4: provider enabled flag backward compatibility")
+		logger.Info("Migrated config to v4: provider enabled flags")
 		cfg.SchemaVersion = 4
 	}
 

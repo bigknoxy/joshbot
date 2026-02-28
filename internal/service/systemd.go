@@ -218,7 +218,8 @@ func (s *systemdManager) Status() (Status, error) {
 
 	status.Running = s.isRunning()
 
-	out, err := exec.Command("systemctl", "status", s.config.Name).CombinedOutput()
+	cmd := s.buildCommand("systemctl", "status", s.config.Name)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		status.Status = "unknown"
 	} else {
@@ -232,7 +233,8 @@ func (s *systemdManager) Status() (Status, error) {
 }
 
 func (s *systemdManager) isRunning() bool {
-	out, err := exec.Command("systemctl", "is-active", s.config.Name).Output()
+	cmd := s.buildCommand("systemctl", "is-active", s.config.Name)
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}

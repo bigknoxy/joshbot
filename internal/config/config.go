@@ -53,6 +53,10 @@ const (
 	DefaultMaxToolIterations = 20
 	// DefaultMemoryWindow is the default memory window size.
 	DefaultMemoryWindow = 50
+	// DefaultCompactionThreshold is the default threshold for proactive context compaction.
+	DefaultCompactionThreshold = 0.7
+	// DefaultToolOutputMaxChars is the default max characters for tool output truncation.
+	DefaultToolOutputMaxChars = 4000
 	// CurrentSchemaVersion is the current config schema version.
 	CurrentSchemaVersion = 4
 )
@@ -81,12 +85,13 @@ type ProviderDefaults struct {
 
 // AgentDefaults holds default agent configuration.
 type AgentDefaults struct {
-	Workspace         string  `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
-	Model             string  `mapstructure:"model" json:"model" yaml:"model"`
-	MaxTokens         int     `mapstructure:"max_tokens" json:"max_tokens" yaml:"max_tokens"`
-	Temperature       float64 `mapstructure:"temperature" json:"temperature" yaml:"temperature"`
-	MaxToolIterations int     `mapstructure:"max_tool_iterations" json:"max_tool_iterations" yaml:"max_tool_iterations"`
-	MemoryWindow      int     `mapstructure:"memory_window" json:"memory_window" yaml:"memory_window"`
+	Workspace           string  `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
+	Model               string  `mapstructure:"model" json:"model" yaml:"model"`
+	MaxTokens           int     `mapstructure:"max_tokens" json:"max_tokens" yaml:"max_tokens"`
+	Temperature         float64 `mapstructure:"temperature" json:"temperature" yaml:"temperature"`
+	MaxToolIterations   int     `mapstructure:"max_tool_iterations" json:"max_tool_iterations" yaml:"max_tool_iterations"`
+	MemoryWindow        int     `mapstructure:"memory_window" json:"memory_window" yaml:"memory_window"`
+	CompactionThreshold float64 `mapstructure:"compaction_threshold" json:"compaction_threshold" yaml:"compaction_threshold"`
 }
 
 // AgentsConfig holds agent configuration.
@@ -129,6 +134,7 @@ type ToolsConfig struct {
 	RestrictToWorkspace    bool           `mapstructure:"restrict_to_workspace" json:"restrict_to_workspace" yaml:"restrict_to_workspace"`
 	ShellAllowList         []string       `mapstructure:"shell_allow_list" json:"shell_allow_list" yaml:"shell_allow_list"`
 	FilesystemAllowedPaths []string       `mapstructure:"filesystem_allowed_paths" json:"filesystem_allowed_paths" yaml:"filesystem_allowed_paths"`
+	ToolOutputMaxChars     int            `mapstructure:"tool_output_max_chars" json:"tool_output_max_chars" yaml:"tool_output_max_chars"`
 }
 
 // GatewayConfig holds gateway server configuration.
@@ -207,6 +213,11 @@ func applyEnvOverrides(cfg *Config) {
 		fmt.Sscanf(v, "%d", &cfg.Agents.Defaults.MemoryWindow)
 	}
 
+	// Compaction threshold
+	if v := getEnv("AGENTS__DEFAULTS__COMPACTION_THRESHOLD"); v != "" {
+		fmt.Sscanf(v, "%f", &cfg.Agents.Defaults.CompactionThreshold)
+	}
+
 	// Telegram enabled
 	if v := getEnv("CHANNELS__TELEGRAM__ENABLED"); v != "" {
 		cfg.Channels.Telegram.Enabled = v == "true" || v == "1"
@@ -251,6 +262,11 @@ func applyEnvOverrides(cfg *Config) {
 		for i := range cfg.Tools.FilesystemAllowedPaths {
 			cfg.Tools.FilesystemAllowedPaths[i] = strings.TrimSpace(cfg.Tools.FilesystemAllowedPaths[i])
 		}
+	}
+
+	// Tool output max chars
+	if v := getEnv("TOOLS__TOOL_OUTPUT_MAX_CHARS"); v != "" {
+		fmt.Sscanf(v, "%d", &cfg.Tools.ToolOutputMaxChars)
 	}
 
 	// Gateway host
@@ -303,12 +319,13 @@ func Defaults() *Config {
 		},
 		Agents: AgentsConfig{
 			Defaults: AgentDefaults{
-				Workspace:         DefaultWorkspace,
-				Model:             DefaultModel,
-				MaxTokens:         DefaultMaxTokens,
-				Temperature:       DefaultTemperature,
-				MaxToolIterations: DefaultMaxToolIterations,
-				MemoryWindow:      DefaultMemoryWindow,
+				Workspace:           DefaultWorkspace,
+				Model:               DefaultModel,
+				MaxTokens:           DefaultMaxTokens,
+				Temperature:         DefaultTemperature,
+				MaxToolIterations:   DefaultMaxToolIterations,
+				MemoryWindow:        DefaultMemoryWindow,
+				CompactionThreshold: DefaultCompactionThreshold,
 			},
 		},
 		Channels: ChannelsConfig{
@@ -331,6 +348,7 @@ func Defaults() *Config {
 			RestrictToWorkspace:    true,
 			ShellAllowList:         []string{},
 			FilesystemAllowedPaths: []string{},
+			ToolOutputMaxChars:     DefaultToolOutputMaxChars,
 		},
 		Gateway: GatewayConfig{
 			Host: DefaultGatewayHost,

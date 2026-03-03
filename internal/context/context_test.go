@@ -70,7 +70,7 @@ func TestRegistryLookup_DefaultHeuristic(t *testing.T) {
 	r := NewRegistry()
 
 	info := r.Lookup("unknown-model")
-	if info.ContextWindow != 8192 {
-		t.Fatalf("expected medium fallback 8192, got %d", info.ContextWindow)
+	if info.ContextWindow != 4096 {
+		t.Fatalf("expected small fallback 4096, got %d", info.ContextWindow)
 	}
 }

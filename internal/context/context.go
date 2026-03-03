@@ -35,6 +35,7 @@ func NewRegistry() *Registry {
 		"z-ai/glm-4.5-air:free":            8192,
 		"openai/llama3.2":                  8192,
 		"meta-llama/llama-3.2-3b-instruct": 8192,
+		"arcee-ai/trinity-large-preview":   131072,
 	}}
 }
 
@@ -43,6 +44,18 @@ func (r *Registry) Lookup(model string) ModelInfo {
 	m := strings.ToLower(model)
 	if window, ok := r.overrides[m]; ok {
 		return ModelInfo{Name: model, ContextWindow: window}
+	}
+
+	// Heuristic detection for large models by name pattern
+	// Check for explicit size indicators in model name
+	if strings.Contains(m, "large") || strings.Contains(m, "128k") || strings.Contains(m, "200k") {
+		return ModelInfo{Name: model, ContextWindow: 131072}
+	}
+	if strings.Contains(m, "32k") {
+		return ModelInfo{Name: model, ContextWindow: 32768}
+	}
+	if strings.Contains(m, "16k") {
+		return ModelInfo{Name: model, ContextWindow: 16384}
 	}
 
 	// heuristics
@@ -54,7 +67,7 @@ func (r *Registry) Lookup(model string) ModelInfo {
 	case strings.Contains(m, "small"):
 		return r.defaults[0]
 	default:
-		return r.defaults[1]
+		return r.defaults[0]
 	}
 }
 

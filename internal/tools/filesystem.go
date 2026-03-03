@@ -22,17 +22,24 @@ const (
 
 // FilesystemTool provides file system operations.
 type FilesystemTool struct {
-	workspace    string
-	restrict     bool
-	allowedPaths []string // Additional paths allowed outside workspace
+	workspace      string
+	restrict       bool
+	allowedPaths   []string // Additional paths allowed outside workspace
+	maxOutputChars int      // Maximum characters to truncate file reads to
 }
 
 // NewFilesystemTool creates a new FilesystemTool.
 func NewFilesystemTool(workspace string, restrict bool, allowedPaths ...string) *FilesystemTool {
+	return NewFilesystemToolWithMaxOutput(workspace, restrict, 8000, allowedPaths...)
+}
+
+// NewFilesystemToolWithMaxOutput creates a new FilesystemTool with custom max output chars.
+func NewFilesystemToolWithMaxOutput(workspace string, restrict bool, maxOutputChars int, allowedPaths ...string) *FilesystemTool {
 	return &FilesystemTool{
-		workspace:    workspace,
-		restrict:     restrict,
-		allowedPaths: allowedPaths,
+		workspace:      workspace,
+		restrict:       restrict,
+		allowedPaths:   allowedPaths,
+		maxOutputChars: maxOutputChars,
 	}
 }
 
@@ -243,6 +250,13 @@ func (t *FilesystemTool) readFile(path string, args map[string]any) ToolResult {
 	output := fmt.Sprintf("File: %s (lines %d-%d of %d)\n", path, offset+1, end, len(lines))
 	output += strings.Join(selectedLines, "\n")
 
+	// Truncate output if it exceeds maxOutputChars
+	if len(output) > t.maxOutputChars {
+		truncated := output[:t.maxOutputChars]
+		suffix := fmt.Sprintf("\n... (truncated, %d chars total)", len(output))
+		output = truncated + suffix
+	}
+
 	return ToolResult{Output: output}
 }
 
@@ -445,9 +459,10 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 
 // FilesystemToolConfig holds configuration for the filesystem tool.
 type FilesystemToolConfig struct {
-	Workspace    string
-	Restrict     bool
-	AllowedPaths []string
+	Workspace      string
+	Restrict       bool
+	AllowedPaths   []string
+	MaxOutputChars int
 }
 
 // NewFilesystemToolFromConfig creates a FilesystemTool from config.
@@ -459,5 +474,11 @@ func NewFilesystemToolFromConfig(cfg FilesystemToolConfig) *FilesystemTool {
 			workspace = filepath.Join(os.Getenv("HOME"), ".joshbot", "workspace")
 		}
 	}
-	return NewFilesystemTool(workspace, cfg.Restrict, cfg.AllowedPaths...)
+
+	maxOutputChars := cfg.MaxOutputChars
+	if maxOutputChars == 0 {
+		maxOutputChars = 8000
+	}
+
+	return NewFilesystemToolWithMaxOutput(workspace, cfg.Restrict, maxOutputChars, cfg.AllowedPaths...)
 }

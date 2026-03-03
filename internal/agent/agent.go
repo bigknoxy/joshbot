@@ -376,21 +376,73 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			})
 		}
 
-		// Interleaved Chain-of-Thought: ask LLM to reflect
-		if iteration < a.maxIterations-1 {
-			reflectMsg := providers.Message{
-				Role: providers.RoleUser,
-				Content: "[System: Reflect on the tool results and decide your next action. " +
-					"If you have enough information to respond to the user, do so. Otherwise, use more tools.]",
-			}
-			messages = append(messages, reflectMsg)
-			// Don't save reflection prompts to session history
-		}
+		// Proactive context compaction: check if we need to compact after tool execution
+		messages = a.checkAndCompactContext(messages, sess)
 	}
 
 	// Hit max iterations
 	a.logger.Warn("Hit max iterations", "max", a.maxIterations)
 	return "I've been working on this for a while. Here's what I found so far - let me know if you'd like me to continue.", nil
+}
+
+// checkAndCompactContext estimates current message tokens and compacts context if threshold is exceeded.
+// It returns the original messages if under threshold, or compacted messages otherwise.
+func (a *Agent) checkAndCompactContext(messages []providers.Message, sess *session.Session) []providers.Message {
+	// Only proceed if we have budget manager and compressor
+	if a.budget == nil || a.compressor == nil {
+		return messages
+	}
+
+	threshold := a.cfg.Agents.Defaults.CompactionThreshold
+	if threshold <= 0 || threshold > 1.0 {
+		threshold = 0.7 // default fallback
+	}
+
+	model := a.cfg.Agents.Defaults.Model
+	maxCompletion := a.cfg.Agents.Defaults.MaxTokens
+	budget := a.budget.ComputeBudget(model, maxCompletion)
+	thresholdBudget := int(float64(budget) * threshold)
+
+	// Estimate tokens for all messages (excluding system message at index 0)
+	totalTokens := 0
+	for i := 1; i < len(messages); i++ {
+		totalTokens += ctxpkg.TokenEstimator(messages[i].Content)
+	}
+
+	a.logger.Debug("Context compaction check",
+		"total_tokens", totalTokens,
+		"threshold_budget", thresholdBudget,
+		"full_budget", budget,
+		"threshold", threshold,
+	)
+
+	// If under threshold, no compaction needed
+	if totalTokens <= thresholdBudget {
+		return messages
+	}
+
+	// Threshold exceeded - compact messages
+	a.logger.Info("Compacting context", "total_tokens", totalTokens, "threshold_budget", thresholdBudget)
+
+	// Get session messages for compression (excluding system prompt)
+	sessionMsgs := messages[1:] // Skip system message
+	compressed, err := a.compressor.CompressMessages(model, sessionMsgs, thresholdBudget)
+	if err != nil {
+		a.logger.Warn("Context compaction failed", "error", err)
+		return messages
+	}
+
+	// Return new message list with compressed content
+	newMessages := []providers.Message{
+		messages[0], // Keep system message
+		{
+			Role:    providers.RoleUser,
+			Content: "<conversation_summary>\n" + compressed,
+		},
+	}
+
+	a.logger.Debug("Context compacted", "original_messages", len(sessionMsgs), "new_content_len", len(compressed))
+	return newMessages
 }
 
 // buildMessages builds the message list for LLM from session and system prompt.

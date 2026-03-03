@@ -13,21 +13,28 @@ import (
 
 // ShellTool provides shell execution capabilities.
 type ShellTool struct {
-	timeout   time.Duration
-	workspace string
-	restrict  bool
-	denyList  []string
-	allowList []string // If non-empty, only these commands are allowed
+	timeout        time.Duration
+	workspace      string
+	restrict       bool
+	denyList       []string
+	allowList      []string // If non-empty, only these commands are allowed
+	maxOutputChars int      // Maximum characters to truncate output to
 }
 
 // NewShellTool creates a new ShellTool.
 func NewShellTool(timeout time.Duration, workspace string, restrict bool, allowList ...string) *ShellTool {
+	return NewShellToolWithMaxOutput(timeout, workspace, restrict, 4000, allowList...)
+}
+
+// NewShellToolWithMaxOutput creates a new ShellTool with custom max output chars.
+func NewShellToolWithMaxOutput(timeout time.Duration, workspace string, restrict bool, maxOutputChars int, allowList ...string) *ShellTool {
 	return &ShellTool{
-		timeout:   timeout,
-		workspace: workspace,
-		restrict:  restrict,
-		denyList:  defaultDenyList(),
-		allowList: allowList,
+		timeout:        timeout,
+		workspace:      workspace,
+		restrict:       restrict,
+		denyList:       defaultDenyList(),
+		allowList:      allowList,
+		maxOutputChars: maxOutputChars,
 	}
 }
 
@@ -54,7 +61,8 @@ func (t *ShellTool) Name() string {
 // Description returns a description of the tool.
 func (t *ShellTool) Description() string {
 	desc := `Execute shell commands. Use this to run terminal commands, scripts, `
-	desc += `and interact with the system. Commands are subject to safety restrictions.`
+	desc += `and interact with the system. Commands are subject to safety restrictions. `
+	desc += `Output is truncated to 4000 characters for large outputs.`
 	if len(t.allowList) > 0 {
 		desc += ` Only whitelisted commands are allowed.`
 	}
@@ -260,7 +268,15 @@ func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) Tool
 		result.WriteString("(command completed with no output)")
 	}
 
-	return ToolResult{Output: result.String()}
+	// Truncate output if it exceeds maxOutputChars
+	outputStr := result.String()
+	if len(outputStr) > t.maxOutputChars {
+		truncated := outputStr[:t.maxOutputChars]
+		suffix := fmt.Sprintf("\n... (truncated, %d chars total)", len(outputStr))
+		outputStr = truncated + suffix
+	}
+
+	return ToolResult{Output: outputStr}
 }
 
 // readOutput reads all output from a pipe.
@@ -283,11 +299,12 @@ func readOutput(pipe interface{ Read([]byte) (int, error) }) (string, error) {
 
 // ShellToolConfig holds configuration for the shell tool.
 type ShellToolConfig struct {
-	Timeout   time.Duration
-	Workspace string
-	Restrict  bool
-	DenyList  []string
-	AllowList []string
+	Timeout        time.Duration
+	Workspace      string
+	Restrict       bool
+	DenyList       []string
+	AllowList      []string
+	MaxOutputChars int
 }
 
 // NewShellToolFromConfig creates a ShellTool from config.
@@ -305,7 +322,12 @@ func NewShellToolFromConfig(cfg ShellToolConfig) *ShellTool {
 		timeout = 60 * time.Second
 	}
 
-	tool := NewShellTool(timeout, workspace, cfg.Restrict, cfg.AllowList...)
+	maxOutputChars := cfg.MaxOutputChars
+	if maxOutputChars == 0 {
+		maxOutputChars = 4000
+	}
+
+	tool := NewShellToolWithMaxOutput(timeout, workspace, cfg.Restrict, maxOutputChars, cfg.AllowList...)
 
 	if len(cfg.DenyList) > 0 {
 		tool.denyList = cfg.DenyList

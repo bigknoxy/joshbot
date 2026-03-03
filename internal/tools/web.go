@@ -140,8 +140,8 @@ func parseExaCLICrawlResult(output string) (string, error) {
 	}
 
 	text := resp.Results[0].Text
-	if len(text) > 15000 {
-		text = text[:15000] + "\n... (truncated)"
+	if len(text) > 5000 {
+		text = text[:5000] + "\n... (truncated, " + strconv.Itoa(len(text)) + " chars total)"
 	}
 	return text, nil
 }
@@ -858,8 +858,8 @@ func (t *WebTool) webFetch(args map[string]any) ToolResult {
 
 	// For plain text, just return as-is (truncated)
 	output := string(body)
-	if len(output) > 10000 {
-		output = output[:10000] + "\n... (truncated)"
+	if len(output) > 5000 {
+		output = output[:5000] + "\n... (truncated, " + strconv.Itoa(len(output)) + " chars total)"
 	}
 
 	return ToolResult{
@@ -1018,8 +1018,8 @@ func (t *WebTool) extractHTMLContent(urlStr string, body []byte) ToolResult {
 	text = strings.Join(cleanLines, "\n")
 
 	// Limit output
-	if len(text) > 15000 {
-		text = text[:15000] + "\n... (truncated)"
+	if len(text) > 5000 {
+		text = text[:5000] + "\n... (truncated, " + strconv.Itoa(len(text)) + " chars total)"
 	}
 
 	var output strings.Builder

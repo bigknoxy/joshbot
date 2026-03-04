@@ -486,33 +486,6 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.FilesystemAllowedPaths,
 	)
 
-	// Create async callback channel and start processor
-	asyncCallbackCh := make(chan tools.AsyncResult, 100)
-	go func() {
-		for result := range asyncCallbackCh {
-			var msg string
-			if result.Error != nil {
-				msg = fmt.Sprintf("❌ Background task failed (%s): %v", result.ToolName, result.Error)
-			} else {
-				output := result.Output
-				if len(output) > 2000 {
-					output = output[:2000] + "... (truncated)"
-				}
-				msg = fmt.Sprintf("✅ Background task completed (%s):\n%s", result.ToolName, output)
-			}
-
-			msgBus.Publish(bus.OutboundMessage{
-				Channel:   result.Channel,
-				ChannelID: result.ChatID,
-				Content:   msg,
-			})
-		}
-	}()
-
-	// Enable async support in the registry
-	toolsRegistry.SetAsyncCallback(asyncCallbackCh)
-
-	// Create agent with tools registry
 	agentInstance := agent.NewAgent(
 		cfg,
 		multiProvider,

@@ -12,7 +12,6 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/session"
-	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
 // mockProvider is a mock LLM provider for testing.
@@ -66,14 +65,6 @@ func (m *mockToolExecutor) Execute(ctx context.Context, name string, args map[st
 		return m.executeFn(ctx, name, args)
 	}
 	return "executed", nil
-}
-
-func (m *mockToolExecutor) ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(tools.AsyncResult)) (tools.ToolResult, bool) {
-	result, err := m.Execute(ctx, name, args)
-	if err != nil {
-		return tools.ToolResult{Error: err}, false
-	}
-	return tools.ToolResult{Output: result}, false
 }
 
 func (m *mockToolExecutor) GetSchemas() []providers.Tool {

@@ -69,12 +69,34 @@ docker run -it -v ~/.joshbot:/root/.joshbot joshbot onboard
 ## Usage
 
 ```bash
-joshbot onboard     # First-time setup
-joshbot agent       # Interactive CLI chat
-joshbot gateway     # Start all channels (Telegram, etc.)
-joshbot status      # Show configuration and status
-joshbot uninstall   # Remove joshbot binary and config
+joshbot onboard # First-time setup
+joshbot agent # Interactive CLI chat
+joshbot agent --debug # CLI chat with debug logging
+joshbot gateway # Start all channels (Telegram, etc.)
+joshbot gateway --debug # Gateway with debug logging
+joshbot status # Show configuration and status
+joshbot uninstall # Remove joshbot binary and config
 ```
+
+### Debug Mode
+
+Use `--debug` flag to enable detailed logging for troubleshooting:
+
+```bash
+# Debug mode for agent
+joshbot agent --debug
+
+# Debug mode for gateway
+joshbot gateway --debug
+```
+
+Debug mode outputs detailed information about:
+- LLM request/response details (model, content length, tool calls)
+- HTTP response status codes
+- Tool execution results
+- Empty response detection and fallback behavior
+
+This is especially useful when troubleshooting why joshbot returns "I've processed your request." instead of actual responses.
 
 ### Onboard Command
 
@@ -444,6 +466,23 @@ joshbot/
 **GitHub Copilot not authenticated** — Run `joshbot auth github-copilot`. If it previously worked, re-run auth to refresh an expired token.
 
 **"URL blocked by security policy"** — `web_fetch` blocks localhost/private IPs and metadata endpoints to prevent SSRF. Use a public URL or proxy through an external service.
+
+**Getting "I've processed your request." instead of actual responses** — This can happen when:
+- The LLM returns empty content (rate limiting, API errors)
+- Tool execution completes but the follow-up LLM call fails
+
+To diagnose, run with `--debug` flag:
+```bash
+joshbot agent --debug
+```
+
+Debug output will show:
+- LLM response details (content length, tool calls, finish reason)
+- HTTP response status codes
+- Empty content warnings when detected
+- Fallback provider activation
+
+If you see rate limit errors (HTTP 429), configure fallback providers in your config for resilience.
 
 ## License
 

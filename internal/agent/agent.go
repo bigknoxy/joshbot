@@ -13,6 +13,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/session"
+	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
 // Default values
@@ -24,6 +25,7 @@ const (
 // ToolExecutor is an interface for executing tool calls.
 type ToolExecutor interface {
 	Execute(ctx context.Context, name string, args map[string]any) (string, error)
+	ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(tools.AsyncResult)) (tools.ToolResult, bool)
 	GetSchemas() []providers.Tool
 }
 
@@ -214,8 +216,9 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 	// Build messages for LLM (system + session messages)
 	messages := a.buildMessages(systemPrompt, sess)
 
-	// Run ReAct loop
-	responseContent, err := a.reactLoop(ctx, messages, sess)
+	// Run ReAct loop with channel info for async callbacks
+	channelID := msg.SenderID // Use SenderID as the channel identifier
+	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID)
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
 		// Check for timeout
@@ -255,7 +258,7 @@ func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
 }
 
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.
-func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session) (string, error) {
+func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID string) (string, error) {
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
 
@@ -288,10 +291,22 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		choice := resp.Choices[0]
 		assistantMsg := choice.Message
 
+		// DEBUG: Log LLM response details
+		a.logger.Debug("LLM response received",
+			"content_length", len(assistantMsg.Content),
+			"content_preview", truncate(assistantMsg.Content, 200),
+			"tool_calls_count", len(assistantMsg.ToolCalls),
+			"finish_reason", choice.FinishReason,
+		)
+
 		// If no tool calls, we're done
 		if len(assistantMsg.ToolCalls) == 0 {
 			content := assistantMsg.Content
 			if content == "" {
+				a.logger.Warn("Empty content from LLM - triggering fallback message",
+					"model", a.cfg.Agents.Defaults.Model,
+					"iteration", iteration+1,
+				)
 				content = "I've processed your request."
 			}
 
@@ -354,26 +369,41 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			}
 
 			// Execute tool
-			result, err := a.tools.Execute(ctx, tc.Function.Name, args)
-			if err != nil {
+			result, isAsync := a.tools.ExecuteWithContext(ctx, tc.Function.Name, args, channel, channelID, nil)
+			var resultStr string
+			if result.Error != nil {
 				a.logger.Error("Tool execution failed",
 					"tool", tc.Function.Name,
-					"error", err,
+					"error", result.Error,
 				)
-				result = fmt.Sprintf("Error executing %s: %v", tc.Function.Name, err)
+				resultStr = fmt.Sprintf("Error executing %s: %v", tc.Function.Name, result.Error)
+			} else {
+				resultStr = result.Output
+			}
+
+			// For async tools, add placeholder message
+			if isAsync {
+				resultStr = result.Output // Contains "Started in background..." message
 			}
 
 			// Format tool result for LLM
-			toolMsg := a.formatToolResult(tc.ID, tc.Function.Name, result)
+			toolMsg := a.formatToolResult(tc.ID, tc.Function.Name, resultStr)
 			messages = append(messages, toolMsg)
 
 			// Add to session
 			sess.AddMessage(session.Message{
 				Role:       session.RoleTool,
-				Content:    result,
+				Content:    resultStr,
 				ToolCallID: tc.ID,
 				Timestamp:  time.Now(),
 			})
+
+			// DEBUG: Log tool result
+			a.logger.Debug("Tool result",
+				"tool", tc.Function.Name,
+				"result_length", len(resultStr),
+				"result_preview", truncate(resultStr, 200),
+			)
 		}
 
 		// Proactive context compaction: check if we need to compact after tool execution

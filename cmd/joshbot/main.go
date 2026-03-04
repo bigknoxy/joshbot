@@ -109,6 +109,11 @@ func runApp() error {
 				Usage:       "Enable verbose logging",
 				Destination: new(bool),
 			},
+			&cli.BoolFlag{
+				Name:        "debug",
+				Usage:       "Enable debug logging (more detailed than verbose)",
+				Destination: new(bool),
+			},
 		},
 		Commands: []*cli.Command{
 			{
@@ -124,12 +129,22 @@ func runApp() error {
 						Aliases: []string{"m"},
 						Usage:   "Send a single message and exit (non-interactive mode)",
 					},
+					&cli.BoolFlag{
+						Name:  "debug",
+						Usage: "Enable debug logging",
+					},
 				},
 				Action: runAgent,
 			},
 			{
-				Name:   "gateway",
-				Usage:  "Start joshbot gateway (Telegram + all channels)",
+				Name:  "gateway",
+				Usage: "Start joshbot gateway (Telegram + all channels)",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "debug",
+						Usage: "Enable debug logging",
+					},
+				},
 				Action: runGateway,
 			},
 			{
@@ -232,8 +247,8 @@ func runApp() error {
 			},
 		},
 		Before: func(c *cli.Context) error {
-			// Update log level if verbose is set
-			if c.Bool("verbose") {
+			// Update log level if verbose or debug is set
+			if c.Bool("verbose") || c.Bool("debug") {
 				log.SetLevel(log.DebugLevel)
 			}
 			return nil
@@ -470,6 +485,32 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.ShellAllowList,
 		cfg.Tools.FilesystemAllowedPaths,
 	)
+
+	// Create async callback channel and start processor
+	asyncCallbackCh := make(chan tools.AsyncResult, 100)
+	go func() {
+		for result := range asyncCallbackCh {
+			var msg string
+			if result.Error != nil {
+				msg = fmt.Sprintf("❌ Background task failed (%s): %v", result.ToolName, result.Error)
+			} else {
+				output := result.Output
+				if len(output) > 2000 {
+					output = output[:2000] + "... (truncated)"
+				}
+				msg = fmt.Sprintf("✅ Background task completed (%s):\n%s", result.ToolName, output)
+			}
+
+			msgBus.Publish(bus.OutboundMessage{
+				Channel:   result.Channel,
+				ChannelID: result.ChatID,
+				Content:   msg,
+			})
+		}
+	}()
+
+	// Enable async support in the registry
+	toolsRegistry.SetAsyncCallback(asyncCallbackCh)
 
 	// Create agent with tools registry
 	agentInstance := agent.NewAgent(

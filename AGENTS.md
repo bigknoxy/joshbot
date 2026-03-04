@@ -17,10 +17,12 @@ go build -o joshbot ./cmd/joshbot
 go install ./cmd/joshbot
 
 # Run
-./joshbot onboard          # First-time setup
-./joshbot agent            # Interactive CLI mode
-./joshbot gateway          # Telegram + all channels
-./joshbot status           # Show config/status
+./joshbot onboard # First-time setup
+./joshbot agent # Interactive CLI mode
+./joshbot agent --debug # CLI mode with debug logging
+./joshbot gateway # Telegram + all channels
+./joshbot gateway --debug # Gateway with debug logging
+./joshbot status # Show config/status
 
 # Run directly (development)
 go run ./cmd/joshbot agent
@@ -139,10 +141,22 @@ import (
 ### Logging
 
 - **charmbracelet/log** for structured logging (`log.Info`, `log.Debug`, `log.Warn`, `log.Error`)
-- `log.Debug()` for routine operations
+- `log.Debug()` for routine operations, LLM request/response details, tool execution results
 - `log.Info()` for significant events (tool execution, service start/stop)
-- `log.Warn()` for recoverable issues
+- `log.Warn()` for recoverable issues, empty content detection
 - `log.Error()` for failures
+
+**Debug Mode:** Use `--debug` flag to enable DebugLevel logging:
+```bash
+joshbot agent --debug
+joshbot gateway --debug
+```
+
+Debug logging provides visibility into:
+- LLM response details: content_length, content_preview, tool_calls_count, finish_reason
+- HTTP response status codes and model information
+- Tool execution results with result_length and preview
+- Empty content warnings with model and iteration info for troubleshooting
 
 ### String Formatting
 

@@ -158,6 +158,9 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 	}
 	defer resp.Body.Close()
 
+	// DEBUG: Log HTTP response details
+	p.logger.Debug("HTTP response received", "status", resp.StatusCode, "model", req.Model)
+
 	// Read the response body
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -177,6 +180,10 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 
 	p.logger.Debug("Received chat response", "choices", len(chatResp.Choices), "usage", chatResp.Usage)
 
+	// DEBUG: Log parsed response details
+	if len(chatResp.Choices) > 0 {
+		p.logger.Debug("Parsed LLM response", "content_length", len(chatResp.Choices[0].Message.Content), "content_preview", truncate(chatResp.Choices[0].Message.Content, 200), "tool_calls", len(chatResp.Choices[0].Message.ToolCalls))
+	}
 	return &chatResp, nil
 }
 
@@ -579,4 +586,12 @@ func ParseToolArguments[T any](args string) (*T, error) {
 		return nil, fmt.Errorf("failed to parse arguments: %w", err)
 	}
 	return &result, nil
+}
+
+// truncate truncates a string to maxLen and adds "..." if truncated
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

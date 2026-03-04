@@ -162,9 +162,9 @@ import (
 channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
 (CLI,         (chan-based)      (ReAct loop)    (HTTP -> LLM API)
  Telegram)                          |
-                              tools/Registry
-                              (filesystem, shell,
-                               web, message)
+                               tools/Registry
+                               (filesystem, shell,
+                                web, message)
 ```
 
 - **Message bus** decouples channels from agent via `InboundMessage`/`OutboundMessage` channels
@@ -173,6 +173,8 @@ channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
 - **Skills**: Markdown files with YAML frontmatter, progressive loading (summary -> full content)
 - **Sessions**: JSONL files in `~/.joshbot/sessions/`
 - **Config**: `~/.joshbot/config.json`, JSON-validated, env vars with `JOSHBOT_` prefix
+- **Prompt caching**: Static system prompt cached with mtime-based invalidation (`internal/agent/context.go`)
+- **Model-centric config**: Provider auto-detected from model prefix, fallback chains supported (`internal/config/config.go`)
 
 ## Key Files
 
@@ -180,14 +182,14 @@ channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
 |------|---------|
 | `cmd/joshbot/main.go` | CLI entry point, service wiring, onboard flow |
 | `internal/agent/agent.go` | Core ReAct agent loop, message processing |
-| `internal/agent/context.go` | System prompt assembly |
+| `internal/agent/context.go` | System prompt assembly with caching |
 | `internal/memory/memory.go` | MEMORY.md + HISTORY.md management |
 | `internal/skills/skills.go` | Skill discovery and progressive loading |
 | `internal/tools/tool.go` | Tool interface (implement this to add new tools) |
 | `internal/tools/registry.go` | Tool registration and execution |
 | `internal/tools/shell.go` | Shell exec with safety deny-list |
 | `internal/channels/telegram.go` | Telegram channel implementation |
-| `internal/config/config.go` | All configuration structs and loading |
+| `internal/config/config.go` | All configuration structs, model-centric config, provider detection |
 | `internal/bus/bus.go` | Channel-based message bus |
 | `internal/providers/provider.go` | Provider interface and types |
 | `internal/providers/litellm.go` | OpenRouter-compatible HTTP provider |

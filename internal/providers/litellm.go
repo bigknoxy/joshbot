@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bigknoxy/joshbot/internal/config"
 )
 
 // Logger is a simple logger interface for providers.
@@ -54,6 +56,29 @@ func NewLiteLLMProviderWithLogger(cfg Config, logger Logger) *LiteLLMProvider {
 		},
 		logger: logger,
 	}
+}
+
+// NewProviderFromResolvedModel creates a provider from a resolved model config.
+func NewProviderFromResolvedModel(resolved config.ResolvedModelConfig, logger Logger) *LiteLLMProvider {
+	maxTokens := resolved.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = config.DefaultMaxTokens
+	}
+
+	cfg := Config{
+		APIKey:       resolved.APIKey,
+		APIBase:      resolved.APIBase,
+		Model:        resolved.ModelID,
+		MaxTokens:    maxTokens,
+		ExtraHeaders: resolved.Extra,
+		Timeout:      120 * time.Second,
+	}
+
+	if logger == nil {
+		logger = &DefaultLogger{}
+	}
+
+	return NewLiteLLMProviderWithLogger(cfg, logger)
 }
 
 // Name returns the name of the provider.

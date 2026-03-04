@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-03-04
+
+### Added
+
+#### Model-Centric Configuration
+- **New `models_config` format** - Simplified model configuration with provider auto-detection
+- **Fallback chains** - Configure multiple models; automatically try next if primary fails
+- **Provider auto-detection** - Model prefixes (`anthropic/`, `groq/`, `ollama/`, etc.) automatically set API base URL
+- **Supported providers**: Anthropic, OpenAI, Groq, Ollama, OpenRouter, NVIDIA NIM, DeepSeek, Google Gemini, Cerebras
+- **Environment variable support**: `JOSHBOT_MODELS_CONFIG__MODELS__0__NAME`, etc.
+- **Backward compatible** - Legacy `providers` format still supported
+
+#### System Prompt Caching
+- **Intelligent caching** - Static system prompt cached in memory, reducing file I/O on every message
+- **mtime-based invalidation** - Cache automatically rebuilds when source files change
+- **Tracked files**: AGENTS.md, SOUL.md, USER.md, TOOLS.md, IDENTITY.md, memory/MEMORY.md, skills/*/SKILL.md
+- **Force refresh** - `InvalidatePromptCache()` for programmatic cache clearing
+
+### Changed
+
+- Configuration now supports both model-centric and provider-centric formats
+- Faster response times due to reduced file I/O
+
 ## [1.12.1] - 2026-02-25
 
 ### Fixed

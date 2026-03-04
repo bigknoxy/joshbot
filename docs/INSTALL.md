@@ -309,9 +309,81 @@ joshbot stores all configuration and data in `~/.joshbot/`:
     └── skills/          # Custom skills
 ```
 
-### Configuration File
+### Model-Centric Configuration (Recommended)
 
-The main config file is `~/.joshbot/config.json`:
+The new model-centric format simplifies configuration. Define models directly with their API settings:
+
+```json
+{
+  "schema_version": 1,
+  "models_config": {
+    "models": [
+      {
+        "name": "smart",
+        "model": "anthropic/claude-sonnet-4",
+        "api_key": "sk-ant-..."
+      },
+      {
+        "name": "fast",
+        "model": "groq/llama-3.3-70b-versatile",
+        "api_key": "gsk_..."
+      },
+      {
+        "name": "local",
+        "model": "ollama/llama3.2"
+      }
+    ],
+    "agent": {
+      "model": "smart",
+      "fallback": ["fast", "local"]
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": false,
+      "token": "",
+      "allow_from": []
+    }
+  },
+  "tools": {
+    "web": { "search": { "api_key": "" } },
+    "exec": { "timeout": 60 },
+    "restrict_to_workspace": true
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790
+  },
+  "log_level": "info"
+}
+```
+
+**Key Benefits:**
+- **Provider auto-detection**: Model prefix like `groq/` automatically configures the correct API endpoint
+- **Fallback chains**: If the primary model fails, try the next in the fallback list
+- **Simpler setup**: No separate provider configuration needed
+
+#### Provider Auto-Detection
+
+joshbot automatically detects the provider from the model name prefix:
+
+| Model Prefix | Provider | Default API Base |
+|--------------|----------|------------------|
+| `anthropic/` | Anthropic | `https://api.anthropic.com` |
+| `openai/` | OpenAI | `https://api.openai.com/v1` |
+| `groq/` | Groq | `https://api.groq.com/openai/v1` |
+| `ollama/` | Ollama | `http://localhost:11434/v1` |
+| `openrouter/` | OpenRouter | `https://openrouter.ai/api/v1` |
+| `nvidia/` | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` |
+| `deepseek/` | DeepSeek | `https://api.deepseek.com/v1` |
+| `gemini/` | Google Gemini | `https://generativelanguage.googleapis.com/v1beta` |
+| `cerebras/` | Cerebras | `https://api.cerebras.ai/v1` |
+
+For models without a recognized prefix, you must provide `api_base`.
+
+### Legacy Provider Configuration
+
+The old format is still supported for backward compatibility:
 
 ```json
 {
@@ -362,6 +434,23 @@ The main config file is `~/.joshbot/config.json`:
 
 All configuration values can be overridden with environment variables using the `JOSHBOT_` prefix. Use `__` (double underscore) for nested values:
 
+**Model-Centric Format (New):**
+```bash
+# Configure models (indexed)
+export JOSHBOT_MODELS_CONFIG__MODELS__0__NAME="smart"
+export JOSHBOT_MODELS_CONFIG__MODELS__0__MODEL="anthropic/claude-sonnet-4"
+export JOSHBOT_MODELS_CONFIG__MODELS__0__API_KEY="sk-ant-..."
+
+export JOSHBOT_MODELS_CONFIG__MODELS__1__NAME="fast"
+export JOSHBOT_MODELS_CONFIG__MODELS__1__MODEL="groq/llama-3.3-70b-versatile"
+export JOSHBOT_MODELS_CONFIG__MODELS__1__API_KEY="gsk_..."
+
+# Set active model and fallback chain
+export JOSHBOT_MODELS_CONFIG__AGENT__MODEL="smart"
+export JOSHBOT_MODELS_CONFIG__AGENT__FALLBACK="fast,local"  # comma-separated
+```
+
+**Legacy Format:**
 ```bash
 # Provider configuration
 export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-v1-..."
@@ -370,7 +459,10 @@ export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-v1-..."
 export JOSHBOT_AGENTS__DEFAULTS__MODEL="anthropic/claude-sonnet-4"
 export JOSHBOT_AGENTS__DEFAULTS__MAX_TOKENS="16384"
 export JOSHBOT_AGENTS__DEFAULTS__TEMPERATURE="0.5"
+```
 
+**Common Settings:**
+```bash
 # Telegram configuration
 export JOSHBOT_CHANNELS__TELEGRAM__ENABLED="true"
 export JOSHBOT_CHANNELS__TELEGRAM__TOKEN="123456:ABC..."
@@ -396,26 +488,50 @@ Choose an LLM model based on your needs:
 | Free tier | `arcee-ai/trinity-large-preview:free` | No cost via OpenRouter, good for testing |
 | Better quality | `anthropic/claude-sonnet-4` | Requires Anthropic or OpenRouter credits |
 | Fast responses | `groq/llama-3.3-70b-versatile` | Requires Groq API key |
+| Local | `ollama/llama3.2` | No API key needed, runs locally |
 
-To change the model:
-
-```bash
-# Via environment variable
-export JOSHBOT_AGENTS__DEFAULTS__MODEL="anthropic/claude-sonnet-4"
-
-# Or edit config.json
+**Model-Centric Config (Recommended):**
+```json
+{
+  "models_config": {
+    "models": [
+      { "name": "smart", "model": "anthropic/claude-sonnet-4", "api_key": "sk-ant-..." },
+      { "name": "fast", "model": "groq/llama-3.3-70b-versatile", "api_key": "gsk_..." }
+    ],
+    "agent": { "model": "smart", "fallback": ["fast"] }
+  }
+}
 ```
+
+**With Fallback Chain:**
+```json
+{
+  "models_config": {
+    "models": [
+      { "name": "primary", "model": "anthropic/claude-sonnet-4", "api_key": "sk-ant-..." },
+      { "name": "backup", "model": "groq/llama-3.3-70b-versatile", "api_key": "gsk_..." },
+      { "name": "local", "model": "ollama/llama3.2" }
+    ],
+    "agent": { "model": "primary", "fallback": ["backup", "local"] }
+  }
+}
+```
+
+If `primary` fails, joshbot automatically tries `backup`, then `local`.
 
 #### Multiple Providers
 
-You can configure multiple providers:
+You can configure multiple providers in the same config:
 
 ```json
 {
-  "providers": {
-    "openrouter": { "api_key": "sk-or-..." },
-    "anthropic": { "api_key": "sk-ant-..." },
-    "groq": { "api_key": "gsk_..." }
+  "models_config": {
+    "models": [
+      { "name": "claude", "model": "anthropic/claude-sonnet-4", "api_key": "sk-ant-..." },
+      { "name": "gpt", "model": "openai/gpt-4o", "api_key": "sk-..." },
+      { "name": "llama", "model": "groq/llama-3.3-70b-versatile", "api_key": "gsk_..." }
+    ],
+    "agent": { "model": "claude", "fallback": ["gpt", "llama"] }
   }
 }
 ```

@@ -298,132 +298,153 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	// Get logger
 	logger := log.Get()
 
-	// Create MultiProvider instead of single provider
+	// Create MultiProvider
 	multiProvider := providers.NewMultiProvider(providers.MultiProviderConfig{
 		DefaultProvider: cfg.ProviderDefaults.Default,
 		Logger:          &providers.DefaultLogger{},
 	})
-	if cfg.ProviderDefaults.Default == "" {
-		multiProvider.SetDefault("openrouter")
-	}
 
-	// Register OpenRouter (if configured and enabled)
-	if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" && p.Enabled {
-		openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
-			APIKey:       p.APIKey,
-			APIBase:      p.APIBase,
-			ExtraHeaders: p.ExtraHeaders,
-			Model:        cfg.Agents.Defaults.Model,
-			MaxTokens:    cfg.Agents.Defaults.MaxTokens,
-			Temperature:  cfg.Agents.Defaults.Temperature,
-		})
-		if err != nil {
-			log.Warn("Failed to create OpenRouter provider", "error", err)
-		} else {
-			multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0, p.Enabled)
-		}
-	}
+	// Check if using new model-centric config
+	if cfg.UseModelsConfig() {
+		// Use new model-centric configuration
+		log.Info("Using model-centric configuration")
 
-	// Register NVIDIA NIM (if configured) - first fallback
-	if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
-		nvidiaProvider, err := providers.GetProvider("nvidia", providers.Config{
-			APIKey:       p.APIKey,
-			APIBase:      p.APIBase,
-			ExtraHeaders: p.ExtraHeaders,
-		})
-		if err != nil {
-			log.Warn("Failed to create NVIDIA provider", "error", err)
-		} else {
-			priority := 1
-			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "nvidia"); idx >= 0 {
-				priority = idx + 1
-			}
-			multiProvider.Register("nvidia", nvidiaProvider, "", priority, p.Enabled)
+		resolvedModels := cfg.GetAllModelConfigs()
+		for i, resolved := range resolvedModels {
+			provider := providers.NewProviderFromResolvedModel(resolved, &providers.DefaultLogger{})
+			priority := i
+			enabled := true
+			multiProvider.Register(resolved.Name, provider, resolved.ModelID, priority, enabled)
+			log.Info("Registered model", "name", resolved.Name, "model", resolved.ModelID, "provider", resolved.Provider, "api_key_len", len(resolved.APIKey))
 		}
-	}
 
-	// Register Groq (if configured)
-	if p, ok := cfg.Providers["groq"]; ok && p.APIKey != "" && p.Enabled {
-		groqProvider, err := providers.GetProvider("groq", providers.Config{
-			APIKey:       p.APIKey,
-			APIBase:      p.APIBase,
-			ExtraHeaders: p.ExtraHeaders,
-		})
-		if err != nil {
-			log.Warn("Failed to create Groq provider", "error", err)
-		} else {
-			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
-			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "groq"); idx >= 0 {
-				priority = idx + 1
-			}
-			multiProvider.Register("groq", groqProvider, "", priority, p.Enabled)
+		if len(resolvedModels) == 0 {
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("no models configured")
 		}
-	}
+	} else {
+		// Use legacy provider configuration
+		if cfg.ProviderDefaults.Default == "" {
+			multiProvider.SetDefault("openrouter")
+		}
 
-	// Register Ollama (if configured)
-	if p, ok := cfg.Providers["ollama"]; ok && p.Enabled {
-		apiBase := p.APIBase
-		if apiBase == "" {
-			apiBase = providers.GetDefaultAPIBase()
-		}
-		timeout := p.Timeout
-		if timeout == 0 {
-			timeout = 300 * time.Second
-		}
-		ollamaProvider, err := providers.GetProvider("ollama", providers.Config{
-			APIBase:      apiBase,
-			ExtraHeaders: p.ExtraHeaders,
-			Timeout:      timeout,
-			Model:        p.Model,
-		})
-		if err != nil {
-			log.Warn("Failed to create Ollama provider", "error", err)
-		} else {
-			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
-			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "ollama"); idx >= 0 {
-				priority = idx + 1
-			}
-			model := p.Model
-			if model == "" {
-				model = providers.GetDefaultModel("ollama")
-			}
-			multiProvider.Register("ollama", ollamaProvider, model, priority, p.Enabled)
-		}
-	}
-
-	// Register GitHub Copilot (if configured)
-	if p, ok := cfg.Providers["github-copilot"]; ok && p.Enabled {
-		homeDir, _ := copilot.GetHomeDir()
-		token, err := copilot.LoadToken(homeDir)
-		if err != nil || token == nil || token.AccessToken == "" {
-			log.Warn("GitHub Copilot not authenticated", "error", err)
-			log.Warn("Run: joshbot auth github-copilot")
-		} else {
-			copilotCfg := providers.Config{
-				APIKey:      token.AccessToken,
-				Model:       cfg.Agents.Defaults.Model,
-				MaxTokens:   cfg.Agents.Defaults.MaxTokens,
-				Temperature: cfg.Agents.Defaults.Temperature,
-			}
-			if p.Model != "" {
-				copilotCfg.Model = p.Model
-			}
-			if copilotCfg.Model == "" {
-				copilotCfg.Model = "gpt-4o"
-			}
-			copilotProvider, err := providers.GetProvider("github-copilot", copilotCfg)
+		// Register OpenRouter (if configured and enabled)
+		if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" && p.Enabled {
+			openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
+				APIKey:       p.APIKey,
+				APIBase:      p.APIBase,
+				ExtraHeaders: p.ExtraHeaders,
+				Model:        cfg.Agents.Defaults.Model,
+				MaxTokens:    cfg.Agents.Defaults.MaxTokens,
+				Temperature:  cfg.Agents.Defaults.Temperature,
+			})
 			if err != nil {
-				log.Warn("Failed to create GitHub Copilot provider", "error", err)
+				log.Warn("Failed to create OpenRouter provider", "error", err)
+			} else {
+				multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0, p.Enabled)
+			}
+		}
+
+		// Register NVIDIA NIM (if configured) - first fallback
+		if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
+			nvidiaProvider, err := providers.GetProvider("nvidia", providers.Config{
+				APIKey:       p.APIKey,
+				APIBase:      p.APIBase,
+				ExtraHeaders: p.ExtraHeaders,
+			})
+			if err != nil {
+				log.Warn("Failed to create NVIDIA provider", "error", err)
+			} else {
+				priority := 1
+				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "nvidia"); idx >= 0 {
+					priority = idx + 1
+				}
+				multiProvider.Register("nvidia", nvidiaProvider, "", priority, p.Enabled)
+			}
+		}
+
+		// Register Groq (if configured)
+		if p, ok := cfg.Providers["groq"]; ok && p.APIKey != "" && p.Enabled {
+			groqProvider, err := providers.GetProvider("groq", providers.Config{
+				APIKey:       p.APIKey,
+				APIBase:      p.APIBase,
+				ExtraHeaders: p.ExtraHeaders,
+			})
+			if err != nil {
+				log.Warn("Failed to create Groq provider", "error", err)
 			} else {
 				priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
-				for i, name := range cfg.ProviderDefaults.FallbackOrder {
-					if name == "github-copilot" {
-						priority = i + 1
-						break
-					}
+				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "groq"); idx >= 0 {
+					priority = idx + 1
 				}
-				multiProvider.Register("github-copilot", copilotProvider, copilotCfg.Model, priority, p.Enabled)
-				log.Info("Registered provider", "name", "github-copilot", "priority", priority)
+				multiProvider.Register("groq", groqProvider, "", priority, p.Enabled)
+			}
+		}
+
+		// Register Ollama (if configured)
+		if p, ok := cfg.Providers["ollama"]; ok && p.Enabled {
+			apiBase := p.APIBase
+			if apiBase == "" {
+				apiBase = providers.GetDefaultAPIBase()
+			}
+			timeout := p.Timeout
+			if timeout == 0 {
+				timeout = 300 * time.Second
+			}
+			ollamaProvider, err := providers.GetProvider("ollama", providers.Config{
+				APIBase:      apiBase,
+				ExtraHeaders: p.ExtraHeaders,
+				Timeout:      timeout,
+				Model:        p.Model,
+			})
+			if err != nil {
+				log.Warn("Failed to create Ollama provider", "error", err)
+			} else {
+				priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "ollama"); idx >= 0 {
+					priority = idx + 1
+				}
+				model := p.Model
+				if model == "" {
+					model = providers.GetDefaultModel("ollama")
+				}
+				multiProvider.Register("ollama", ollamaProvider, model, priority, p.Enabled)
+			}
+		}
+
+		// Register GitHub Copilot (if configured)
+		if p, ok := cfg.Providers["github-copilot"]; ok && p.Enabled {
+			homeDir, _ := copilot.GetHomeDir()
+			token, err := copilot.LoadToken(homeDir)
+			if err != nil || token == nil || token.AccessToken == "" {
+				log.Warn("GitHub Copilot not authenticated", "error", err)
+				log.Warn("Run: joshbot auth github-copilot")
+			} else {
+				copilotCfg := providers.Config{
+					APIKey:      token.AccessToken,
+					Model:       cfg.Agents.Defaults.Model,
+					MaxTokens:   cfg.Agents.Defaults.MaxTokens,
+					Temperature: cfg.Agents.Defaults.Temperature,
+				}
+				if p.Model != "" {
+					copilotCfg.Model = p.Model
+				}
+				if copilotCfg.Model == "" {
+					copilotCfg.Model = "gpt-4o"
+				}
+				copilotProvider, err := providers.GetProvider("github-copilot", copilotCfg)
+				if err != nil {
+					log.Warn("Failed to create GitHub Copilot provider", "error", err)
+				} else {
+					priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+					for i, name := range cfg.ProviderDefaults.FallbackOrder {
+						if name == "github-copilot" {
+							priority = i + 1
+							break
+						}
+					}
+					multiProvider.Register("github-copilot", copilotProvider, copilotCfg.Model, priority, p.Enabled)
+					log.Info("Registered provider", "name", "github-copilot", "priority", priority)
+				}
 			}
 		}
 	}
@@ -510,16 +531,37 @@ func runAgent(c *cli.Context) error {
 		return err
 	}
 
-	if len(cfg.Providers) == 0 {
+	// Check for either legacy providers or new model-centric config
+	if !cfg.UseModelsConfig() && len(cfg.Providers) == 0 {
 		return fmt.Errorf("no providers configured. Run 'joshbot onboard' first")
 	}
 
-	// Override model from CLI flag if provided
+	// Override model from CLI flag if provided (works for both config formats)
 	if modelFlag := c.String("model"); modelFlag != "" {
+		if cfg.UseModelsConfig() {
+			// Check if the flag is a model name or model ID
+			if _, ok := cfg.GetModel(modelFlag); ok {
+				cfg.ModelsConfig.Agent.Model = modelFlag
+			} else {
+				// Try to find by model ID
+				for _, m := range cfg.ModelsConfig.Models {
+					if m.Model == modelFlag || config.StripProviderPrefix(m.Model) == modelFlag {
+						cfg.ModelsConfig.Agent.Model = m.Name
+						break
+					}
+				}
+			}
+		}
 		cfg.Agents.Defaults.Model = modelFlag
 	}
 
-	log.Info("Starting agent mode", "model", cfg.Agents.Defaults.Model)
+	// Get model name for logging
+	modelName := cfg.Agents.Defaults.Model
+	if cfg.UseModelsConfig() {
+		modelName = cfg.ModelsConfig.Agent.Model
+	}
+
+	log.Info("Starting agent mode", "model", modelName)
 
 	// Setup components
 	_, _, _, agentInstance, _, messageSender, err := setupComponents(cfg)
@@ -1130,12 +1172,19 @@ func runGateway(c *cli.Context) error {
 		return err
 	}
 
-	if len(cfg.Providers) == 0 {
+	// Check for either legacy providers or new model-centric config
+	if !cfg.UseModelsConfig() && len(cfg.Providers) == 0 {
 		return fmt.Errorf("no providers configured. Run 'joshbot onboard' first")
 	}
 
+	// Get model name for logging
+	modelName := cfg.Agents.Defaults.Model
+	if cfg.UseModelsConfig() {
+		modelName = cfg.ModelsConfig.Agent.Model
+	}
+
 	log.Info("Starting gateway mode",
-		"model", cfg.Agents.Defaults.Model,
+		"model", modelName,
 		"telegram", cfg.Channels.Telegram.Enabled,
 	)
 
@@ -2065,20 +2114,44 @@ func runStatus(c *cli.Context) error {
 	fmt.Printf("Workspace:      %s %s\n", cfg.WorkspaceDir(), statusBool(wsExists))
 	fmt.Printf("Sessions:       %s\n", cfg.SessionsDir())
 	fmt.Println()
-	fmt.Printf("Model:          %s\n", cfg.Agents.Defaults.Model)
+
+	// Display model info based on config format
+	if cfg.UseModelsConfig() {
+		fmt.Println("Config format:  model-centric")
+		fmt.Printf("Active model:   %s\n", cfg.ModelsConfig.Agent.Model)
+		if len(cfg.ModelsConfig.Agent.Fallback) > 0 {
+			fmt.Printf("Fallback:       %s\n", strings.Join(cfg.ModelsConfig.Agent.Fallback, ", "))
+		}
+	} else {
+		fmt.Printf("Model:          %s\n", cfg.Agents.Defaults.Model)
+	}
 	fmt.Printf("Max tokens:     %d\n", cfg.Agents.Defaults.MaxTokens)
 	fmt.Printf("Temperature:    %.1f\n", cfg.Agents.Defaults.Temperature)
 	fmt.Printf("Memory window:  %d\n", cfg.Agents.Defaults.MemoryWindow)
 	fmt.Println()
 
-	providerNames := make([]string, 0, len(cfg.Providers))
-	for name := range cfg.Providers {
-		providerNames = append(providerNames, name)
+	// Display providers/models
+	if cfg.UseModelsConfig() {
+		modelNames := make([]string, 0, len(cfg.ModelsConfig.Models))
+		for _, m := range cfg.ModelsConfig.Models {
+			if !m.Disabled {
+				modelNames = append(modelNames, m.Name)
+			}
+		}
+		if len(modelNames) == 0 {
+			modelNames = []string{"none"}
+		}
+		fmt.Printf("Models:         %s\n", strings.Join(modelNames, ", "))
+	} else {
+		providerNames := make([]string, 0, len(cfg.Providers))
+		for name := range cfg.Providers {
+			providerNames = append(providerNames, name)
+		}
+		if len(providerNames) == 0 {
+			providerNames = []string{"none"}
+		}
+		fmt.Printf("Providers:      %s\n", strings.Join(providerNames, ", "))
 	}
-	if len(providerNames) == 0 {
-		providerNames = []string{"none"}
-	}
-	fmt.Printf("Providers:      %s\n", strings.Join(providerNames, ", "))
 	fmt.Printf("Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
 	fmt.Printf("Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
 	fmt.Println()

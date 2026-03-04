@@ -827,6 +827,8 @@ func TestAgentMaxIterations(t *testing.T) {
 }
 
 func TestBuildSystemPrompt(t *testing.T) {
+	InvalidatePromptCache()
+
 	cfg := config.Defaults()
 	cfg.Agents.Defaults.Workspace = "/tmp/test-workspace"
 

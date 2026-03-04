@@ -6,21 +6,144 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/providers"
 )
 
-// BuildPrompt builds the full system prompt from workspace files and injected context.
-// This follows the Python implementation's build_system_prompt function.
-// userName is optional - if provided, it will be included for personalization.
-func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, userName string) string {
+// cacheBaseline tracks the state of source files for cache invalidation.
+type cacheBaseline struct {
+	existed  map[string]bool // Which files existed when cache was built
+	maxMtime time.Time       // Latest modification time of all files
+}
+
+// promptCache holds the cached static portion of the system prompt.
+type promptCache struct {
+	prompt   string        // Cached prompt content
+	baseline cacheBaseline // State when cache was built
+	mu       sync.RWMutex  // Protects concurrent access
+}
+
+// globalPromptCache is the singleton cache for system prompts.
+var globalPromptCache promptCache
+
+// sourceFilesChanged checks if any source files have changed since baseline.
+func sourceFilesChanged(workspace string, baseline cacheBaseline) bool {
+	if baseline.existed == nil {
+		return true
+	}
+
+	currentFiles := collectSourceFiles(workspace)
+
+	if len(currentFiles) != len(baseline.existed) {
+		return true
+	}
+
+	for path, existed := range baseline.existed {
+		info, err := os.Stat(path)
+		currentlyExists := err == nil
+
+		if existed != currentlyExists {
+			return true
+		}
+
+		if currentlyExists && info.ModTime().After(baseline.maxMtime) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// collectSourceFiles gathers all source file paths and their existence.
+func collectSourceFiles(workspace string) map[string]bool {
+	files := make(map[string]bool)
+
+	identityFiles := []string{
+		filepath.Join(workspace, "AGENTS.md"),
+		filepath.Join(workspace, "SOUL.md"),
+		filepath.Join(workspace, "USER.md"),
+		filepath.Join(workspace, "TOOLS.md"),
+		filepath.Join(workspace, "IDENTITY.md"),
+	}
+
+	for _, path := range identityFiles {
+		_, err := os.Stat(path)
+		files[path] = err == nil
+	}
+
+	memPath := filepath.Join(workspace, "memory", "MEMORY.md")
+	_, err := os.Stat(memPath)
+	files[memPath] = err == nil
+
+	skillsDir := filepath.Join(workspace, "skills")
+	filepath.Walk(skillsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() && (strings.HasSuffix(path, "SKILL.md") || strings.HasSuffix(path, "skill.md")) {
+			files[path] = true
+		}
+		return nil
+	})
+
+	return files
+}
+
+// buildCacheBaseline creates a baseline from current file state.
+func buildCacheBaseline(workspace string) cacheBaseline {
+	files := collectSourceFiles(workspace)
+	var maxMtime time.Time
+
+	for path, existed := range files {
+		if existed {
+			info, err := os.Stat(path)
+			if err == nil && info.ModTime().After(maxMtime) {
+				maxMtime = info.ModTime()
+			}
+		}
+	}
+
+	return cacheBaseline{
+		existed:  files,
+		maxMtime: maxMtime,
+	}
+}
+
+// BuildPromptCached builds the static portion of the prompt with caching.
+func BuildPromptCached(workspace string, skills SkillsLoader, memory MemoryLoader) string {
+	globalPromptCache.mu.RLock()
+	if globalPromptCache.prompt != "" && !sourceFilesChanged(workspace, globalPromptCache.baseline) {
+		cached := globalPromptCache.prompt
+		globalPromptCache.mu.RUnlock()
+		return cached
+	}
+	globalPromptCache.mu.RUnlock()
+
+	globalPromptCache.mu.Lock()
+	defer globalPromptCache.mu.Unlock()
+
+	if globalPromptCache.prompt != "" && !sourceFilesChanged(workspace, globalPromptCache.baseline) {
+		return globalPromptCache.prompt
+	}
+
+	prompt := buildStaticPrompt(workspace, skills, memory)
+	baseline := buildCacheBaseline(workspace)
+
+	globalPromptCache.prompt = prompt
+	globalPromptCache.baseline = baseline
+
+	return prompt
+}
+
+// buildStaticPrompt builds the static portion of the system prompt.
+func buildStaticPrompt(workspace string, skills SkillsLoader, memory MemoryLoader) string {
 	parts := []string{}
 
-	// Core identity
 	parts = append(parts, buildCoreIdentity())
 
-	// Load identity files from workspace
 	identity := loadIdentityFiles(workspace)
 	for name, content := range identity {
 		if content != "" {
@@ -28,12 +151,6 @@ func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, use
 		}
 	}
 
-	// User name context - add after identity but before memory
-	if userName != "" {
-		parts = append(parts, fmt.Sprintf(`The user's name is %s. Use their name sparingly and naturally - occasional greetings, sign-offs, or personal touches are appropriate. Do not overuse it.`, userName))
-	}
-
-	// Memory context (always loaded)
 	if memory != nil {
 		memContent, err := memory.LoadMemory(context.Background())
 		if err == nil && memContent != "" {
@@ -41,7 +158,6 @@ func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, use
 		}
 	}
 
-	// Skills summary
 	if skills != nil {
 		skillsSummary, err := skills.LoadSummary(context.Background())
 		if err == nil && skillsSummary != "" {
@@ -49,7 +165,31 @@ func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, use
 		}
 	}
 
-	// Current time
+	return joinParts(parts)
+}
+
+// InvalidatePromptCache clears the global prompt cache.
+func InvalidatePromptCache() {
+	globalPromptCache.mu.Lock()
+	defer globalPromptCache.mu.Unlock()
+	globalPromptCache.prompt = ""
+	globalPromptCache.baseline = cacheBaseline{}
+}
+
+// BuildPrompt builds the full system prompt from workspace files and injected context.
+// Uses caching for static content to avoid redundant file I/O.
+func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, userName string) string {
+	parts := []string{}
+
+	staticPrompt := BuildPromptCached(workspace, skills, memory)
+	if staticPrompt != "" {
+		parts = append(parts, staticPrompt)
+	}
+
+	if userName != "" {
+		parts = append(parts, fmt.Sprintf(`The user's name is %s. Use their name sparingly and naturally - occasional greetings, sign-offs, or personal touches are appropriate. Do not overuse it.`, userName))
+	}
+
 	now := time.Now().UTC().Format("2006-01-02 15:04 UTC")
 	parts = append(parts, fmt.Sprintf("<current_time>%s</current_time>", now))
 

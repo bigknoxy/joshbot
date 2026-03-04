@@ -94,6 +94,81 @@ type AgentDefaults struct {
 	CompactionThreshold float64 `mapstructure:"compaction_threshold" json:"compaction_threshold" yaml:"compaction_threshold"`
 }
 
+// ModelConfig defines a single model with its API configuration.
+type ModelConfig struct {
+	Name      string            `mapstructure:"name" json:"name" yaml:"name"`
+	Model     string            `mapstructure:"model" json:"model" yaml:"model"`
+	APIKey    string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIBase   string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
+	Extra     map[string]string `mapstructure:"extra" json:"extra,omitempty" yaml:"extra,omitempty"`
+	Disabled  bool              `mapstructure:"disabled" json:"disabled,omitempty" yaml:"disabled,omitempty"`
+	MaxTokens int               `mapstructure:"max_tokens" json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+}
+
+// AgentModelConfig holds agent model configuration (new simplified structure).
+type AgentModelConfig struct {
+	Model    string   `mapstructure:"model" json:"model" yaml:"model"`
+	Fallback []string `mapstructure:"fallback" json:"fallback,omitempty" yaml:"fallback,omitempty"`
+}
+
+// ModelsConfig holds all model configurations.
+type ModelsConfig struct {
+	Models []ModelConfig    `mapstructure:"models" json:"models" yaml:"models"`
+	Agent  AgentModelConfig `mapstructure:"agent" json:"agent" yaml:"agent"`
+}
+
+// ProviderInfo contains detected provider information.
+type ProviderInfo struct {
+	Name      string
+	APIFormat string
+	BaseURL   string
+}
+
+// ResolvedModelConfig is a fully resolved model configuration.
+type ResolvedModelConfig struct {
+	Name      string
+	ModelID   string
+	Provider  string
+	APIFormat string
+	APIBase   string
+	APIKey    string
+	Extra     map[string]string
+	MaxTokens int
+}
+
+// providerPrefixes maps model prefixes to provider info.
+var providerPrefixes = map[string]ProviderInfo{
+	"anthropic/":  {Name: "anthropic", APIFormat: "anthropic", BaseURL: "https://api.anthropic.com"},
+	"openai/":     {Name: "openai", APIFormat: "openai", BaseURL: "https://api.openai.com/v1"},
+	"groq/":       {Name: "groq", APIFormat: "openai", BaseURL: "https://api.groq.com/openai/v1"},
+	"ollama/":     {Name: "ollama", APIFormat: "openai", BaseURL: "http://localhost:11434/v1"},
+	"openrouter/": {Name: "openrouter", APIFormat: "openai", BaseURL: "https://openrouter.ai/api/v1"},
+	"nvidia/":     {Name: "nvidia", APIFormat: "openai", BaseURL: "https://integrate.api.nvidia.com/v1"},
+	"deepseek/":   {Name: "deepseek", APIFormat: "openai", BaseURL: "https://api.deepseek.com/v1"},
+	"gemini/":     {Name: "gemini", APIFormat: "openai", BaseURL: "https://generativelanguage.googleapis.com/v1beta"},
+	"cerebras/":   {Name: "cerebras", APIFormat: "openai", BaseURL: "https://api.cerebras.ai/v1"},
+}
+
+// DetectProvider extracts provider info from a model string.
+func DetectProvider(model string) ProviderInfo {
+	for prefix, info := range providerPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return info
+		}
+	}
+	return ProviderInfo{Name: "unknown", APIFormat: "openai", BaseURL: ""}
+}
+
+// StripProviderPrefix removes the provider prefix from a model name.
+func StripProviderPrefix(model string) string {
+	for prefix := range providerPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return strings.TrimPrefix(model, prefix)
+		}
+	}
+	return model
+}
+
 // AgentsConfig holds agent configuration.
 type AgentsConfig struct {
 	Defaults AgentDefaults `mapstructure:"defaults" json:"defaults" yaml:"defaults"`
@@ -150,15 +225,22 @@ type UserConfig struct {
 
 // Config is the root configuration for joshbot.
 type Config struct {
-	SchemaVersion    int                       `mapstructure:"schema_version" json:"schema_version" yaml:"schema_version"`
-	Providers        map[string]ProviderConfig `mapstructure:"providers" json:"providers" yaml:"providers"`
+	SchemaVersion int `mapstructure:"schema_version" json:"schema_version" yaml:"schema_version"`
+
+	// New model-centric config (preferred)
+	ModelsConfig ModelsConfig `mapstructure:"models_config" json:"models_config,omitempty" yaml:"models_config,omitempty"`
+
+	// Legacy provider-centric config (still supported for backward compatibility)
+	Providers        map[string]ProviderConfig `mapstructure:"providers" json:"providers,omitempty" yaml:"providers,omitempty"`
 	ProviderDefaults ProviderDefaults          `mapstructure:"provider_defaults" json:"provider_defaults,omitempty" yaml:"provider_defaults,omitempty"`
 	Agents           AgentsConfig              `mapstructure:"agents" json:"agents" yaml:"agents"`
-	Channels         ChannelsConfig            `mapstructure:"channels" json:"channels" yaml:"channels"`
-	Tools            ToolsConfig               `mapstructure:"tools" json:"tools" yaml:"tools"`
-	Gateway          GatewayConfig             `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
-	LogLevel         string                    `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
-	User             UserConfig                `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+
+	// Other config sections
+	Channels ChannelsConfig `mapstructure:"channels" json:"channels" yaml:"channels"`
+	Tools    ToolsConfig    `mapstructure:"tools" json:"tools" yaml:"tools"`
+	Gateway  GatewayConfig  `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
+	LogLevel string         `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User     UserConfig     `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
 }
 
 // parseConfigFromFile parses JSON config data into the Config struct.
@@ -183,7 +265,81 @@ func applyEnvOverrides(cfg *Config) {
 		fmt.Sscanf(v, "%d", &cfg.SchemaVersion)
 	}
 
-	// Model
+	// Model-centric config support
+	// Format: JOSHBOT_MODELS_CONFIG__AGENT__MODEL=smart
+	//         JOSHBOT_MODELS_CONFIG__MODELS__0__NAME=smart
+	//         JOSHBOT_MODELS_CONFIG__MODELS__0__MODEL=openai/gpt-4
+	//         JOSHBOT_MODELS_CONFIG__MODELS__0__API_KEY=sk-xxx
+	if v := getEnv("MODELS_CONFIG__AGENT__MODEL"); v != "" {
+		cfg.ModelsConfig.Agent.Model = v
+	}
+
+	if v := getEnv("MODELS_CONFIG__AGENT__FALLBACK"); v != "" {
+		cfg.ModelsConfig.Agent.Fallback = strings.Split(v, ",")
+		for i := range cfg.ModelsConfig.Agent.Fallback {
+			cfg.ModelsConfig.Agent.Fallback[i] = strings.TrimSpace(cfg.ModelsConfig.Agent.Fallback[i])
+		}
+	}
+
+	// Parse model configs from env (indexed approach)
+	for i := 0; ; i++ {
+		prefix := fmt.Sprintf("MODELS_CONFIG__MODELS__%d__", i)
+		name := getEnv(prefix + "NAME")
+		if name == "" {
+			break
+		}
+
+		apiKey := getEnv(prefix + "API_KEY")
+		apiBase := getEnv(prefix + "API_BASE")
+		modelID := getEnv(prefix + "MODEL")
+
+		// Check if model already exists (update mode)
+		found := false
+		for j := range cfg.ModelsConfig.Models {
+			if cfg.ModelsConfig.Models[j].Name == name {
+				// Update existing model
+				if apiKey != "" {
+					cfg.ModelsConfig.Models[j].APIKey = apiKey
+				}
+				if apiBase != "" {
+					cfg.ModelsConfig.Models[j].APIBase = apiBase
+				}
+				if modelID != "" {
+					cfg.ModelsConfig.Models[j].Model = modelID
+				}
+				if v := getEnv(prefix + "DISABLED"); v != "" {
+					cfg.ModelsConfig.Models[j].Disabled = v == "true" || v == "1"
+				}
+				if v := getEnv(prefix + "MAX_TOKENS"); v != "" {
+					fmt.Sscanf(v, "%d", &cfg.ModelsConfig.Models[j].MaxTokens)
+				}
+				found = true
+				break
+			}
+		}
+
+		// If not found, create new model
+		if !found {
+			model := ModelConfig{
+				Name:    name,
+				Model:   modelID,
+				APIKey:  apiKey,
+				APIBase: apiBase,
+			}
+
+			if v := getEnv(prefix + "DISABLED"); v != "" {
+				model.Disabled = v == "true" || v == "1"
+			}
+
+			if v := getEnv(prefix + "MAX_TOKENS"); v != "" {
+				fmt.Sscanf(v, "%d", &model.MaxTokens)
+			}
+
+			cfg.ModelsConfig.Models = append(cfg.ModelsConfig.Models, model)
+		}
+	}
+
+	// Model (legacy)
 	if v := getEnv("AGENTS__DEFAULTS__MODEL"); v != "" {
 		cfg.Agents.Defaults.Model = v
 	}
@@ -314,6 +470,15 @@ func applyEnvOverrides(cfg *Config) {
 func Defaults() *Config {
 	return &Config{
 		SchemaVersion: CurrentSchemaVersion,
+		// New model-centric config (empty by default, user must configure)
+		ModelsConfig: ModelsConfig{
+			Models: []ModelConfig{},
+			Agent: AgentModelConfig{
+				Model:    "",
+				Fallback: []string{},
+			},
+		},
+		// Legacy provider config (still supported)
 		Providers: map[string]ProviderConfig{
 			"openrouter": {},
 		},
@@ -403,11 +568,175 @@ func (c *Config) EnsureDirs() error {
 	return nil
 }
 
+// UseModelsConfig returns true if the new model-centric config is being used.
+func (c *Config) UseModelsConfig() bool {
+	return len(c.ModelsConfig.Models) > 0
+}
+
+// GetModel returns a model config by name.
+func (c *Config) GetModel(name string) (ModelConfig, bool) {
+	for _, m := range c.ModelsConfig.Models {
+		if m.Name == name {
+			return m, true
+		}
+	}
+	return ModelConfig{}, false
+}
+
+// GetActiveModel returns the currently configured model.
+func (c *Config) GetActiveModel() (ModelConfig, error) {
+	modelName := c.ModelsConfig.Agent.Model
+	if modelName == "" {
+		return ModelConfig{}, errors.New("no model configured")
+	}
+
+	model, ok := c.GetModel(modelName)
+	if !ok {
+		return ModelConfig{}, fmt.Errorf("model not found: %s", modelName)
+	}
+
+	return model, nil
+}
+
+// GetFallbackModels returns the fallback model chain.
+func (c *Config) GetFallbackModels() []ModelConfig {
+	var models []ModelConfig
+	for _, name := range c.ModelsConfig.Agent.Fallback {
+		if m, ok := c.GetModel(name); ok && !m.Disabled {
+			models = append(models, m)
+		}
+	}
+	return models
+}
+
+// ResolveModelConfig resolves the full configuration for a model.
+func (c *Config) ResolveModelConfig(name string) (ResolvedModelConfig, error) {
+	model, ok := c.GetModel(name)
+	if !ok {
+		return ResolvedModelConfig{}, fmt.Errorf("model not found: %s", name)
+	}
+
+	if model.Disabled {
+		return ResolvedModelConfig{}, fmt.Errorf("model is disabled: %s", name)
+	}
+
+	provider := DetectProvider(model.Model)
+
+	apiBase := model.APIBase
+	if apiBase == "" {
+		apiBase = provider.BaseURL
+	}
+
+	if apiBase == "" {
+		return ResolvedModelConfig{}, fmt.Errorf("model %s: api_base required for unknown provider", name)
+	}
+
+	// Validate API key for providers that require it
+	if model.APIKey == "" {
+		// Some providers don't require API keys (e.g., local Ollama)
+		if provider.Name != "ollama" {
+			return ResolvedModelConfig{}, fmt.Errorf("model %s: api_key required for provider %s", name, provider.Name)
+		}
+	}
+
+	modelID := StripProviderPrefix(model.Model)
+
+	return ResolvedModelConfig{
+		Name:      model.Name,
+		ModelID:   modelID,
+		Provider:  provider.Name,
+		APIFormat: provider.APIFormat,
+		APIBase:   apiBase,
+		APIKey:    model.APIKey,
+		Extra:     model.Extra,
+		MaxTokens: model.MaxTokens,
+	}, nil
+}
+
+// GetAllModelConfigs returns all enabled model configurations resolved.
+func (c *Config) GetAllModelConfigs() []ResolvedModelConfig {
+	var configs []ResolvedModelConfig
+
+	activeModel := c.ModelsConfig.Agent.Model
+	if resolved, err := c.ResolveModelConfig(activeModel); err == nil {
+		configs = append(configs, resolved)
+	}
+
+	for _, fallback := range c.ModelsConfig.Agent.Fallback {
+		if fallback == activeModel {
+			continue
+		}
+		if resolved, err := c.ResolveModelConfig(fallback); err == nil {
+			configs = append(configs, resolved)
+		}
+	}
+
+	for _, m := range c.ModelsConfig.Models {
+		if m.Name == activeModel {
+			continue
+		}
+		found := false
+		for _, f := range c.ModelsConfig.Agent.Fallback {
+			if f == m.Name {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		if resolved, err := c.ResolveModelConfig(m.Name); err == nil {
+			configs = append(configs, resolved)
+		}
+	}
+
+	return configs
+}
+
 // Validate validates the configuration and returns an error if invalid.
 func (c *Config) Validate() error {
-	// Validate model is not empty
-	if c.Agents.Defaults.Model == "" {
-		return errors.New("model cannot be empty")
+	// Validate new model-centric config if present
+	if c.UseModelsConfig() {
+		if len(c.ModelsConfig.Models) == 0 {
+			return errors.New("no models configured")
+		}
+
+		if c.ModelsConfig.Agent.Model == "" {
+			return errors.New("no active model configured")
+		}
+
+		// Check active model exists
+		if _, ok := c.GetModel(c.ModelsConfig.Agent.Model); !ok {
+			return fmt.Errorf("active model not found: %s", c.ModelsConfig.Agent.Model)
+		}
+
+		// Check fallback models exist
+		for _, name := range c.ModelsConfig.Agent.Fallback {
+			if _, ok := c.GetModel(name); !ok {
+				return fmt.Errorf("fallback model not found: %s", name)
+			}
+		}
+
+		// Validate each model has required fields
+		for _, m := range c.ModelsConfig.Models {
+			if m.Name == "" {
+				return errors.New("model name cannot be empty")
+			}
+			if m.Model == "" {
+				return fmt.Errorf("model %s: model ID cannot be empty", m.Name)
+			}
+
+			// Check API base is provided for unknown providers
+			provider := DetectProvider(m.Model)
+			if provider.Name == "unknown" && m.APIBase == "" {
+				return fmt.Errorf("model %s: api_base required for unknown provider", m.Name)
+			}
+		}
+	} else {
+		// Legacy provider-centric validation
+		if c.Agents.Defaults.Model == "" {
+			return errors.New("model cannot be empty")
+		}
 	}
 
 	// Validate max_tokens is positive
@@ -428,6 +757,11 @@ func (c *Config) Validate() error {
 	// Validate memory_window is positive
 	if c.Agents.Defaults.MemoryWindow <= 0 {
 		return errors.New("memory_window must be positive")
+	}
+
+	// Validate compaction_threshold is in valid range
+	if c.Agents.Defaults.CompactionThreshold <= 0 || c.Agents.Defaults.CompactionThreshold > 1 {
+		return errors.New("compaction_threshold must be between 0 and 1")
 	}
 
 	// Validate exec timeout is positive
@@ -490,6 +824,11 @@ func Load() (*Config, error) {
 			p.APIKey = strings.TrimSpace(p.APIKey)
 			p.APIBase = strings.TrimSpace(p.APIBase)
 			cfg.Providers[name] = p
+		}
+		// Also sanitize model API keys
+		for i := range cfg.ModelsConfig.Models {
+			cfg.ModelsConfig.Models[i].APIKey = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIKey)
+			cfg.ModelsConfig.Models[i].APIBase = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIBase)
 		}
 		cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
 		cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)

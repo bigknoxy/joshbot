@@ -15,7 +15,9 @@ A lightweight personal AI assistant written in Go, featuring self-learning memor
 - **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
 - **Telegram Integration** - Chat from your phone with full media support
 - **Interactive CLI** - Rich terminal interface with markdown rendering
-- **Multi-Provider LLM** - OpenRouter, Anthropic, OpenAI, Groq, DeepSeek, Gemini, and more
+- **Multi-Provider LLM** - OpenRouter, Anthropic, OpenAI, Groq, DeepSeek, Gemini, NVIDIA, and more
+- **Model-Centric Config** - Simplified model configuration with provider auto-detection and fallback chains
+- **Prompt Caching** - Intelligent caching of system prompts with mtime-based invalidation for faster responses
 - **Tool Use** - File operations, shell commands, web search, scheduling, and more
 - **Proactive Tasks** - Heartbeat system for autonomous task processing
 - **Scheduled Reminders** - Cron-based task scheduling with natural delay syntax
@@ -169,6 +171,73 @@ The heartbeat service (active in gateway mode) reads `~/.joshbot/workspace/HEART
 
 Config file: `~/.joshbot/config.json`
 
+### Model-Centric Configuration (Recommended)
+
+The new model-centric format is simpler and more intuitive. Define models directly with their API configuration:
+
+```json
+{
+  "models_config": {
+    "models": [
+      {
+        "name": "smart",
+        "model": "anthropic/claude-sonnet-4",
+        "api_key": "sk-ant-..."
+      },
+      {
+        "name": "fast",
+        "model": "groq/llama-3.3-70b-versatile",
+        "api_key": "gsk_..."
+      },
+      {
+        "name": "local",
+        "model": "ollama/llama3.2",
+        "api_base": "http://localhost:11434/v1"
+      }
+    ],
+    "agent": {
+      "model": "smart",
+      "fallback": ["fast", "local"]
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": false,
+      "token": "",
+      "allow_from": []
+    }
+  },
+  "tools": {
+    "web": { "search": { "api_key": "" } },
+    "exec": { "timeout": 60 },
+    "restrict_to_workspace": true
+  }
+}
+```
+
+**Benefits:**
+- Provider auto-detected from model prefix (e.g., `groq/` → Groq API)
+- Easy fallback chains — try next model if one fails
+- No separate provider configuration needed
+
+### Provider Auto-Detection
+
+| Model Prefix | Provider | Default API Base |
+|--------------|----------|------------------|
+| `anthropic/` | Anthropic | `https://api.anthropic.com` |
+| `openai/` | OpenAI | `https://api.openai.com/v1` |
+| `groq/` | Groq | `https://api.groq.com/openai/v1` |
+| `ollama/` | Ollama | `http://localhost:11434/v1` |
+| `openrouter/` | OpenRouter | `https://openrouter.ai/api/v1` |
+| `nvidia/` | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` |
+| `deepseek/` | DeepSeek | `https://api.deepseek.com/v1` |
+| `gemini/` | Google Gemini | `https://generativelanguage.googleapis.com/v1beta` |
+| `cerebras/` | Cerebras | `https://api.cerebras.ai/v1` |
+
+### Legacy Provider Configuration (Still Supported)
+
+For backward compatibility, the old format still works:
+
 ```json
 {
   "providers": {
@@ -207,6 +276,23 @@ Config file: `~/.joshbot/config.json`
 
 All config values can be set via environment variables with `JOSHBOT_` prefix:
 
+**Model-Centric Format (New):**
+```bash
+# Configure models
+export JOSHBOT_MODELS_CONFIG__MODELS__0__NAME="smart"
+export JOSHBOT_MODELS_CONFIG__MODELS__0__MODEL="anthropic/claude-sonnet-4"
+export JOSHBOT_MODELS_CONFIG__MODELS__0__API_KEY="sk-ant-..."
+
+export JOSHBOT_MODELS_CONFIG__MODELS__1__NAME="fast"
+export JOSHBOT_MODELS_CONFIG__MODELS__1__MODEL="groq/llama-3.3-70b-versatile"
+export JOSHBOT_MODELS_CONFIG__MODELS__1__API_KEY="gsk_..."
+
+# Set active model and fallback chain
+export JOSHBOT_MODELS_CONFIG__AGENT__MODEL="smart"
+export JOSHBOT_MODELS_CONFIG__AGENT__FALLBACK="fast"
+```
+
+**Legacy Format:**
 ```bash
 export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-..."
 export JOSHBOT_CHANNELS__TELEGRAM__ENABLED="true"
@@ -214,34 +300,48 @@ export JOSHBOT_CHANNELS__TELEGRAM__ENABLED="true"
 
 ### Changing the LLM Model
 
-The default model is `openai/gpt-4`. For free alternatives via OpenRouter, try `arcee-ai/trinity-large-preview:free` or browse available models at openrouter.ai.
+With the new model-centric config, changing models is straightforward:
 
-**To use Anthropic directly:**
+**Use Anthropic Claude:**
 ```json
 {
-  "providers": { "anthropic": { "api_key": "sk-ant-..." } },
-  "agents": { "defaults": { "model": "claude-sonnet-4-20250514" } }
+  "models_config": {
+    "models": [{ "name": "claude", "model": "anthropic/claude-sonnet-4", "api_key": "sk-ant-..." }],
+    "agent": { "model": "claude" }
+  }
 }
 ```
 
-**To use OpenAI directly:**
+**Use OpenAI GPT-4:**
 ```json
 {
-  "providers": { "openai": { "api_key": "sk-..." } },
-  "agents": { "defaults": { "model": "gpt-4o" } }
+  "models_config": {
+    "models": [{ "name": "gpt", "model": "openai/gpt-4o", "api_key": "sk-..." }],
+    "agent": { "model": "gpt" }
+  }
 }
 ```
 
-**To use a local model (Ollama, vLLM):**
+**Use local Ollama (no API key needed):**
 ```json
 {
-  "providers": {
-    "custom": {
-      "api_key": "",
-      "api_base": "http://localhost:11434/v1"
-    }
-  },
-  "agents": { "defaults": { "model": "openai/llama3.2" } }
+  "models_config": {
+    "models": [{ "name": "local", "model": "ollama/llama3.2" }],
+    "agent": { "model": "local" }
+  }
+}
+```
+
+**With fallback chain:**
+```json
+{
+  "models_config": {
+    "models": [
+      { "name": "primary", "model": "anthropic/claude-sonnet-4", "api_key": "sk-ant-..." },
+      { "name": "fallback", "model": "groq/llama-3.3-70b-versatile", "api_key": "gsk_..." }
+    ],
+    "agent": { "model": "primary", "fallback": ["fallback"] }
+  }
 }
 ```
 
@@ -330,6 +430,8 @@ joshbot/
 - **Progressive skill loading**: Minimal context overhead, full content on demand
 - **Plain-file memory**: No databases, just markdown — simple and portable
 - **Context compression**: Summarizes old context to stay within token limits
+- **Prompt caching**: Static system prompt cached with mtime-based invalidation, reducing file I/O on every message
+- **Model-centric config**: Provider auto-detected from model prefix, fallback chains for resilience
 
 ## Troubleshooting
 

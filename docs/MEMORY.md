@@ -139,3 +139,53 @@ Return a helpful error message explaining alternatives when systemctl is not fou
 - Also fixed ignored error in `runAuthCopilot` where `loadConfig()` failure would silently overwrite existing config
 
 **Prevention Rule**: When a function expects a home directory (`~`), never pass a path that already contains `.joshbot`. Always verify the input path format matches the function's documented expectations.
+
+---
+
+## 2026-03-04 Model-Centric Configuration Pattern
+
+**Context**: Simplifying provider configuration by making models the primary configuration unit rather than providers.
+
+**Decision**: 
+- Introduced `models_config` section with `models` array and `agent` settings
+- Each model has `name`, `model` (with provider prefix), `api_key`, `api_base`
+- Provider auto-detected from model prefix (e.g., `groq/llama-3.3-70b` → Groq provider)
+- Fallback chains supported via `agent.fallback` array
+
+**Benefits**:
+- Simpler configuration: One place to define model + API key + endpoint
+- Provider auto-detection reduces boilerplate
+- Fallback chains improve resilience
+- Backward compatible with legacy `providers` format
+
+**Design Patterns**:
+- `DetectProvider(model string) ProviderInfo` - Returns provider name, API format, and default base URL
+- `StripProviderPrefix(model string) string` - Removes prefix to get actual model ID
+- `ResolveModelConfig(name string)` - Combines model config with detected provider defaults
+
+**Prevention Rule**: When designing config formats, prefer user-centric models over implementation-centric providers. Users think in terms of "which model should I use", not "which provider should I configure".
+
+---
+
+## 2026-03-04 System Prompt Caching Strategy
+
+**Context**: Reducing redundant file I/O on every message by caching the static system prompt.
+
+**Decision**:
+- Cache static prompt content in memory
+- Use mtime-based invalidation to detect file changes
+- Track all source files: AGENTS.md, SOUL.md, USER.md, TOOLS.md, IDENTITY.md, MEMORY.md, skills/*/SKILL.md
+- Double-checked locking pattern for thread-safe cache access
+
+**Implementation**:
+- `cacheBaseline` struct tracks file existence and max mtime
+- `promptCache` struct holds cached content and baseline
+- `BuildPromptCached()` checks cache validity before rebuilding
+- `InvalidatePromptCache()` for force refresh
+
+**Trade-offs**:
+- Memory overhead: Cached prompt stored in memory (~10-50KB typical)
+- File system precision: Some filesystems have 1-2 second mtime precision (acceptable for this use case)
+- Concurrency: Double-checked locking with RLock/RWMutex ensures thread safety
+
+**Prevention Rule**: When implementing caching, always include a way to invalidate the cache. Prefer content-based or mtime-based invalidation over TTL-based for data that changes infrequently.

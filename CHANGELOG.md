@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.1] - 2026-03-04
+
+### Added
+
+#### Debug Logging
+- **`--debug` flag** for agent and gateway commands to enable detailed troubleshooting logs
+- **HTTP response logging** - Log status codes and model information
+- **LLM response details** - Log content length, tool calls, and finish reasons
+- **Empty content detection** - Warn when LLM returns empty responses after tool execution
+- **Helps diagnose** "I've processed your request" issues and rate limiting errors
+
+### Fixed
+
+- **Broken async callback code** - Removed references to non-existent `tools.AsyncResult` type
+- **Test failures** - Fixed agent test mock to match ToolExecutor interface
+
+### Added
+
+#### Async Tools for Long-Running Operations
+- **AsyncTool interface** and `AsyncResult`/`PendingAsync` types for background execution
+- **Registry ExecuteWithContext** for async tool execution
+- **ShellTool async support** - Auto-detect long-running commands (python, npm, make, etc.)
+- **Explicit async control** - `async` parameter for shell tool
+- **CLI mode notifications** - Callback printer for background task completion
+- **Gateway mode routing** - Callback routing via message bus
+- **Prevents timeout errors** on operations >60 seconds
+- **Better UX**: "Started in background, I'll notify you when done."
+
 ## [1.16.0] - 2026-03-04
 
 ### Added

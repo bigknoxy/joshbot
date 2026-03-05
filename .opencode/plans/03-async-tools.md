@@ -1,6 +1,6 @@
 # Plan: Async Tools
 
-**Status:** Not Started  
+**Status:** ✅ Completed  
 **Priority:** Medium  
 **Estimated Effort:** 6-8 hours (~300 LOC)  
 **Impact:** Medium (prevents timeouts, better UX for long-running ops)  
@@ -885,19 +885,19 @@ func TestPendingAsyncTracking(t *testing.T) {
 
 ## Completion Checklist
 
-- [ ] Added AsyncTool interface
-- [ ] Added AsyncResult and PendingAsync types
-- [ ] Updated Registry with async support
-- [ ] Implemented IsAsync() for ShellTool
-- [ ] Implemented ExecuteAsync() for ShellTool
-- [ ] Added async parameter to shell tool
-- [ ] Updated Agent to handle callbacks
-- [ ] Added callback processor goroutine
-- [ ] Updated ReAct loop for async handling
-- [ ] Added unit tests
-- [ ] Verified build passes
-- [ ] Verified tests pass
-- [ ] Tested manually with long-running commands
+- [x] Added AsyncTool interface
+- [x] Added AsyncResult and PendingAsync types
+- [x] Updated Registry with async support
+- [x] Implemented IsAsync() for ShellTool
+- [x] Implemented ExecuteAsync() for ShellTool
+- [x] Added async parameter to shell tool
+- [x] Updated Agent to handle callbacks
+- [x] Added callback processor goroutine
+- [x] Updated ReAct loop for async handling
+- [x] Added unit tests
+- [x] Verified build passes
+- [x] Verified tests pass
+- [x] Tested manually with long-running commands
 
 ---
 
@@ -906,3 +906,4 @@ func TestPendingAsyncTracking(t *testing.T) {
 | Date | Status | Notes |
 |------|--------|-------|
 | 2026-03-03 | Not Started | Plan created |
+| 2026-03-05 | Completed | Implementation done, tests pass, CLI callback handler added |

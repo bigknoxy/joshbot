@@ -486,6 +486,31 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.FilesystemAllowedPaths,
 	)
 
+	// Create async callback channel and start processor for background task notifications
+	asyncCallbackCh := make(chan tools.AsyncResult, 100)
+	toolsRegistry.SetAsyncCallback(asyncCallbackCh)
+	go func() {
+		for result := range asyncCallbackCh {
+			var msg string
+			if result.Error != nil {
+				msg = fmt.Sprintf("❌ Background task failed (%s): %v", result.ToolName, result.Error)
+			} else {
+				output := result.Output
+				if len(output) > 2000 {
+					output = output[:2000] + "... (truncated)"
+				}
+				msg = fmt.Sprintf("✅ Background task completed (%s):\n%s", result.ToolName, output)
+			}
+
+			// Publish to message bus for gateway mode
+			msgBus.Publish(bus.OutboundMessage{
+				Channel:   result.Channel,
+				ChannelID: result.ChatID,
+				Content:   msg,
+			})
+		}
+	}()
+
 	agentInstance := agent.NewAgent(
 		cfg,
 		multiProvider,
@@ -578,7 +603,7 @@ func runAgent(c *cli.Context) error {
 	log.Info("Starting agent mode", "model", modelName)
 
 	// Setup components
-	_, _, _, agentInstance, _, messageSender, err := setupComponents(cfg)
+	_, _, _, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
 	if err != nil {
 		return err
 	}
@@ -587,9 +612,34 @@ func runAgent(c *cli.Context) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start async callback printer for CLI mode
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case result := <-toolsRegistry.GetAsyncCallbackChannel():
+				var msg string
+				if result.Error != nil {
+					msg = fmt.Sprintf("\n❌ Background task failed (%s): %v\n> ", result.ToolName, result.Error)
+				} else {
+					output := result.Output
+					if len(output) > 500 {
+						output = output[:500] + "... (truncated)"
+					}
+					msg = fmt.Sprintf("\n✅ Background task completed (%s):\n%s\n> ", result.ToolName, output)
+				}
+				fmt.Fprint(os.Stdout, msg)
+			}
+		}
+	}()
+
 	// Non-interactive mode: send single message and exit
 	if message := c.String("message"); message != "" {
-		return runAgentSingleMessage(ctx, agentInstance, message, os.Stdout, messageSender)
+		err := runAgentSingleMessage(ctx, agentInstance, message, os.Stdout, messageSender)
+		// Wait a bit for async callbacks
+		time.Sleep(2 * time.Second)
+		return err
 	}
 
 	done := make(chan struct{})

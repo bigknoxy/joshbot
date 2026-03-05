@@ -71,6 +71,10 @@ func (m *mockToolExecutor) Execute(ctx context.Context, name string, args map[st
 	return m.registry.Execute(ctx, name, args)
 }
 
+func (m *mockToolExecutor) ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(tools.AsyncResult)) (tools.ToolResult, bool) {
+	return m.registry.ExecuteWithContext(ctx, name, args, channel, channelID, callback)
+}
+
 func (m *mockToolExecutor) GetSchemas() []providers.Tool {
 	return m.registry.GetSchemas()
 }

@@ -6,16 +6,21 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/charmbracelet/log"
+	"github.com/google/uuid"
 )
 
 // Registry manages tool registration and execution.
 type Registry struct {
-	mu     sync.RWMutex
-	tools  map[string]Tool
-	logger interface{ Info(msg string, args ...any) }
+	mu              sync.RWMutex
+	tools           map[string]Tool
+	logger          interface{ Info(msg string, args ...any) }
+	pendingAsync    map[string]*PendingAsync
+	pendingMu       sync.RWMutex
+	asyncCallbackCh chan AsyncResult
 }
 
 // Option is a functional option for configuring the Registry.
@@ -25,6 +30,14 @@ type Option func(*Registry)
 func WithLogger(logger interface{ Info(msg string, args ...any) }) Option {
 	return func(r *Registry) {
 		r.logger = logger
+	}
+}
+
+// WithAsyncSupport enables async tool execution.
+func WithAsyncSupport(callbackCh chan AsyncResult) Option {
+	return func(r *Registry) {
+		r.asyncCallbackCh = callbackCh
+		r.pendingAsync = make(map[string]*PendingAsync)
 	}
 }
 
@@ -120,6 +133,129 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 	}
 
 	return result.Output, nil
+}
+
+// ExecuteWithContext runs a tool with channel/chat context for callbacks.
+func (r *Registry) ExecuteWithContext(
+	ctx context.Context,
+	name string,
+	args map[string]any,
+	channel, chatID string,
+	asyncCallback func(AsyncResult),
+) (ToolResult, bool) {
+	tool, ok := r.Get(name)
+	if !ok {
+		return ToolResult{Error: fmt.Errorf("tool not found: %s", name)}, false
+	}
+
+	// Check if tool supports async
+	if asyncTool, ok := tool.(AsyncTool); ok && asyncTool.IsAsync(args) {
+		return r.executeAsync(ctx, asyncTool, args, channel, chatID, asyncCallback)
+	}
+
+	// Execute synchronously
+	result := tool.Execute(ctx, args)
+	return result, false
+}
+
+// executeAsync runs an async tool in a goroutine.
+func (r *Registry) executeAsync(
+	ctx context.Context,
+	tool AsyncTool,
+	args map[string]any,
+	channel, chatID string,
+	callback func(AsyncResult),
+) (ToolResult, bool) {
+	opID := uuid.New().String()[:8]
+
+	pending := &PendingAsync{
+		ID:        opID,
+		ToolName:  tool.Name(),
+		Args:      args,
+		StartedAt: time.Now(),
+		Channel:   channel,
+		ChatID:    chatID,
+	}
+
+	r.pendingMu.Lock()
+	if r.pendingAsync == nil {
+		r.pendingAsync = make(map[string]*PendingAsync)
+	}
+	r.pendingAsync[opID] = pending
+	r.pendingMu.Unlock()
+
+	go func() {
+		defer func() {
+			r.pendingMu.Lock()
+			delete(r.pendingAsync, opID)
+			r.pendingMu.Unlock()
+		}()
+
+		cb := func(result AsyncResult) {
+			result.ToolName = tool.Name()
+			result.Args = args
+			result.Channel = channel
+			result.ChatID = chatID
+
+			if r.asyncCallbackCh != nil {
+				select {
+				case r.asyncCallbackCh <- result:
+				default:
+					if r.logger != nil {
+						r.logger.Info("Async callback channel full, dropping result", "tool", tool.Name())
+					}
+				}
+			}
+
+			if callback != nil {
+				callback(result)
+			}
+		}
+
+		tool.ExecuteAsync(ctx, args, cb)
+	}()
+
+	return ToolResult{
+		Output: fmt.Sprintf("Started %s in background (ID: %s). I'll notify you when it's done.", tool.Name(), opID),
+	}, true
+}
+
+// GetPendingAsync returns all pending async operations.
+func (r *Registry) GetPendingAsync() []*PendingAsync {
+	r.pendingMu.RLock()
+	defer r.pendingMu.RUnlock()
+
+	result := make([]*PendingAsync, 0, len(r.pendingAsync))
+	for _, p := range r.pendingAsync {
+		result = append(result, p)
+	}
+	return result
+}
+
+// CancelAsync cancels a pending async operation by ID.
+func (r *Registry) CancelAsync(id string) error {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+
+	if _, ok := r.pendingAsync[id]; !ok {
+		return fmt.Errorf("pending operation not found: %s", id)
+	}
+
+	delete(r.pendingAsync, id)
+	return nil
+}
+
+// SetAsyncCallback sets the callback channel for async tool results.
+func (r *Registry) SetAsyncCallback(ch chan AsyncResult) {
+	r.asyncCallbackCh = ch
+	if r.pendingAsync == nil {
+		r.pendingAsync = make(map[string]*PendingAsync)
+	}
+}
+
+// GetAsyncCallbackChannel returns the async callback channel.
+func (r *Registry) GetAsyncCallbackChannel() chan AsyncResult {
+	return r.asyncCallbackCh
 }
 
 // GetSchemas returns the tool schemas for LLM function calling.

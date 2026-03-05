@@ -91,6 +91,13 @@ func (t *ShellTool) Parameters() []Parameter {
 			Description: "Working directory for the command",
 			Required:    false,
 		},
+		{
+			Name:        "async",
+			Type:        ParamBoolean,
+			Description: "Run command asynchronously for long-running operations",
+			Required:    false,
+			Default:     false,
+		},
 	}
 }
 
@@ -295,6 +302,143 @@ func readOutput(pipe interface{ Read([]byte) (int, error) }) (string, error) {
 	}
 
 	return string(result), nil
+}
+
+// longRunningPatterns are commands that typically take a long time.
+var longRunningPatterns = []string{
+	"python",
+	"npm run",
+	"yarn",
+	"make",
+	"docker build",
+	"docker compose",
+	"rsync",
+	"tar",
+	"zip",
+	"ffmpeg",
+	"git clone",
+	"wget",
+	"curl -O",
+	"sleep",
+	"watch",
+	"tail -f",
+	"npm install",
+	"pip install",
+	"go build",
+	"go test",
+	"cargo build",
+	"mvn",
+	"gradle",
+}
+
+// IsAsync returns true if the command is likely to be long-running.
+func (t *ShellTool) IsAsync(args map[string]any) bool {
+	// Check for explicit async flag
+	if async, ok := args["async"].(bool); ok {
+		return async
+	}
+
+	cmd, _ := args["command"].(string)
+	if cmd == "" {
+		return false
+	}
+
+	cmdLower := strings.ToLower(cmd)
+	for _, pattern := range longRunningPatterns {
+		if strings.Contains(cmdLower, strings.ToLower(pattern)) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ExecuteAsync runs the shell command asynchronously.
+func (t *ShellTool) ExecuteAsync(ctx context.Context, args map[string]any, callback AsyncCallback) ToolResult {
+	cmd, _ := args["command"].(string)
+	if cmd == "" {
+		err := errors.New("command is required")
+		callback(AsyncResult{Error: err})
+		return ToolResult{Error: err}
+	}
+
+	// Check allowlist
+	if len(t.allowList) > 0 {
+		allowed := false
+		cmdTrimmed := strings.TrimSpace(cmd)
+		for _, allowedCmd := range t.allowList {
+			if cmdTrimmed == allowedCmd || strings.HasPrefix(cmdTrimmed, allowedCmd+" ") {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			err := fmt.Errorf("command not in allowlist: %s", cmdTrimmed)
+			callback(AsyncResult{Error: err})
+			return ToolResult{Error: err}
+		}
+	}
+
+	// Check deny list
+	if denied := t.isDenied(cmd); denied != "" {
+		err := fmt.Errorf("command denied: %s", denied)
+		callback(AsyncResult{Error: err})
+		return ToolResult{Error: err}
+	}
+
+	// Get working directory
+	workingDir := t.workspace
+	if wd, ok := args["working_dir"].(string); ok && wd != "" {
+		if filepath.IsAbs(wd) {
+			if t.restrict && !isWithinBase(wd, t.workspace) {
+				err := fmt.Errorf("working directory outside workspace")
+				callback(AsyncResult{Error: err})
+				return ToolResult{Error: err}
+			}
+			workingDir = wd
+		} else {
+			workingDir = filepath.Clean(filepath.Join(t.workspace, wd))
+			if t.restrict && !isWithinBase(workingDir, t.workspace) {
+				err := fmt.Errorf("working directory outside workspace")
+				callback(AsyncResult{Error: err})
+				return ToolResult{Error: err}
+			}
+		}
+	}
+
+	// Get timeout
+	timeout := t.timeout
+	if to, ok := args["timeout"].(float64); ok && to > 0 {
+		timeout = time.Duration(to) * time.Second
+	}
+
+	// Run in goroutine
+	go func() {
+		execCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		result := t.runCommand(execCtx, cmd, workingDir)
+
+		asyncResult := AsyncResult{
+			Metadata: map[string]any{
+				"command":     cmd,
+				"working_dir": workingDir,
+			},
+		}
+
+		if result.Error != nil {
+			asyncResult.Error = result.Error
+			asyncResult.Output = fmt.Sprintf("Command failed: %v", result.Error)
+		} else {
+			asyncResult.Output = result.Output
+		}
+
+		callback(asyncResult)
+	}()
+
+	return ToolResult{
+		Output: fmt.Sprintf("Started command in background: %s", cmd),
+	}
 }
 
 // ShellToolConfig holds configuration for the shell tool.

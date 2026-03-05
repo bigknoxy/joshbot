@@ -1,11 +1,11 @@
 // Package tools provides the tool system for joshbot's agent.
-// It defines the base tool interface, parameter types, and implementations
-// for filesystem, shell, web, and message tools.
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // ParameterType represents the type of a tool parameter.
@@ -97,6 +97,42 @@ func (r ToolResult) String() string {
 		return fmt.Sprintf("Error: %v", r.Error)
 	}
 	return r.Output
+}
+
+// AsyncCallback is called when an async tool completes.
+type AsyncCallback func(result AsyncResult)
+
+// AsyncResult contains the result of an async tool execution.
+type AsyncResult struct {
+	ToolName string         // Name of the tool that completed
+	Args     map[string]any // Arguments passed to the tool
+	Output   string         // Tool output
+	Error    error          // Error if tool failed
+	Metadata map[string]any // Additional metadata
+	Channel  string         // Channel to send callback to
+	ChatID   string         // Chat ID for callback
+}
+
+// AsyncTool is an optional interface that tools can implement
+// to indicate they support asynchronous execution.
+type AsyncTool interface {
+	Tool
+
+	// IsAsync returns true if this execution should be async.
+	IsAsync(args map[string]any) bool
+
+	// ExecuteAsync runs the tool in the background and calls the callback when done.
+	ExecuteAsync(ctx context.Context, args map[string]any, callback AsyncCallback) ToolResult
+}
+
+// PendingAsync tracks a pending async operation.
+type PendingAsync struct {
+	ID        string         // Unique identifier
+	ToolName  string         // Tool being executed
+	Args      map[string]any // Tool arguments
+	StartedAt time.Time      // When it started
+	Channel   string         // Channel to send callback to
+	ChatID    string         // Chat ID for callback
 }
 
 // GenerateSchema generates a JSON schema for a tool's parameters.

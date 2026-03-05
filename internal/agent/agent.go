@@ -13,17 +13,20 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/session"
+	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
-// Default values
 const (
+	// DefaultTimeout is the default timeout for agent operations.
+	DefaultTimeout = 120 * time.Second
+	// DefaultMaxIterations is the default max iterations for ReAct loop.
 	DefaultMaxIterations = 20
-	DefaultTimeout       = 5 * time.Minute // 5 minute max for processing
 )
 
 // ToolExecutor is an interface for executing tool calls.
 type ToolExecutor interface {
 	Execute(ctx context.Context, name string, args map[string]any) (string, error)
+	ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(tools.AsyncResult)) (tools.ToolResult, bool)
 	GetSchemas() []providers.Tool
 }
 
@@ -367,15 +370,31 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			}
 
 			// Execute tool
-			result, _ := a.tools.Execute(ctx, tc.Function.Name, args)
+			result, isAsync := a.tools.ExecuteWithContext(ctx, tc.Function.Name, args, channel, channelID, nil)
+			var resultStr string
+			if result.Error != nil {
+				a.logger.Error("Tool execution failed",
+					"tool", tc.Function.Name,
+					"error", result.Error,
+				)
+				resultStr = fmt.Sprintf("Error executing %s: %v", tc.Function.Name, result.Error)
+			} else {
+				resultStr = result.Output
+			}
+
+			// For async tools, add placeholder message
+			if isAsync {
+				resultStr = result.Output // Contains "Started in background..." message
+			}
+
 			// Format tool result for LLM
-			toolMsg := a.formatToolResult(tc.ID, tc.Function.Name, result)
+			toolMsg := a.formatToolResult(tc.ID, tc.Function.Name, resultStr)
 			messages = append(messages, toolMsg)
 
 			// Add to session
 			sess.AddMessage(session.Message{
 				Role:       session.RoleTool,
-				Content:    result,
+				Content:    resultStr,
 				ToolCallID: tc.ID,
 				Timestamp:  time.Now(),
 			})
@@ -383,8 +402,9 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			// DEBUG: Log tool result
 			a.logger.Debug("Tool result",
 				"tool", tc.Function.Name,
-				"result_length", len(result),
-				"result_preview", truncate(result, 200),
+				"result_length", len(resultStr),
+				"result_preview", truncate(resultStr, 200),
+				"is_async", isAsync,
 			)
 		}
 

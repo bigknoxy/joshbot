@@ -113,8 +113,6 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 		if isAuthError(err) {
 			return nil, err
 		}
-		// Show network errors to user for debugging
-		fmt.Printf("\n[DEBUG] Token check error: %v (will retry)\n", err)
 		log.Debug("token poll error (initial): %v", err)
 	}
 	if token != nil {
@@ -126,7 +124,7 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 	// If GitHub suggested a slower interval, use it
 	if suggestedInterval > intervalSec {
 		intervalSec = suggestedInterval
-		fmt.Printf("[DEBUG] Using GitHub suggested interval: %ds\n", intervalSec)
+		log.Debug("Using GitHub suggested interval: %ds", intervalSec)
 	}
 
 	log.Debug("authorization pending, starting poll ticker...")
@@ -161,7 +159,7 @@ func PollForToken(ctx context.Context, deviceCode string, intervalSec int) (*Tok
 			// Update interval if GitHub suggested a slower rate
 			if suggestedInterval > intervalSec {
 				intervalSec = suggestedInterval
-				fmt.Printf("\n[DEBUG] Slowing down to %ds interval per GitHub\n", intervalSec)
+				log.Debug("Slowing down to %ds interval per GitHub", intervalSec)
 				ticker.Stop()
 				ticker = time.NewTicker(time.Duration(intervalSec) * time.Second)
 			}
@@ -191,8 +189,7 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	// Always show response status for debugging
-	fmt.Printf("[DEBUG] Token response: status=%d body=%s\n", resp.StatusCode, string(body))
+	log.Debug("Token response: status=%d body=%s", resp.StatusCode, string(body))
 
 	var result struct {
 		AccessToken  string `json:"access_token"`
@@ -214,7 +211,7 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 		case "slow_down":
 			// Return the interval from slow_down so caller can adjust polling
 			if result.Interval > 0 {
-				fmt.Printf("[DEBUG] GitHub requests slower polling: interval=%ds\n", result.Interval)
+				log.Debug("GitHub requests slower polling: interval=%ds", result.Interval)
 			}
 			return nil, result.Interval, nil
 		case "expired_token":

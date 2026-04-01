@@ -265,7 +265,10 @@ download_binary() {
             if [ "$checksum" = "$actual_checksum" ]; then
                 echo "  ✓ Checksum verified"
             else
-                echo "Warning: Checksum mismatch (continuing anyway)" >&2
+                echo "Error: Checksum mismatch — download may be corrupted or tampered with" >&2
+                echo "Expected: $checksum" >&2
+                echo "Actual:   $actual_checksum" >&2
+                exit 1
             fi
         else
             echo "  Checksum not found in release"

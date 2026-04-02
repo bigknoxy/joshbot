@@ -181,9 +181,21 @@ func runApp() error {
 						Name:  "list",
 						Usage: "List configured providers",
 					},
+					&cli.StringFlag{
+						Name:  "add",
+						Usage: "Add a specific provider (nvidia, openrouter, groq, ollama, openai, anthropic, github-copilot)",
+					},
+					&cli.StringFlag{
+						Name:  "remove",
+						Usage: "Remove a specific provider",
+					},
 					&cli.BoolFlag{
 						Name:  "default",
 						Usage: "Set default provider",
+					},
+					&cli.BoolFlag{
+						Name:  "fallback",
+						Usage: "Configure fallback order",
 					},
 				},
 				Action: runConfigure,
@@ -281,27 +293,26 @@ func loadConfig(cfgPath string) (*config.Config, error) {
 }
 
 // setupComponents initializes all required components.
-func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, error) {
+func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, *learning.Consolidator, *learning.Loop, error) {
 	// Ensure directories exist
 	if err := cfg.EnsureDirs(); err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
 	}
 
 	// Initialize memory manager
-	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace)
+	memoryManager, err := memory.New(cfg.WorkspaceDir())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
 	}
 	if err := memoryManager.Initialize(context.Background()); err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
 	}
 
 	// Initialize skills loader
-	skillsLoader, err := skills.NewLoader(cfg.Agents.Defaults.Workspace)
+	skillsLoader, err := skills.NewLoader(cfg.WorkspaceDir())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
 	}
-	// Discover skills now so agent has summaries available
 	_ = skillsLoader.Discover()
 
 	// Initialize message bus
@@ -334,7 +345,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 
 		if len(resolvedModels) == 0 {
-			return nil, nil, nil, nil, nil, nil, fmt.Errorf("no models configured")
+			return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("no models configured")
 		}
 	} else {
 		// Use legacy provider configuration
@@ -467,7 +478,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	// Initialize session manager
 	sessionMgr, err := session.NewManager(cfg.SessionsDir())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create session manager: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create session manager: %w", err)
 	}
 
 	// Build context budgeting/compression components
@@ -485,6 +496,11 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.ShellAllowList,
 		cfg.Tools.FilesystemAllowedPaths,
 	)
+
+	// Register MCP tools if configured
+	if err := tools.SetupMCPTools(toolsRegistry, cfg.Tools.MCP.Servers); err != nil {
+		log.Warn("MCP tools setup failed", "error", err)
+	}
 
 	// Create async callback channel and start processor for background task notifications
 	asyncCallbackCh := make(chan tools.AsyncResult, 100)
@@ -535,9 +551,15 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	consolidator := learning.NewConsolidator(memoryManager, multiProvider, 10*time.Minute)
 	consolidator.Start()
 
+	// Start learning loop (Hermes-style: experience -> skills -> improvement)
+	// Reuse the skillsLoader already created above
+	loopCfg := learning.DefaultLoopConfig(cfg.Agents.Defaults.Workspace)
+	learningLoop := learning.NewLoop(memoryManager, multiProvider, skillsLoader, loopCfg)
+	learningLoop.Start()
+
 	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
-	return msgBus, multiProvider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
+	return msgBus, multiProvider, sessionMgr, agentInstance, toolsRegistry, messageSender, consolidator, learningLoop, nil
 }
 
 // indexOf returns the index of needle in haystack, or -1 if not found.
@@ -603,7 +625,7 @@ func runAgent(c *cli.Context) error {
 	log.Info("Starting agent mode", "model", modelName)
 
 	// Setup components
-	_, _, _, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
+	_, _, _, agentInstance, toolsRegistry, messageSender, _, _, err := setupComponents(cfg)
 	if err != nil {
 		return err
 	}
@@ -1253,7 +1275,7 @@ func runGateway(c *cli.Context) error {
 	)
 
 	// Setup components
-	msgBus, _, _, agentInstance, _, sender, err := setupComponents(cfg)
+	msgBus, provider, _, agentInstance, _, sender, consolidator, learningLoop, err := setupComponents(cfg)
 	if err != nil {
 		return err
 	}
@@ -1309,7 +1331,7 @@ func runGateway(c *cli.Context) error {
 	// Start Telegram channel if enabled
 	var tgChannel *channels.TelegramChannel
 	if cfg.Channels.Telegram.Enabled && cfg.Channels.Telegram.Token != "" {
-		tgChannel = channels.NewTelegramChannel(msgBus, &cfg.Channels.Telegram)
+		tgChannel = channels.NewTelegramChannelWithTranscriber(msgBus, &cfg.Channels.Telegram, provider)
 		if err := tgChannel.Start(ctx); err != nil {
 			log.Error("Failed to start Telegram channel", "error", err)
 		} else {
@@ -1330,6 +1352,14 @@ func runGateway(c *cli.Context) error {
 
 	// Wait for shutdown
 	<-done
+
+	// Stop background services
+	if consolidator != nil {
+		consolidator.Stop()
+	}
+	if learningLoop != nil {
+		learningLoop.Stop()
+	}
 
 	// Stop Telegram channel
 	if tgChannel != nil {
@@ -2241,6 +2271,29 @@ func runConfigure(c *cli.Context) error {
 		return listProviders(cfg)
 	}
 
+	// --add flag: add specific provider
+	if addProvider := c.String("add"); addProvider != "" {
+		cfg = configureProvider(cfg, addProvider)
+		return config.Save(cfg)
+	}
+
+	// --remove flag: remove specific provider
+	if removeProvider := c.String("remove"); removeProvider != "" {
+		return removeProviderConfig(cfg, removeProvider)
+	}
+
+	// --default flag: set default provider
+	if c.Bool("default") {
+		cfg = setDefaultProvider(cfg)
+		return config.Save(cfg)
+	}
+
+	// --fallback flag: configure fallback order
+	if c.Bool("fallback") {
+		cfg = configureFallbackOrder(cfg)
+		return config.Save(cfg)
+	}
+
 	// Interactive wizard
 	return runConfigureWizard(cfg)
 }
@@ -2253,7 +2306,7 @@ func listProviders(cfg *config.Config) error {
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
 
-	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
+	providers := []string{"nvidia", "openrouter", "groq", "ollama", "openai", "anthropic", "github-copilot"}
 	defaultProvider := cfg.ProviderDefaults.Default
 
 	for _, name := range providers {
@@ -2291,7 +2344,7 @@ func listProviders(cfg *config.Config) error {
 
 // runConfigureWizard runs the interactive provider configuration wizard.
 func runConfigureWizard(cfg *config.Config) error {
-	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
+	providers := []string{"nvidia", "openrouter", "groq", "ollama", "openai", "anthropic", "github-copilot"}
 
 	for {
 		// Display current state
@@ -2338,18 +2391,20 @@ func runConfigureWizard(cfg *config.Config) error {
 		fmt.Println("  2. Configure OpenRouter")
 		fmt.Println("  3. Configure Groq")
 		fmt.Println("  4. Configure Ollama")
-		fmt.Println("  5. Configure GitHub Copilot")
-		fmt.Println("  6. Set default provider")
-		fmt.Println("  7. Configure fallback order")
-		fmt.Println("  8. Done")
+		fmt.Println("  5. Configure OpenAI")
+		fmt.Println("  6. Configure Anthropic")
+		fmt.Println("  7. Configure GitHub Copilot")
+		fmt.Println("  8. Set default provider")
+		fmt.Println("  9. Configure fallback order")
+		fmt.Println("  10. Done")
 		fmt.Println()
 
-		fmt.Print("Choice [8]: ")
+		fmt.Print("Choice [10]: ")
 
 		var choice string
 		fmt.Scanln(&choice)
 		if choice == "" {
-			choice = "8"
+			choice = "10"
 		}
 
 		switch choice {
@@ -2362,12 +2417,16 @@ func runConfigureWizard(cfg *config.Config) error {
 		case "4":
 			cfg = configureProvider(cfg, "ollama")
 		case "5":
-			cfg = configureProvider(cfg, "github-copilot")
+			cfg = configureProvider(cfg, "openai")
 		case "6":
-			cfg = setDefaultProvider(cfg)
+			cfg = configureProvider(cfg, "anthropic")
 		case "7":
-			cfg = configureFallbackOrder(cfg)
+			cfg = configureProvider(cfg, "github-copilot")
 		case "8":
+			cfg = setDefaultProvider(cfg)
+		case "9":
+			cfg = configureFallbackOrder(cfg)
+		case "10":
 			// Save and exit
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("failed to save config: %w", err)
@@ -2391,6 +2450,10 @@ func getProviderDisplayName(name string) string {
 		return "Groq"
 	case "ollama":
 		return "Ollama"
+	case "openai":
+		return "OpenAI"
+	case "anthropic":
+		return "Anthropic"
 	case "github-copilot":
 		return "GitHub Copilot"
 	default:
@@ -2639,6 +2702,75 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 				p.Model = strings.TrimSpace(modelInput)
 			}
 		}
+	case "openai":
+		if exists && p.APIBase != "" {
+			fmt.Printf("API base URL [%s]: ", p.APIBase)
+		} else {
+			fmt.Print("API base URL [https://api.openai.com/v1]: ")
+		}
+		fmt.Scanln(&apiBase)
+		if apiBase == "" {
+			if p.APIBase == "" {
+				apiBase = "https://api.openai.com/v1"
+			} else {
+				apiBase = p.APIBase
+			}
+		}
+		p.APIBase = strings.TrimSpace(apiBase)
+
+		defaultModel := providers.GetDefaultModel("openai")
+		if exists && p.Model != "" {
+			defaultModel = p.Model
+		}
+		models, err := providers.ListModels(providers.Config{
+			APIKey:  p.APIKey,
+			APIBase: p.APIBase,
+		})
+		if err != nil {
+			fmt.Printf("\nCould not fetch models: %v\n", err)
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		} else if len(models) > 0 {
+			selected := promptModelSelection(models, defaultModel)
+			p.Model = selected
+		} else {
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		}
+		var modelInput string
+		fmt.Scanln(&modelInput)
+		if modelInput == "" && p.Model == "" {
+			p.Model = defaultModel
+		} else if modelInput != "" {
+			p.Model = strings.TrimSpace(modelInput)
+		}
+	case "anthropic":
+		if exists && p.APIBase != "" {
+			fmt.Printf("API base URL [%s]: ", p.APIBase)
+		} else {
+			fmt.Print("API base URL [https://api.anthropic.com/v1]: ")
+		}
+		fmt.Scanln(&apiBase)
+		if apiBase == "" {
+			if p.APIBase == "" {
+				apiBase = "https://api.anthropic.com/v1"
+			} else {
+				apiBase = p.APIBase
+			}
+		}
+		p.APIBase = strings.TrimSpace(apiBase)
+
+		fmt.Println("\nNote: Anthropic does not provide a public model listing endpoint.")
+		fmt.Println("Available models: claude-sonnet-4-20250514, claude-opus-4-20250514, claude-haiku-3-20250314")
+		defaultModel := providers.GetDefaultModel("anthropic")
+		if exists && p.Model != "" {
+			defaultModel = p.Model
+		}
+		fmt.Printf("Model (default: %s): ", defaultModel)
+		var modelInput string
+		fmt.Scanln(&modelInput)
+		if modelInput == "" {
+			modelInput = defaultModel
+		}
+		p.Model = strings.TrimSpace(modelInput)
 	}
 
 	// Validate credentials if API key was provided
@@ -2801,13 +2933,33 @@ func filterModels(models []string, filter string) []string {
 // validateProviderCredentials tests the API credentials for a provider.
 func validateProviderCredentials(provider, apiKey, apiBase string) error {
 	switch provider {
-	case "openrouter", "groq", "nvidia":
+	case "openrouter", "groq", "nvidia", "openai":
 		// Test call to list models
 		req, err := http.NewRequest("GET", apiBase+"/models", nil)
 		if err != nil {
 			return fmt.Errorf("connection failed: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("connection failed: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == 401 {
+			return fmt.Errorf("invalid API key")
+		}
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+		return nil
+	case "anthropic":
+		// Anthropic uses x-api-key header instead of Authorization
+		req, err := http.NewRequest("GET", apiBase+"/models", nil)
+		if err != nil {
+			return fmt.Errorf("connection failed: %w", err)
+		}
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("connection failed: %w", err)
@@ -2831,6 +2983,44 @@ func validateProviderCredentials(provider, apiKey, apiBase string) error {
 		}
 		return nil
 	}
+	return nil
+}
+
+// removeProviderConfig removes a provider from the configuration.
+func removeProviderConfig(cfg *config.Config, provider string) error {
+	if cfg.Providers == nil {
+		fmt.Printf("Provider '%s' is not configured.\n", provider)
+		return nil
+	}
+
+	_, exists := cfg.Providers[provider]
+	if !exists {
+		fmt.Printf("Provider '%s' is not configured.\n", provider)
+		return nil
+	}
+
+	// Check if it's the default provider
+	if cfg.ProviderDefaults.Default == provider {
+		fmt.Printf("Warning: '%s' is the default provider. Removing it.\n", provider)
+		cfg.ProviderDefaults.Default = ""
+	}
+
+	// Remove from fallback order
+	var newFallback []string
+	for _, p := range cfg.ProviderDefaults.FallbackOrder {
+		if p != provider {
+			newFallback = append(newFallback, p)
+		}
+	}
+	cfg.ProviderDefaults.FallbackOrder = newFallback
+
+	delete(cfg.Providers, provider)
+
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	fmt.Printf("Provider '%s' removed.\n", provider)
 	return nil
 }
 
@@ -2889,8 +3079,14 @@ func setDefaultProvider(cfg *config.Config) *config.Config {
 func configureFallbackOrder(cfg *config.Config) *config.Config {
 	// Find configured providers
 	var configured []string
+	homeDir, _ := copilot.GetHomeDir()
 	for name, p := range cfg.Providers {
-		if p.APIKey != "" {
+		if name == "github-copilot" {
+			token, err := copilot.LoadToken(homeDir)
+			if err == nil && token != nil && token.AccessToken != "" {
+				configured = append(configured, name)
+			}
+		} else if p.APIKey != "" {
 			configured = append(configured, name)
 		}
 	}

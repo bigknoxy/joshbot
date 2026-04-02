@@ -263,3 +263,15 @@ func (l *Loader) GetSkill(name string) *Skill {
 	}
 	return l.skills[name]
 }
+
+// List returns all discovered skills
+func (l *Loader) List() []*Skill {
+	if !l.loaded {
+		_ = l.Discover()
+	}
+	result := make([]*Skill, 0, len(l.skills))
+	for _, sk := range l.skills {
+		result = append(result, sk)
+	}
+	return result
+}

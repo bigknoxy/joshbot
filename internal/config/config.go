@@ -202,6 +202,18 @@ type ExecConfig struct {
 	Timeout int `mapstructure:"timeout" json:"timeout" yaml:"timeout"`
 }
 
+// MCPConfig holds MCP server configuration.
+type MCPConfig struct {
+	Servers []MCPServerConfig `mapstructure:"servers" json:"servers" yaml:"servers"`
+}
+
+// MCPServerConfig holds a single MCP server configuration.
+type MCPServerConfig struct {
+	Name    string `mapstructure:"name" json:"name" yaml:"name"`
+	URL     string `mapstructure:"url" json:"url" yaml:"url"`
+	Enabled bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+}
+
 // ToolsConfig holds tools configuration.
 type ToolsConfig struct {
 	Web                    WebToolsConfig `mapstructure:"web" json:"web" yaml:"web"`
@@ -210,6 +222,7 @@ type ToolsConfig struct {
 	ShellAllowList         []string       `mapstructure:"shell_allow_list" json:"shell_allow_list" yaml:"shell_allow_list"`
 	FilesystemAllowedPaths []string       `mapstructure:"filesystem_allowed_paths" json:"filesystem_allowed_paths" yaml:"filesystem_allowed_paths"`
 	ToolOutputMaxChars     int            `mapstructure:"tool_output_max_chars" json:"tool_output_max_chars" yaml:"tool_output_max_chars"`
+	MCP                    MCPConfig      `mapstructure:"mcp" json:"mcp" yaml:"mcp"`
 }
 
 // GatewayConfig holds gateway server configuration.

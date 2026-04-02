@@ -44,6 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Skills.Loader.List()** method added for skill enumeration
 - **Gateway shutdown** - consolidator and learning loop properly stopped on context cancellation
 
+## [1.17.1] - 2026-04-02
+
+### Fixed
+
+- **Broken MCP package removed** — `internal/mcp/` referenced undefined types from MCP SDK v1.4.0, blocking `go vet` and CI
+- **Debug output leaks** — replaced 5 `fmt.Printf("[DEBUG]...")` statements in copilot auth with structured `log.Debug()`
+- **Checksum verification bypass** — `install.sh` now exits on checksum mismatch instead of continuing with potentially corrupted binary
+
+### Added
+
+- **Smoke tests for 5 zero-coverage packages** — heartbeat (7 tests), skills (14 tests), service (4 tests), pkg/bus (1 test), copilot (6 tests)
+- **SECURITY.md** — vulnerability reporting process, security best practices, and architecture notes
+- **VERSION file** — proper version tracking for releases
+
+### Changed
+
+- **uninstall.sh rewritten** — now handles Go binary removal, systemd/launchd services, and legacy pipx installation
+- **docker-compose.yml** — removed deprecated `version: '3.8'` key
+- **CHANGELOG.md** — backfilled missing v1.13-v1.15 entries
+
 ## [1.17.0] - 2026-03-05
 
 ### Added

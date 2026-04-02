@@ -146,17 +146,28 @@ joshbot/
 ├── cmd/joshbot/           # Main application entry point
 ├── internal/
 │   ├── agent/             # Core ReAct agent loop
-│   ├── bus/               # Message bus (goroutine-based)
+│   ├── bus/               # Internal message bus
 │   ├── channels/          # Chat channels (CLI, Telegram)
 │   ├── config/            # Configuration loading
+│   ├── context/           # LLM context and system prompt
+│   ├── copilot/           # GitHub Copilot integration
+│   ├── cron/              # Scheduled task runner
+│   ├── heartbeat/         # Proactive task system
+│   ├── learning/          # Self-learning memory
+│   ├── log/               # Structured logging
 │   ├── memory/            # MEMORY.md + HISTORY.md management
 │   ├── providers/         # LLM provider integrations
+│   ├── service/           # System service management
 │   ├── session/           # Session management
 │   ├── skills/            # Skill discovery and loading
+│   ├── subagent/          # Subagent delegation
 │   └── tools/             # Tool system and implementations
+├── pkg/
+│   ├── bus/               # Public message bus types
+│   └── channels/          # Public channel types
 ├── docs/                  # Documentation
 ├── workspace/             # User data (skills, memory)
-└── tasks/                  # Task tracking
+└── tasks/                 # Task tracking
 ```
 
 For more details on architecture and component interactions, see [AGENTS.md](./AGENTS.md).

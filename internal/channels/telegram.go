@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +20,11 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"gopkg.in/telebot.v3"
 )
+
+// Transcriber interface for audio transcription.
+type Transcriber interface {
+	Transcribe(ctx context.Context, audioData []byte, prompt string) (string, error)
+}
 
 // TelegramChannel implements the Channel interface for Telegram.
 type TelegramChannel struct {
@@ -42,10 +48,18 @@ type TelegramChannel struct {
 
 	// Polling configuration
 	pollTimeout time.Duration
+
+	// Transcriber for voice messages (optional)
+	transcriber Transcriber
 }
 
 // NewTelegramChannel creates a new Telegram channel instance.
 func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *TelegramChannel {
+	return NewTelegramChannelWithTranscriber(bus, cfg, nil)
+}
+
+// NewTelegramChannelWithTranscriber creates a new Telegram channel with transcription support.
+func NewTelegramChannelWithTranscriber(bus *bus.MessageBus, cfg *config.TelegramConfig, transcriber Transcriber) *TelegramChannel {
 	// Build allowlist set for fast lookup
 	allowSet := make(map[string]struct{})
 	for _, a := range cfg.AllowFrom {
@@ -66,6 +80,7 @@ func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *Telegr
 		retryDelay:    500 * time.Millisecond,
 		maxRetryDelay: 5 * time.Second,
 		pollTimeout:   60 * time.Second,
+		transcriber:   transcriber,
 	}
 }
 
@@ -454,6 +469,16 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 	go t.sendTyping(ctx.Sender())
 
 	voice := msg.Voice
+	chatID := msg.Chat.ID
+	messageID := msg.ID
+
+	// If transcriber is available, download and transcribe in background
+	if t.transcriber != nil {
+		go t.downloadAndTranscribe(voice.File, chatID, messageID, msg.Sender, voice.MIME)
+		return nil
+	}
+
+	// Fallback: no transcription, just send placeholder
 	content := "[Voice message]"
 	if voice.Caption != "" {
 		content = fmt.Sprintf("[Voice message with caption]: %s", voice.Caption)
@@ -466,7 +491,7 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 		Timestamp: time.Now(),
 		Metadata: map[string]any{
 			"message_id":     msg.ID,
-			"chat_id":        msg.Chat.ID,
+			"chat_id":        chatID,
 			"username":       msg.Sender.Username,
 			"first_name":     msg.Sender.FirstName,
 			"last_name":      msg.Sender.LastName,
@@ -479,14 +504,118 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 		},
 	}
 
-	// Download voice in background
-	go t.downloadFile(voice.File, "voice", msg.Chat.ID, msg.ID)
-
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send voice message to bus", "error", "queue full")
 	}
 
 	return nil
+}
+
+// downloadAndTranscribe downloads a voice file and transcribes it.
+func (t *TelegramChannel) downloadAndTranscribe(file telebot.File, chatID int64, messageID int, sender *telebot.User, mimeType string) {
+	t.mu.RLock()
+	bot := t.bot
+	transcriber := t.transcriber
+	t.mu.RUnlock()
+
+	if bot == nil || transcriber == nil {
+		return
+	}
+
+	// Check if file is on cloud
+	if !file.InCloud() {
+		log.Debug("voice file not in cloud, skipping transcription", "file_id", file.FileID)
+		return
+	}
+
+	// Download to temp file
+	tmpFile, err := os.CreateTemp("", "joshbot-voice-*.ogg")
+	if err != nil {
+		log.Error("failed to create temp file for voice transcription", "error", err)
+		t.sendVoiceFallback("[Voice message - transcription failed: cannot create temp file]", chatID, messageID, sender, file)
+		return
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	err = bot.Download(&file, tmpPath)
+	if err != nil {
+		log.Error("failed to download voice file for transcription", "error", err, "file_id", file.FileID)
+		t.sendVoiceFallback("[Voice message - transcription failed: download error]", chatID, messageID, sender, file)
+		return
+	}
+
+	// Read the audio file
+	audioData, err := os.ReadFile(tmpPath)
+	if err != nil {
+		log.Error("failed to read downloaded voice file", "error", err)
+		t.sendVoiceFallback("[Voice message - transcription failed: read error]", chatID, messageID, sender, file)
+		return
+	}
+
+	// Transcribe the audio
+	prompt := ""
+	if mimeType != "" {
+		prompt = fmt.Sprintf("Voice message from Telegram (%s)", mimeType)
+	}
+
+	transcription, err := transcriber.Transcribe(context.Background(), audioData, prompt)
+	if err != nil {
+		log.Error("failed to transcribe voice message", "error", err, "file_id", file.FileID)
+		t.sendVoiceFallback(fmt.Sprintf("[Voice message - transcription failed: %s]", err.Error()), chatID, messageID, sender, file)
+		return
+	}
+
+	// Send transcribed text to the bus
+	inbound := bus.InboundMessage{
+		SenderID:  fmt.Sprintf("telegram_%d", sender.ID),
+		Content:   transcription,
+		Channel:   t.name,
+		Timestamp: time.Now(),
+		Metadata: map[string]any{
+			"message_id":     messageID,
+			"chat_id":        chatID,
+			"username":       sender.Username,
+			"first_name":     sender.FirstName,
+			"last_name":      sender.LastName,
+			"media_type":     "voice",
+			"transcribed":    true,
+			"file_id":        file.FileID,
+			"file_unique_id": file.UniqueID,
+		},
+	}
+
+	if !t.bus.Send(inbound) {
+		log.Error("failed to send transcribed voice message to bus", "error", "queue full")
+	}
+
+	log.Info("Voice message transcribed", "chat_id", chatID, "message_id", messageID, "length", len(transcription))
+}
+
+// sendVoiceFallback sends a placeholder message when transcription fails.
+func (t *TelegramChannel) sendVoiceFallback(content string, chatID int64, messageID int, sender *telebot.User, file telebot.File) {
+	inbound := bus.InboundMessage{
+		SenderID:  fmt.Sprintf("telegram_%d", sender.ID),
+		Content:   content,
+		Channel:   t.name,
+		Timestamp: time.Now(),
+		Metadata: map[string]any{
+			"message_id":     messageID,
+			"chat_id":        chatID,
+			"username":       sender.Username,
+			"first_name":     sender.FirstName,
+			"last_name":      sender.LastName,
+			"media_type":     "voice",
+			"transcribed":    false,
+			"file_id":        file.FileID,
+			"file_unique_id": file.UniqueID,
+		},
+	}
+
+	if !t.bus.Send(inbound) {
+		log.Error("failed to send voice fallback to bus", "error", "queue full")
+	}
 }
 
 // handleDocument processes incoming documents.

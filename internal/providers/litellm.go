@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"sync"
@@ -333,14 +334,75 @@ func (p *LiteLLMProvider) Transcribe(ctx context.Context, audioData []byte, prom
 	}
 	url := strings.TrimRight(apiBase, "/") + "/audio/transcriptions"
 
-	// Note: Real implementation would use multipart form upload
-	// For simplicity, returning an error indicating this needs implementation
-	_ = url
-	_ = prompt
+	// Create multipart form body
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
 
-	p.logger.Warn("Transcribe not fully implemented - requires multipart form upload")
+	// Add model field
+	if err := writer.WriteField("model", "whisper-1"); err != nil {
+		return "", fmt.Errorf("failed to write model field: %w", err)
+	}
 
-	return "", fmt.Errorf("transcribe not implemented: requires multipart form upload")
+	// Add prompt field if provided
+	if prompt != "" {
+		if err := writer.WriteField("prompt", prompt); err != nil {
+			return "", fmt.Errorf("failed to write prompt field: %w", err)
+		}
+	}
+
+	// Add audio file
+	part, err := writer.CreateFormFile("file", "audio.ogg")
+	if err != nil {
+		return "", fmt.Errorf("failed to create form file: %w", err)
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return "", fmt.Errorf("failed to write audio data: %w", err)
+	}
+
+	// Close the writer to set the boundary
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	// Create the HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", url, &body)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+
+	// Send the request
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("transcription request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for error response
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("transcription failed (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse the response
+	var result struct {
+		Text string `json:"text"`
+	}
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("failed to parse transcription response: %w", err)
+	}
+
+	p.logger.Debug("Audio transcribed", "length", len(result.Text))
+
+	return result.Text, nil
 }
 
 // parseError parses an error response from the API and returns a FallbackError

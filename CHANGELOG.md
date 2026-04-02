@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-04-02
+
+### Added
+
+#### Configure Command Wizard
+- **`--add` flag** - Add a specific provider interactively (nvidia, openrouter, groq, ollama, openai, anthropic, github-copilot)
+- **`--remove` flag** - Remove a configured provider
+- **`--fallback` flag** - Configure provider fallback order with validation
+- **OpenAI and Anthropic providers** added to configuration wizard
+- **charmbracelet/huh** dependency for interactive form rendering
+
+#### Voice/Transcribe Support
+- **Transcribe() implementation** in LiteLLM provider with multipart form upload to `/audio/transcriptions` endpoint (whisper-1 model)
+- **Telegram voice message handling** - automatic download and transcription of voice messages
+- **Transcriber interface** for provider-agnostic transcription
+- **Graceful fallback** when transcription fails or transcriber unavailable
+
+#### MCP (Model Context Protocol) Integration
+- **HTTP JSON-RPC client** (`internal/mcp/client.go`) - Server struct with Connect/discoverTools/CallTool
+- **MCP Manager** for managing multiple MCP servers
+- **MCP tool wrapper** - automatically registers discovered MCP tools into joshbot's tool registry
+- **MCP status tool** - diagnostics for connected MCP servers
+- **Atomic JSON-RPC IDs** via nextID counter for concurrent calls
+- **Config support** - MCP servers configurable via config.json
+
+#### Learning Loop (Hermes-style Self-Improvement)
+- **5-phase cycle** - extractExperiences, identifyPatterns, generateSkills, updateUserModel, rateAndImproveSkills
+- **Experience extraction** - LLM-assisted extraction of lessons from conversation history
+- **Pattern identification** - identifies recurring patterns and user preferences
+- **Skill generation** - auto-creates new skills based on identified patterns
+- **User model** - tracks user preferences and interaction patterns
+- **Skill rating and improvement** - rates existing skills and suggests improvements
+- **Extends existing consolidator** - integrates with gateway startup/shutdown
+
+### Changed
+
+- **Skills.Loader.List()** method added for skill enumeration
+- **Gateway shutdown** - consolidator and learning loop properly stopped on context cancellation
+
 ## [1.17.0] - 2026-03-05
 
 ### Added

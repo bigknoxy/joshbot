@@ -431,6 +431,7 @@ func TestRegistryWithDefaults(t *testing.T) {
 		nil,  // no message sender
 		nil,  // shell allowlist
 		nil,  // filesystem allowed paths
+		nil,  // no skill loader
 	)
 
 	// Should have filesystem, shell, and web tools

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -163,17 +165,102 @@ func (m *Manager) Initialize(ctx context.Context) error {
 }
 
 func (m *Manager) ensureFile(path, template string) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat %s: %w", path, err)
+	if _, err := os.Stat(path); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		if err := os.WriteFile(path, []byte(template), 0o644); err != nil {
+			return fmt.Errorf("write template %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// WriteFacts writes structured facts into MEMORY.md, organized by category.
+func (m *Manager) WriteFacts(ctx context.Context, facts []Fact) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Group facts by category
+	byCategory := map[FactCategory][]Fact{}
+	for _, f := range facts {
+		byCategory[f.Category] = append(byCategory[f.Category], f)
 	}
 
-	if err := os.WriteFile(path, []byte(template), 0o644); err != nil {
-		return fmt.Errorf("write template %s: %w", path, err)
+	// Build markdown content
+	var b strings.Builder
+	b.WriteString("# Long-Term Memory\n\n")
+
+	// Sort categories for deterministic output
+	categories := make([]FactCategory, 0, len(byCategory))
+	for cat := range byCategory {
+		categories = append(categories, cat)
+	}
+	sort.Slice(categories, func(i, j int) bool {
+		return categories[i] < categories[j]
+	})
+
+	for _, cat := range categories {
+		b.WriteString(fmt.Sprintf("## %s\n", string(cat)))
+		for _, f := range byCategory[cat] {
+			b.WriteString(FormatFactMarkdown(f))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Atomic write
+	path := m.MemoryPath()
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write temp memory: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename memory: %w", err)
 	}
 
 	return nil
+}
+
+// ReconcileFacts merges new facts with existing memory (upsert + dedup + evict).
+func (m *Manager) ReconcileFacts(ctx context.Context, facts []Fact) error {
+	existing, err := m.loadFactsLocked()
+	if err != nil {
+		return err
+	}
+
+	factMap := make(map[string]Fact, len(existing))
+	for _, f := range existing {
+		factMap[f.ID] = f
+	}
+
+	for _, f := range facts {
+		if prev, ok := factMap[f.ID]; ok {
+			factMap[f.ID] = MergeFacts(prev, f)
+		} else {
+			factMap[f.ID] = f
+		}
+	}
+
+	merged := make([]Fact, 0, len(factMap))
+	for _, f := range factMap {
+		merged = append(merged, f)
+	}
+
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Confidence != merged[j].Confidence {
+			return merged[i].Confidence > merged[j].Confidence
+		}
+		return merged[i].UpdatedAt.After(merged[j].UpdatedAt)
+	})
+
+	const maxFacts = 100
+	if len(merged) > maxFacts {
+		merged = merged[:maxFacts]
+	}
+
+	return m.WriteFacts(ctx, merged)
 }
 
 const defaultMemoryTemplate = `# Long-Term Memory

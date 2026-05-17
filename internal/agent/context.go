@@ -142,28 +142,23 @@ func BuildPromptCached(workspace string, skills SkillsLoader, memory MemoryLoade
 
 // buildStaticPrompt builds the static portion of the system prompt.
 func buildStaticPrompt(workspace string, skills SkillsLoader, memory MemoryLoader) string {
-	parts := []string{}
+	parts := []string{buildCoreIdentity()}
 
-	parts = append(parts, buildCoreIdentity())
-
-	identity := loadIdentityFiles(workspace)
-	for name, content := range identity {
+	for name, content := range loadIdentityFiles(workspace) {
 		if content != "" {
 			parts = append(parts, fmt.Sprintf("<%s>\n%s\n</%s>", name, content, name))
 		}
 	}
 
 	if memory != nil {
-		memContent, err := memory.LoadMemory(context.Background())
-		if err == nil && memContent != "" {
+		if memContent, err := memory.LoadMemory(context.Background()); err == nil && memContent != "" {
 			parts = append(parts, fmt.Sprintf("<memory>\n%s\n</memory>", memContent))
 		}
 	}
 
 	if skills != nil {
-		skillsSummary, err := skills.LoadSummary(context.Background())
-		if err == nil && skillsSummary != "" {
-			parts = append(parts, fmt.Sprintf("<skills>\n%s\n</skills>", skillsSummary))
+		if summary, err := skills.LoadSummary(context.Background()); err == nil && summary != "" {
+			parts = append(parts, fmt.Sprintf("<skills>\n%s\n</skills>", summary))
 		}
 	}
 
@@ -190,6 +185,26 @@ func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, use
 
 	if userName != "" {
 		parts = append(parts, fmt.Sprintf(`The user's name is %s. Use their name sparingly and naturally - occasional greetings, sign-offs, or personal touches are appropriate. Do not overuse it.`, userName))
+	}
+
+	now := time.Now().UTC().Format("2006-01-02 15:04 UTC")
+	parts = append(parts, fmt.Sprintf("<current_time>%s</current_time>", now))
+
+	return joinParts(parts)
+}
+
+// BuildSmartPrompt builds a system prompt with relevance-scored memory injection.
+// The currentQuery parameter is reserved for future smart memory retrieval.
+func BuildSmartPrompt(workspace string, skills SkillsLoader, mem MemoryLoader, userName string, currentQuery string) string {
+	parts := []string{}
+
+	staticPrompt := BuildPromptCached(workspace, skills, mem)
+	if staticPrompt != "" {
+		parts = append(parts, staticPrompt)
+	}
+
+	if userName != "" {
+		parts = append(parts, fmt.Sprintf(`The user's name is %s.`, userName))
 	}
 
 	now := time.Now().UTC().Format("2006-01-02 15:04 UTC")

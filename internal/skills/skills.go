@@ -107,42 +107,26 @@ func NewLoader(workspace string) (*Loader, error) {
 func (l *Loader) Discover() error {
 	l.skills = map[string]*Skill{}
 
-	// bundled first
-	_ = filepath.WalkDir(l.bundledDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil
-		}
-		// skill directory must contain SKILL.md
-		skillFile := filepath.Join(path, "SKILL.md")
-		if _, err := os.Stat(skillFile); err == nil {
-			if info, _ := os.Stat(path); info.IsDir() {
-				name := filepath.Base(path)
-				sk := l.parseSkill(path, name)
-				if sk != nil {
-					l.skills[sk.Name] = sk
-				}
-			}
-		}
-		return nil
-	})
-
-	// workspace overrides
-	_ = filepath.WalkDir(l.workspaceDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil
-		}
-		skillFile := filepath.Join(path, "SKILL.md")
-		if _, err := os.Stat(skillFile); err == nil {
-			name := filepath.Base(path)
-			sk := l.parseSkill(path, name)
-			if sk != nil {
-				l.skills[sk.Name] = sk
-			}
-		}
-		return nil
-	})
+	_ = filepath.WalkDir(l.bundledDir, l.walkSkillDir)
+	_ = filepath.WalkDir(l.workspaceDir, l.walkSkillDir)
 
 	l.loaded = true
+	return nil
+}
+
+// walkSkillDir is the filepath.WalkDir callback that registers discovered skills.
+func (l *Loader) walkSkillDir(path string, d fs.DirEntry, err error) error {
+	if err != nil || !d.IsDir() {
+		return nil
+	}
+	skillFile := filepath.Join(path, "SKILL.md")
+	if _, err := os.Stat(skillFile); err != nil {
+		return nil
+	}
+	name := filepath.Base(path)
+	if sk := l.parseSkill(path, name); sk != nil {
+		l.skills[sk.Name] = sk
+	}
 	return nil
 }
 
@@ -156,46 +140,26 @@ func (l *Loader) parseSkill(dir, defaultName string) *Skill {
 	name := defaultName
 	description := ""
 	always := false
-	requirements := []string{}
-	tags := []string{}
+	var requirements []string
+	var tags []string
 
 	if strings.HasPrefix(raw, "---") {
 		parts := strings.SplitN(raw, "---", 3)
 		if len(parts) >= 3 {
-			front := parts[1]
-			for _, line := range strings.Split(front, "\n") {
+			for _, line := range strings.Split(parts[1], "\n") {
 				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "name:") {
+				switch {
+				case strings.HasPrefix(line, "name:"):
 					name = strings.Trim(strings.TrimPrefix(line, "name:"), " \"'")
-				} else if strings.HasPrefix(line, "description:") {
+				case strings.HasPrefix(line, "description:"):
 					description = strings.Trim(strings.TrimPrefix(line, "description:"), " \"'")
-				} else if strings.HasPrefix(line, "always:") {
+				case strings.HasPrefix(line, "always:"):
 					v := strings.TrimSpace(strings.TrimPrefix(line, "always:"))
-					if v == "true" || v == "yes" || v == "1" {
-						always = true
-					}
-				} else if strings.HasPrefix(line, "requirements:") {
-					rest := strings.TrimSpace(strings.TrimPrefix(line, "requirements:"))
-					if strings.HasPrefix(rest, "[") {
-						rest = strings.Trim(rest, "[]")
-						for _, r := range strings.Split(rest, ",") {
-							r = strings.Trim(r, " \"'")
-							if r != "" {
-								requirements = append(requirements, r)
-							}
-						}
-					}
-				} else if strings.HasPrefix(line, "tags:") {
-					rest := strings.TrimSpace(strings.TrimPrefix(line, "tags:"))
-					if strings.HasPrefix(rest, "[") {
-						rest = strings.Trim(rest, "[]")
-						for _, t := range strings.Split(rest, ",") {
-							t = strings.Trim(t, " \"'")
-							if t != "" {
-								tags = append(tags, t)
-							}
-						}
-					}
+					always = v == "true" || v == "yes" || v == "1"
+				case strings.HasPrefix(line, "requirements:"):
+					requirements = parseYAMLList(strings.TrimSpace(strings.TrimPrefix(line, "requirements:")))
+				case strings.HasPrefix(line, "tags:"):
+					tags = parseYAMLList(strings.TrimSpace(strings.TrimPrefix(line, "tags:")))
 				}
 			}
 		}
@@ -204,8 +168,7 @@ func (l *Loader) parseSkill(dir, defaultName string) *Skill {
 	if description == "" {
 		content := raw
 		if strings.HasPrefix(raw, "---") {
-			parts := strings.SplitN(raw, "---", 3)
-			if len(parts) >= 3 {
+			if parts := strings.SplitN(raw, "---", 3); len(parts) >= 3 {
 				content = parts[2]
 			}
 		}
@@ -224,6 +187,21 @@ func (l *Loader) parseSkill(dir, defaultName string) *Skill {
 		Requirements: requirements,
 		Tags:         tags,
 	}
+}
+
+// parseYAMLList parses a bracket-delimited list like ["a", "b", "c"].
+func parseYAMLList(s string) []string {
+	if !strings.HasPrefix(s, "[") {
+		return nil
+	}
+	s = strings.Trim(s, "[]")
+	var result []string
+	for _, item := range strings.Split(s, ",") {
+		if cleaned := strings.Trim(item, " \"'"); cleaned != "" {
+			result = append(result, cleaned)
+		}
+	}
+	return result
 }
 
 // LoadSummary returns XML summary of discovered skills. Implements SkillsLoader interface used by agent.
@@ -262,4 +240,51 @@ func (l *Loader) GetSkill(name string) *Skill {
 		_ = l.Discover()
 	}
 	return l.skills[name]
+}
+
+// Invalidate clears the skill cache so the next call to Discover, LoadSummary, or GetSkill
+// will re-scan both bundled and workspace skill directories.
+func (l *Loader) Invalidate() {
+	l.loaded = false
+	l.skills = map[string]*Skill{}
+}
+
+// Create writes a new skill to the workspace directory and triggers re-discovery.
+// content must be a valid SKILL.md with YAML frontmatter.
+func (l *Loader) Create(name, content string) error {
+	dir := filepath.Join(l.workspaceDir, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create skill directory: %w", err)
+	}
+	p := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write SKILL.md: %w", err)
+	}
+	l.Invalidate()
+	return nil
+}
+
+// Delete removes a skill by name from the workspace directory and triggers re-discovery.
+func (l *Loader) Delete(name string) error {
+	sk := l.GetSkill(name)
+	if sk == nil {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	if err := os.RemoveAll(sk.Path); err != nil {
+		return fmt.Errorf("failed to delete skill %q: %w", name, err)
+	}
+	l.Invalidate()
+	return nil
+}
+
+// List returns all discovered skills.
+func (l *Loader) List() []*Skill {
+	if !l.loaded {
+		_ = l.Discover()
+	}
+	skills := make([]*Skill, 0, len(l.skills))
+	for _, sk := range l.skills {
+		skills = append(skills, sk)
+	}
+	return skills
 }

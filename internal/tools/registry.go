@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/providers"
+	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/charmbracelet/log"
 	"github.com/google/uuid"
 )
@@ -337,6 +338,7 @@ func RegistryWithDefaults(
 	messageSender MessageSender,
 	shellAllowList []string,
 	filesystemAllowedPaths []string,
+	skillLoader *skills.Loader,
 ) *Registry {
 	registry := NewRegistry()
 
@@ -391,6 +393,12 @@ func RegistryWithDefaults(
 
 		channelTool := NewChannelMessageTool(messageSender)
 		_ = registry.Register(channelTool)
+	}
+
+	// Skill registry tool (optional)
+	if skillLoader != nil {
+		skillTool := NewSkillRegistryTool(skillLoader)
+		_ = registry.Register(skillTool)
 	}
 
 	return registry

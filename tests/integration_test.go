@@ -247,6 +247,7 @@ func TestIntegrationWithTools(t *testing.T) {
 		nil,   // message sender
 		nil,   // shell allowlist
 		nil,   // filesystem allowed paths
+		nil,   // no skill loader
 	)
 
 	// Add custom tool for testing

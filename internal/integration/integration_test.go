@@ -157,7 +157,7 @@ func TestAgent_CompressionAndConsolidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMemory error: %v", err)
 	}
-	if !strings.Contains(memText, "Consolidated Facts") {
+	if !strings.Contains(memText, "## system") {
 		t.Fatalf("expected consolidated facts in MEMORY.md, got: %s", memText)
 	}
 }

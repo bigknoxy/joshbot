@@ -13,6 +13,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/session"
+	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
@@ -67,6 +68,9 @@ type Agent struct {
 	compressor    *ctxpkg.Compressor
 	maxIterations int
 	timeout       time.Duration
+	skillDetector *skills.SkillDetector
+	extractor     *skills.Extractor
+	skillLoader   *skills.Loader
 }
 
 // Option is a functional option for configuring Agent.
@@ -171,6 +175,33 @@ func WithCompressor(c *ctxpkg.Compressor) Option {
 	}
 }
 
+// WithSkillDetector injects a SkillDetector for automatic skill discovery.
+func WithSkillDetector(d *skills.SkillDetector) Option {
+	return func(a *Agent) {
+		if d != nil {
+			a.skillDetector = d
+		}
+	}
+}
+
+// WithExtractor injects a skill Extractor for LLM-based skill creation.
+func WithExtractor(e *skills.Extractor) Option {
+	return func(a *Agent) {
+		if e != nil {
+			a.extractor = e
+		}
+	}
+}
+
+// WithSkillLoader injects a concrete skills.Loader (needed for Create/Delete/List).
+func WithSkillLoader(l *skills.Loader) Option {
+	return func(a *Agent) {
+		if l != nil {
+			a.skillLoader = l
+		}
+	}
+}
+
 // Process handles an inbound message and returns the response content.
 // It implements the full ReAct loop: receive message, call LLM, execute tools, repeat.
 func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
@@ -219,7 +250,7 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 
 	// Run ReAct loop with channel info for async callbacks
 	channelID := msg.SenderID // Use SenderID as the channel identifier
-	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID)
+	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content)
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
 		// Check for timeout
@@ -259,7 +290,9 @@ func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
 }
 
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.
-func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID string) (string, error) {
+func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string) (string, error) {
+	var toolRecords []skills.ToolCallRecord
+
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
 
@@ -317,6 +350,9 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 				Content:   content,
 				Timestamp: time.Now(),
 			})
+
+			// Skill detection: record trace and check for candidates
+			a.afterReActDetection(content, toolRecords, sess.ID, userMessage)
 
 			return content, nil
 		}
@@ -387,6 +423,15 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 				resultStr = result.Output // Contains "Started in background..." message
 			}
 
+			// Record tool call for skill detection (only synchronous, real tool calls)
+			if a.skillDetector != nil {
+				toolRecords = append(toolRecords, skills.ToolCallRecord{
+					Tool:   tc.Function.Name,
+					Args:   args,
+					Result: truncate(resultStr, 200),
+				})
+			}
+
 			// Format tool result for LLM
 			toolMsg := a.formatToolResult(tc.ID, tc.Function.Name, resultStr)
 			messages = append(messages, toolMsg)
@@ -415,6 +460,58 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	// Hit max iterations
 	a.logger.Warn("Hit max iterations", "max", a.maxIterations)
 	return "I've been working on this for a while. Here's what I found so far - let me know if you'd like me to continue.", nil
+}
+
+// afterReActDetection records the trace and, if a strong-enough candidate is
+// found, asks the extractor to generate a SKILL.md and persists it via the loader.
+func (a *Agent) afterReActDetection(finalOutput string, toolRecords []skills.ToolCallRecord, sessionID, userMessage string) {
+	if a.skillDetector == nil || len(toolRecords) == 0 {
+		return
+	}
+
+	trace := skills.Trace{
+		UserMessage: userMessage,
+		ToolCalls:   toolRecords,
+		FinalOutput: finalOutput,
+	}
+
+	a.skillDetector.RecordTrace(sessionID, trace)
+
+	candidate := a.skillDetector.Detect(trace)
+	if candidate == nil {
+		a.logger.Debug("No skill candidate detected", "tool_calls", len(toolRecords))
+		return
+	}
+
+	a.logger.Info("Skill candidate detected",
+		"name", candidate.Name,
+		"confidence", candidate.Confidence,
+	)
+
+	if a.extractor == nil || a.skillLoader == nil {
+		return
+	}
+
+	// Ask LLM to generate SKILL.md content from the trace
+	existingSkills := a.skillLoader.List()
+	skillContent, err := a.extractor.Extract(context.Background(), trace, existingSkills)
+	if err != nil {
+		a.logger.Warn("Skill extraction failed", "error", err)
+		return
+	}
+
+	if skillContent == "" {
+		a.logger.Warn("Skill extraction returned empty content")
+		return
+	}
+
+	// Create the skill
+	if err := a.skillLoader.Create(candidate.Name, skillContent); err != nil {
+		a.logger.Warn("Failed to create skill", "name", candidate.Name, "error", err)
+		return
+	}
+
+	a.logger.Info("Skill created successfully", "name", candidate.Name)
 }
 
 // checkAndCompactContext estimates current message tokens and compacts context if threshold is exceeded.

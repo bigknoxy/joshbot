@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -72,13 +73,9 @@ func (c *Consolidator) Start() {
 		ticker := time.NewTicker(c.interval)
 		defer ticker.Stop()
 		for {
-			if err := c.RunOnce(context.Background()); err != nil {
-				// best-effort: ignore errors
-				_ = err
-			}
+			_ = c.RunOnce(context.Background()) // best-effort
 			select {
 			case <-ticker.C:
-				continue
 			case <-c.stopCh:
 				return
 			}
@@ -106,12 +103,11 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 		return nil
 	}
 
-	// take last N non-empty lines as recent summary input (configurable, default 12)
-	lines := []string{}
+	// Take last N non-empty lines as recent summary input.
+	var lines []string
 	for _, ln := range strings.Split(strings.TrimSpace(hist), "\n") {
-		ln = strings.TrimSpace(ln)
-		if ln != "" {
-			lines = append(lines, ln)
+		if trimmed := strings.TrimSpace(ln); trimmed != "" {
+			lines = append(lines, trimmed)
 		}
 	}
 	n := c.historyLines
@@ -125,7 +121,10 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 		sys := "You are a memory consolidation assistant. Extract a short list of factual one-line statements from the conversation."
 		req := providers.ChatRequest{
 			Model:       c.provider.Config().Model,
-			Messages:    []providers.Message{{Role: providers.RoleSystem, Content: sys}, {Role: providers.RoleUser, Content: recent}},
+			Messages: []providers.Message{
+				{Role: providers.RoleSystem, Content: sys},
+				{Role: providers.RoleUser, Content: recent},
+			},
 			MaxTokens:   200,
 			Temperature: 0.0,
 		}
@@ -135,66 +134,75 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 		}
 	}
 
-	if summary == "" {
-		// fallback: pick lines that look like facts (contain ':' or '- ')
-		facts := []string{}
-		for _, ln := range strings.Split(recent, "\n") {
-			if strings.Contains(ln, ":") || strings.HasPrefix(ln, "- ") || len(ln) < 200 {
-				facts = append(facts, ln)
-			}
-		}
-		if len(facts) == 0 {
-			facts = strings.Split(recent, "\n")
-		}
-		summary = strings.Join(facts, "\n")
+	switch {
+	case summary == "":
+		return c.heuristicFallback(ctx, recent)
+	default:
+		return c.saveSummary(ctx, summary)
+	}
+}
+
+// saveSummary tries structured fact parsing first, falls back to raw fact.
+func (c *Consolidator) saveSummary(ctx context.Context, summary string) error {
+	var facts []memory.Fact
+	if err := json.Unmarshal([]byte(summary), &facts); err == nil && len(facts) > 0 {
+		return c.mem.ReconcileFacts(ctx, facts)
 	}
 
-	// Append a short header and the summary to MEMORY.md
-	content := "\n## Consolidated Facts\n" + summary + "\n"
-	// read existing memory and append (with deduplication and limit)
-	memText, err := c.mem.LoadMemory(ctx)
-	if err != nil {
-		return err
+	fact := memory.Fact{
+		ID:         memory.FactID(memory.FactSystem, summary),
+		Category:   memory.FactSystem,
+		Content:    summary,
+		Confidence: 0.6,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
-	newText := mergeConsolidatedFacts(memText, content, c.maxFacts)
-	if err := c.mem.WriteMemory(ctx, newText); err != nil {
-		return err
+	return c.mem.ReconcileFacts(ctx, []memory.Fact{fact})
+}
+
+// heuristicFallback picks lines that look like facts and writes them as consolidated section.
+func (c *Consolidator) heuristicFallback(ctx context.Context, recent string) error {
+	var facts []string
+	for _, ln := range strings.Split(recent, "\n") {
+		if strings.Contains(ln, ":") || strings.HasPrefix(ln, "- ") {
+			facts = append(facts, ln)
+		}
+	}
+	if len(facts) == 0 {
+		facts = strings.Split(recent, "\n")
 	}
 
-	return nil
+	existing, _ := c.mem.LoadMemory(ctx)
+	newText := mergeConsolidatedFacts(existing, strings.Join(facts, "\n"), c.maxFacts)
+	return c.mem.WriteMemory(ctx, newText)
 }
 
 func mergeConsolidatedFacts(memoryText, consolidatedSection string, maxFacts int) string {
-	// Find the consolidated section in memory
 	consolidationIdx := strings.Index(memoryText, "## Consolidated Facts")
 	hasExistingSection := consolidationIdx >= 0
 
-	// Extract existing facts for deduplication
-	seen := map[string]bool{}
+	seen := make(map[string]bool)
 	var existingFacts []string
 
 	if hasExistingSection {
 		sectionContent := memoryText[consolidationIdx+len("## Consolidated Facts"):]
 		for _, line := range strings.Split(sectionContent, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				existingFacts = append(existingFacts, line)
-				seen[line] = true
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				existingFacts = append(existingFacts, trimmed)
+				seen[trimmed] = true
 			}
 		}
 	}
 
-	// Extract new facts, skipping duplicates
 	var newFacts []string
 	for _, line := range strings.Split(consolidatedSection, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "##") && !seen[line] {
-			newFacts = append(newFacts, line)
-			seen[line] = true
+		if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "##") && !seen[trimmed] {
+			newFacts = append(newFacts, trimmed)
+			seen[trimmed] = true
 		}
 	}
 
-	// Combine: new facts first (more recent), then existing, limited to maxFacts
+	// Combine: new facts first (more recent), then existing, limited to maxFacts.
 	allFacts := newFacts
 	for _, f := range existingFacts {
 		if len(allFacts) >= maxFacts {
@@ -206,13 +214,13 @@ func mergeConsolidatedFacts(memoryText, consolidatedSection string, maxFacts int
 		allFacts = allFacts[:maxFacts]
 	}
 
-	// Build the new memory text
 	factsStr := strings.Join(allFacts, "\n")
-	if hasExistingSection {
+	switch {
+	case hasExistingSection:
 		return memoryText[:consolidationIdx] + "## Consolidated Facts\n" + factsStr + "\n"
-	}
-	if strings.TrimSpace(memoryText) != "" {
+	case strings.TrimSpace(memoryText) != "":
 		return strings.TrimRight(memoryText, "\n") + "\n## Consolidated Facts\n" + factsStr + "\n"
+	default:
+		return "## Consolidated Facts\n" + factsStr + "\n"
 	}
-	return "## Consolidated Facts\n" + factsStr + "\n"
 }

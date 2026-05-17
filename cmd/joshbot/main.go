@@ -484,11 +484,13 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		messageSender,
 		cfg.Tools.ShellAllowList,
 		cfg.Tools.FilesystemAllowedPaths,
+		skillsLoader,
 	)
 
 	// Create async callback channel and start processor for background task notifications
 	asyncCallbackCh := make(chan tools.AsyncResult, 100)
 	toolsRegistry.SetAsyncCallback(asyncCallbackCh)
+	toolsRegistry.Register(tools.NewMemorySearchTool(memoryManager))
 	go func() {
 		for result := range asyncCallbackCh {
 			var msg string
@@ -511,6 +513,10 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 	}()
 
+	// Create skill self-creation components (Milestone 2)
+	skillDetector := skills.NewSkillDetector()
+	skillExtractor := skills.NewExtractor(multiProvider, cfg.Agents.Defaults.Model)
+
 	agentInstance := agent.NewAgent(
 		cfg,
 		multiProvider,
@@ -520,6 +526,9 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		agent.WithMemoryLoader(memoryManager),
 		agent.WithHistoryAppender(memoryManager),
 		agent.WithSkillsLoader(skillsLoader),
+		agent.WithSkillDetector(skillDetector),
+		agent.WithExtractor(skillExtractor),
+		agent.WithSkillLoader(skillsLoader),
 		agent.WithBudgetManager(budget),
 		agent.WithCompressor(compressor),
 	)

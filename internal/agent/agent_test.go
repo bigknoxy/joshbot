@@ -1001,6 +1001,9 @@ func TestCleanCommand(t *testing.T) {
 		{"/help", "help"},
 		{"start", "start"},
 		{"/command\n", "command"},
+		{"//double_slash", "double_slash"},
+		{"/trailing space ", "trailing space"},
+		{"/mixed\n ", "mixed"},
 		{"", ""},
 	}
 

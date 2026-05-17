@@ -274,50 +274,15 @@ func (r *Registry) GetSchemas() []providers.Tool {
 
 // toolToProviderTool converts a Tool to a providers.Tool.
 func toolToProviderTool(tool Tool) providers.Tool {
-	params := tool.Parameters()
-
-	// Generate JSON schema from parameters
-	properties := make(map[string]any)
-	required := make([]string, 0)
-
-	for _, p := range params {
-		prop := map[string]any{
-			"type":        string(p.Type),
-			"description": p.Description,
-		}
-
-		if len(p.Enum) > 0 {
-			prop["enum"] = p.Enum
-		}
-
-		if p.Default != nil {
-			prop["default"] = p.Default
-		}
-
-		properties[p.Name] = prop
-
-		if p.Required {
-			required = append(required, p.Name)
-		}
-	}
-
-	schema := map[string]any{
-		"type":       "object",
-		"properties": properties,
-	}
-
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-
-	schemaBytes, _ := json.Marshal(schema)
+	schemaStr := GenerateSchema(tool.Parameters())
+	raw := json.RawMessage(schemaStr)
 
 	return providers.Tool{
 		Type: "function",
 		Function: providers.FunctionDefinition{
 			Name:        tool.Name(),
 			Description: tool.Description(),
-			Parameters:  (*json.RawMessage)(&schemaBytes),
+			Parameters:  &raw,
 		},
 	}
 }
@@ -358,13 +323,9 @@ func (r *Registry) GetToolDocs() string {
 }
 
 // DefaultRegistry creates a registry with default tools.
+// This returns an empty registry; use RegistryWithDefaults for pre-configured tools.
 func DefaultRegistry() *Registry {
-	registry := NewRegistry()
-
-	// Note: These would need proper configuration in production
-	// For now, register empty tools that can be configured later
-
-	return registry
+	return NewRegistry()
 }
 
 // RegistryWithDefaults creates a registry with standard tools configured.

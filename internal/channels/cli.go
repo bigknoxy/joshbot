@@ -410,14 +410,13 @@ func (c *CLIChannel) formatAndPrintMessage(msg bus.OutboundMessage) {
 
 	// Format content based on parse mode
 	content := msg.Content
-	if parseMode == "markdown" || parseMode == "md" {
-		// Simple markdown-like formatting
+	switch parseMode {
+	case "markdown", "md", "html":
+		if parseMode == "html" {
+			content = stripHTML(content)
+		}
 		content = styles.Message.Render(content)
-	} else if parseMode == "html" {
-		// Strip HTML tags for plain display
-		content = stripHTML(content)
-		content = styles.Message.Render(content)
-	} else {
+	default:
 		content = styles.Message.Render(content)
 	}
 
@@ -452,20 +451,22 @@ func (c *CLIChannel) printSuccess(msg string) {
 
 // stripHTML removes HTML tags from a string.
 func stripHTML(s string) string {
-	var result strings.Builder
+	var b strings.Builder
+	b.Grow(len(s))
 	inTag := false
-
 	for _, r := range s {
-		if r == '<' {
+		switch r {
+		case '<':
 			inTag = true
-		} else if r == '>' {
+		case '>':
 			inTag = false
-		} else if !inTag {
-			result.WriteRune(r)
+		default:
+			if !inTag {
+				b.WriteRune(r)
+			}
 		}
 	}
-
-	return result.String()
+	return b.String()
 }
 
 // getTerminalWidth attempts to get the terminal width.

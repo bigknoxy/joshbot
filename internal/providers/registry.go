@@ -99,27 +99,18 @@ func UnregisterProvider(name string) {
 }
 
 // normalizeProviderName normalizes a provider name to lowercase for case-insensitive lookup.
+// Also maps common aliases to canonical names.
 func normalizeProviderName(name string) string {
-	// Handle common aliases
-	switch name {
-	case "openai":
-		return "openai"
-	case "openrouter":
-		return "openrouter"
-	case "anthropic":
-		return "anthropic"
-	case "google", "gemini":
+	lower := strings.ToLower(name)
+	switch lower {
+	case "google":
 		return "gemini"
-	case "azure":
-		return "azure"
-	case "local", "ollama":
+	case "local":
 		return "ollama"
-	case "groq":
-		return "groq"
-	case "nvidia", "nim":
+	case "nim":
 		return "nvidia"
 	default:
-		return name
+		return lower
 	}
 }
 

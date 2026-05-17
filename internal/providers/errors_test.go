@@ -150,6 +150,9 @@ func TestExtractStatusCode(t *testing.T) {
 		{"api_failed", "API request failed with status 404", 404},
 		{"no_match", "some random error", 0},
 		{"empty", "", 0},
+		{"edge_port_in_message", "connection refused on port 443", 0},
+		{"edge_mid_digits", "error code 9999", 0},
+		{"edge_short_fragment", "status 5", 0},
 	}
 
 	for _, tt := range tests {
@@ -157,6 +160,61 @@ func TestExtractStatusCode(t *testing.T) {
 			got := extractStatusCode(tt.errMsg)
 			if got != tt.wantCode {
 				t.Errorf("extractStatusCode(%q) = %d, want %d", tt.errMsg, got, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestScanStatusCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantCode int
+	}{
+		{"valid_429", "429", 429},
+		{"valid_200", "200", 200},
+		{"valid_599", "599", 599},
+		{"too_short", "42", 0},
+		{"non_numeric", "abc", 0},
+		{"empty", "", 0},
+		{"invalid_range_099", "099", 0},
+		{"invalid_range_600", "600", 0},
+		{"with_suffix", "429)", 429},
+		{"with_space", "500 ", 500},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanStatusCode(tt.input)
+			if got != tt.wantCode {
+				t.Errorf("scanStatusCode(%q) = %d, want %d", tt.input, got, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestScanAnyStatusCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantCode int
+	}{
+		{"prefix_pattern", "status 503 error", 503},
+		{"mid_string", "API returned 404 for request", 404},
+		{"no_match", "everything is fine", 0},
+		{"empty", "", 0},
+		{"too_short", "50x error", 0},
+		{"port_number", "connected on port 443", 0},
+		{"non_status_three_digit", "value 999 exceeds limit", 0},
+		{"status_at_start", "500 error", 500},
+		{"no_keyword_plain_digits", "429", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanAnyStatusCode(tt.input)
+			if got != tt.wantCode {
+				t.Errorf("scanAnyStatusCode(%q) = %d, want %d", tt.input, got, tt.wantCode)
 			}
 		})
 	}

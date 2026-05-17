@@ -673,16 +673,10 @@ func isCommand(content string) bool {
 	return len(content) > 0 && content[0] == '/'
 }
 
-// cleanCommand cleans a command string.
+// cleanCommand strips the leading slash and trailing whitespace from a command.
 func cleanCommand(content string) string {
-	if len(content) > 0 && content[0] == '/' {
-		content = content[1:]
-	}
-	// Remove extra whitespace
-	for len(content) > 0 && (content[len(content)-1] == ' ' || content[len(content)-1] == '\n') {
-		content = content[:len(content)-1]
-	}
-	return content
+	content = strings.TrimLeft(content, "/")
+	return strings.TrimRight(content, " \n")
 }
 
 // getSessionKey generates a session key from the message.

@@ -115,25 +115,27 @@ func buildCacheBaseline(workspace string) cacheBaseline {
 // BuildPromptCached builds the static portion of the prompt with caching.
 func BuildPromptCached(workspace string, skills SkillsLoader, memory MemoryLoader) string {
 	globalPromptCache.mu.RLock()
-	if globalPromptCache.prompt != "" && !sourceFilesChanged(workspace, globalPromptCache.baseline) {
-		cached := globalPromptCache.prompt
-		globalPromptCache.mu.RUnlock()
+	cached := globalPromptCache.prompt
+	baseline := globalPromptCache.baseline
+	globalPromptCache.mu.RUnlock()
+
+	if cached != "" && !sourceFilesChanged(workspace, baseline) {
 		return cached
 	}
-	globalPromptCache.mu.RUnlock()
 
 	globalPromptCache.mu.Lock()
 	defer globalPromptCache.mu.Unlock()
 
+	// Double-check after acquiring write lock
 	if globalPromptCache.prompt != "" && !sourceFilesChanged(workspace, globalPromptCache.baseline) {
 		return globalPromptCache.prompt
 	}
 
 	prompt := buildStaticPrompt(workspace, skills, memory)
-	baseline := buildCacheBaseline(workspace)
+	newBaseline := buildCacheBaseline(workspace)
 
 	globalPromptCache.prompt = prompt
-	globalPromptCache.baseline = baseline
+	globalPromptCache.baseline = newBaseline
 
 	return prompt
 }
@@ -248,36 +250,14 @@ func loadIdentityFiles(workspace string) map[string]string {
 
 // joinParts joins prompt parts with double newlines.
 func joinParts(parts []string) string {
-	result := ""
+	var b strings.Builder
 	for i, part := range parts {
 		if i > 0 {
-			result += "\n\n"
+			b.WriteString("\n\n")
 		}
-		result += part
+		b.WriteString(part)
 	}
-	return result
-}
-
-// FormatToolResult formats a tool result as a message for the LLM.
-func FormatToolResult(toolCallID, name, result string) providers.Message {
-	return providers.Message{
-		Role:       providers.RoleTool,
-		Content:    result,
-		Name:       name,
-		ToolCallID: toolCallID,
-	}
-}
-
-// FormatAssistantToolCalls formats an assistant message with tool calls.
-func FormatAssistantToolCalls(content string, toolCalls []providers.ToolCall) providers.Message {
-	msg := providers.Message{
-		Role:    providers.RoleAssistant,
-		Content: content,
-	}
-	if len(toolCalls) > 0 {
-		msg.ToolCalls = toolCalls
-	}
-	return msg
+	return b.String()
 }
 
 // LoadMemoryFile loads the MEMORY.md file from the workspace.

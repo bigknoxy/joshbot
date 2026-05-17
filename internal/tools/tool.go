@@ -38,33 +38,24 @@ type Parameter struct {
 
 // Parameters returns the parameters as a JSON Schema.
 func (p Parameter) Parameters() map[string]any {
-	result := map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-		"required":   []string{},
-	}
-
-	props := result["properties"].(map[string]any)
-
 	prop := map[string]any{
 		"type":        string(p.Type),
 		"description": p.Description,
 	}
-
 	if len(p.Enum) > 0 {
 		prop["enum"] = p.Enum
 	}
-
 	if p.Default != nil {
 		prop["default"] = p.Default
 	}
 
-	props[p.Name] = prop
-
-	if p.Required {
-		result["required"] = append(result["required"].([]string), p.Name)
+	result := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{p.Name: prop},
 	}
-
+	if p.Required {
+		result["required"] = []string{p.Name}
+	}
 	return result
 }
 
@@ -137,25 +128,21 @@ type PendingAsync struct {
 
 // GenerateSchema generates a JSON schema for a tool's parameters.
 func GenerateSchema(params []Parameter) string {
-	properties := make(map[string]any)
-	required := make([]string, 0)
+	properties := make(map[string]any, len(params))
+	required := make([]string, 0, len(params))
 
 	for _, p := range params {
 		prop := map[string]any{
 			"type":        string(p.Type),
 			"description": p.Description,
 		}
-
 		if len(p.Enum) > 0 {
 			prop["enum"] = p.Enum
 		}
-
 		if p.Default != nil {
 			prop["default"] = p.Default
 		}
-
 		properties[p.Name] = prop
-
 		if p.Required {
 			required = append(required, p.Name)
 		}
@@ -165,14 +152,13 @@ func GenerateSchema(params []Parameter) string {
 		"type":       "object",
 		"properties": properties,
 	}
-
 	if len(required) > 0 {
 		schema["required"] = required
 	}
 
-	_bytes, err := json.Marshal(schema)
+	raw, err := json.Marshal(schema)
 	if err != nil {
 		return "{}"
 	}
-	return string(_bytes)
+	return string(raw)
 }

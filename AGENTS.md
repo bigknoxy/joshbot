@@ -2,317 +2,137 @@
 
 ## Project Overview
 
-joshbot is a lightweight personal AI assistant (~3,600 LOC Go) with self-learning
-memory, skill self-creation, and Telegram integration. Architecture: goroutine-based
-message bus decoupling chat channels from a ReAct agent loop backed by multi-provider
-LLM via OpenRouter-compatible APIs.
+joshbot is a lightweight personal AI assistant (~16,000 LOC Go non-test) with self-learning memory, skill self-creation, and Telegram integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
 
-## Build & Run Commands
+Module: `github.com/bigknoxy/joshbot`. Go 1.24.0.
+
+## Build & Run
+
+No Makefile. Standard Go tooling:
 
 ```bash
-# Build
-go build -o joshbot ./cmd/joshbot
+go build -o joshbot ./cmd/joshbot     # Build
+go install ./cmd/joshbot               # Install
+go run ./cmd/joshbot agent             # Dev mode
 
-# Install to $GOPATH/bin
-go install ./cmd/joshbot
-
-# Run
-./joshbot onboard # First-time setup
-./joshbot agent # Interactive CLI mode
-./joshbot agent --debug # CLI mode with debug logging
-./joshbot gateway # Telegram + all channels
-./joshbot gateway --debug # Gateway with debug logging
-./joshbot status # Show config/status
-
-# Run directly (development)
-go run ./cmd/joshbot agent
-
-# Docker
-docker build -t joshbot .
-docker run -it joshbot gateway
+# Runtime commands
+./joshbot onboard     # First-time setup wizard
+./joshbot agent       # Interactive CLI mode
+./joshbot agent -m "..."  # Single message mode
+./joshbot gateway     # Telegram + all channels
+./joshbot status      # Show config/status
+./joshbot configure   # Re-run config wizard
+./joshbot update      # Self-update
 ```
+
+Docker: `docker build -t joshbot . && docker run -it joshbot gateway`
 
 ## Testing
 
-Tests are colocated with source files using `_test.go` suffix:
-
 ```bash
-go test ./...                              # Run all tests
-go test ./internal/tools                   # Run one package
-go test ./internal/tools -run TestShell    # Run specific test
-go test -v ./internal/agent                # Verbose output
-go test -race ./...                        # With race detector
+go test ./...                                          # All tests
+go test -race ./...                                    # With race detector
+go test -v ./internal/tools -run TestShell             # Single test
 ```
 
-Place tests in the same directory as the code being tested with `_test.go` suffix.
-Most components are testable in isolation (tools, config, bus, session, memory, skills).
+Tests colocated with `_test.go` suffix. Integration tests in `tests/` plus `internal/integration/`. Python test scripts in `tests/` (legacy from migration).
 
 ## Linting & Formatting
 
-Go tooling is built-in. Use these commands:
-
 ```bash
-go fmt ./...              # Format code
-go vet ./...              # Static analysis
-go mod tidy               # Clean up go.mod/go.sum
-
-# Optional: install additional linters
-go install honnef.co/go/tools/cmd/staticcheck@latest
-staticcheck ./...         # Advanced static analysis
+go fmt ./...
+go vet ./...
+go mod tidy
 ```
 
-## Code Style
+## Code Architecture
 
-### Package Structure
+```
+cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~3,340 LOC
+  internal/
+    agent/agent.go             -- ReAct loop (max 20 iterations)
+    agent/context.go           -- System prompt assembly (identity files + memory + skills)
+    bus/bus.go                 -- Channel-based message bus (Inbound/OutboundMessage in bus.go)
+    channels/cli.go            -- CLI readline channel (bufio.Reader)
+    channels/telegram.go       -- Telegram long-polling channel (telebot)
+    config/config.go           -- JSON config, env overrides (JOSHBOT_ prefix)
+    context/context.go         -- Context propagation, registry, budget manager
+    copilot/auth.go            -- GitHub Copilot auth flow
+    cron/cron.go               -- Cron scheduler
+    heartbeat/heartbeat.go     -- HEARTBEAT.md unchecked-task checker
+    integration/               -- Integration tests
+    learning/learning.go       -- Learning/summary extraction
+    log/logger.go              -- Structured logging (charmbracelet/log + lipgloss)
+    memory/memory.go           -- MEMORY.md + HISTORY.md management
+    providers/                 -- Provider interface + LiteLLM, Ollama, Multiprovider
+    service/                   -- Systemd/launchd service install (cross-platform factory)
+    session/                   -- JSON-persisted conversation sessions
+    skills/skills.go           -- Skill discovery from SKILL.md files
+    subagent/subagent.go       -- Restricted subagent runner
+    tools/                     -- Tool interface + Registry + filesystem, shell, web, message, async
+  pkg/                         -- Incomplete refactor from internal/ (only bus + channels exist here)
+    bus/                       -- Duplicates internal/bus
+    channels/                  -- Duplicates internal/channels
+```
 
-The project follows standard Go project layout:
-- `cmd/joshbot/` - Main application entry point
-- `internal/` - Private application code (not importable externally)
-- `pkg/` - Public packages (importable by external projects)
+> **IMPORTANT**: Edit `internal/` not `pkg/`. The `pkg/` directory is an incomplete parallel refactor. All production code imports from `internal/`.
 
-Every `.go` file follows this order:
-1. Package comment (starts with "Package X ...")
-2. Package declaration
-3. Stdlib imports
-4. Third-party imports (blank line separator)
-5. Local imports (blank line separator)
+## Key Interfaces
 
 ```go
-// Package tools provides the tool system for joshbot's agent.
-package tools
+// internal/tools/tool.go
+type Tool interface {
+    Name() string
+    Description() string
+    Parameters() []Parameter
+    Execute(ctx interface{}, args map[string]any) ToolResult
+}
 
-import (
-	"context"
-	"fmt"
-	"sync"
-
-	"github.com/bigknoxy/joshbot/internal/providers"
-)
+// internal/providers/provider.go
+type Provider interface {
+    Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+    ChatStream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error)
+    Transcribe(ctx context.Context, audioData []byte, prompt string) (string, error)
+    Name() string
+    Config() Config
+}
 ```
-
-### Imports
-
-- **Group imports** by stdlib, third-party, then local (separated by blank lines)
-- **Use import aliases** for clarity when needed (e.g., `ctxpkg "github.com/bigknoxy/joshbot/internal/context"`)
-- **Avoid blank imports** except for drivers/side effects
-
-### Error Handling
-
-- **Return errors as values** - don't panic in library code
-- **Wrap errors with context** using `fmt.Errorf("operation failed: %w", err)`
-- **Tools return error strings** (`return fmt.Sprintf("Error: File not found: %s", path)`) - don't return errors that require handling
-- **Graceful degradation** with fallbacks
-- **Check errors explicitly** - don't ignore return values
-
-### Naming Conventions
-
-| Element          | Convention         | Example                          |
-|------------------|--------------------|----------------------------------|
-| Packages         | lowercase, single  | `tools`, `bus`, `config`         |
-| Types            | PascalCase         | `Agent`, `WebFetchTool`          |
-| Functions/methods| PascalCase (exported), camelCase (unexported) | `BuildSystemPrompt`, `parseResponse` |
-| Private fields   | camelCase          | `cfg`, `running`                 |
-| Constants        | PascalCase or UPPER_SNAKE_CASE | `MaxOutput`, `MAX_QUEUE_SIZE` |
-| Interfaces       | PascalCase + "er" suffix | `Provider`, `ToolExecutor` |
-
-### Data Modeling
-
-- **Structs** for data types (InboundMessage, LLMResponse, Session, etc.)
-- **Embed interfaces** for composition
-- **Use struct tags** for JSON/field mapping (`json:"field_name"`)
-- **Functional options pattern** for complex configuration
-
-### Interfaces & Extension Points
-
-- **Small, focused interfaces** (prefer 1-3 methods)
-- **Interface segregation** - define interfaces where they're used
-- **Registry pattern** for tools (`Registry`) and providers
-- **Functional options** for flexible construction (`Option func(*Type)`)
-
-### Concurrency Patterns
-
-- **Goroutines** for concurrent operations
-- **Channels** for message bus (`chan InboundMessage`, `chan OutboundMessage`)
-- **sync.Mutex/sync.RWMutex** for shared state
-- **sync.WaitGroup** for goroutine coordination
-- **context.Context** for cancellation and timeouts
-- **select** for multiplexing channel operations
-
-### Logging
-
-- **charmbracelet/log** for structured logging (`log.Info`, `log.Debug`, `log.Warn`, `log.Error`)
-- `log.Debug()` for routine operations, LLM request/response details, tool execution results
-- `log.Info()` for significant events (tool execution, service start/stop)
-- `log.Warn()` for recoverable issues, empty content detection
-- `log.Error()` for failures
-
-**Debug Mode:** Use `--debug` flag to enable DebugLevel logging:
-```bash
-joshbot agent --debug
-joshbot gateway --debug
-```
-
-Debug logging provides visibility into:
-- LLM response details: content_length, content_preview, tool_calls_count, finish_reason
-- HTTP response status codes and model information
-- Tool execution results with result_length and preview
-- Empty content warnings with model and iteration info for troubleshooting
-
-### String Formatting
-
-- **fmt.Sprintf** for formatted strings
-- **String concatenation** with `+` for simple cases
-- **strings.Builder** for building complex strings efficiently
-
-### Documentation
-
-- **Package comments** at top of file (starts with "Package X ...")
-- **Exported types/functions** must have doc comments
-- **Example functions** for usage documentation (`ExampleTool_Execute`)
-
-## Architecture Quick Reference
-
-```
-channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
-(CLI,         (chan-based)      (ReAct loop)    (HTTP -> LLM API)
- Telegram)                          |
-                               tools/Registry
-                               (filesystem, shell,
-                                web, message)
-```
-
-- **Message bus** decouples channels from agent via `InboundMessage`/`OutboundMessage` channels
-- **ReAct loop**: LLM -> tool calls -> reflect -> repeat (max 20 iterations)
-- **Memory**: `MEMORY.md` (always in context) + `HISTORY.md` (grep-searchable event log)
-- **Skills**: Markdown files with YAML frontmatter, progressive loading (summary -> full content)
-- **Sessions**: JSONL files in `~/.joshbot/sessions/`
-- **Config**: `~/.joshbot/config.json`, JSON-validated, env vars with `JOSHBOT_` prefix
-- **Prompt caching**: Static system prompt cached with mtime-based invalidation (`internal/agent/context.go`)
-- **Model-centric config**: Provider auto-detected from model prefix, fallback chains supported (`internal/config/config.go`)
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `cmd/joshbot/main.go` | CLI entry point, service wiring, onboard flow |
-| `internal/agent/agent.go` | Core ReAct agent loop, message processing |
-| `internal/agent/context.go` | System prompt assembly with caching |
-| `internal/memory/memory.go` | MEMORY.md + HISTORY.md management |
-| `internal/skills/skills.go` | Skill discovery and progressive loading |
-| `internal/tools/tool.go` | Tool interface (implement this to add new tools) |
-| `internal/tools/registry.go` | Tool registration and execution |
-| `internal/tools/shell.go` | Shell exec with safety deny-list |
-| `internal/channels/telegram.go` | Telegram channel implementation |
-| `internal/config/config.go` | All configuration structs, model-centric config, provider detection |
-| `internal/bus/bus.go` | Channel-based message bus |
-| `internal/providers/provider.go` | Provider interface and types |
-| `internal/providers/litellm.go` | OpenRouter-compatible HTTP provider |
 
 ## Adding New Components
 
-**New tool**: Create `internal/tools/my_tool.go`, implement the `Tool` interface
-(methods: `Name()`, `Description()`, `Parameters()`, `Execute()`), register via
-`RegistryWithDefaults()` in `main.go` or create custom registry setup.
+- **New tool**: Create in `internal/tools/`, implement `Tool` interface, register via `tools.RegistryWithDefaults()`
+- **New channel**: Create in `internal/channels/`, implement channel logic, register in `main.go` gateway cmd
+- **New skill**: Create `workspace/skills/{name}/SKILL.md` with YAML frontmatter (auto-discovered)
 
-**New channel**: Create `internal/channels/my_channel.go`, implement channel logic
-that publishes `InboundMessage` to the bus and subscribes to `OutboundMessage`.
+## Config
 
-**New skill**: Create `workspace/skills/{name}/SKILL.md` with YAML frontmatter. Auto-discovered.
+Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.g., `JOSHBOT_PROVIDERS_OPENROUTER_API_KEY`). Model-name-based provider routing: `claude` → Anthropic, `gpt` → OpenAI, `gemini` → Gemini. Default fallback: OpenRouter.
 
-## Go Version
+```json
+{
+  "agents": { "defaults": { "workspace": "~/.joshbot/workspace", "model": "openrouter/anthropic/claude-sonnet-4-20250514", "max_tool_iterations": 20 } },
+  "providers": { "openrouter": { "api_key": "" }, "anthropic": {}, ... },
+  "channels": { "telegram": { "enabled": false, "token": "", "allow_from": [] } },
+  "heartbeat": { "enabled": true, "interval": 30 }
+}
+```
 
-Requires **Go 1.24+**. Uses modern features: generic types, structured logging,
-improved error handling with `%w`, and context-aware cancellation throughout.
+## Gotchas
 
-## Lessons Learned
+- **Telegram message limit**: Telegram Bot API enforces 4096 char max per message. joshbot does not split long messages — exceeding this causes send failure (not retryable). Ensure output stays under limit.
+- **CLI stdin blocking**: `bufio.NewReader(os.Stdin).ReadString('\n')` blocks on stdin and can't be interrupted by context cancellation
+- **Session key format**: `"channel:senderID"` (e.g., `"cli:cli-user"`, `"telegram:johndoe"`). Computed from `Channel:SenderID` — no explicit SessionKey field
+- **OutboundMessage**: Uses `ChannelID` (not `ChatID`) for routing responses back to the correct chat
+- **Workspace identity files**: `IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md` loaded into system prompt via XML tags
+- **Service cross-platform**: `internal/service/` uses build tags (`factory_linux.go`, `factory_darwin.go`, `factory_other.go`) — each must export the same function signature. Also has `systemd.go`, `launchd.go`, `openrc.go`, `unsupported.go`
+- **`pkg/` is stale**: `pkg/` duplicates `internal/bus` and `internal/channels` — do not edit unless purposely finishing the refactor
 
-> **IMPORTANT**: Always check `docs/MEMORY.md` when encountering issues. This file captures detailed failure modes, root causes, and prevention rules from past mistakes. Avoid repeating errors by reviewing learned lessons first.
-
-### Cross-Platform Factory Pattern (Go)
-
-When using build tags for platform-specific implementations:
-
-1. **Each platform factory file MUST export the same function signature**
-   - `factory_linux.go` → `func NewManager(cfg Config) (Manager, error)`
-   - `factory_darwin.go` → `func NewManager(cfg Config) (Manager, error)`
-   - `factory_other.go` → `func NewManager(cfg Config) (Manager, error)`
-
-2. **Never put the factory function in the interface/struct file**
-   - ❌ Bad: `service.go` defines `NewManager()`
-   - ✅ Good: `service.go` defines interface only; `factory_*.go` files provide implementations
-
-3. **Build tags must be exclusive per file**
-   - `//go:build linux` for Linux
-   - `//go:build darwin` for macOS
-   - `//go:build !linux && !darwin` for fallback
-
-4. **Test cross-platform builds locally before release**
-   ```bash
-   GOOS=linux GOARCH=amd64 go build ./...
-   GOOS=darwin GOARCH=arm64 go build ./...
-   GOOS=windows GOARCH=amd64 go build ./...
-   ```
-
-5. **Running as root: sudo not available**
-   - When user is root (uid 0), `sudo` command doesn't exist
-   - Detect with `os.Getuid() == 0` and skip sudo prefix
-   - Applies to systemd service installation, file operations needing elevated permissions
-
-## Testing Protocol
-
-**CRITICAL**: Before any release, perform end-to-end testing to catch issues early.
-
-### Pre-Release Testing Checklist
+## Pre-Release Checklist
 
 ```bash
-# 1. Build and install locally
-go install ./cmd/joshbot
-
-# 2. Clean up previous test config
+go build ./cmd/joshbot
 rm -rf ~/.joshbot
-
-# 3. Test onboarding with each provider
-joshbot onboard    # Test NVIDIA, OpenRouter, Groq, Ollama
-
-# 4. Test non-interactive mode
-joshbot agent -m "hello"
-
-# 5. Test interactive mode
-joshbot agent      # Send message, verify response, check for tool errors
-
-# 6. Test gateway mode (if Telegram changes)
-joshbot gateway    # Send Telegram message, verify response
-
-# 7. Verify status
-joshbot status
-
-# 8. Cleanup
-rm -rf ~/.joshbot
+go test -race ./...
+./joshbot agent -m "hello"    # Verify response
+./joshbot status               # Verify config
 ```
-
-### Common Issues to Watch For
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| "no chat ID stored for channel: cli" | Session.SetChatID() not called in CLI mode | Call `session.SetChatID("cli", "cli_user")` before processing |
-| "no providers configured" | Provider.Enabled=false or missing API key | Set `Enabled: true` when saving config |
-| 401/403 auth errors | Wrong API base URL or missing /v1 path | Use registry defaults via `GetProvider()` |
-| Wrong model suggested | Hardcoded model in onboarding | Use `providers.GetDefaultModel(provider)` |
-
-### Parallel Testing with Subagents
-
-For comprehensive testing, use parallel subagents:
-
-```
-Subagent 1: Run gateway and monitor for errors
-  - Start joshbot gateway
-  - Watch logs for errors
-  - Keep running
-
-Subagent 2: Test CLI commands
-  - joshbot agent -m "test"
-  - Verify response
-  - Check for tool execution errors
-```
-
-This catches issues that single-threaded testing misses.

@@ -6,10 +6,72 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 )
+
+// extractStatusCode parses HTTP status code from error message.
+// Avoids regex compilation overhead by using simple string scanning.
+func extractStatusCode(errMsg string) int {
+	// Try specific patterns first (most reliable)
+	prefixes := []string{
+		"API request failed with status ",
+		"API error (",
+		"status ",
+		"HTTP ",
+	}
+	for _, prefix := range prefixes {
+		if idx := strings.Index(errMsg, prefix); idx != -1 {
+			rest := errMsg[idx+len(prefix):]
+			code := scanStatusCode(rest)
+			if code > 0 {
+				return code
+			}
+		}
+	}
+
+	// Fallback: scan for any 3-digit number that looks like an HTTP status code
+	return scanAnyStatusCode(errMsg)
+}
+
+// scanStatusCode reads a 3-digit status code from the start of s.
+func scanStatusCode(s string) int {
+	if len(s) < 3 {
+		return 0
+	}
+	code, err := strconv.Atoi(s[:3])
+	if err == nil && code >= 100 && code < 600 {
+		return code
+	}
+	return 0
+}
+
+// scanAnyStatusCode scans for any 3-digit HTTP status code in the string.
+// Only considers codes near HTTP-related keywords to avoid false matches
+// on port numbers, version numbers, etc.
+func scanAnyStatusCode(s string) int {
+	indicators := []string{"status", "http", "error", "code", "got", "returned", "response", "failed", "received"}
+	lower := strings.ToLower(s)
+
+	for _, ind := range indicators {
+		idx := strings.Index(lower, ind)
+		if idx == -1 {
+			continue
+		}
+		// Search before and after the indicator keyword
+		searchStart := max(0, idx-10)
+		searchEnd := min(idx+len(ind)+30, len(s))
+		for i := searchStart; i+2 < searchEnd; i++ {
+			if s[i] >= '1' && s[i] <= '5' {
+				code, err := strconv.Atoi(s[i : i+3])
+				if err == nil && code >= 100 && code < 600 {
+					return code
+				}
+			}
+		}
+	}
+	return 0
+}
 
 // FallbackError wraps an error with context for fallback decisions
 type FallbackError struct {
@@ -90,26 +152,6 @@ func ShouldFallback(provider string, statusCode int, errMsg string) bool {
 	}
 
 	return isFallbackStatusCode(statusCode)
-}
-
-// extractStatusCode parses HTTP status code from error message.
-func extractStatusCode(errMsg string) int {
-	patterns := []string{
-		`API error \((\d{3})\)`,
-		`status (\d{3})`,
-		`HTTP (\d{3})`,
-		`API request failed with status (\d{3})`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
-		if matches := re.FindStringSubmatch(errMsg); len(matches) > 1 {
-			code, _ := strconv.Atoi(matches[1])
-			return code
-		}
-	}
-
-	return 0
 }
 
 // isNetworkError checks if the error is a network-level failure.

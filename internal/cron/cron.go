@@ -128,7 +128,7 @@ func (s *Service) Stop() {
 
 func (s *Service) scheduleJob(j Job) {
 	// support 'delay:<duration>' and 'every:<duration>'
-	parts := stringsSplitN(j.Schedule, ":", 2)
+	parts := strings.SplitN(j.Schedule, ":", 2)
 	if len(parts) != 2 {
 		return
 	}
@@ -173,10 +173,4 @@ func (s *Service) publishJob(j Job) {
 		Metadata:  map[string]any{"job_id": j.ID},
 	}
 	_ = s.bus.Send(inbound)
-}
-
-// Helper: strings.SplitN wrapper (avoid importing strings repeatedly)
-func stringsSplitN(s, sep string, n int) []string {
-	// lightweight wrapper
-	return strings.SplitN(s, sep, n)
 }

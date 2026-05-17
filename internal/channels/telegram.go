@@ -76,11 +76,7 @@ func (t *TelegramChannel) Name() string {
 
 // normalizeUsername normalizes a username for allowlist comparison.
 func normalizeUsername(username string) string {
-	s := username
-	if len(s) > 0 && s[0] == '@' {
-		s = s[1:]
-	}
-	return strings.ToLower(s)
+	return strings.ToLower(strings.TrimPrefix(username, "@"))
 }
 
 // IsAllowed checks if a user is in the allowlist.

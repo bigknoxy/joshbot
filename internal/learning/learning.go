@@ -120,7 +120,7 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 	if c.provider != nil {
 		sys := "You are a memory consolidation assistant. Extract a short list of factual one-line statements from the conversation."
 		req := providers.ChatRequest{
-			Model:       c.provider.Config().Model,
+			Model: c.provider.Config().Model,
 			Messages: []providers.Message{
 				{Role: providers.RoleSystem, Content: sys},
 				{Role: providers.RoleUser, Content: recent},

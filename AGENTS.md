@@ -131,8 +131,15 @@ Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.
 
 ```bash
 go build ./cmd/joshbot
+gofmt -d .                     # MUST return empty (no formatting diffs)
 rm -rf ~/.joshbot
 go test -race ./...
 ./joshbot agent -m "hello"    # Verify response
 ./joshbot status               # Verify config
 ```
+
+## Release Process
+1. Push changes to main first
+2. **WAIT** for CI to pass (green checkmark on the commit) — do not push the tag until CI is green
+3. Only then cut the release tag with `git tag vX.Y.Z && git push origin vX.Y.Z`
+4. Monitor both the CI workflow and the Release workflow until all jobs are green

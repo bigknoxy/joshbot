@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-05-19
+
+### Added
+- **CLI flags for `joshbot config`** — `--provider`, `--api-key`, `--api-base`, `--model`, `--set-default`, `--remove` flags for headless configuration
+- **`joshbot version` command** — Shows the current version string
+- **`internal/configure/` package** — Shared configurator API used by both CLI flags and interactive wizard, gating CLI/interactive parity with tests
+
+### Fixed
+- **Model config bugs** — `setDefaultProvider` no longer overwrites per-provider model with registry default; `configureProvider` auto-default now sets `agents.defaults.model`; NVIDIA provider registration now passes `p.Model` on creation and registration
+
+### Changed
+- `internal/config/config.go` — Added `JOSHBOT_NVIDIA_API_KEY` shorthand env var support with auto-`Enabled: true`
+- `internal/config/config_test.go` — Added `TestMain()` to isolate tests from env var pollution
+- Deduplicated `getProviderDisplayName` and `maskAPIKey` into `internal/configure/` package (removed from main.go)
+- Replaced deprecated `strings.Title` with `cases.Title` from `golang.org/x/text`
+
 ## [1.19.0] - 2026-05-17
 
 ### Added

@@ -441,15 +441,21 @@ func applyEnvOverrides(cfg *Config) {
 	}
 
 	// Provider API keys
-	if v := getEnv("PROVIDERS__OPENROUTER__API_KEY"); v != "" {
+	// Canonical: JOSHBOT_PROVIDERS__OPENROUTER__API_KEY
+	// Shorthand (also accepted): JOSHBOT_OPENROUTER_API_KEY
+	orKey := getEnv("PROVIDERS__OPENROUTER__API_KEY")
+	if orKey == "" {
+		orKey = os.Getenv("JOSHBOT_OPENROUTER_API_KEY")
+	}
+	if orKey != "" {
 		if cfg.Providers == nil {
 			cfg.Providers = make(map[string]ProviderConfig)
 		}
 		if p, ok := cfg.Providers["openrouter"]; ok {
-			p.APIKey = v
+			p.APIKey = orKey
 			cfg.Providers["openrouter"] = p
 		} else {
-			cfg.Providers["openrouter"] = ProviderConfig{APIKey: v}
+			cfg.Providers["openrouter"] = ProviderConfig{APIKey: orKey, Enabled: true}
 		}
 	}
 
@@ -462,6 +468,23 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Providers["openrouter"] = p
 		} else {
 			cfg.Providers["openrouter"] = ProviderConfig{APIBase: v}
+		}
+	}
+
+	// Shorthand: JOSHBOT_NVIDIA_API_KEY
+	nvKey := getEnv("PROVIDERS__NVIDIA__API_KEY")
+	if nvKey == "" {
+		nvKey = os.Getenv("JOSHBOT_NVIDIA_API_KEY")
+	}
+	if nvKey != "" {
+		if cfg.Providers == nil {
+			cfg.Providers = make(map[string]ProviderConfig)
+		}
+		if p, ok := cfg.Providers["nvidia"]; ok {
+			p.APIKey = nvKey
+			cfg.Providers["nvidia"] = p
+		} else {
+			cfg.Providers["nvidia"] = ProviderConfig{APIKey: nvKey, Enabled: true}
 		}
 	}
 }

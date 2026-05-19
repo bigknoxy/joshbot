@@ -3,8 +3,30 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	// Save and clear JOSHBOT_ env vars so tests run in a clean environment
+	prefix := "JOSHBOT_"
+	saved := map[string]string{}
+	for _, env := range os.Environ() {
+		if strings.HasPrefix(env, prefix) {
+			parts := strings.SplitN(env, "=", 2)
+			saved[parts[0]] = parts[1]
+			os.Unsetenv(parts[0])
+		}
+	}
+
+	code := m.Run()
+
+	// Restore env vars
+	for k, v := range saved {
+		os.Setenv(k, v)
+	}
+	os.Exit(code)
+}
 
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()

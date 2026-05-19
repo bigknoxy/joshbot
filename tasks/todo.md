@@ -1,188 +1,34 @@
-Migrate Python joshbot to Go — plan and acceptance criteria
+# Tasks
 
-- Goal: Replace the Python implementation with a complete, production-ready Go implementation and phase out the Python codebase. The running service should be the Go binary and provide at least feature parity with current gateway (Telegram inbound/outbound, ReAct agent loop with tools, message bus, sessions, skills, and basic observability).
+## Goal: Fix model config bug + abstract configure with CLI flags + tests
 
-- Acceptance criteria:
-  - `go build ./cmd/joshbot` produces a working gateway binary that can start and accept Telegram updates (polling or webhook) and process messages end-to-end.
-  - Existing Python behavior for allowlist, markdown handling, token redaction, empty-outbound guards, and outbound tracing (trace_id + digest) is implemented and verified in Go.
-  - Unit tests cover critical components (bus, channels/telegram, agent loop core) and `go test ./...` passes.
-  - A rollout plan is documented and the running gateway can be switched with zero/low downtime.
+### Acceptance Criteria
+- `joshbot config --provider nvidia --api-key xxx --model foo` sets the config correctly
+- Interactive `joshbot config` wizard produces identical results
+- `joshbot agent` picks up the configured model, not the registry default
+- All paths have unit test coverage
 
-- Phases (high level):
-  1. Discover & map (2 days)
-     - Inventory Python modules and map to Go packages (channels, agent, bus, providers, tools, skills, config).
-     - Produce a file-level migration map and an interface contract for each major component.
-  2. Scaffold Go repo (1 day)
-     - Create Go module, `cmd/joshbot`, `pkg/agent`, `pkg/bus`, `pkg/channels`, `pkg/providers`, `pkg/tools`, `pkg/config`, `internal/skills`.
-     - Add CI skeleton (GitHub Actions) to run `go test` and `go vet`.
-  3. Implement core infra (3-5 days)
-     - Message bus, Inbound/Outbound message types, session storage (file-backed JSON), basic config loader.
-  4. Channels: Telegram + CLI (3-5 days)
-     - Implement Telegram channel (webhook + polling), markdown safe-send (MarkdownV2 escape), token redaction, empty message guard, outbound tracing.
-     - CLI channel for local testing.
-  5. Agent loop & providers (5-8 days)
-     - ReAct agent loop, LLM provider interface, Litellm provider adapter (or a mock provider for local dev), tools registry and execution model.
-  6. Skills, tools, sessions (3-5 days)
-     - Skills loader (markdown files), tools port (message, shell, webfetch stubs), session persistence.
-  7. Tests, observability, and hardening (2-4 days)
-     - Unit tests, basic integration tests, structured logging, metrics, and troubleshooting (timeouts, retries).
-  8. Rollout & cutover (1-2 days)
-     - Deploy, smoke test, switch webhook/stop Python instance, monitor.
+### Bugs to Fix
+1. `setDefaultProvider` (main.go:2901) overwrites model with registry default
+2. `configureProvider` auto-default (main.go:2683) doesn't set model
+3. NVIDIA registration (main.go:369-381) doesn't pass `p.Model`
 
-- Immediate next actions (I will do these now unless you instruct otherwise):
-  1. Create a detailed migration map (repo-relative file list mapping Python -> Go packages) and place it at `tasks/migration_map.md`.
-  2. Scaffold the Go module in `/root/code/joshbot-go` with `go mod init github.com/bigknoxy/joshbot` and a minimal `cmd/joshbot/main.go` that prints a help message.
-  3. Add `tasks/` checklist entries for each phase above and mark discovery as `in_progress`.
+### Implementation Plan
 
-- Verification steps (how I will prove migration progress):
-  - Unit test pass: `go test ./...` (local CI will run as part of workflow).
-  - Build success: `go build -o /tmp/joshbot ./cmd/joshbot` and `file /tmp/joshbot` to confirm a Go ELF binary.
-  - Runtime smoke: start gateway in foreground `stdbuf -oL /tmp/joshbot gateway` and send a test Telegram message (or emulate via `curl` when using webhook) and show the inbound/outbound log sequence.
+**Phase 1: Fix Bugs (targeted)**
+- main.go:2901 — prefer per-provider model over registry default
+- main.go:2683-2684 — also set model when auto-defaulting
+- main.go:369-381 — pass p.Model to NVIDIA registration
 
-- Risks & mitigations:
-  - Risk: Behavioral drift (subtle differences vs Python) — Mitigate: add unit tests for allowlist normalization, markdown escaping, empty message guard, and token-redaction early.
-  - Risk: LLM provider differences — Mitigate: add a mock provider and integration tests to validate ReAct loop behavior before wiring production provider.
-  - Risk: Downtime during cutover — Mitigate: use webhook setWebhook atomic switch or use canary instance and redirect traffic gradually.
+**Phase 2: Create `internal/configure/` package**
+- `configurator.go` — Configurator type with non-interactive API
+- `configure_test.go` — comprehensive tests
 
-- Deliverables (per phase):
-  1. `tasks/migration_map.md` (file mapping).
-  2. `joshbot-go` repo scaffold with `cmd/joshbot` and empty package skeletons.
-  3. Working `pkg/bus` and message types with unit tests.
-  4. `pkg/channels/telegram` implementing safe sends + webhook/polling toggle.
-  5. Agent loop + provider adapters with ReAct skeleton and sample tool.
-  6. Integration tests and CI pass.
-  7. Rollout plan executed and Python gateway decommissioned.
+**Phase 3: Wire CLI flags in main.go**
+- `--provider`, `--api-key`, `--api-base`, `--model`, `--set-default`, `--remove` flags
+- `runConfigure` delegates to configure package when flags are set
+- Interactive wizard delegates to same package
 
-Acceptance criteria checklist (copy to track progress):
-- [ ] Migration map created (`tasks/migration_map.md`)
-- [ ] Go module scaffolded in `/root/code/joshbot-go`
-- [ ] Core bus + message types implemented + tests
-- [ ] Telegram channel implemented (webhook + polling) + tests for markdown/empty/allowlist
-- [ ] Agent loop and provider interfaces + mock provider tests
-- [ ] Integration tests and CI pass
-- [ ] Rollout plan executed and Python gateway decommissioned
-
----
-
-Prepare joshbot for production users — remediation plan
-
-- Goal: Harden security, fix functional gaps, improve reliability/UX, and ship a production-ready PR for review.
-- Acceptance criteria:
-  - Shell/FS/Web tools are safe by default, allow opt-in for broader access.
-  - `/new` fully resets server-side sessions.
-  - Provider errors are structured and fallback works; timeouts respected.
-  - Message bus concurrency is bounded; Telegram/CLI reliability improvements verified.
-  - Memory/skills prompt bloat reduced with controls.
-  - Tests added/updated; `go test ./...` passes.
-  - PR created with clear summary and verification story.
-
-- Working notes:
-  - Default to workspace-only file access; allow `restrict=false` for broader scope.
-  - Shell access is allowed when user enables it; still avoid obviously dangerous commands.
-  - Keep changes minimal and follow existing patterns.
-
-- Tasks:
-  - [ ] Security hardening: shell allowlist or safer execution, SSRF guard, filesystem restrictions
-  - [ ] Session lifecycle: implement real `/new` reset
-  - [x] Provider reliability: fix `WithTimeout`, structured errors/fallback
-  - [ ] Concurrency: bound message bus dispatch
-  - [ ] UX reliability: CLI full-line input, Telegram reconnect/media handling
-  - [x] Memory/skills: reduce prompt bloat, dedupe/limits
-  - [x] Memory/skills: dedupe consolidated facts, expand history window, skills summary-only
-  - [x] Run go tests for modified packages
-  - [ ] Tests: add coverage for providers/Telegram/memory where needed
-  - [ ] Verification: `go test ./...`
-  - [ ] PR: create ready-for-review PR
-
-Provider reliability subtasks:
-- [x] Fix WithTimeout in registry.go to respect input parameter
-- [x] Update LiteLLM provider to return structured FallbackError
-- [x] Add tests for WithTimeout
-- [x] Add tests for FallbackError in LiteLLM provider
-- [x] Add tests for error fallback logic
-- [x] Run relevant go tests
-
----
-
-# Current Task: Fix fallback logic using providers with enabled=false
-
-## Issue
-- main.go line 311: OpenRouter registered WITHOUT checking `p.Enabled`
-- Other providers (nvidia, groq, ollama, github-copilot) correctly check `p.Enabled`
-- Fallback chain includes all registered providers regardless of config Enabled status
-
-## Plan
-- [x] Fix main.go: Add `p.Enabled` check for OpenRouter registration  
-- [x] Add Enabled field to ProviderEntry in multiprovider for runtime filtering
-- [x] Add tests for enabled/disabled provider behavior in fallback
-- [x] Run verification: go test ./..., go vet ./..., go build ./cmd/joshbot
-
----
-
-# Current Task: Create PR and monitor CI
-
-- Goal: Create a new branch, open a PR with current changes, and monitor CI to green. If CI fails, diagnose, fix, and update PR until green.
-- Acceptance criteria:
-  - PR exists from a new branch with a clear summary.
-  - CI checks for the PR are green, or failures are fixed and rerun to green.
-  - Provide PR URL and final CI status.
-
-- Working notes:
-  - Use existing repo conventions for branch naming and PR summary.
-  - Do not modify unrelated files; keep changes minimal if fixes are needed.
-
-- Plan:
-  - [ ] Restate goal + acceptance criteria
-  - [ ] Inspect git status, diffs, and recent commits for PR scope
-  - [ ] Create new branch and open PR with summary
-  - [ ] Monitor CI checks; if failing, diagnose root cause
-  - [ ] Implement minimal fix, update PR, and re-check CI
-  - [ ] Report PR URL and final CI status
-
----
-
-# Current Task: Review PR #43 (fix/systemd-env-ollama-migration)
-
-## Plan
-- [x] Restate goal + acceptance criteria
-- [x] Locate PR scope vs main (diff, commits)
-- [x] Review config migration: provider enabled behavior
-- [x] Review systemd HOME env handling
-- [x] Identify unintended behavior/regressions
-- [x] Implement minimal fixes if needed
-- [x] Add/adjust tests for fixes
-- [x] Run verification (go test ./..., go vet ./..., go build ./cmd/joshbot)
-- [x] Summarize findings + verification story
-
----
-
-# Current Task: Fix Migration V4 Provider Enabled Behavior - COMPLETED
-
-## Summary
-Fixed the migration v4 logic to properly handle provider enabled behavior:
-
-- **Providers with API keys/config** → Auto-enabled after migration (backward compatibility)
-- **Ollama/GitHub Copilot** → Remain disabled unless explicitly enabled (local daemons)
-- **Explicitly disabled** (`enabled: false`) → Remain disabled (respect user preference)
-
-## Changes Made
-1. `internal/config/config.go`:
-   - Added `parseExplicitDisable()` to detect explicit `enabled: false` in old configs
-   - Added `containsEnabledKey()` helper to check if "enabled" field was present
-   - Updated migration v4 logic with `localProviders` map for Ollama/GitHub Copilot
-   - Modified `migrateConfig()` to accept raw JSON for explicit disable detection
-
-2. `internal/config/config_test.go`:
-   - Updated `TestMigrateConfigV4_OllamaNotAutoEnabled` test expectations
-   - Added `TestMigrateConfigV4_ConfiguredProviderAutoEnabled` test
-   - Added `TestMigrateConfigV4_GitHubCopilotNotAutoEnabled` test
-   - Added `TestMigrateConfigV4_ExplicitDisableStaysDisabled` test
-
-## Verification
-- `go test ./...` ✓
-- `go vet ./...` ✓
-- `go build ./cmd/joshbot` ✓
-
-## Pushed
-- Commit: `b74eda1` to `fix/systemd-env-ollama-migration` branch
-
+**Phase 4: End-to-end verification**
+- Build + test
+- Manual smoke test

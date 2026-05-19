@@ -189,3 +189,44 @@ Return a helpful error message explaining alternatives when systemctl is not fou
 - Concurrency: Double-checked locking with RLock/RWMutex ensures thread safety
 
 **Prevention Rule**: When implementing caching, always include a way to invalidate the cache. Prefer content-based or mtime-based invalidation over TTL-based for data that changes infrequently.
+
+---
+
+## 2026-05-17 CI Failure: gofmt Formatting After Release Tag
+
+**Context**: v1.19.0 release was tagged and pushed alongside main commit. CI run failed because `gofmt -l .` returned `internal/learning/learning.go` — vertical-alignment padding in a struct literal.
+
+**Root Cause**: Release tag was pushed at the same time as the main commit, before CI could verify the code. The `gofmt` check (`.github/workflows/ci.yml`) caught the formatting issue, but since the tag was already pushed, it had to be deleted and re-pushed.
+
+**Fix**:
+1. Run `gofmt -w internal/learning/learning.go` to fix formatting
+2. Added `gofmt -d .` to pre-release checklist in AGENTS.md
+3. Documented release process: push main → WAIT for CI green → cut tag
+4. Recorded lesson in `tasks/lessons.md`
+
+**Prevention Rule**: NEVER push main commit and release tag simultaneously. Push main first, wait for CI green checkmark, then cut and push the tag. Always run `gofmt -d .` (or `gofmt -l .`) before committing.
+
+---
+
+## 2026-05-18 Env Var Backward Compatibility for Shorthand Names
+
+**Context**: Dogfood testing revealed that `JOSHBOT_OPENROUTER_API_KEY` (single-underscore) was not picked up by the config system, which expects `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY` (double underscores, full path).
+
+**Decision**: Added backward-compatible fallback checks in `applyEnvOverrides()` in `internal/config/config.go`:
+- `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY` has priority, falls back to `JOSHBOT_OPENROUTER_API_KEY`
+- `JOSHBOT_PROVIDERS__NVIDIA__API_KEY` has priority, falls back to `JOSHBOT_NVIDIA_API_KEY`
+- Env var presence also sets `Enabled: true` automatically (no need for config.json entry)
+
+**Reasoning**: The shorthand forms are intuitive and commonly set by users. The `__` (double-underscore) path separator is technically precise but easy to get wrong. Supporting both ensures backward compatibility and better DX.
+
+**Prevention Rule**: When designing env var override systems, always support both the canonical path-based name and common shorthand names for widely-used config values. The `__` separator in env vars is non-obvious — document it clearly.
+
+---
+
+## 2026-05-18 Config Test Environment Isolation with TestMain
+
+**Context**: Adding `JOSHBOT_OPENROUTER_API_KEY` fallback in `applyEnvOverrides` caused `TestLoadSanitizesWhitespace` to fail because the real env var overwrote the test's config value.
+
+**Decision**: Added `TestMain()` to `internal/config/config_test.go` that saves all `JOSHBOT_` env vars, clears them before tests, and restores them after.
+
+**Prevention Rule**: Any config package that reads environment variables must use `TestMain` or equivalent to isolate tests from the user's shell environment. Env-sensitive tests should never assume a clean environment.

@@ -63,6 +63,8 @@ gh run list --workflow=release.yml --limit 3
 gh run watch <RUN_ID> --exit-status
 ```
 
+- [ ] Step 2a: WAIT for CI on main commit to pass (green checkmark) BEFORE pushing tag
+
 ### Step 3: Verify Release
 
 ```bash
@@ -115,6 +117,9 @@ gh release edit v<X.Y.Z> --latest
 
 | Version | Date | Description |
 |---------|------|-------------|
+| v1.19.0 | 2026-05-17 | Intelligent memory + skill self-creation |
+| v1.18.0 | 2026-05-17 | Code simplification + test expansion + AGENTS.md rewrite |
+| v1.17.1 | 2026-04-02 | Smoke tests + SECURITY.md + broken MCP removal |
 | v1.12.1 | 2026-02-25 | Model/provider sync fix, tool_call_id preservation |
 | v1.12.0 | 2026-02-24 | Exa crawl for web_fetch, version/status display fixes |
 | v1.11.0 | 2026-02-24 | Enhanced Ollama integration |

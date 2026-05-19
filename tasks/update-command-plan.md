@@ -1,3 +1,5 @@
+> **⚠️ OBSOLETE**: This document is from the Python version of joshbot and is no longer relevant to the current Go codebase. Kept for historical reference only.
+
 # Plan: `joshbot update` Command + Close All Version/Upgrade Gaps
 
 ## Overview

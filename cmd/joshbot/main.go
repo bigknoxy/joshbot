@@ -1716,7 +1716,7 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, 
 	// Show existing key if available
 	if existingCfg != nil {
 		if p, ok := existingCfg.Providers[provider]; ok && p.APIKey != "" {
-			fmt.Printf("Current API key: %s\n", maskAPIKey(p.APIKey))
+			fmt.Printf("Current API key: %s\n", configure.MaskAPIKey(p.APIKey))
 			fmt.Print("Enter new API key (or press Enter to keep current): ")
 		} else {
 			fmt.Printf("Enter your %s (or press Enter to skip): ", keyName)
@@ -2415,7 +2415,7 @@ func runConfigureWizard(cfg *config.Config) error {
 				status += " (default)"
 			}
 
-			fmt.Printf("  %s %s (%s)\n", icon, getProviderDisplayName(name), status)
+			fmt.Printf("  %s %s (%s)\n", icon, configure.GetProviderDisplayName(name), status)
 		}
 
 		fmt.Println()
@@ -2466,24 +2466,6 @@ func runConfigureWizard(cfg *config.Config) error {
 	}
 }
 
-// getProviderDisplayName returns the display name for a provider.
-func getProviderDisplayName(name string) string {
-	switch name {
-	case "nvidia":
-		return "NVIDIA NIM"
-	case "openrouter":
-		return "OpenRouter"
-	case "groq":
-		return "Groq"
-	case "ollama":
-		return "Ollama"
-	case "github-copilot":
-		return "GitHub Copilot"
-	default:
-		return name
-	}
-}
-
 // configureProvider prompts the user to configure a specific provider.
 func configureProvider(cfg *config.Config, provider string) *config.Config {
 	// Initialize providers map if needed
@@ -2493,7 +2475,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 
 	p, exists := cfg.Providers[provider]
 
-	fmt.Printf("\n=== Configure %s ===\n", getProviderDisplayName(provider))
+	fmt.Printf("\n=== Configure %s ===\n", configure.GetProviderDisplayName(provider))
 	fmt.Println()
 
 	// Get API key (skip for OAuth-based providers)
@@ -2501,7 +2483,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 	if provider != "github-copilot" {
 		fmt.Print("API key")
 		if exists && p.APIKey != "" {
-			fmt.Printf(" [%s]", maskAPIKey(p.APIKey))
+			fmt.Printf(" [%s]", configure.MaskAPIKey(p.APIKey))
 		}
 		fmt.Print(": ")
 
@@ -2955,7 +2937,7 @@ func setDefaultProvider(cfg *config.Config) *config.Config {
 		if name == cfg.ProviderDefaults.Default {
 			marker = "*"
 		}
-		fmt.Printf("  %d. %s %s\n", i+1, marker, getProviderDisplayName(name))
+		fmt.Printf("  %d. %s %s\n", i+1, marker, configure.GetProviderDisplayName(name))
 	}
 	fmt.Println()
 
@@ -2977,7 +2959,7 @@ func setDefaultProvider(cfg *config.Config) *config.Config {
 	} else {
 		cfg.Agents.Defaults.Model = providers.GetDefaultModel(cfg.ProviderDefaults.Default)
 	}
-	fmt.Printf("\nDefault provider set to: %s\n", getProviderDisplayName(cfg.ProviderDefaults.Default))
+	fmt.Printf("\nDefault provider set to: %s\n", configure.GetProviderDisplayName(cfg.ProviderDefaults.Default))
 
 	return cfg
 }
@@ -3004,13 +2986,13 @@ func configureFallbackOrder(cfg *config.Config) *config.Config {
 		fmt.Println("  (not set - will use providers as configured)")
 	} else {
 		for i, name := range cfg.ProviderDefaults.FallbackOrder {
-			fmt.Printf("  %d. %s\n", i+1, getProviderDisplayName(name))
+			fmt.Printf("  %d. %s\n", i+1, configure.GetProviderDisplayName(name))
 		}
 	}
 	fmt.Println()
 	fmt.Println("Available providers:")
 	for i, name := range configured {
-		fmt.Printf("  %d. %s\n", i+1, getProviderDisplayName(name))
+		fmt.Printf("  %d. %s\n", i+1, configure.GetProviderDisplayName(name))
 	}
 	fmt.Println()
 	fmt.Print("Enter fallback order (e.g., 1,2,3): ")
@@ -3245,21 +3227,6 @@ func statusBool(b bool) string {
 		return "(exists)"
 	}
 	return "(missing)"
-}
-
-// maskAPIKey masks an API key for display, showing only the first few and last few characters.
-// Example: "sk-or-v1-abc123...xyz789" -> "sk-or-v1-****...****4c0"
-func maskAPIKey(key string) string {
-	if key == "" {
-		return ""
-	}
-	if len(key) <= 16 {
-		return key[:2] + "****" + key[len(key)-4:]
-	}
-	// Show first 8 and last 4 characters
-	prefix := key[:8]
-	suffix := key[len(key)-4:]
-	return prefix + "****...****" + suffix
 }
 
 // maskToken masks a Telegram bot token for display.

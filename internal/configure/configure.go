@@ -2,9 +2,11 @@ package configure
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/copilot"
@@ -172,10 +174,10 @@ func (c *Configurator) ValidateProviderCredentials(name string) error {
 
 func getDefaultAPIBase(name string) string {
 	bases := map[string]string{
-		"nvidia":    "https://integrate.api.nvidia.com/v1",
+		"nvidia":     "https://integrate.api.nvidia.com/v1",
 		"openrouter": "https://openrouter.ai/api/v1",
-		"groq":      "https://api.groq.com/openai/v1",
-		"ollama":    "http://localhost:11434",
+		"groq":       "https://api.groq.com/openai/v1",
+		"ollama":     "http://localhost:11434",
 	}
 	if base, ok := bases[name]; ok {
 		return base
@@ -190,18 +192,7 @@ func Save(cfg *config.Config) error {
 	return nil
 }
 
-func SaveIfInteractive(cfg *config.Config, interactive bool) {
-	if interactive {
-		fmt.Println()
-		if err := Save(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		} else {
-			fmt.Println("Configuration saved.")
-		}
-	}
-}
-
-func getProviderDisplayName(name string) string {
+func GetProviderDisplayName(name string) string {
 	names := map[string]string{
 		"nvidia":         "NVIDIA NIM",
 		"openrouter":     "OpenRouter",
@@ -212,10 +203,10 @@ func getProviderDisplayName(name string) string {
 	if display, ok := names[name]; ok {
 		return display
 	}
-	return strings.Title(name)
+	return cases.Title(language.Und).String(name)
 }
 
-func maskAPIKey(key string) string {
+func MaskAPIKey(key string) string {
 	if len(key) <= 8 {
 		return strings.Repeat("*", len(key))
 	}

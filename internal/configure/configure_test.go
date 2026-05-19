@@ -285,7 +285,7 @@ func TestGetProviderDisplayName(t *testing.T) {
 		{"github-copilot", "GitHub Copilot"},
 	}
 	for _, tc := range cases {
-		got := getProviderDisplayName(tc.name)
+		got := GetProviderDisplayName(tc.name)
 		if got != tc.want {
 			t.Errorf("getProviderDisplayName(%q) = %q, want %q", tc.name, got, tc.want)
 		}
@@ -301,7 +301,7 @@ func TestMaskAPIKey(t *testing.T) {
 		{"abc"},
 	}
 	for _, tc := range cases {
-		masked := maskAPIKey(tc.input)
+		masked := MaskAPIKey(tc.input)
 		if masked == "" {
 			t.Error("masked key should not be empty")
 		}

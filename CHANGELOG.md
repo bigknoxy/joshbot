@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-05-17
+
+### Added
+
+#### Intelligent Memory System
+- **Structured Fact format** — Facts stored with SHA256-based `FactID`, category enum (`user_info`, `preference`, `project`, `decision`, `skill`, `system`), confidence scoring (0.0-1.0), source tracking, and deduplication
+- **Memory search tool** (`memory_search`) — Keyword + category + tag search with relevance scoring (recency, confidence, access count, keyword match)
+- **Markdown-backed persistence** — Facts stored in MEMORY.md with backward-compatible user-editable format
+- **Metadata support** — `UserMetadata` struct for tracking memory version, preferences, and last updated
+- **Fact reconciliation** — `ReconcileFacts()` merges new facts with existing memory via upsert + dedup + eviction (max 100 facts)
+- **Learning extraction** — `learning.go` now extracts structured facts from conversations with LLM-based summarization
+- **New files**: `internal/memory/fact.go`, `search.go`, `metadata.go`, `internal/tools/memory_tool.go`
+
+#### Skill Self-Creation
+- **Skill Detection** — Weighted heuristic scoring system (`SkillDetector`) that detects skill-worthy patterns from conversation traces (3+ tool use triggers, repeated command patterns, explicit skill creation requests). Threshold: ≥2.0 confidence
+- **LLM-based Skill Extraction** — `Extractor` generates valid SKILL.md files from conversation traces using an LLM prompt
+- **Skill Validation** — `ValidateSkill()` checks YAML frontmatter, required fields, name uniqueness, and body content
+- **Skill Registry Tool** (`skill_registry`) — Exposes `list`, `create`, and `delete` actions to the ReAct loop
+- **Skill creation flow** — `CreateSkill()` writes to `~/.joshbot/workspace/skills/{name}/SKILL.md`, auto-discovered by the skills Loader
+- **New files**: `internal/skills/detection.go`, `extraction.go`, `validation.go`, `detection_test.go`, `internal/tools/skill_tool.go`
+
+### Changed
+- `internal/agent/agent.go` — Wire skill detection into reactLoop (after each iteration and after processing)
+- `internal/agent/context.go` — `BuildSmartPrompt` uses strings.Builder, extracted methods
+- `internal/learning/learning.go` — Extracted `saveSummary` and `heuristicFallback` methods
+- `internal/memory/memory.go` — `WriteFacts`, `ReconcileFacts`, structured markdown output with categorized sections
+- `internal/skills/skills.go` — Added `Create()`, `Delete()`, `List()`, `Invalidate()` methods on Loader
+- `internal/tools/registry.go` — Registers SkillRegistryTool alongside defaults
+
+## [1.18.0] - 2026-05-17
+
+### Changed
+- **AGENTS.md rewritten** — Accurate LOC count (~16,000 non-test Go), Go 1.24.0, correct interface signatures
+- **Code simplifications** — Simplified `cleanCommand`, `normalizeUsername`, `joinParts`, `stripHTML`
+- **Schema building deduplication** — Replaced duplicated schema building in `toolToProviderTool` with `GenerateSchema`
+- **Dead code removal** — Removed `FormatToolResult`, `FormatAssistantToolCalls`, `stringsSplitN`
+- **Regex compilation fix** — Eliminated regex in `extractStatusCode`, fixed false positive on port numbers
+- **Provider normalization** — Simplified `normalizeProviderName` with case-insensitive lookup
+
+### Added
+- Unit tests for `scanStatusCode`, `scanAnyStatusCode`, `normalizeProviderName`
+
 ## [1.17.1] - 2026-04-02
 
 ### Fixed

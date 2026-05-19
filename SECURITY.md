@@ -4,8 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.17.x  | :white_check_mark: |
-| < 1.17  | :x:                |
+| 1.18.x, 1.19.x | :white_check_mark: |
+| < 1.18         | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -50,3 +50,8 @@ When running joshbot:
 - **File permissions**: Auth files are created with `0600` permissions
 - **Input validation**: All tool inputs are validated before execution
 - **Sandbox awareness**: joshbot runs with the same permissions as the user — it does not implement its own sandbox
+
+### Tool-Specific Security Notes
+
+- **`memory_search` tool**: Can read all stored facts, including potentially sensitive information in MEMORY.md. Access control is file-permission based — ensure `~/.joshbot/` directory permissions are restrictive.
+- **`skill_registry` tool**: Can create, list, and delete skills (SKILL.md files). Skill creation writes files under `~/.joshbot/workspace/skills/` and can introduce new instructions for the agent to follow. Treat skill changes as configuration changes — review skill content before use.

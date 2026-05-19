@@ -9,9 +9,9 @@ A lightweight personal AI assistant written in Go, featuring self-learning memor
 
 ## Features
 
-- **Self-Learning Memory** - Automatically remembers important facts across conversations (MEMORY.md + HISTORY.md)
+- **Self-Learning Memory** - Automatically remembers important facts across conversations using a structured fact system (categorized with SHA256-based IDs, confidence scoring, source tracking, and deduplication)
 - **Context Compression** - Summarizes old context to stay within token limits; works well with small local models
-- **Skill Self-Creation** - Creates new capabilities for itself as markdown files
+- **Skill Self-Creation** - Creates new capabilities for itself as markdown files, with auto-detection from conversation patterns and LLM-based extraction
 - **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
 - **Telegram Integration** - Chat from your phone with full media support
 - **Interactive CLI** - Rich terminal interface with markdown rendering
@@ -107,24 +107,26 @@ joshbot onboard --keep-data  # Reconfigure but preserve memory/skills
 ```
 
 The onboard flow will:
-- Ask for your OpenRouter API key (free at [openrouter.ai/keys](https://openrouter.ai/keys))
+- Ask for your LLM API key (defaults to NVIDIA NIM; OpenRouter free tier also supported at [openrouter.ai/keys](https://openrouter.ai/keys))
 - Let you choose a personality (Professional, Friendly, Sarcastic, Minimal, or Custom)
 - Set up your workspace and memory files
 
 ## Memory System
 
-joshbot uses a two-file memory system that learns from your conversations:
+joshbot uses a structured fact-based memory system that learns from your conversations:
 
 | File | Purpose |
 |------|---------|
-| `MEMORY.md` | Long-term facts (always in context) |
+| `MEMORY.md` | Long-term structured facts (always in context) |
 | `HISTORY.md` | Searchable event log with timestamps |
+
+Facts use a structured format with SHA256-based IDs, categorized by type (`user_info`, `preference`, `project`, `decision`, `skill`, `system`), with confidence scoring (0.0-1.0) and source tracking. The `memory_search` tool enables keyword + category + tag search with relevance scoring.
 
 ### Memory Consolidation
 
 When conversations grow large:
 1. Old messages are summarized by the LLM
-2. Key facts are extracted to MEMORY.md
+2. Key facts are extracted as structured facts to MEMORY.md (with reconciliation to avoid duplicates)
 3. A summary is appended to HISTORY.md
 4. Context is compressed to stay within limits
 
@@ -415,6 +417,8 @@ After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 | `message` | Send messages to channels |
 | `spawn` | Create background tasks |
 | `cron` | Schedule reminders/tasks |
+| `memory_search` | Search stored facts by keyword, category, or tags |
+| `skill_registry` | List, create, and delete skills |
 
 **Security defaults:**
 - `web_fetch` blocks localhost, private IP ranges, and metadata hosts (SSRF protection).
@@ -435,8 +439,10 @@ After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 joshbot/
 ├── cmd/joshbot/     # CLI entry point
 ├── internal/
-│   ├── agent/       # Core brain (loop, context, memory, skills)
-│   ├── tools/       # Built-in tools
+│   ├── agent/       # Core brain (loop, context)
+│   ├── memory/      # Structured fact store (fact.go, search.go, metadata.go)
+│   ├── skills/      # Skill discovery, detection, extraction, validation
+│   ├── tools/       # Built-in tools (incl. memory_search, skill_registry)
 │   ├── channels/    # Chat integrations (CLI, Telegram)
 │   ├── bus/         # Message bus (decouples channels from agent)
 │   ├── providers/   # LLM provider layer

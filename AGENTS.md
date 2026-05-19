@@ -106,14 +106,30 @@ type Provider interface {
 
 ## Config
 
-Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.g., `JOSHBOT_PROVIDERS_OPENROUTER_API_KEY`). Model-name-based provider routing: `claude` → Anthropic, `gpt` → OpenAI, `gemini` → Gemini. Default fallback: OpenRouter.
+Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.g., `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY`). Model-name-based provider routing: `claude` → Anthropic, `gpt` → OpenAI, `gemini` → Gemini. Default fallback: OpenRouter.
 
+**Legacy Provider Format:**
 ```json
 {
   "agents": { "defaults": { "workspace": "~/.joshbot/workspace", "model": "openrouter/anthropic/claude-sonnet-4-20250514", "max_tool_iterations": 20 } },
   "providers": { "openrouter": { "api_key": "" }, "anthropic": {}, ... },
-  "channels": { "telegram": { "enabled": false, "token": "", "allow_from": [] } },
-  "heartbeat": { "enabled": true, "interval": 30 }
+  "channels": { "telegram": { "enabled": false, "token": "", "allow_from": [] } }
+}
+```
+
+**Model-Centric Format (Recommended):**
+```json
+{
+  "models_config": {
+    "models": [
+      { "name": "smart", "model": "anthropic/claude-sonnet-4", "api_key": "sk-ant-..." },
+      { "name": "fast", "model": "groq/llama-3.3-70b-versatile", "api_key": "gsk_..." }
+    ],
+    "agent": { "model": "smart", "fallback": ["fast"] }
+  },
+  "channels": {
+    "telegram": { "enabled": false, "token": "", "allow_from": [] }
+  }
 }
 ```
 
@@ -126,6 +142,41 @@ Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.
 - **Workspace identity files**: `IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md` loaded into system prompt via XML tags
 - **Service cross-platform**: `internal/service/` uses build tags (`factory_linux.go`, `factory_darwin.go`, `factory_other.go`) — each must export the same function signature. Also has `systemd.go`, `launchd.go`, `openrc.go`, `unsupported.go`
 - **`pkg/` is stale**: `pkg/` duplicates `internal/bus` and `internal/channels` — do not edit unless purposely finishing the refactor
+
+## Provider Enabled Flag
+
+Providers require `"enabled": true` in config to activate. This is a required boolean field:
+
+```json
+{
+  "providers": {
+    "nvidia": {
+      "api_key": "nvapi-...",
+      "enabled": true
+    }
+  }
+}
+```
+
+Environment variables also set `enabled: true` automatically when a provider is configured via env var.
+
+## Env Var Format
+
+All config values can be overridden with `JOSHBOT_` prefix env vars using `__` as path separator:
+
+```bash
+# Canonical format (use provider routing key):
+export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-..."
+export JOSHBOT_PROVIDERS__NVIDIA__API_KEY="nvapi-..."
+
+# Model-centric format:
+export JOSHBOT_MODELS_CONFIG__AGENT__MODEL="smart"
+export JOSHBOT_MODELS_CONFIG__MODELS__0__NAME="fast"
+export JOSHBOT_MODELS_CONFIG__MODELS__0__MODEL="groq/llama-3.3-70b-versatile"
+export JOSHBOT_MODELS_CONFIG__MODELS__0__API_KEY="gsk_..."
+```
+
+Shorthand forms like `JOSHBOT_OPENROUTER_API_KEY` and `JOSHBOT_NVIDIA_API_KEY` are also accepted for backward compatibility.
 
 ## Pre-Release Checklist
 

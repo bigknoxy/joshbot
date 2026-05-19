@@ -22,6 +22,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/channels"
 	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/configure"
 	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
 	"github.com/bigknoxy/joshbot/internal/copilot"
 	"github.com/bigknoxy/joshbot/internal/cron"
@@ -181,9 +182,29 @@ func runApp() error {
 						Name:  "list",
 						Usage: "List configured providers",
 					},
-					&cli.BoolFlag{
-						Name:  "default",
-						Usage: "Set default provider",
+					&cli.StringFlag{
+						Name:  "provider",
+						Usage: "Provider to configure (nvidia, openrouter, groq, ollama, github-copilot)",
+					},
+					&cli.StringFlag{
+						Name:  "api-key",
+						Usage: "API key for the provider",
+					},
+					&cli.StringFlag{
+						Name:  "api-base",
+						Usage: "API base URL for the provider",
+					},
+					&cli.StringFlag{
+						Name:  "model",
+						Usage: "Model to use for the provider",
+					},
+					&cli.StringFlag{
+						Name:  "set-default",
+						Usage: "Set a provider as the default",
+					},
+					&cli.StringFlag{
+						Name:  "remove",
+						Usage: "Remove a configured provider",
 					},
 				},
 				Action: runConfigure,
@@ -192,6 +213,11 @@ func runApp() error {
 				Name:   "update",
 				Usage:  "Update joshbot to the latest version",
 				Action: runUpdate,
+			},
+			{
+				Name:   "version",
+				Usage:  "Show joshbot version",
+				Action: runVersion,
 			},
 			{
 				Name:  "uninstall",
@@ -365,6 +391,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 				APIKey:       p.APIKey,
 				APIBase:      p.APIBase,
 				ExtraHeaders: p.ExtraHeaders,
+				Model:        p.Model,
 			})
 			if err != nil {
 				log.Warn("Failed to create NVIDIA provider", "error", err)
@@ -373,7 +400,11 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "nvidia"); idx >= 0 {
 					priority = idx + 1
 				}
-				multiProvider.Register("nvidia", nvidiaProvider, "", priority, p.Enabled)
+				model := p.Model
+				if model == "" {
+					model = providers.GetDefaultModel("nvidia")
+				}
+				multiProvider.Register("nvidia", nvidiaProvider, model, priority, p.Enabled)
 			}
 		}
 
@@ -748,6 +779,11 @@ func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, me
 	}
 
 	fmt.Fprintln(output, strings.TrimSpace(response))
+	return nil
+}
+
+func runVersion(c *cli.Context) error {
+	fmt.Printf("joshbot version %s\n", Version)
 	return nil
 }
 
@@ -2239,19 +2275,60 @@ func runStatus(c *cli.Context) error {
 
 // runConfigure handles the configure command.
 func runConfigure(c *cli.Context) error {
-	// Load existing config
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 
-	// --list flag: show providers and exit
+	conf := configure.New(cfg)
+
 	if c.Bool("list") {
 		return listProviders(cfg)
 	}
 
-	// Interactive wizard
+	if provider := c.String("remove"); provider != "" {
+		if err := conf.RemoveProvider(provider); err != nil {
+			return err
+		}
+		fmt.Printf("Removed provider %q.\n", provider)
+		return flushConfig(cfg)
+	}
+
+	if c.IsSet("provider") {
+		opts := configure.ProviderOptions{
+			Name:   c.String("provider"),
+			APIKey: c.String("api-key"),
+			Model:  c.String("model"),
+		}
+		if c.IsSet("api-base") {
+			opts.APIBase = c.String("api-base")
+		}
+		if err := conf.ConfigureProvider(opts); err != nil {
+			return err
+		}
+		fmt.Printf("Provider %q configured with model %q.\n", opts.Name, cfg.Providers[opts.Name].Model)
+	}
+
+	if provider := c.String("set-default"); provider != "" {
+		if err := conf.SetDefault(provider); err != nil {
+			return err
+		}
+		fmt.Printf("Default provider set to %q with model %q.\n", provider, cfg.Agents.Defaults.Model)
+	}
+
+	if c.IsSet("provider") || c.IsSet("set-default") {
+		return flushConfig(cfg)
+	}
+
 	return runConfigureWizard(cfg)
+}
+
+func flushConfig(cfg *config.Config) error {
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+	fmt.Println("Configuration saved.")
+	return nil
 }
 
 // listProviders displays the configured providers.
@@ -2669,9 +2746,14 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 	p.Enabled = true
 	cfg.Providers[provider] = p
 
-	// If this is the first provider, set it as default
+	// If this is the first provider, set it as default with its model
 	if cfg.ProviderDefaults.Default == "" {
 		cfg.ProviderDefaults.Default = provider
+		if p.Model != "" {
+			cfg.Agents.Defaults.Model = p.Model
+		} else {
+			cfg.Agents.Defaults.Model = providers.GetDefaultModel(provider)
+		}
 	}
 
 	fmt.Println()
@@ -2888,7 +2970,13 @@ func setDefaultProvider(cfg *config.Config) *config.Config {
 	}
 
 	cfg.ProviderDefaults.Default = configured[choice-1]
-	cfg.Agents.Defaults.Model = providers.GetDefaultModel(cfg.ProviderDefaults.Default)
+
+	// Use user-configured per-provider model if available, else registry default
+	if p, ok := cfg.Providers[cfg.ProviderDefaults.Default]; ok && p.Model != "" {
+		cfg.Agents.Defaults.Model = p.Model
+	} else {
+		cfg.Agents.Defaults.Model = providers.GetDefaultModel(cfg.ProviderDefaults.Default)
+	}
 	fmt.Printf("\nDefault provider set to: %s\n", getProviderDisplayName(cfg.ProviderDefaults.Default))
 
 	return cfg

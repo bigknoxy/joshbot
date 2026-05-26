@@ -2729,6 +2729,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 	cfg.Providers[provider] = p
 
 	// If this is the first provider, set it as default with its model
+	// Otherwise, if this is the current default provider, update the model
 	if cfg.ProviderDefaults.Default == "" {
 		cfg.ProviderDefaults.Default = provider
 		if p.Model != "" {
@@ -2736,6 +2737,8 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 		} else {
 			cfg.Agents.Defaults.Model = providers.GetDefaultModel(provider)
 		}
+	} else if cfg.ProviderDefaults.Default == provider && p.Model != "" {
+		cfg.Agents.Defaults.Model = p.Model
 	}
 
 	fmt.Println()

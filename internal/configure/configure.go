@@ -77,6 +77,8 @@ func (c *Configurator) ConfigureProvider(opts ProviderOptions) error {
 		} else {
 			c.cfg.Agents.Defaults.Model = providers.GetDefaultModel(opts.Name)
 		}
+	} else if c.cfg.ProviderDefaults.Default == opts.Name && p.Model != "" {
+		c.cfg.Agents.Defaults.Model = p.Model
 	}
 
 	return nil

@@ -98,6 +98,72 @@ func TestConfigureProvider_SecondProvider_DoesNotOverrideDefault(t *testing.T) {
 	}
 }
 
+func TestConfigureProvider_ReconfigureDefault_UpdatesModel(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.Providers["nvidia"] = config.ProviderConfig{
+		APIKey:  "nvapi-old",
+		APIBase: "https://integrate.api.nvidia.com/v1",
+		Model:   "stepfun-ai/step-3.5-flash",
+		Enabled: true,
+	}
+	cfg.Providers["openrouter"] = config.ProviderConfig{
+		APIKey:  "sk-or-old",
+		Enabled: true,
+	}
+	cfg.ProviderDefaults.Default = "nvidia"
+	cfg.Agents.Defaults.Model = "stepfun-ai/step-3.5-flash"
+	c := New(cfg)
+
+	err := c.ConfigureProvider(ProviderOptions{
+		Name:   "nvidia",
+		APIKey: "nvapi-new",
+		Model:  "meta/llama-4-405b",
+	})
+	if err != nil {
+		t.Fatalf("ConfigureProvider on default provider failed: %v", err)
+	}
+
+	if c.cfg.Agents.Defaults.Model != "meta/llama-4-405b" {
+		t.Errorf("expected agents.defaults.model updated to 'meta/llama-4-405b', got %q", c.cfg.Agents.Defaults.Model)
+	}
+	if c.cfg.ProviderDefaults.Default != "nvidia" {
+		t.Errorf("expected default to remain 'nvidia', got %q", c.cfg.ProviderDefaults.Default)
+	}
+	p := c.cfg.Providers["nvidia"]
+	if p.Model != "meta/llama-4-405b" {
+		t.Errorf("expected per-provider model 'meta/llama-4-405b', got %q", p.Model)
+	}
+}
+
+func TestConfigureProvider_ReconfigureNonDefault_DoesNotChangeModel(t *testing.T) {
+	cfg := newTestConfig(t)
+	cfg.Providers["nvidia"] = config.ProviderConfig{
+		APIKey:  "nvapi-key",
+		APIBase: "https://integrate.api.nvidia.com/v1",
+		Model:   "stepfun-ai/step-3.5-flash",
+		Enabled: true,
+	}
+	cfg.ProviderDefaults.Default = "nvidia"
+	cfg.Agents.Defaults.Model = "stepfun-ai/step-3.5-flash"
+	c := New(cfg)
+
+	err := c.ConfigureProvider(ProviderOptions{
+		Name:   "openrouter",
+		APIKey: "sk-or-new",
+		Model:  "some-other-model",
+	})
+	if err != nil {
+		t.Fatalf("ConfigureProvider on non-default provider failed: %v", err)
+	}
+
+	if c.cfg.Agents.Defaults.Model != "stepfun-ai/step-3.5-flash" {
+		t.Errorf("expected agents.defaults.model unchanged, got %q", c.cfg.Agents.Defaults.Model)
+	}
+	if c.cfg.ProviderDefaults.Default != "nvidia" {
+		t.Errorf("expected default to remain 'nvidia', got %q", c.cfg.ProviderDefaults.Default)
+	}
+}
+
 func TestConfigureProvider_ExistingProvider_UpdatesFields(t *testing.T) {
 	cfg := newTestConfig(t)
 	cfg.Providers["openrouter"] = config.ProviderConfig{

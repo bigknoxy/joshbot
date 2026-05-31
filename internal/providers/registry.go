@@ -161,7 +161,7 @@ func init() {
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},
-		DefaultModel: "arcee-ai/trinity-large-preview:free",
+		DefaultModel: "openrouter/free",
 		DisplayName:  "OpenRouter",
 		Description:  "Many models, one API key",
 	})

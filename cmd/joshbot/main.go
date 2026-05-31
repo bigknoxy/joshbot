@@ -1556,7 +1556,7 @@ func runOnboard(c *cli.Context) error {
 		// Get provider's default model as fallback
 		defaultModel := providers.GetDefaultModel(provider)
 		if defaultModel == "" {
-			defaultModel = "arcee-ai/trinity-large-preview:free"
+			defaultModel = "openrouter/free"
 		}
 		// Use selected model, or fall back to provider default
 		if model == "" {

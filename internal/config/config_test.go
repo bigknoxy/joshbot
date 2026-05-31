@@ -377,7 +377,7 @@ func TestConfigString(t *testing.T) {
 	cfg := Defaults()
 	str := cfg.String()
 
-	expected := "Config{SchemaVersion: 4, Model: arcee-ai/trinity-large-preview:free, LogLevel: info, Gateway: 0.0.0.0:18790}"
+	expected := "Config{SchemaVersion: 4, Model: openrouter/free, LogLevel: info, Gateway: 0.0.0.0:18790}"
 	if str != expected {
 		t.Errorf("String() = %v, want %v", str, expected)
 	}
@@ -580,9 +580,9 @@ func TestMigrateConfig(t *testing.T) {
 		t.Errorf("expected schema version %d after migration, got %d", CurrentSchemaVersion, cfg.SchemaVersion)
 	}
 
-	// Model should be migrated
-	if cfg.Agents.Defaults.Model == "google/gemma-2-9b-it:free" {
-		t.Error("model should have been migrated")
+	// Model should be migrated to the current default
+	if cfg.Agents.Defaults.Model != DefaultModel {
+		t.Errorf("model should have been migrated to %q, got %q", DefaultModel, cfg.Agents.Defaults.Model)
 	}
 }
 

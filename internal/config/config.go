@@ -38,7 +38,7 @@ func SetLogger(l Logger) {
 
 const (
 	// DefaultModel is the default LLM model.
-	DefaultModel = "arcee-ai/trinity-large-preview:free"
+	DefaultModel = "openrouter/free"
 	// DefaultExecTimeout is the default shell execution timeout in seconds.
 	DefaultExecTimeout = 60
 	// DefaultGatewayHost is the default gateway host.
@@ -977,8 +977,8 @@ func migrateConfig(cfg *Config, rawJSON []byte) error {
 	if cfg.SchemaVersion < 1 {
 		// Update defunct model if present
 		if cfg.Agents.Defaults.Model == "google/gemma-2-9b-it:free" {
-			cfg.Agents.Defaults.Model = "arcee-ai/tranny-large-preview:free"
-			logger.Info("Migrated model from google/gemma-2-9b-it:free to arcee-ai/tranny-large-preview:free")
+			cfg.Agents.Defaults.Model = "openrouter/free"
+			logger.Info("Migrated model from google/gemma-2-9b-it:free to openrouter/free")
 		}
 		cfg.SchemaVersion = 1
 

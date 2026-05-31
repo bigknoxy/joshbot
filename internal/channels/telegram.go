@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -310,6 +311,7 @@ func (t *TelegramChannel) setupHandlers(bot *telebot.Bot) {
 // handleMessage processes incoming text messages.
 func (t *TelegramChannel) handleMessage(ctx telebot.Context) error {
 	msg := ctx.Message()
+	fmt.Fprintf(os.Stderr, "!!! handleMessage called sender=%d text=%q\n", msg.Sender.ID, msg.Text)
 
 	// Check if it's a command - let specific handlers deal with it
 	if strings.HasPrefix(msg.Text, "/") {
@@ -367,6 +369,7 @@ Just send me a message and I'll respond!`
 // handleNew handles the /new command to start a new session.
 func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
 	msg := ctx.Message()
+	fmt.Fprintf(os.Stderr, "!!! handleNew called sender=%d text=%q\n", msg.Sender.ID, msg.Text)
 
 	// Send new session command to bus
 	inbound := bus.InboundMessage{

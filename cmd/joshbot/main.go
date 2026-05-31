@@ -548,6 +548,8 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	skillDetector := skills.NewSkillDetector()
 	skillExtractor := skills.NewExtractor(multiProvider, cfg.Agents.Defaults.Model)
 
+	// Enable async support in the registry
+	toolsRegistry.SetAsyncCallback(asyncCallbackCh)
 	agentInstance := agent.NewAgent(
 		cfg,
 		multiProvider,

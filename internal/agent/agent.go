@@ -292,7 +292,6 @@ func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.
 func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string) (string, error) {
 	var toolRecords []skills.ToolCallRecord
-
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
 

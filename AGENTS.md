@@ -19,10 +19,16 @@ go run ./cmd/joshbot agent             # Dev mode
 ./joshbot onboard     # First-time setup wizard
 ./joshbot agent       # Interactive CLI mode
 ./joshbot agent -m "..."  # Single message mode
+./joshbot agent --debug  # CLI mode with debug logging
 ./joshbot gateway     # Telegram + all channels
+./joshbot gateway --debug # Gateway with debug logging
 ./joshbot status      # Show config/status
 ./joshbot configure   # Re-run config wizard
 ./joshbot update      # Self-update
+
+# Docker
+docker build -t joshbot .
+docker run -it joshbot gateway
 ```
 
 Docker: `docker build -t joshbot . && docker run -it joshbot gateway`
@@ -97,6 +103,124 @@ type Provider interface {
     Config() Config
 }
 ```
+
+### Imports
+
+- **Group imports** by stdlib, third-party, then local (separated by blank lines)
+- **Use import aliases** for clarity when needed (e.g., `ctxpkg "github.com/bigknoxy/joshbot/internal/context"`)
+- **Avoid blank imports** except for drivers/side effects
+
+### Error Handling
+
+- **Return errors as values** - don't panic in library code
+- **Wrap errors with context** using `fmt.Errorf("operation failed: %w", err)`
+- **Tools return error strings** (`return fmt.Sprintf("Error: File not found: %s", path)`) - don't return errors that require handling
+- **Graceful degradation** with fallbacks
+- **Check errors explicitly** - don't ignore return values
+
+### Naming Conventions
+
+| Element          | Convention         | Example                          |
+|------------------|--------------------|----------------------------------|
+| Packages         | lowercase, single  | `tools`, `bus`, `config`         |
+| Types            | PascalCase         | `Agent`, `WebFetchTool`          |
+| Functions/methods| PascalCase (exported), camelCase (unexported) | `BuildSystemPrompt`, `parseResponse` |
+| Private fields   | camelCase          | `cfg`, `running`                 |
+| Constants        | PascalCase or UPPER_SNAKE_CASE | `MaxOutput`, `MAX_QUEUE_SIZE` |
+| Interfaces       | PascalCase + "er" suffix | `Provider`, `ToolExecutor` |
+
+### Data Modeling
+
+- **Structs** for data types (InboundMessage, LLMResponse, Session, etc.)
+- **Embed interfaces** for composition
+- **Use struct tags** for JSON/field mapping (`json:"field_name"`)
+- **Functional options pattern** for complex configuration
+
+### Interfaces & Extension Points
+
+- **Small, focused interfaces** (prefer 1-3 methods)
+- **Interface segregation** - define interfaces where they're used
+- **Registry pattern** for tools (`Registry`) and providers
+- **Functional options** for flexible construction (`Option func(*Type)`)
+
+### Concurrency Patterns
+
+- **Goroutines** for concurrent operations
+- **Channels** for message bus (`chan InboundMessage`, `chan OutboundMessage`)
+- **sync.Mutex/sync.RWMutex** for shared state
+- **sync.WaitGroup** for goroutine coordination
+- **context.Context** for cancellation and timeouts
+- **select** for multiplexing channel operations
+
+### Logging
+
+- **charmbracelet/log** for structured logging (`log.Info`, `log.Debug`, `log.Warn`, `log.Error`)
+- `log.Debug()` for routine operations, LLM request/response details, tool execution results
+- `log.Info()` for significant events (tool execution, service start/stop)
+- `log.Warn()` for recoverable issues, empty content detection
+- `log.Error()` for failures
+
+**Debug Mode:** Use `--debug` flag to enable DebugLevel logging:
+```bash
+joshbot agent --debug
+joshbot gateway --debug
+```
+
+Debug logging provides visibility into:
+- LLM response details: content_length, content_preview, tool_calls_count, finish_reason
+- HTTP response status codes and model information
+- Tool execution results with result_length and preview
+- Empty content warnings with model and iteration info for troubleshooting
+
+### String Formatting
+
+- **fmt.Sprintf** for formatted strings
+- **String concatenation** with `+` for simple cases
+- **strings.Builder** for building complex strings efficiently
+
+### Documentation
+
+- **Package comments** at top of file (starts with "Package X ...")
+- **Exported types/functions** must have doc comments
+- **Example functions** for usage documentation (`ExampleTool_Execute`)
+
+## Architecture Quick Reference
+
+```
+channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
+(CLI,         (chan-based)      (ReAct loop)    (HTTP -> LLM API)
+ Telegram)                          |
+                               tools/Registry
+                               (filesystem, shell,
+                                web, message)
+```
+
+- **Message bus** decouples channels from agent via `InboundMessage`/`OutboundMessage` channels
+- **ReAct loop**: LLM -> tool calls -> reflect -> repeat (max 20 iterations)
+- **Memory**: `MEMORY.md` (always in context) + `HISTORY.md` (grep-searchable event log)
+- **Skills**: Markdown files with YAML frontmatter, progressive loading (summary -> full content)
+- **Sessions**: JSONL files in `~/.joshbot/sessions/`
+- **Config**: `~/.joshbot/config.json`, JSON-validated, env vars with `JOSHBOT_` prefix
+- **Prompt caching**: Static system prompt cached with mtime-based invalidation (`internal/agent/context.go`)
+- **Model-centric config**: Provider auto-detected from model prefix, fallback chains supported (`internal/config/config.go`)
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `cmd/joshbot/main.go` | CLI entry point, service wiring, onboard flow |
+| `internal/agent/agent.go` | Core ReAct agent loop, message processing |
+| `internal/agent/context.go` | System prompt assembly with caching |
+| `internal/memory/memory.go` | MEMORY.md + HISTORY.md management |
+| `internal/skills/skills.go` | Skill discovery and progressive loading |
+| `internal/tools/tool.go` | Tool interface (implement this to add new tools) |
+| `internal/tools/registry.go` | Tool registration and execution |
+| `internal/tools/shell.go` | Shell exec with safety deny-list |
+| `internal/channels/telegram.go` | Telegram channel implementation |
+| `internal/config/config.go` | All configuration structs, model-centric config, provider detection |
+| `internal/bus/bus.go` | Channel-based message bus |
+| `internal/providers/provider.go` | Provider interface and types |
+| `internal/providers/litellm.go` | OpenRouter-compatible HTTP provider |
 
 ## Adding New Components
 

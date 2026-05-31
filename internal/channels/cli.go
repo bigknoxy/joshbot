@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 )
@@ -205,6 +207,15 @@ func (c *CLIChannel) Send(msg bus.OutboundMessage) error {
 
 // consumeOutbound listens for outbound messages from the bus.
 func (c *CLIChannel) consumeOutbound(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in CLI outbound consumer",
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+
 	ch := c.bus.OutboundChannel()
 	for {
 		select {

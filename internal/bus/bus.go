@@ -2,9 +2,13 @@ package bus
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/bigknoxy/joshbot/internal/log"
 )
 
 // MaxQueueSize is the maximum number of messages that can be buffered in any channel.
@@ -260,7 +264,16 @@ func (mb *MessageBus) dispatchToHandlers(topic string, msg InboundMessage) {
 			mb.handlerSemaphore <- struct{}{}
 			// Execute handler in a goroutine, release semaphore when done
 			go func(h MessageHandler) {
-				defer func() { <-mb.handlerSemaphore }()
+				defer func() {
+					<-mb.handlerSemaphore
+					if r := recover(); r != nil {
+						log.Error("panic in message handler",
+							"topic", topic,
+							"panic", fmt.Sprintf("%v", r),
+							"stack", string(debug.Stack()),
+						)
+					}
+				}()
 				h(mb.ctx, msg)
 			}(handler)
 		}

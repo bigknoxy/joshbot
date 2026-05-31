@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,9 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"gopkg.in/telebot.v3"
 )
+
+// TelegramMaxMessageLen is the maximum message length allowed by Telegram Bot API.
+const TelegramMaxMessageLen = 4096
 
 // TelegramChannel implements the Channel interface for Telegram.
 type TelegramChannel struct {
@@ -309,7 +313,17 @@ func (t *TelegramChannel) setupHandlers(bot *telebot.Bot) {
 }
 
 // handleMessage processes incoming text messages.
-func (t *TelegramChannel) handleMessage(ctx telebot.Context) error {
+func (t *TelegramChannel) handleMessage(ctx telebot.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in telegram message handler",
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()),
+			)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+
 	msg := ctx.Message()
 	fmt.Fprintf(os.Stderr, "!!! handleMessage called sender=%d text=%q\n", msg.Sender.ID, msg.Text)
 
@@ -842,6 +856,7 @@ func (t *TelegramChannel) Stop() error {
 }
 
 // Send delivers an outbound message to Telegram.
+// Splits messages exceeding TelegramMaxMessageLen into multiple messages.
 func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 	t.mu.RLock()
 	bot := t.bot
@@ -888,12 +903,15 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		}
 	}
 
-	// Prepare send options
+	// Split message if it exceeds Telegram's limit
+	parts := splitMessage(msg.Content, TelegramMaxMessageLen)
+
+	// Prepare send options (without content - content is per-message)
 	opts := &telebot.SendOptions{
 		ParseMode: parseMode,
 	}
 
-	// Handle reply_to - pass the original message for reply
+	// Handle reply_to - pass the original message for reply (only on first part)
 	if replyToMsg, ok := msg.Metadata["reply_to_message"].(**telebot.Message); ok && replyToMsg != nil {
 		opts.ReplyTo = *replyToMsg
 	}
@@ -903,40 +921,80 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		opts.ReplyMarkup = t.buildReplyMarkup(markup)
 	}
 
-	// Retry logic for sending
-	var lastErr error
-	delay := t.retryDelay
-
-	for attempt := 0; attempt < t.maxRetries; attempt++ {
-		_, err := bot.Send(recipient, msg.Content, opts)
-		if err == nil {
-			return nil
+	// Send each part with retry logic
+	for i, part := range parts {
+		partOpts := *opts
+		if i > 0 {
+			partOpts.ReplyTo = nil
 		}
 
-		lastErr = err
-		log.Warn("failed to send message, retrying",
-			"attempt", attempt+1,
-			"max_retries", t.maxRetries,
-			"error", err,
-			"recipient", msg.ChannelID,
-		)
+		var lastErr error
+		delay := t.retryDelay
 
-		// Check if error is retryable
-		if !isRetryable(err) {
-			break
+		for attempt := 0; attempt < t.maxRetries; attempt++ {
+			_, err := bot.Send(recipient, part, &partOpts)
+			if err == nil {
+				lastErr = nil
+				break
+			}
+
+			lastErr = err
+			log.Warn("failed to send message part, retrying",
+				"attempt", attempt+1,
+				"max_retries", t.maxRetries,
+				"part", i+1,
+				"total_parts", len(parts),
+				"error", err,
+				"recipient", msg.ChannelID,
+			)
+
+			if !isRetryable(err) {
+				break
+			}
+
+			select {
+			case <-time.After(delay):
+				delay = time.Duration(math.Min(float64(delay*2), float64(t.maxRetryDelay)))
+			case <-t.stopCh:
+				return fmt.Errorf("stopped while retrying: %w", lastErr)
+			}
 		}
 
-		// Wait before retry with exponential backoff
-		select {
-		case <-time.After(delay):
-			// Exponential backoff
-			delay = time.Duration(math.Min(float64(delay*2), float64(t.maxRetryDelay)))
-		case <-t.stopCh:
-			return fmt.Errorf("stopped while retrying: %w", lastErr)
+		if lastErr != nil {
+			return fmt.Errorf("failed to send message part %d/%d after %d retries: %w",
+				i+1, len(parts), t.maxRetries, lastErr)
 		}
 	}
 
-	return fmt.Errorf("failed to send message after %d retries: %w", t.maxRetries, lastErr)
+	return nil
+}
+
+// splitMessage splits a message into chunks of at most maxLen bytes each.
+// Tries to split on newlines for cleaner breaks.
+func splitMessage(content string, maxLen int) []string {
+	if len(content) <= maxLen {
+		return []string{content}
+	}
+
+	var parts []string
+	for len(content) > 0 {
+		if len(content) <= maxLen {
+			parts = append(parts, content)
+			break
+		}
+
+		// Try to split at a newline within the limit
+		splitAt := strings.LastIndex(content[:maxLen], "\n")
+		if splitAt <= 0 {
+			// No newline found, split at maxLen boundary
+			splitAt = maxLen
+		}
+
+		parts = append(parts, content[:splitAt])
+		content = content[splitAt:]
+	}
+
+	return parts
 }
 
 // isRetryable determines if an error should trigger a retry.
@@ -1058,6 +1116,15 @@ func (t *TelegramChannel) buildReplyMarkup(markup map[string]any) *telebot.Reply
 
 // consumeOutbound listens for outbound messages from the bus.
 func (t *TelegramChannel) consumeOutbound(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in telegram outbound consumer",
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+
 	ch := t.bus.OutboundChannel()
 	for {
 		select {

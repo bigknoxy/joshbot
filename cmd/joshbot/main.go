@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -493,6 +494,30 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 				}
 			}
 		}
+
+		// Register Custom OpenAI-compatible (if configured)
+		if p, ok := cfg.Providers["custom"]; ok && p.APIKey != "" && p.Enabled {
+			customProvider, err := providers.GetProvider("custom", providers.Config{
+				APIKey:       p.APIKey,
+				APIBase:      p.APIBase,
+				ExtraHeaders: p.ExtraHeaders,
+				Model:        p.Model,
+			})
+			if err != nil {
+				log.Warn("Failed to create custom provider", "error", err)
+			} else {
+				priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "custom"); idx >= 0 {
+					priority = idx + 1
+				}
+				model := p.Model
+				if model == "" {
+					model = p.Model
+				}
+				multiProvider.Register("custom", customProvider, model, priority, p.Enabled)
+				log.Info("Registered custom provider", "api_base", p.APIBase)
+			}
+		}
 	}
 
 	// Initialize session manager
@@ -595,11 +620,16 @@ func indexOf(haystack []string, needle string) int {
 // setupGracefulShutdown sets up signal handling for graceful shutdown.
 func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, done chan<- struct{}) {
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	go func() {
 		sig := <-sigChan
-		log.Warn("Received signal, shutting down...", "signal", sig)
+		switch sig {
+		case syscall.SIGHUP:
+			log.Warn("Received SIGHUP signal, gracefully restarting...", "signal", sig)
+		default:
+			log.Warn("Received signal, shutting down...", "signal", sig)
+		}
 		cancel()
 		close(done)
 	}()
@@ -1319,6 +1349,21 @@ func runGateway(c *cli.Context) error {
 	msgBus.Subscribe("all", func(ctx context.Context, msg bus.InboundMessage) {
 		// DEBUG: Direct stderr logging
 		fmt.Fprintf(os.Stderr, "!!! BUS HANDLER INVOKED channel=%s content=%q\n", msg.Channel, msg.Content)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in agent handler",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+				outbound := bus.OutboundMessage{
+					Content:   "I encountered an internal error while processing your request. Please try again.",
+					Channel:   msg.Channel,
+					ChannelID: getChannelID(msg),
+					Timestamp: time.Now(),
+				}
+				msgBus.Publish(outbound)
+			}
+		}()
 
 		// Store the chat ID for this channel to enable proactive messaging
 		if sender != nil {

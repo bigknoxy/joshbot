@@ -1,0 +1,297 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Skip to content" [ref=e4] [cursor=pointer]:
+      - /url: "#start-of-content"
+    - banner [ref=e6]:
+      - heading "Navigation Menu" [level=2] [ref=e7]
+      - generic [ref=e9]:
+        - button "Toggle navigation" [ref=e11] [cursor=pointer]
+        - link "Homepage" [ref=e17] [cursor=pointer]:
+          - /url: /
+          - img [ref=e18]
+        - generic [ref=e20]:
+          - link "Sign in" [ref=e21] [cursor=pointer]:
+            - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Fbigknoxy%2Fjoshbot%2Fpull%2F53
+          - button "Appearance settings" [ref=e24] [cursor=pointer]:
+            - img
+  - main [ref=e28]:
+    - generic [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e32]:
+          - img [ref=e33]
+          - link "bigknoxy" [ref=e36] [cursor=pointer]:
+            - /url: /bigknoxy
+          - generic [ref=e37]: /
+          - strong [ref=e38]:
+            - link "joshbot" [ref=e39] [cursor=pointer]:
+              - /url: /bigknoxy/joshbot
+          - generic [ref=e40]: Public
+        - generic [ref=e41]:
+          - list:
+            - listitem [ref=e42]:
+              - link "You must be signed in to change notification settings" [ref=e43] [cursor=pointer]:
+                - /url: /login?return_to=%2Fbigknoxy%2Fjoshbot
+                - img [ref=e44]
+                - text: Notifications
+            - listitem [ref=e46]:
+              - link "Fork 0" [ref=e47] [cursor=pointer]:
+                - /url: /login?return_to=%2Fbigknoxy%2Fjoshbot
+                - img [ref=e48]
+                - text: Fork
+                - generic "0" [ref=e50]
+            - listitem [ref=e51]:
+              - link "You must be signed in to star a repository" [ref=e53] [cursor=pointer]:
+                - /url: /login?return_to=%2Fbigknoxy%2Fjoshbot
+                - img [ref=e54]
+                - text: Star
+                - generic "0 users starred this repository" [ref=e56]: "0"
+      - navigation "Repository" [ref=e57]:
+        - list [ref=e58]:
+          - listitem [ref=e59]:
+            - link "Code" [ref=e60] [cursor=pointer]:
+              - /url: /bigknoxy/joshbot
+              - img [ref=e61]
+              - generic [ref=e63]: Code
+          - listitem [ref=e64]:
+            - link "Issues 1" [ref=e65] [cursor=pointer]:
+              - /url: /bigknoxy/joshbot/issues
+              - img [ref=e66]
+              - generic [ref=e69]: Issues
+              - generic "1" [ref=e70]
+          - listitem [ref=e71]:
+            - link "Pull requests 4" [ref=e72] [cursor=pointer]:
+              - /url: /bigknoxy/joshbot/pulls
+              - img [ref=e73]
+              - generic [ref=e75]: Pull requests
+              - generic "4" [ref=e76]
+          - listitem [ref=e77]:
+            - link "Actions" [ref=e78] [cursor=pointer]:
+              - /url: /bigknoxy/joshbot/actions
+              - img [ref=e79]
+              - generic [ref=e81]: Actions
+          - listitem [ref=e82]:
+            - link "Projects" [ref=e83] [cursor=pointer]:
+              - /url: /bigknoxy/joshbot/projects
+              - img [ref=e84]
+              - generic [ref=e86]: Projects
+          - listitem [ref=e87]
+          - listitem [ref=e88]
+        - button "Additional navigation options" [ref=e92] [cursor=pointer]:
+          - img
+    - generic [ref=e99]:
+      - generic [ref=e102]:
+        - 'heading "fix: replace defunct default model with openrouter/free, fix migration typo, add 410 to fallback #53" [level=1] [ref=e104]':
+          - text: "fix: replace defunct default model with openrouter/free, fix migration typo, add 410 to fallback"
+          - generic [ref=e106]: "#53"
+        - generic [ref=e108]:
+          - generic [ref=e110]:
+            - img "Pull request" [ref=e111]
+            - text: Open
+          - generic [ref=e114]:
+            - link "bigknoxy" [ref=e115] [cursor=pointer]:
+              - /url: /bigknoxy
+            - text: wants to merge 1 commit into
+            - generic [ref=e116]:
+              - link "main" [ref=e117] [cursor=pointer]:
+                - /url: /bigknoxy/joshbot/tree/main
+              - generic [ref=e118]: from
+              - generic [ref=e119]:
+                - link "fix/default-model-410-error" [ref=e120] [cursor=pointer]:
+                  - /url: /bigknoxy/joshbot/tree/fix/default-model-410-error
+                - button "Copy head branch name to clipboard" [ref=e121] [cursor=pointer]:
+                  - img [ref=e122]
+        - generic [ref=e125]:
+          - generic [ref=e127]:
+            - generic [ref=e128]: "+22"
+            - generic [ref=e129]: "-13"
+            - generic [ref=e130]: "Lines changed: 22 additions & 13 deletions"
+          - navigation "Pull request navigation tabs" [ref=e139]:
+            - tablist [ref=e140]:
+              - tab "Conversation (0)" [selected] [ref=e141] [cursor=pointer]:
+                - img [ref=e142]
+                - text: Conversation
+                - generic [ref=e144]: "0"
+                - generic [ref=e145]: (0)
+              - tab "Commits (1)" [ref=e146] [cursor=pointer]:
+                - img [ref=e147]
+                - text: Commits
+                - generic [ref=e149]: "1"
+                - generic [ref=e150]: (1)
+              - tab "Checks (1)" [ref=e151] [cursor=pointer]:
+                - img [ref=e152]
+                - text: Checks
+                - generic [ref=e154]: "1"
+                - generic [ref=e155]: (1)
+              - tab "Files changed (9)" [ref=e156] [cursor=pointer]:
+                - img [ref=e157]
+                - text: Files changed
+                - generic [ref=e159]: "9"
+                - generic [ref=e160]: (9)
+      - generic [ref=e165]:
+        - generic [ref=e167]:
+          - heading "Conversation" [level=2] [ref=e168]
+          - generic [ref=e169]:
+            - generic [ref=e170]:
+              - generic [ref=e172]:
+                - link "@bigknoxy" [ref=e173] [cursor=pointer]:
+                  - /url: /bigknoxy
+                  - img "@bigknoxy" [ref=e174]
+                - generic [ref=e176]:
+                  - generic [ref=e177]:
+                    - generic [ref=e178]:
+                      - group [ref=e180]:
+                        - button "Show options" [ref=e181] [cursor=pointer]:
+                          - img "Show options" [ref=e184]
+                      - generic "This user is the owner of the joshbot repository." [ref=e187]:
+                        - generic [ref=e188]: Owner
+                    - heading "bigknoxy commented May 31, 20262 minutes ago" [level=3] [ref=e189]:
+                      - generic [ref=e190]:
+                        - strong [ref=e191]:
+                          - link "bigknoxy" [ref=e192] [cursor=pointer]:
+                            - /url: /bigknoxy
+                        - text: commented
+                        - link "May 31, 20262 minutes ago" [ref=e193] [cursor=pointer]:
+                          - /url: "#issue-4556571833"
+                  - generic [ref=e197]:
+                    - heading "What changed" [level=2] [ref=e198]
+                    - heading "Root cause" [level=3] [ref=e199]
+                    - paragraph [ref=e200]:
+                      - text: OpenRouter removed
+                      - code [ref=e201]: arcee-ai/trinity-large-preview:free
+                      - text: — the default model since v1.0.0. This caused HTTP 410 on every LLM call, producing
+                      - code [ref=e202]: "API error (410): unknown error"
+                      - text: for all users (including Telegram).
+                    - heading "Fixes" [level=3] [ref=e203]
+                    - list [ref=e204]:
+                      - listitem [ref=e205]:
+                        - strong [ref=e206]: Default model
+                        - text: →
+                        - code [ref=e207]: openrouter/free
+                        - text: (auto-routes to best available free model, future-proof)
+                      - listitem [ref=e208]:
+                        - strong [ref=e209]: Config migration typo
+                        - text: — v0→v1 migration wrote misspelled
+                        - code [ref=e210]: arcee-ai/tranny-large-preview:free
+                        - text: (
+                        - code [ref=e211]: tranny
+                        - text: vs
+                        - code [ref=e212]: trinity
+                        - text: ). Fixed to
+                        - code [ref=e213]: openrouter/free
+                        - text: .
+                      - listitem [ref=e214]:
+                        - strong [ref=e215]: 410 now triggers provider fallback
+                        - text: — Added HTTP 410 to
+                        - code [ref=e216]: isFallbackStatusCode()
+                        - text: so deprecated models trigger fallback to the next provider instead of failing immediately.
+                      - listitem [ref=e217]:
+                        - strong [ref=e218]: Hardened migration test
+                        - text: — Now asserts exact expected model instead of just checking it changed.
+                      - listitem [ref=e219]:
+                        - strong [ref=e220]: Updated all references
+                        - text: — config.go, registry.go, context.go, main.go, INSTALL.md, all tests.
+                    - heading "Verification" [level=3] [ref=e221]
+                    - list [ref=e222]:
+                      - listitem [ref=e223]:
+                        - code [ref=e224]: go test -race ./...
+                        - text: — all 23 packages pass
+                      - listitem [ref=e225]:
+                        - code [ref=e226]: gofmt -d .
+                        - text: — empty (clean)
+                      - listitem [ref=e227]:
+                        - code [ref=e228]: go vet ./...
+                        - text: — empty (clean)
+                      - listitem [ref=e229]:
+                        - code [ref=e230]: go build ./cmd/joshbot
+                        - text: — builds clean
+                      - listitem [ref=e231]: "Dogfood: binary runs, agent responds correctly"
+                      - listitem [ref=e232]: "Dogfood: config test with old schema_version=0 and old model migrates correctly"
+                    - heading "Release" [level=3] [ref=e233]
+                    - paragraph [ref=e234]:
+                      - text: "After merge:"
+                      - code [ref=e235]: v1.20.2
+              - generic [ref=e240]:
+                - img [ref=e242]
+                - generic [ref=e247]:
+                  - link "@bigknoxy" [ref=e250] [cursor=pointer]:
+                    - /url: /bigknoxy
+                    - img "@bigknoxy" [ref=e251]
+                  - generic [ref=e252]:
+                    - code [ref=e253]:
+                      - 'link "fix: replace defunct default model with openrouter/free, fix migratio…" [ref=e254] [cursor=pointer]':
+                        - /url: /bigknoxy/joshbot/pull/53/commits/d337df0ead3b3d79fe0c2a888edcf195100a3290
+                    - button "Commit message body" [ref=e256] [cursor=pointer]: …
+                  - group [ref=e260]:
+                    - generic "1 / 1 checks OK" [ref=e261] [cursor=pointer]:
+                      - img "1 / 1 checks OK" [ref=e262]
+                  - code [ref=e265]:
+                    - link "d337df0" [ref=e266] [cursor=pointer]:
+                      - /url: /bigknoxy/joshbot/pull/53/commits/d337df0ead3b3d79fe0c2a888edcf195100a3290
+            - generic [ref=e270]:
+              - link "Sign up for free" [ref=e271] [cursor=pointer]:
+                - /url: /join?source=comment-repo
+              - strong [ref=e272]: to join this conversation on GitHub
+              - text: . Already have an account?
+              - link "Sign in to comment" [ref=e273] [cursor=pointer]:
+                - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Fbigknoxy%2Fjoshbot%2Fpull%2F53
+        - generic [ref=e277]:
+          - form "Select reviewers" [ref=e279]:
+            - heading "Reviewers" [level=3] [ref=e280]
+            - text: No reviews
+          - form "Select assignees" [ref=e282]:
+            - heading "Assignees" [level=3] [ref=e283]
+            - text: No one assigned
+          - generic [ref=e284]:
+            - heading "Labels" [level=3] [ref=e285]
+            - generic [ref=e286]: None yet
+          - form "Select projects" [ref=e288]:
+            - heading "Projects" [level=3] [ref=e289]
+            - text: None yet
+          - form "Select milestones" [ref=e291]:
+            - heading "Milestone" [level=3] [ref=e292]
+            - text: No milestone
+          - form "Link issues" [ref=e298]:
+            - heading "Development" [level=3] [ref=e299]
+            - paragraph [ref=e300]: Successfully merging this pull request may close these issues.
+            - paragraph [ref=e302]: None yet
+          - generic [ref=e304]:
+            - heading "1 participant" [level=3] [ref=e305]
+            - link "@bigknoxy" [ref=e307] [cursor=pointer]:
+              - /url: /bigknoxy
+              - img "@bigknoxy" [ref=e308]
+  - contentinfo [ref=e309]:
+    - heading "Footer" [level=2] [ref=e310]
+    - generic [ref=e311]:
+      - generic [ref=e312]:
+        - link "GitHub Homepage" [ref=e313] [cursor=pointer]:
+          - /url: https://github.com
+          - img [ref=e314]
+        - generic [ref=e316]: © 2026 GitHub, Inc.
+      - navigation "Footer" [ref=e317]:
+        - heading "Footer navigation" [level=3] [ref=e318]
+        - list "Footer navigation" [ref=e319]:
+          - listitem [ref=e320]:
+            - link "Terms" [ref=e321] [cursor=pointer]:
+              - /url: https://docs.github.com/site-policy/github-terms/github-terms-of-service
+          - listitem [ref=e322]:
+            - link "Privacy" [ref=e323] [cursor=pointer]:
+              - /url: https://docs.github.com/site-policy/privacy-policies/github-privacy-statement
+          - listitem [ref=e324]:
+            - link "Security" [ref=e325] [cursor=pointer]:
+              - /url: https://github.com/security
+          - listitem [ref=e326]:
+            - link "Status" [ref=e327] [cursor=pointer]:
+              - /url: https://www.githubstatus.com/
+          - listitem [ref=e328]:
+            - link "Community" [ref=e329] [cursor=pointer]:
+              - /url: https://github.community/
+          - listitem [ref=e330]:
+            - link "Docs" [ref=e331] [cursor=pointer]:
+              - /url: https://docs.github.com/
+          - listitem [ref=e332]:
+            - link "Contact" [ref=e333] [cursor=pointer]:
+              - /url: https://support.github.com?tags=dotcom-footer
+          - listitem [ref=e334]:
+            - button "Manage cookies" [ref=e336] [cursor=pointer]
+          - listitem [ref=e337]:
+            - button "Do not share my personal information" [ref=e339] [cursor=pointer]

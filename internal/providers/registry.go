@@ -247,6 +247,19 @@ func init() {
 		Description:  "Enterprise Azure integration",
 	})
 
+	// Register Custom (generic OpenAI-compatible)
+	RegisterProviderWithInfo("custom", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				return nil, fmt.Errorf("custom provider requires api_base to be set")
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "",
+		DisplayName:  "Custom OpenAI-Compatible",
+		Description:  "Generic OpenAI-compatible API endpoint",
+	})
+
 	// Keep litellm as a generic fallback
 	RegisterProvider("litellm", func(cfg Config) (Provider, error) {
 		return NewLiteLLMProvider(cfg), nil

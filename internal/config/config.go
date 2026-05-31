@@ -147,6 +147,7 @@ var providerPrefixes = map[string]ProviderInfo{
 	"deepseek/":   {Name: "deepseek", APIFormat: "openai", BaseURL: "https://api.deepseek.com/v1"},
 	"gemini/":     {Name: "gemini", APIFormat: "openai", BaseURL: "https://generativelanguage.googleapis.com/v1beta"},
 	"cerebras/":   {Name: "cerebras", APIFormat: "openai", BaseURL: "https://api.cerebras.ai/v1"},
+	"custom/":     {Name: "custom", APIFormat: "openai", BaseURL: ""},
 }
 
 // DetectProvider extracts provider info from a model string.

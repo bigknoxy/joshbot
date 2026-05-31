@@ -402,7 +402,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 				}
 				model := p.Model
 				if model == "" {
-					model = providers.GetDefaultModel("nvidia")
+					model = cfg.Agents.Defaults.Model
 				}
 				multiProvider.Register("nvidia", nvidiaProvider, model, priority, p.Enabled)
 			}

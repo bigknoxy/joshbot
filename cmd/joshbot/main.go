@@ -1315,6 +1315,9 @@ func runGateway(c *cli.Context) error {
 
 	// Subscribe agent to all channels
 	msgBus.Subscribe("all", func(ctx context.Context, msg bus.InboundMessage) {
+		// DEBUG: Direct stderr logging
+		fmt.Fprintf(os.Stderr, "!!! BUS HANDLER INVOKED channel=%s content=%q\n", msg.Channel, msg.Content)
+
 		// Store the chat ID for this channel to enable proactive messaging
 		if sender != nil {
 			sender.SetChatID(msg.Channel, getChannelID(msg))

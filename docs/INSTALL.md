@@ -169,7 +169,7 @@ The wizard will guide you through:
    ```
 
 3. **Model Selection**
-   - Default: `openai/gpt-4` (or use `arcee-ai/trinity-large-preview:free` for free via OpenRouter)
+   - Default: `openai/gpt-4` (or use `openrouter/free` for free via OpenRouter)
    - You can specify any model supported by your provider
 
 ### Onboarding Options
@@ -485,7 +485,7 @@ Choose an LLM model based on your needs:
 
 | Use Case | Recommended Model | Notes |
 |----------|-------------------|-------|
-| Free tier | `arcee-ai/trinity-large-preview:free` | No cost via OpenRouter, good for testing |
+| Free tier | `openrouter/free` | No cost via OpenRouter, auto-routes to best free model |
 | Better quality | `anthropic/claude-sonnet-4` | Requires Anthropic or OpenRouter credits |
 | Fast responses | `groq/llama-3.3-70b-versatile` | Requires Groq API key |
 | Local | `ollama/llama3.2` | No API key needed, runs locally |

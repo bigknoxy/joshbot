@@ -35,7 +35,7 @@ func NewRegistry() *Registry {
 		"z-ai/glm-4.5-air:free":            8192,
 		"openai/llama3.2":                  8192,
 		"meta-llama/llama-3.2-3b-instruct": 8192,
-		"arcee-ai/trinity-large-preview":   131072,
+		"openrouter/free":                  131072,
 	}}
 }
 

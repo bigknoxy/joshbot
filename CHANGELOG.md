@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.2] - 2026-05-31
+
+### Fixed
+- **HTTP 410 error on LLM calls** — Default model `arcee-ai/trinity-large-preview:free` was removed from OpenRouter, causing all API calls to fail with `API error (410)`. Changed default to `openrouter/free` (auto-routes to best available free model), updated all references in config, provider registry, context budget, docs, and tests.
+- **Migration typo** — Config migration from v0→v1 wrote misspelled model name `arcee-ai/tranny-large-preview:free` (typo: "tranny") instead of the correct model. Fixed to migrate to `openrouter/free`. Hardenend migration test to assert exact expected model.
+- **410 not triggering fallback** — `isFallbackStatusCode()` did not include 410 (Gone), so a deprecated model caused immediate failure instead of triggering fallback to another provider. Added 410 to the fallback status code list.
+
 ## [1.20.0] - 2026-05-19
 
 ### Added

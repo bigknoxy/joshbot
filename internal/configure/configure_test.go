@@ -13,7 +13,7 @@ func newTestConfig(t *testing.T) *config.Config {
 		Providers: make(map[string]config.ProviderConfig),
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
-				Model: "arcee-ai/trinity-large-preview:free",
+				Model: config.DefaultModel,
 			},
 		},
 	}

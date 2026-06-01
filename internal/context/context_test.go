@@ -76,6 +76,33 @@ func TestCompressMessages_SingleMessageExceedsBudget(t *testing.T) {
 	}
 }
 
+func TestCompressMessages_ProviderReturnsEmpty(t *testing.T) {
+	msgs := []providers.Message{
+		{Role: providers.RoleUser, Content: strings.Repeat("a", 500)},
+	}
+	mock := &mockProv{resp: ""}
+	c := &Compressor{Provider: mock}
+	out, err := c.CompressMessages("test-model", msgs, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Fatalf("expected non-empty fallback when provider returns empty, got empty string")
+	}
+}
+
+func TestCompressMessages_AllEmptyContent(t *testing.T) {
+	msgs := []providers.Message{
+		{Role: providers.RoleUser, Content: ""},
+		{Role: providers.RoleAssistant, Content: ""},
+	}
+	c := &Compressor{Provider: nil}
+	out, err := c.CompressMessages("test-model", msgs, 100)
+	if err == nil {
+		t.Fatalf("expected error for all-empty messages, got nil, out=%q", out)
+	}
+}
+
 func TestCompressMessages_ToolResultTriggersCompaction(t *testing.T) {
 	msgs := []providers.Message{
 		{Role: providers.RoleUser, Content: "did the royals win"},

@@ -121,6 +121,21 @@ type Compressor struct {
 	Provider providers.Provider // optional
 }
 
+// lastNonEmptyContent returns the tail of the last message with non-empty
+// Content, truncated to maxChars. Returns false if no message has content.
+func lastNonEmptyContent(messages []providers.Message, maxChars int) (string, bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Content != "" {
+			content := messages[i].Content
+			if len(content) > maxChars {
+				content = content[len(content)-maxChars:]
+			}
+			return content, true
+		}
+	}
+	return "", false
+}
+
 // CompressMessages returns a compacted string representation of messages limited by budget tokens.
 // It naively keeps the most recent messages until the token budget is met; if exceeded and a Provider
 // is available, it will ask the provider to summarize them.
@@ -128,9 +143,20 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 	if len(messages) == 0 {
 		return "", fmt.Errorf("no messages to compress")
 	}
+
+	// If all messages have empty content, return error early
+	allEmpty := true
+	for _, m := range messages {
+		if m.Content != "" {
+			allEmpty = false
+			break
+		}
+	}
+	if allEmpty {
+		return "", fmt.Errorf("all %d messages have empty content", len(messages))
+	}
+
 	// Heuristic: if there are many messages, prefer provider summarization when available.
-	// DEBUG LOG
-	// fmt.Printf("CompressMessages called: messages=%d budget=%d\n", len(messages), budget)
 	if c.Provider != nil && len(messages) > 50 {
 		sys := "You are a summarization assistant. Produce a concise summary that preserves important facts and decisions."
 		joinedAll := ""
@@ -154,7 +180,6 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 	// join messages from newest backwards until budget
 	var parts []string
 	tokens := 0
-	// iterate from end
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		est := TokenEstimator(m.Content)
@@ -167,17 +192,10 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 
 	joined := strings.Join(parts, "\n\n")
 	if joined == "" {
-		// desperate fallback: include at least the last message content, truncated
-		maxChars := budget * 4
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Content != "" {
-				content := messages[i].Content
-				if len(content) > maxChars {
-					content = content[len(content)-maxChars:]
-				}
-				return content, nil
-			}
+		if content, ok := lastNonEmptyContent(messages, budget*4); ok {
+			return content, nil
 		}
+		return "", fmt.Errorf("no compressible content in %d messages", len(messages))
 	}
 	if TokenEstimator(joined) <= budget {
 		return joined, nil
@@ -202,22 +220,15 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 
 	// fallback: truncate
 	out := joined
-	// keep approximately budget tokens worth of chars
 	maxChars := budget * 4
 	if len(out) > maxChars {
 		out = out[len(out)-maxChars:]
 	}
 	if out == "" {
-		// desperate fallback: take at least the last message's tail
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Content != "" {
-				content := messages[i].Content
-				if len(content) > maxChars {
-					content = content[len(content)-maxChars:]
-				}
-				return content, nil
-			}
+		if content, ok := lastNonEmptyContent(messages, maxChars); ok {
+			return content, nil
 		}
+		return "", fmt.Errorf("no compressible content after truncation in %d messages", len(messages))
 	}
 	return out, nil
 }

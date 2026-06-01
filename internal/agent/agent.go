@@ -555,12 +555,8 @@ func (a *Agent) checkAndCompactContext(messages []providers.Message, sess *sessi
 	// Get session messages for compression (excluding system prompt)
 	sessionMsgs := messages[1:] // Skip system message
 	compressed, err := a.compressor.CompressMessages(model, sessionMsgs, thresholdBudget)
-	if err != nil || compressed == "" {
-		if err != nil {
-			a.logger.Warn("Context compaction failed", "error", err)
-		} else {
-			a.logger.Warn("Context compaction produced empty content, skipping")
-		}
+	if err != nil {
+		a.logger.Warn("Context compaction failed", "error", err)
 		return messages
 	}
 

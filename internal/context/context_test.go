@@ -2,6 +2,7 @@ package contextpkg
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/providers"
@@ -53,6 +54,42 @@ func TestCompressMessages_WithProvider_ExceedsBudget(t *testing.T) {
 	}
 	if out != "SUMMARY" {
 		t.Fatalf("expected provider summary, got %q", out)
+	}
+}
+
+func TestCompressMessages_SingleMessageExceedsBudget(t *testing.T) {
+	msgs := []providers.Message{
+		{Role: providers.RoleTool, Content: strings.Repeat("x", 2000)},
+	}
+	c := &Compressor{Provider: nil}
+	// tiny budget that the single message exceeds
+	out, err := c.CompressMessages("test-model", msgs, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Fatalf("expected non-empty output even when message exceeds budget, got empty string")
+	}
+	// Must return at least part of the content, not empty
+	if !strings.Contains(out, "x") {
+		t.Fatalf("expected output to contain message content, got empty/truncated content")
+	}
+}
+
+func TestCompressMessages_ToolResultTriggersCompaction(t *testing.T) {
+	msgs := []providers.Message{
+		{Role: providers.RoleUser, Content: "did the royals win"},
+		{Role: providers.RoleAssistant, Content: `[{"name": "web_search", "arguments": "{\"query\": \"Kansas City Royals score\"}"}]`},
+		{Role: providers.RoleTool, Content: strings.Repeat("The Royals played a game and here is a very long tool result with details ", 80)},
+		{Role: providers.RoleAssistant, Content: "The Royals won 5-3."},
+	}
+	c := &Compressor{Provider: nil}
+	out, err := c.CompressMessages("test-model", msgs, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Fatalf("expected non-empty output as fallback even with tiny budget, got empty string")
 	}
 }
 

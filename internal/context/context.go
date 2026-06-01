@@ -166,6 +166,19 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 	}
 
 	joined := strings.Join(parts, "\n\n")
+	if joined == "" {
+		// desperate fallback: include at least the last message content, truncated
+		maxChars := budget * 4
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Content != "" {
+				content := messages[i].Content
+				if len(content) > maxChars {
+					content = content[len(content)-maxChars:]
+				}
+				return content, nil
+			}
+		}
+	}
 	if TokenEstimator(joined) <= budget {
 		return joined, nil
 	}
@@ -182,7 +195,7 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 			MaxTokens: 200,
 		}
 		resp, err := c.Provider.Chat(context.Background(), req)
-		if err == nil && len(resp.Choices) > 0 {
+		if err == nil && len(resp.Choices) > 0 && resp.Choices[0].Message.Content != "" {
 			return resp.Choices[0].Message.Content, nil
 		}
 	}
@@ -193,6 +206,18 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 	maxChars := budget * 4
 	if len(out) > maxChars {
 		out = out[len(out)-maxChars:]
+	}
+	if out == "" {
+		// desperate fallback: take at least the last message's tail
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Content != "" {
+				content := messages[i].Content
+				if len(content) > maxChars {
+					content = content[len(content)-maxChars:]
+				}
+				return content, nil
+			}
+		}
 	}
 	return out, nil
 }

@@ -146,13 +146,21 @@ func parseExaCLICrawlResult(output string) (string, error) {
 	return text, nil
 }
 
-// parseExaCLISearchResults parses the line-delimited JSON from exa-cli
+// parseExaCLISearchResults parses JSON output from exa-cli.
+// Handles both pretty-printed multi-line JSON (output of `exa search --format json`)
+// and single-line JSON per object, separated by blank lines.
 func parseExaCLISearchResults(output string) ([]SearchResult, error) {
 	var results []SearchResult
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return results, nil
+	}
+
+	// exa-cli --format json outputs pretty-printed JSON objects separated by blank lines
+	blocks := strings.Split(trimmed, "\n\n")
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block == "" {
 			continue
 		}
 		var r struct {
@@ -161,8 +169,8 @@ func parseExaCLISearchResults(output string) ([]SearchResult, error) {
 			PublishedDate string `json:"publishedDate"`
 			Text          string `json:"text"`
 		}
-		if err := json.Unmarshal([]byte(line), &r); err != nil {
-			log.Debug("Failed to parse exa-cli JSON line", "error", err, "line", line[:min(len(line), 100)])
+		if err := json.Unmarshal([]byte(block), &r); err != nil {
+			log.Debug("Failed to parse exa-cli JSON block", "error", err, "block_len", len(block))
 			continue
 		}
 		results = append(results, SearchResult{

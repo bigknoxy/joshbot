@@ -1676,15 +1676,38 @@ func runOnboard(c *cli.Context) error {
 	fmt.Println("║           Setup complete!                  ║")
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
-	fmt.Printf("Config: %s\n", configPath)
-	fmt.Printf("Workspace: %s\n", wsDir)
+	fmt.Println("  Config:")
+	fmt.Printf("    %s\n", configPath)
+	fmt.Printf("    %s\n", wsDir)
 	fmt.Println()
-	fmt.Println("Quick start:")
-	fmt.Println("  joshbot agent    - Chat in the terminal")
-	fmt.Println("  joshbot gateway - Start Telegram + all channels")
-	fmt.Println("  joshbot status  - Check configuration")
+	fmt.Println("  What's next?")
 	fmt.Println()
-	fmt.Println("Edit ~/.joshbot/config.json to configure Telegram and other settings.")
+	fmt.Println("   1. Test your setup:")
+	fmt.Println("      $ joshbot agent -m \"hello\"")
+	fmt.Println()
+	fmt.Println("   2. Start an interactive chat session:")
+	fmt.Println("      $ joshbot agent")
+	fmt.Println()
+	if telegramConfig != nil && telegramConfig.Enabled {
+		fmt.Println("   3. Run joshbot with Telegram (background + all channels):")
+		fmt.Println("      $ joshbot gateway")
+		fmt.Println()
+		fmt.Println("   4. Check your configuration:")
+		fmt.Println("      $ joshbot status")
+		fmt.Println()
+		fmt.Println("   5. Rerun this setup anytime:")
+		fmt.Println("      $ joshbot onboard")
+	} else {
+		fmt.Println("   3. Check your configuration:")
+		fmt.Println("      $ joshbot status")
+		fmt.Println()
+		fmt.Println("   4. Rerun this setup anytime:")
+		fmt.Println("      $ joshbot onboard")
+	}
+	fmt.Println()
+	fmt.Println("  Need help?")
+	fmt.Println("    Edit ~/.joshbot/config.json to customize settings.")
+	fmt.Println("    Run joshbot with --debug flag for verbose logging.")
 
 	return nil
 }
@@ -1696,13 +1719,20 @@ func selectProvider(existingCfg *config.Config) string {
 
 	// Use provider registry for display names and descriptions
 	providerList := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
-	for i, p := range providerList {
-		displayName := providers.GetProviderDisplayName(p)
-		desc := providers.GetProviderDescription(p)
+	for i, key := range providerList {
+		displayName := providers.GetProviderDisplayName(key)
+		desc := providers.GetProviderDescription(key)
+
+		prefix := "  "
+		suffix := ""
+		if key == "nvidia" {
+			prefix = "  ✅"
+			suffix = " — recommended for new users"
+		}
 		if desc != "" {
-			fmt.Printf("  %d. %s (%s)\n", i+1, displayName, desc)
+			fmt.Printf("%s %d. %s (%s%s)\n", prefix, i+1, displayName, desc, suffix)
 		} else {
-			fmt.Printf("  %d. %s\n", i+1, displayName)
+			fmt.Printf("%s %d. %s\n", prefix, i+1, displayName)
 		}
 	}
 
@@ -1803,6 +1833,10 @@ func selectPersonality(existingCfg *config.Config) string {
 	if personalityChoice == "" {
 		personalityChoice = defaultChoice
 	}
+
+	// Show a sample response to help them know what to expect
+	showPersonalityPreview(personalityChoice)
+
 	return personalityChoice
 }
 
@@ -1825,6 +1859,24 @@ func promptUserName(existingCfg *config.Config) string {
 	return strings.TrimSpace(name)
 }
 
+// modelHelp returns a brief description of what a model is good for, by provider.
+func modelHelp(provider string) string {
+	switch provider {
+	case "nvidia":
+		return "Good for complex reasoning, coding, and analysis tasks"
+	case "openrouter":
+		return "OpenRouter's free tier — good for testing and light use"
+	case "groq":
+		return "Fast responses, great for chat and quick iterations"
+	case "ollama":
+		return "Local model, good balance of speed and capability"
+	case "github-copilot":
+		return "GitHub's Copilot models, optimized for coding"
+	default:
+		return "Your chosen model for all conversations"
+	}
+}
+
 // selectModel prompts the user to select a model and returns the choice.
 func selectModel(existingCfg *config.Config, provider string, modelFlag string) string {
 	// Get provider's default model, fall back to config default
@@ -1841,6 +1893,23 @@ func selectModel(existingCfg *config.Config, provider string, modelFlag string) 
 		defaultModel = existingCfg.Agents.Defaults.Model
 	}
 
+	displayName := providers.GetProviderDisplayName(provider)
+	modelDesc := modelHelp(provider)
+
+	// showModelPrompt displays the model selection prompt and reads input.
+	showModelPrompt := func() string {
+		fmt.Printf("  %s default: %s\n", displayName, defaultModel)
+		fmt.Printf("  └ %s\n", modelDesc)
+		fmt.Printf("\nModel name [%s] (press Enter to accept): ", defaultModel)
+		var model string
+		fmt.Scanln(&model)
+		model = strings.TrimSpace(model)
+		if model == "" {
+			model = defaultModel
+		}
+		return model
+	}
+
 	// For GitHub Copilot, fetch models from the catalog
 	if provider == "github-copilot" {
 		homeDir, _ := copilot.GetHomeDir()
@@ -1851,36 +1920,34 @@ func selectModel(existingCfg *config.Config, provider string, modelFlag string) 
 			models, err := copilot.ListModels(token.AccessToken)
 			if err != nil {
 				fmt.Printf("Could not fetch models: %v\n", err)
-				fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
-			} else if len(models) > 0 {
+				fmt.Println()
+				return showModelPrompt()
+			}
+			if len(models) > 0 {
 				// Check if existing config has a saved model
 				if existingCfg != nil {
 					if p, ok := existingCfg.Providers[provider]; ok && p.Model != "" {
 						defaultModel = p.Model
 					}
 				}
-				selected := promptModelSelection(models, defaultModel)
-				return selected
-			} else {
-				fmt.Printf("Could not fetch models, using default.\n")
-				fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
+				return promptModelSelection(models, defaultModel)
 			}
-		} else {
-			fmt.Printf("Not authenticated with GitHub Copilot, using default.\n")
-			fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
+			fmt.Println("Could not fetch models, using default.")
+			fmt.Println()
+			return showModelPrompt()
 		}
-	} else {
-		fmt.Println("\n[Step 4] Model")
-		fmt.Printf("Model name [%s] (press Enter to accept): ", defaultModel)
+		fmt.Println("Not authenticated with GitHub Copilot, using default.")
+		fmt.Println()
+		return showModelPrompt()
 	}
 
-	var model string
-	fmt.Scanln(&model)
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = defaultModel
-	}
-	return model
+	fmt.Println("\n[Step 4] Model")
+	fmt.Printf("  The model powers all of joshbot's responses. Each provider has a\n")
+	fmt.Printf("  recommended default that balances speed, quality, and cost.\n")
+	fmt.Println()
+	fmt.Printf("  You can change this later in config.json or with the --model flag.\n")
+	fmt.Println()
+	return showModelPrompt()
 }
 
 func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
@@ -3460,4 +3527,29 @@ Maximum information, minimum words.
 (Describe your preferred style)
 `
 	}
+}
+
+// showPersonalityPreview prints a sample response in the chosen personality style.
+func showPersonalityPreview(choice string) {
+	var preview, label string
+	switch choice {
+	case "1":
+		label = "Professional"
+		preview = "\"Hello. I'm ready to help. What are we working on?\""
+	case "2":
+		label = "Friendly"
+		preview = "\"Hey there! Great to meet you. What can I help you with today?\""
+	case "3":
+		label = "Sarcastic"
+		preview = "\"Oh great, another human with questions. Fine, hit me — I've got all day. (Spoiler: I'm actually happy to help.)\""
+	case "4":
+		label = "Minimal"
+		preview = "\"Ready. What do you need?\""
+	default:
+		label = "Custom"
+		preview = "(Your personality will be loaded from your custom SOUL.md file)"
+	}
+	fmt.Printf("\n  ✓ %s style selected\n", label)
+	fmt.Printf("    Sample: %s\n", preview)
+	fmt.Println()
 }

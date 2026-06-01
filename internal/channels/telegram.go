@@ -868,18 +868,12 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 
 	log.Debug("Send called", "channelID", msg.ChannelID, "metadata_chat_id", msg.Metadata["chat_id"])
 
-	// Determine recipient - ChannelID is the chat ID
 	var recipient telebot.Recipient
-
-	// First try ChannelID
 	if msg.ChannelID != "" {
 		if chatID, err := strconv.ParseInt(msg.ChannelID, 10, 64); err == nil {
 			recipient = telebot.ChatID(chatID)
-			log.Debug("Using ChannelID as recipient", "chatID", chatID)
 		}
 	}
-
-	// Fall back to metadata
 	if recipient == nil {
 		if cid, ok := msg.Metadata["chat_id"].(int64); ok {
 			recipient = telebot.ChatID(cid)
@@ -887,12 +881,10 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 			recipient = telebot.ChatID(int64(cid))
 		}
 	}
-
 	if recipient == nil {
 		return fmt.Errorf("no valid recipient specified")
 	}
 
-	// Get parse mode from metadata
 	parseMode := telebot.ModeDefault
 	if pm, ok := msg.Metadata["parse_mode"].(string); ok {
 		switch strings.ToLower(pm) {
@@ -903,55 +895,52 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		}
 	}
 
-	// Split message if it exceeds Telegram's limit
 	parts := splitMessage(msg.Content, TelegramMaxMessageLen)
 
-	// Prepare send options (without content - content is per-message)
-	opts := &telebot.SendOptions{
-		ParseMode: parseMode,
-	}
+	// Reserve header space for parts after the first
+	// Header format: "\n\n— *Part N of M* —\n\n" ≈ 30 bytes max
+	const partHeaderOverhead = 35
 
-	// Handle reply_to - pass the original message for reply (only on first part)
-	if replyToMsg, ok := msg.Metadata["reply_to_message"].(**telebot.Message); ok && replyToMsg != nil {
-		opts.ReplyTo = *replyToMsg
-	}
-
-	// Handle reply markup (inline buttons)
-	if markup, ok := msg.Metadata["reply_markup"].(map[string]any); ok {
-		opts.ReplyMarkup = t.buildReplyMarkup(markup)
-	}
-
-	// Send each part with retry logic
 	for i, part := range parts {
-		partOpts := *opts
+		partOpts := telebot.SendOptions{ParseMode: parseMode}
+		if i == 0 {
+			if replyToMsg, ok := msg.Metadata["reply_to_message"].(**telebot.Message); ok && replyToMsg != nil {
+				partOpts.ReplyTo = *replyToMsg
+			}
+			if markup, ok := msg.Metadata["reply_markup"].(map[string]any); ok {
+				partOpts.ReplyMarkup = t.buildReplyMarkup(markup)
+			}
+		}
+
+		content := part
 		if i > 0 {
-			partOpts.ReplyTo = nil
+			header := fmt.Sprintf("\n\n— *Part %d of %d* —\n\n", i+1, len(parts))
+			// Trim part if header pushes it over limit
+			maxPartLen := TelegramMaxMessageLen - len(header)
+			if len(part) > maxPartLen {
+				part = part[:maxPartLen]
+			}
+			content = header + part
 		}
 
 		var lastErr error
 		delay := t.retryDelay
 
 		for attempt := 0; attempt < t.maxRetries; attempt++ {
-			_, err := bot.Send(recipient, part, &partOpts)
+			_, err := bot.Send(recipient, content, &partOpts)
 			if err == nil {
 				lastErr = nil
 				break
 			}
-
 			lastErr = err
 			log.Warn("failed to send message part, retrying",
-				"attempt", attempt+1,
-				"max_retries", t.maxRetries,
-				"part", i+1,
-				"total_parts", len(parts),
-				"error", err,
-				"recipient", msg.ChannelID,
+				"attempt", attempt+1, "max_retries", t.maxRetries,
+				"part", i+1, "total_parts", len(parts),
+				"error", err, "recipient", msg.ChannelID,
 			)
-
 			if !isRetryable(err) {
 				break
 			}
-
 			select {
 			case <-time.After(delay):
 				delay = time.Duration(math.Min(float64(delay*2), float64(t.maxRetryDelay)))
@@ -959,10 +948,17 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 				return fmt.Errorf("stopped while retrying: %w", lastErr)
 			}
 		}
-
 		if lastErr != nil {
 			return fmt.Errorf("failed to send message part %d/%d after %d retries: %w",
 				i+1, len(parts), t.maxRetries, lastErr)
+		}
+
+		if i < len(parts)-1 {
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-t.stopCh:
+				return nil
+			}
 		}
 	}
 
@@ -970,7 +966,8 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 }
 
 // splitMessage splits a message into chunks of at most maxLen bytes each.
-// Tries to split on newlines for cleaner breaks.
+// Avoids splitting inside markdown code blocks by closing them before the
+// split and reopening them after. Tries to split on newlines first.
 func splitMessage(content string, maxLen int) []string {
 	if len(content) <= maxLen {
 		return []string{content}
@@ -983,15 +980,34 @@ func splitMessage(content string, maxLen int) []string {
 			break
 		}
 
-		// Try to split at a newline within the limit
 		splitAt := strings.LastIndex(content[:maxLen], "\n")
 		if splitAt <= 0 {
-			// No newline found, split at maxLen boundary
 			splitAt = maxLen
 		}
 
-		parts = append(parts, content[:splitAt])
-		content = content[splitAt:]
+		prefix := content[:splitAt]
+		suffix := content[splitAt:]
+
+		// If the prefix has an odd number of code fences, we're mid-code-block.
+		// Close the block at the end of this part and reopen at the start of the next.
+		if strings.Count(prefix, "```")%2 == 1 {
+			prefix = prefix + "\n```"
+			suffix = "```\n" + suffix
+			// If closing the block pushed this part over maxLen+4,
+			// fall back to a hard split and just close the block there.
+			if len(prefix) > maxLen+4 {
+				splitAt = maxLen
+				prefix = content[:splitAt]
+				suffix = content[splitAt:]
+				if strings.Count(prefix, "```")%2 == 1 {
+					prefix = prefix + "\n```"
+					suffix = "```\n" + suffix
+				}
+			}
+		}
+
+		parts = append(parts, prefix)
+		content = suffix
 	}
 
 	return parts

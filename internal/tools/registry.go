@@ -386,6 +386,15 @@ func RegistryWithDefaults(
 	})
 	_ = registry.Register(webTool)
 
+	// Register web operation aliases for LLMs that call them directly
+	webAliases := []string{"web_search", "web_fetch", "web_code", "web_company", "web_research"}
+
+	for _, aliasName := range webAliases {
+		if err := registry.Register(&webAlias{web: webTool, name: aliasName}); err != nil {
+			log.Warn("failed to register web alias", "name", aliasName, "error", err)
+		}
+	}
+
 	// Message tool (optional)
 	if messageSender != nil {
 		msgTool := NewMessageTool(messageSender)

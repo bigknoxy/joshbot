@@ -304,10 +304,9 @@ func (t *WebTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *WebTool) Description() string {
-	return `Web tools for searching the internet and fetching web content. ` +
-		`Use web_search to find information, web_code for code search, ` +
-		`web_company for company research, web_research for deep research, ` +
-		`and web_fetch to retrieve specific URLs.`
+	return `Search the internet and fetch web content. ` +
+		`Use the "operation" parameter to choose the type of operation. ` +
+		`For most tasks, use the dedicated web_search, web_fetch, or web_code tools directly.`
 }
 
 // Parameters returns the parameters for the tool.

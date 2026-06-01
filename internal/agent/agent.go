@@ -732,10 +732,23 @@ func (a *Agent) handleCommand(ctx context.Context, msg bus.InboundMessage) strin
 		// Delete the session to start fresh
 		sessionKey := getSessionKey(msg)
 		if err := a.sessions.Delete(ctx, sessionKey); err != nil {
-			// Log the error but don't fail - session might not exist
 			a.logger.Debug("Could not delete session for /new", "session", sessionKey, "error", err)
 		}
-		return "🔄 Started a new conversation! All previous context has been cleared."
+		toolCount := 0
+		if a.tools != nil {
+			toolCount = len(a.tools.GetSchemas())
+		}
+		return fmt.Sprintf(`🔄 Started a new conversation! All previous context has been cleared.
+
+Model: %s
+Tools: %d registered
+Memory window: %d
+
+Just type normally to chat with me!`,
+			a.cfg.Agents.Defaults.Model,
+			toolCount,
+			a.cfg.Agents.Defaults.MemoryWindow,
+		)
 	case "help":
 		return `Available commands:
 /start - Start a conversation

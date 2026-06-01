@@ -267,7 +267,11 @@ func (c *CLIChannel) processInput(ctx context.Context, input string) error {
 		return c.handleCommand(ctx, input)
 	}
 
-	// Send as inbound message to the bus
+	return c.sendToBus(ctx, input)
+}
+
+// sendToBus sends a message through the bus to the agent.
+func (c *CLIChannel) sendToBus(ctx context.Context, input string) error {
 	msg := bus.InboundMessage{
 		SenderID:  "cli_user",
 		Content:   input,
@@ -277,14 +281,10 @@ func (c *CLIChannel) processInput(ctx context.Context, input string) error {
 			"username": "user",
 		},
 	}
-
-	// Show typing indicator
 	fmt.Print(c.styles.Typing.Render("  typing...\n"))
-
 	if !c.bus.Send(msg) {
 		return fmt.Errorf("failed to send message to bus")
 	}
-
 	return nil
 }
 
@@ -298,11 +298,9 @@ func (c *CLIChannel) handleCommand(ctx context.Context, input string) error {
 		return ErrQuit
 
 	case "/new":
-		c.printInfo("Starting new session...")
 		c.inputHistory = nil
 		c.historyPos = 0
-		c.printInfo("New session started. All context has been cleared.")
-		return nil
+		return c.sendToBus(ctx, input)
 
 	case "/help":
 		c.printHelp()

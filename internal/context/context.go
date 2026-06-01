@@ -125,6 +125,9 @@ type Compressor struct {
 // It naively keeps the most recent messages until the token budget is met; if exceeded and a Provider
 // is available, it will ask the provider to summarize them.
 func (c *Compressor) CompressMessages(model string, messages []providers.Message, budget int) (string, error) {
+	if len(messages) == 0 {
+		return "", fmt.Errorf("no messages to compress")
+	}
 	// Heuristic: if there are many messages, prefer provider summarization when available.
 	// DEBUG LOG
 	// fmt.Printf("CompressMessages called: messages=%d budget=%d\n", len(messages), budget)

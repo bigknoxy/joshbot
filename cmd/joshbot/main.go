@@ -353,10 +353,14 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 
 		resolvedModels := cfg.GetAllModelConfigs()
 		for i, resolved := range resolvedModels {
-			provider := providers.NewProviderFromResolvedModel(resolved, &providers.DefaultLogger{})
-			priority := i
-			enabled := true
-			multiProvider.Register(resolved.Name, provider, resolved.ModelID, priority, enabled)
+			llmProvider := providers.NewProviderFromResolvedModel(resolved, &providers.DefaultLogger{})
+			var provider providers.Provider = llmProvider
+			if len(resolved.APIKeys) > 1 {
+				pool := providers.NewAPIKeyPool(resolved.APIKeys, 24*time.Hour, 3)
+				provider = providers.NewKeyRotatingProvider(llmProvider, pool)
+				log.Info("Wrapped provider with key rotation", "name", resolved.Name, "keys", len(resolved.APIKeys))
+			}
+			multiProvider.Register(resolved.Name, provider, resolved.ModelID, i, true)
 			log.Info("Registered model", "name", resolved.Name, "model", resolved.ModelID, "provider", resolved.Provider, "api_key_len", len(resolved.APIKey))
 		}
 

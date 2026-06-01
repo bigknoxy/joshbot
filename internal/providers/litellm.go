@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -36,6 +37,7 @@ type LiteLLMProvider struct {
 	cfg    Config
 	client *http.Client
 	logger Logger
+	apiKey atomic.Value // stores string, thread-safe API key access
 }
 
 // NewLiteLLMProvider creates a new LiteLLM provider with the given configuration.
@@ -49,13 +51,16 @@ func NewLiteLLMProviderWithLogger(cfg Config, logger Logger) *LiteLLMProvider {
 		cfg.Timeout = 120 * time.Second
 	}
 
-	return &LiteLLMProvider{
-		cfg: cfg,
+	p := &LiteLLMProvider{
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
 		logger: logger,
 	}
+	p.apiKey.Store(cfg.APIKey)
+	p.cfg = cfg
+	p.cfg.APIKey = "" // clear so readers use atomic only
+	return p
 }
 
 // NewProviderFromResolvedModel creates a provider from a resolved model config.
@@ -86,9 +91,24 @@ func (p *LiteLLMProvider) Name() string {
 	return "litellm"
 }
 
+// getAPIKey returns the current API key atomically.
+func (p *LiteLLMProvider) getAPIKey() string {
+	if v := p.apiKey.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+// SetAPIKey updates the API key atomically.
+func (p *LiteLLMProvider) SetAPIKey(key string) {
+	p.apiKey.Store(key)
+}
+
 // Config returns the current provider configuration.
 func (p *LiteLLMProvider) Config() Config {
-	return p.cfg
+	cfg := p.cfg
+	cfg.APIKey = p.getAPIKey()
+	return cfg
 }
 
 // newFallbackError creates a FallbackError for network errors.
@@ -138,8 +158,8 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
-	if p.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	if key := p.getAPIKey(); key != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+key)
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
@@ -226,8 +246,8 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
-	if p.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	if key := p.getAPIKey(); key != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+key)
 	}
 	httpReq.Header.Set("Accept", "text/event-stream")
 

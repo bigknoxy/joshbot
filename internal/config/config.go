@@ -70,6 +70,7 @@ var DefaultWorkspace = filepath.Join(DefaultHome, "workspace")
 // ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
 	APIKey       string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIKeys      []string          `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
 	APIBase      string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
 	Model        string            `mapstructure:"model" json:"model,omitempty" yaml:"model,omitempty"`
 	ExtraHeaders map[string]string `mapstructure:"extra_headers" json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
@@ -99,6 +100,7 @@ type ModelConfig struct {
 	Name      string            `mapstructure:"name" json:"name" yaml:"name"`
 	Model     string            `mapstructure:"model" json:"model" yaml:"model"`
 	APIKey    string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIKeys   []string          `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
 	APIBase   string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
 	Extra     map[string]string `mapstructure:"extra" json:"extra,omitempty" yaml:"extra,omitempty"`
 	Disabled  bool              `mapstructure:"disabled" json:"disabled,omitempty" yaml:"disabled,omitempty"`
@@ -132,6 +134,7 @@ type ResolvedModelConfig struct {
 	APIFormat string
 	APIBase   string
 	APIKey    string
+	APIKeys   []string
 	Extra     map[string]string
 	MaxTokens int
 }
@@ -665,6 +668,20 @@ func (c *Config) ResolveModelConfig(name string) (ResolvedModelConfig, error) {
 
 	modelID := StripProviderPrefix(model.Model)
 
+	apiKeys := model.APIKeys
+	if model.APIKey != "" {
+		hasExplicit := false
+		for _, k := range apiKeys {
+			if k == model.APIKey {
+				hasExplicit = true
+				break
+			}
+		}
+		if !hasExplicit {
+			apiKeys = append([]string{model.APIKey}, apiKeys...)
+		}
+	}
+
 	return ResolvedModelConfig{
 		Name:      model.Name,
 		ModelID:   modelID,
@@ -672,6 +689,7 @@ func (c *Config) ResolveModelConfig(name string) (ResolvedModelConfig, error) {
 		APIFormat: provider.APIFormat,
 		APIBase:   apiBase,
 		APIKey:    model.APIKey,
+		APIKeys:   apiKeys,
 		Extra:     model.Extra,
 		MaxTokens: model.MaxTokens,
 	}, nil

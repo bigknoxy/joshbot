@@ -76,6 +76,7 @@ func NewProviderFromResolvedModel(resolved config.ResolvedModelConfig, logger Lo
 		Model:        resolved.ModelID,
 		MaxTokens:    maxTokens,
 		ExtraHeaders: resolved.Extra,
+		ExtraBody:    resolved.ExtraBody,
 		Timeout:      120 * time.Second,
 	}
 
@@ -120,6 +121,25 @@ func (p *LiteLLMProvider) newFallbackError(err error, model string) error {
 		Model:      model,
 		Cause:      err,
 	}
+}
+
+// marshalBody marshals the request body, merging ExtraBody fields if configured.
+func (p *LiteLLMProvider) marshalBody(req ChatRequest) ([]byte, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(p.cfg.ExtraBody) == 0 {
+		return body, nil
+	}
+	var base map[string]any
+	if err := json.Unmarshal(body, &base); err != nil {
+		return nil, err
+	}
+	for k, v := range p.cfg.ExtraBody {
+		base[k] = v
+	}
+	return json.Marshal(base)
 }
 
 // Chat sends a chat request and returns a chat response.
@@ -233,7 +253,7 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 	url := strings.TrimRight(apiBase, "/") + "/chat/completions"
 
 	// Marshal the request body
-	body, err := json.Marshal(req)
+	body, err := p.marshalBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}

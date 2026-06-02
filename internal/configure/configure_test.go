@@ -349,6 +349,7 @@ func TestGetProviderDisplayName(t *testing.T) {
 		{"groq", "Groq"},
 		{"ollama", "Ollama"},
 		{"github-copilot", "GitHub Copilot"},
+		{"poolside", "Poolside"},
 	}
 	for _, tc := range cases {
 		got := GetProviderDisplayName(tc.name)

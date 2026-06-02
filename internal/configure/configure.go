@@ -122,7 +122,7 @@ func (c *Configurator) RemoveProvider(name string) error {
 }
 
 func (c *Configurator) ListProviders() []ProviderListItem {
-	providerNames := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
+	providerNames := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
 	defaultName := c.cfg.ProviderDefaults.Default
 	var items []ProviderListItem
 
@@ -180,6 +180,7 @@ func getDefaultAPIBase(name string) string {
 		"openrouter": "https://openrouter.ai/api/v1",
 		"groq":       "https://api.groq.com/openai/v1",
 		"ollama":     "http://localhost:11434",
+		"poolside":   "https://api.poolside.ai/v1",
 	}
 	if base, ok := bases[name]; ok {
 		return base
@@ -201,6 +202,7 @@ func GetProviderDisplayName(name string) string {
 		"groq":           "Groq",
 		"ollama":         "Ollama",
 		"github-copilot": "GitHub Copilot",
+		"poolside":       "Poolside",
 	}
 	if display, ok := names[name]; ok {
 		return display

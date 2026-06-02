@@ -431,6 +431,29 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 			}
 		}
 
+		// Register Poolside (if configured)
+		if p, ok := cfg.Providers["poolside"]; ok && p.APIKey != "" && p.Enabled {
+			poolsideProvider, err := providers.GetProvider("poolside", providers.Config{
+				APIKey:       p.APIKey,
+				APIBase:      p.APIBase,
+				ExtraHeaders: p.ExtraHeaders,
+				Model:        p.Model,
+			})
+			if err != nil {
+				log.Warn("Failed to create Poolside provider", "error", err)
+			} else {
+				priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "poolside"); idx >= 0 {
+					priority = idx + 1
+				}
+				model := p.Model
+				if model == "" {
+					model = providers.GetDefaultModel("poolside")
+				}
+				multiProvider.Register("poolside", poolsideProvider, model, priority, p.Enabled)
+			}
+		}
+
 		// Register Ollama (if configured)
 		if p, ok := cfg.Providers["ollama"]; ok && p.Enabled {
 			apiBase := p.APIBase
@@ -1656,7 +1679,12 @@ func runOnboard(c *cli.Context) error {
 	}
 
 	// Step 6: Service install
-	installService := promptServiceInstall()
+	var installService bool
+	if force {
+		installService = false
+	} else {
+		installService = promptServiceInstall()
+	}
 	if installService {
 		if err := doServiceInstall(); err != nil {
 			fmt.Printf("Warning: Could not install service: %v\n", err)
@@ -1718,7 +1746,7 @@ func selectProvider(existingCfg *config.Config) string {
 	fmt.Println("Choose your LLM provider:")
 
 	// Use provider registry for display names and descriptions
-	providerList := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
+	providerList := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
 	for i, key := range providerList {
 		displayName := providers.GetProviderDisplayName(key)
 		desc := providers.GetProviderDescription(key)
@@ -1759,6 +1787,8 @@ func selectProvider(existingCfg *config.Config) string {
 		return "ollama"
 	case "5":
 		return "github-copilot"
+	case "6":
+		return "poolside"
 	default:
 		return "nvidia"
 	}
@@ -1777,6 +1807,9 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, 
 	case "groq":
 		keyURL = "https://console.groq.com/keys"
 		keyName = "Groq API key"
+	case "poolside":
+		keyURL = "https://poolside.ai"
+		keyName = "Poolside API key"
 	case "ollama":
 		fmt.Println("\nOllama runs locally - no API key needed.")
 		return "", nil
@@ -1870,6 +1903,8 @@ func modelHelp(provider string) string {
 		return "Fast responses, great for chat and quick iterations"
 	case "ollama":
 		return "Local model, good balance of speed and capability"
+	case "poolside":
+		return "AI for software development, optimized for coding tasks"
 	case "github-copilot":
 		return "GitHub's Copilot models, optimized for coding"
 	default:
@@ -2460,7 +2495,7 @@ func listProviders(cfg *config.Config) error {
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
 
-	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
+	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
 	defaultProvider := cfg.ProviderDefaults.Default
 
 	for _, name := range providers {
@@ -2498,7 +2533,7 @@ func listProviders(cfg *config.Config) error {
 
 // runConfigureWizard runs the interactive provider configuration wizard.
 func runConfigureWizard(cfg *config.Config) error {
-	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
+	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
 
 	for {
 		// Display current state
@@ -2546,17 +2581,18 @@ func runConfigureWizard(cfg *config.Config) error {
 		fmt.Println("  3. Configure Groq")
 		fmt.Println("  4. Configure Ollama")
 		fmt.Println("  5. Configure GitHub Copilot")
-		fmt.Println("  6. Set default provider")
+		fmt.Println("  6. Configure Poolside")
+		fmt.Println("  7. Set default provider")
 		fmt.Println("  7. Configure fallback order")
 		fmt.Println("  8. Done")
 		fmt.Println()
 
-		fmt.Print("Choice [8]: ")
+		fmt.Print("Choice [9]: ")
 
 		var choice string
 		fmt.Scanln(&choice)
 		if choice == "" {
-			choice = "8"
+			choice = "9"
 		}
 
 		switch choice {
@@ -2571,10 +2607,12 @@ func runConfigureWizard(cfg *config.Config) error {
 		case "5":
 			cfg = configureProvider(cfg, "github-copilot")
 		case "6":
-			cfg = setDefaultProvider(cfg)
+			cfg = configureProvider(cfg, "poolside")
 		case "7":
-			cfg = configureFallbackOrder(cfg)
+			cfg = setDefaultProvider(cfg)
 		case "8":
+			cfg = configureFallbackOrder(cfg)
+		case "9":
 			// Save and exit
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("failed to save config: %w", err)
@@ -2706,6 +2744,46 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 		p.APIBase = strings.TrimSpace(apiBase)
 
 		defaultModel := providers.GetDefaultModel("groq")
+		if exists && p.Model != "" {
+			defaultModel = p.Model
+		}
+		models, err := providers.ListModels(providers.Config{
+			APIKey:  p.APIKey,
+			APIBase: p.APIBase,
+		})
+		if err != nil {
+			fmt.Printf("\nCould not fetch models: %v\n", err)
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		} else if len(models) > 0 {
+			selected := promptModelSelection(models, defaultModel)
+			p.Model = selected
+		} else {
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		}
+		var modelInput string
+		fmt.Scanln(&modelInput)
+		if modelInput == "" && p.Model == "" {
+			p.Model = defaultModel
+		} else if modelInput != "" {
+			p.Model = strings.TrimSpace(modelInput)
+		}
+	case "poolside":
+		if exists && p.APIBase != "" {
+			fmt.Printf("API base URL [%s]: ", p.APIBase)
+		} else {
+			fmt.Print("API base URL [https://api.poolside.ai/v1]: ")
+		}
+		fmt.Scanln(&apiBase)
+		if apiBase == "" {
+			if p.APIBase == "" {
+				apiBase = "https://api.poolside.ai/v1"
+			} else {
+				apiBase = p.APIBase
+			}
+		}
+		p.APIBase = strings.TrimSpace(apiBase)
+
+		defaultModel := providers.GetDefaultModel("poolside")
 		if exists && p.Model != "" {
 			defaultModel = p.Model
 		}
@@ -2998,7 +3076,7 @@ func filterModels(models []string, filter string) []string {
 // validateProviderCredentials tests the API credentials for a provider.
 func validateProviderCredentials(provider, apiKey, apiBase string) error {
 	switch provider {
-	case "openrouter", "groq", "nvidia":
+	case "openrouter", "groq", "nvidia", "poolside":
 		// Test call to list models
 		req, err := http.NewRequest("GET", apiBase+"/models", nil)
 		if err != nil {

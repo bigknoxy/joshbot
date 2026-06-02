@@ -234,6 +234,19 @@ func init() {
 		Description:  "Claude models",
 	})
 
+	// Register Poolside
+	RegisterProviderWithInfo("poolside", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://api.poolside.ai/v1"
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "poolside/laguna-m.1",
+		DisplayName:  "Poolside",
+		Description:  "AI for software development",
+	})
+
 	// Register Azure (requires API base, no default model)
 	RegisterProviderWithInfo("azure", ProviderInfo{
 		Factory: func(cfg Config) (Provider, error) {

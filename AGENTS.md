@@ -2,9 +2,22 @@
 
 ## Project Overview
 
-joshbot is a lightweight personal AI assistant (~16,000 LOC Go non-test) with self-learning memory, skill self-creation, and Telegram integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
+joshbot is a lightweight personal AI assistant (~18,000 LOC Go non-test) with self-learning memory, skill self-creation, and Telegram integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
 
 Module: `github.com/bigknoxy/joshbot`. Go 1.24.0.
+
+### ALL CLI commands work non-interactively
+
+| Command | Non-interactive | Notes |
+|---------|----------------|-------|
+| `agent -m "..."` | ✅ | Single message, exits after response |
+| `onboard --force` | ✅ | `--force` skips all prompts (backup + defaults) |
+| `configure --provider --api-key ...` | ✅ | All flags |
+| `configure --list` | ✅ | |
+| `status` | ✅ | |
+| `version` | ✅ | |
+| `update` | ✅ | |
+| `uninstall --force` | ✅ | |
 
 ## Build & Run
 
@@ -25,6 +38,8 @@ go run ./cmd/joshbot agent             # Dev mode
 ./joshbot status      # Show config/status
 ./joshbot configure   # Re-run config wizard
 ./joshbot update      # Self-update
+./joshbot configure --provider openrouter --api-key sk-or-...  # Non-interactive
+./joshbot uninstall --force  # Non-interactive removal
 
 # Docker
 docker build -t joshbot .
@@ -219,8 +234,12 @@ channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
 | `internal/channels/telegram.go` | Telegram channel implementation |
 | `internal/config/config.go` | All configuration structs, model-centric config, provider detection |
 | `internal/bus/bus.go` | Channel-based message bus |
-| `internal/providers/provider.go` | Provider interface and types |
-| `internal/providers/litellm.go` | OpenRouter-compatible HTTP provider |
+| `internal/providers/provider.go` | Provider interface, Config struct (includes ExtraBody), types |
+| `internal/providers/litellm.go` | OpenAI-compatible HTTP provider (supports ExtraBody via marshalBody) |
+| `internal/providers/registry.go` | Provider registration (poolside, groq, nvidia, etc.) |
+| `internal/context/context.go` | Context compaction, compression, budget management |
+| `internal/skills/skills.go` | Skill discovery, progressive loading |
+| `internal/skills/detection.go` | Skill auto-detection from tool usage patterns |
 
 ## Adding New Components
 
@@ -230,7 +249,9 @@ channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
 
 ## Config
 
-Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.g., `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY`). Model-name-based provider routing: `claude` → Anthropic, `gpt` → OpenAI, `gemini` → Gemini. Default fallback: OpenRouter.
+Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.g., `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY`). Model-name-based provider routing: `claude` → Anthropic, `gpt` → OpenAI, `gemini` → Gemini, `poolside` → Poolside. Default fallback: OpenRouter.
+
+**Legacy Provider Format:**
 
 **Legacy Provider Format:**
 ```json
@@ -247,7 +268,8 @@ Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.
   "models_config": {
     "models": [
       { "name": "smart", "model": "anthropic/claude-sonnet-4", "api_key": "sk-ant-..." },
-      { "name": "fast", "model": "groq/llama-3.3-70b-versatile", "api_key": "gsk_..." }
+      { "name": "fast", "model": "groq/llama-3.3-70b-versatile", "api_key": "gsk_..." },
+      { "name": "code", "model": "poolside/laguna-m.1", "api_key": "ps-...", "extra_body": { "chat_template_kwargs": { "enable_thinking": false } } }
     ],
     "agent": { "model": "smart", "fallback": ["fast"] }
   },
@@ -256,6 +278,14 @@ Config at `~/.joshbot/config.json`. Env var overrides with `JOSHBOT_` prefix (e.
   }
 }
 ```
+
+**Registered Providers:** `openrouter`, `openai`, `nvidia`, `groq`, `ollama`, `anthropic`, `poolside`, `azure`, `custom`, `litellm`
+
+**ExtraBody support:** Some providers (e.g., poolside) require extra JSON body fields. Use `extra_body` in model config or `ProviderConfig`:
+```json
+{ "extra_body": { "chat_template_kwargs": { "enable_thinking": false } } }
+```
+This is merged into the chat completion request body via `marshalBody()` in `internal/providers/litellm.go`.
 
 ## Gotchas
 

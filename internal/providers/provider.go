@@ -204,6 +204,8 @@ type Config struct {
 	APIBase string
 	// ExtraHeaders are additional headers to include in requests
 	ExtraHeaders map[string]string
+	// ExtraBody are additional JSON body fields merged into requests
+	ExtraBody map[string]any
 	// Timeout is the request timeout (default 120 seconds)
 	Timeout time.Duration
 	// Model is the default model to use

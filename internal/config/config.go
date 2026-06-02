@@ -74,6 +74,7 @@ type ProviderConfig struct {
 	APIBase      string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
 	Model        string            `mapstructure:"model" json:"model,omitempty" yaml:"model,omitempty"`
 	ExtraHeaders map[string]string `mapstructure:"extra_headers" json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
+	ExtraBody    map[string]any    `mapstructure:"extra_body" json:"extra_body,omitempty" yaml:"extra_body,omitempty"`
 	Enabled      bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Timeout      time.Duration     `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
@@ -103,6 +104,7 @@ type ModelConfig struct {
 	APIKeys   []string          `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
 	APIBase   string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
 	Extra     map[string]string `mapstructure:"extra" json:"extra,omitempty" yaml:"extra,omitempty"`
+	ExtraBody map[string]any    `mapstructure:"extra_body" json:"extra_body,omitempty" yaml:"extra_body,omitempty"`
 	Disabled  bool              `mapstructure:"disabled" json:"disabled,omitempty" yaml:"disabled,omitempty"`
 	MaxTokens int               `mapstructure:"max_tokens" json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
 }
@@ -136,6 +138,7 @@ type ResolvedModelConfig struct {
 	APIKey    string
 	APIKeys   []string
 	Extra     map[string]string
+	ExtraBody map[string]any
 	MaxTokens int
 }
 
@@ -145,6 +148,7 @@ var providerPrefixes = map[string]ProviderInfo{
 	"openai/":     {Name: "openai", APIFormat: "openai", BaseURL: "https://api.openai.com/v1"},
 	"groq/":       {Name: "groq", APIFormat: "openai", BaseURL: "https://api.groq.com/openai/v1"},
 	"ollama/":     {Name: "ollama", APIFormat: "openai", BaseURL: "http://localhost:11434/v1"},
+	"poolside/":   {Name: "poolside", APIFormat: "openai", BaseURL: "https://api.poolside.ai/v1"},
 	"openrouter/": {Name: "openrouter", APIFormat: "openai", BaseURL: "https://openrouter.ai/api/v1"},
 	"nvidia/":     {Name: "nvidia", APIFormat: "openai", BaseURL: "https://integrate.api.nvidia.com/v1"},
 	"deepseek/":   {Name: "deepseek", APIFormat: "openai", BaseURL: "https://api.deepseek.com/v1"},
@@ -691,6 +695,7 @@ func (c *Config) ResolveModelConfig(name string) (ResolvedModelConfig, error) {
 		APIKey:    model.APIKey,
 		APIKeys:   apiKeys,
 		Extra:     model.Extra,
+		ExtraBody: model.ExtraBody,
 		MaxTokens: model.MaxTokens,
 	}, nil
 }

@@ -335,6 +335,20 @@ export JOSHBOT_MODELS_CONFIG__MODELS__0__API_KEY="gsk_..."
 
 Shorthand forms like `JOSHBOT_OPENROUTER_API_KEY` and `JOSHBOT_NVIDIA_API_KEY` are also accepted for backward compatibility.
 
+## Website (site/)
+
+Two pages live in `site/`:
+- `index.html` — Landing page: explains what joshbot is, how it works, use cases, install
+- `architecture.html` — Official design docs: system architecture diagram, data flow, code map, key patterns, component details, config
+
+**Both pages MUST be updated when:**
+- New major features or tools are added
+- Architecture changes (new packages, new patterns)
+- Configuration format or provider support changes
+- Use cases or capabilities significantly expand
+
+The header nav on both pages must be kept in sync (same links, same active state logic).
+
 ## Pre-Release Checklist
 
 ```bash

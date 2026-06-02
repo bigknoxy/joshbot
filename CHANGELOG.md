@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Single-quote JSON parsing** — `parseTasksArg` now falls back to replacing single quotes with double quotes, handling LLMs that serialize arrays as single-quoted JSON strings.
 
+### Other
+- **GitHub Pages deploy** — `site/` directory (landing page + architecture docs) deployed to GitHub Pages on every release. URL set as repo homepage. Pages deploy job added to release workflow.
+
 ## [1.26.0] - 2026-06-01
 
 ### Fixed

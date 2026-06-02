@@ -23,6 +23,14 @@ joshbot is a self-hosted Go personal AI assistant (~14.5K LOC non-test, 520 test
 - All CLI commands work non-interactively (agent -m, onboard --force, configure --provider --api-key, uninstall --force, etc.)
 - ExtraBody support for providers needing custom JSON body fields (poolside chat_template_kwargs, etc.)
 
+## Website (site/)
+
+Two pages in `site/`:
+- `index.html` — Landing page (what/how/why)
+- `architecture.html` — Official architecture docs + diagrams
+
+**Both MUST stay in sync with the codebase.** Update when major features, architecture, config, or capabilities change.
+
 ## Pre-release checklist
 
 ```bash

@@ -180,7 +180,7 @@ func getDefaultAPIBase(name string) string {
 		"openrouter": "https://openrouter.ai/api/v1",
 		"groq":       "https://api.groq.com/openai/v1",
 		"ollama":     "http://localhost:11434",
-		"poolside":   "https://api.poolside.ai/v1",
+		"poolside":   "https://inference.poolside.ai/v1",
 	}
 	if base, ok := bases[name]; ok {
 		return base

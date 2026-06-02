@@ -21,11 +21,27 @@ type Logger interface {
 type defaultLogger struct{}
 
 func (d *defaultLogger) Warn(msg string, args ...interface{}) {
-	log.Printf("WARN: "+msg, args...)
+	out := "WARN: " + msg
+	for _, a := range args {
+		if s, ok := a.(string); ok {
+			out += " " + s
+		} else {
+			out += " " + fmt.Sprint(a)
+		}
+	}
+	log.Print(out)
 }
 
 func (d *defaultLogger) Info(msg string, args ...interface{}) {
-	log.Printf("INFO: "+msg, args...)
+	out := "INFO: " + msg
+	for _, a := range args {
+		if s, ok := a.(string); ok {
+			out += " " + s
+		} else {
+			out += " " + fmt.Sprint(a)
+		}
+	}
+	log.Print(out)
 }
 
 // logger is the package-level logger.
@@ -148,7 +164,7 @@ var providerPrefixes = map[string]ProviderInfo{
 	"openai/":     {Name: "openai", APIFormat: "openai", BaseURL: "https://api.openai.com/v1"},
 	"groq/":       {Name: "groq", APIFormat: "openai", BaseURL: "https://api.groq.com/openai/v1"},
 	"ollama/":     {Name: "ollama", APIFormat: "openai", BaseURL: "http://localhost:11434/v1"},
-	"poolside/":   {Name: "poolside", APIFormat: "openai", BaseURL: "https://api.poolside.ai/v1"},
+	"poolside/":   {Name: "poolside", APIFormat: "openai", BaseURL: "https://inference.poolside.ai/v1"},
 	"openrouter/": {Name: "openrouter", APIFormat: "openai", BaseURL: "https://openrouter.ai/api/v1"},
 	"nvidia/":     {Name: "nvidia", APIFormat: "openai", BaseURL: "https://integrate.api.nvidia.com/v1"},
 	"deepseek/":   {Name: "deepseek", APIFormat: "openai", BaseURL: "https://api.deepseek.com/v1"},

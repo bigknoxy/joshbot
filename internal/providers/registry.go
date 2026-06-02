@@ -238,7 +238,7 @@ func init() {
 	RegisterProviderWithInfo("poolside", ProviderInfo{
 		Factory: func(cfg Config) (Provider, error) {
 			if cfg.APIBase == "" {
-				cfg.APIBase = "https://api.poolside.ai/v1"
+				cfg.APIBase = "https://inference.poolside.ai/v1"
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},

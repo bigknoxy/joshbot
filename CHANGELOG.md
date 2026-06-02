@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] - 2026-06-02
+
+### Added
+- **`chain_execution` tool** — Sequential multi-step subagent execution. Each step's output feeds as context to the next. Supports template substitution (`{{name}}` → prior step output), initial context, graceful step failure (subsequent steps continue), and cancellation. 12 tests.
+- **`subagent_config` tool** — CRUD for YAML-based agent profile configs stored in `~/.joshbot/agents/`. Operations: `list`, `get`, `save`, `discover`. Each config defines model, temperature, max_tokens, system_prompt, tools, skills, and tags. 26 tests.
+- **Auto-discovery of agent configs** — `~/.joshbot/agents/` directory scanned at startup, `*.yaml`/`*.yml` files loaded as named agent profiles.
+
+### Fixed
+- **Single-quote JSON parsing** — `parseTasksArg` now falls back to replacing single quotes with double quotes, handling LLMs that serialize arrays as single-quoted JSON strings.
+
+## [1.26.0] - 2026-06-01
+
+### Fixed
+- **Log format string bug** — `defaultLogger` had mismatched format verbs in structured log calls, causing potential panics on certain log levels.
+
+## [1.25.0] - 2026-06-01
+
+### Added
+- **Poolside provider** — New provider registration for `poolside/laguna-m.1` with `ExtraBody` support for `chat_template_kwargs`.
+- **`onboard --force` stdin hang fix** — Zero stdin pipe detection prevents blocking on first-time setup.
+
+## [1.24.0] - 2026-05-31
+
+### Fixed
+- **exa-cli search JSON parsing** — Handles pretty-printed multi-line JSON output from exa-cli search results.
+
+## [1.23.0] - 2026-05-31
+
+### Changed
+- **`CompressMessages` refactored** — Extracted `lastNonEmptyContent` helper, returns error on all-empty content instead of silently wrapping empty string in `<conversation_summary>` tags.
+
+## [1.22.0] - 2026-05-31
+
+### Added
+- **`parallel_subagent` tool** — Fan-out independent tasks to subagents with configurable concurrency, semaphore-bounded goroutine pool, per-task success/failure reporting. 11 unit + 9 integration tests.
+- **Subagent runner** — `internal/subagent/` package wrapping single-turn LLM calls with configurable model, temperature, max tokens, and timeout.
+
+## [1.21.0] - 2026-05-31
+
+### Added
+- **Auto-skill-creation pipeline** — `SkillDetector` → `Extractor` → `Loader.Create` fully wired in `main.go` (lines 600-616). Tool usage patterns generate SKILL.md files automatically.
+
 ## [1.20.2] - 2026-05-31
 
 ### Fixed

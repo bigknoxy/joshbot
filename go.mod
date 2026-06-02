@@ -14,6 +14,7 @@ require (
 	golang.org/x/term v0.40.0
 	golang.org/x/text v0.3.7
 	gopkg.in/telebot.v3 v3.3.8
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

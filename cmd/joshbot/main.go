@@ -35,6 +35,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/service"
 	"github.com/bigknoxy/joshbot/internal/session"
 	"github.com/bigknoxy/joshbot/internal/skills"
+	"github.com/bigknoxy/joshbot/internal/subagent"
 	"github.com/bigknoxy/joshbot/internal/tools"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/urfave/cli/v2"
@@ -574,6 +575,24 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	asyncCallbackCh := make(chan tools.AsyncResult, 100)
 	toolsRegistry.SetAsyncCallback(asyncCallbackCh)
 	toolsRegistry.Register(tools.NewMemorySearchTool(memoryManager))
+
+	// Create subagent runner for parallel and chain execution tools
+	subagentRunner := subagent.NewRunner(multiProvider, cfg.Agents.Defaults.Model, 500, 0.3, 60*time.Second)
+	toolsRegistry.Register(tools.NewParallelSubagentTool(subagentRunner))
+	toolsRegistry.Register(tools.NewChainExecutionTool(subagentRunner))
+
+	// Create subagent config manager for agent profile discovery
+	agentConfigDir := filepath.Join(config.DefaultHome, "agents")
+	if err := os.MkdirAll(agentConfigDir, 0750); err == nil {
+		agentCfgMgr, cfgErr := tools.NewSubagentConfigManager(agentConfigDir)
+		if cfgErr == nil {
+			if discErr := agentCfgMgr.Discover(); discErr != nil {
+				log.Warn("Subagent config discovery failed", "error", discErr)
+			}
+			toolsRegistry.Register(tools.NewSubagentConfigTool(agentCfgMgr))
+		}
+	}
+
 	go func() {
 		for result := range asyncCallbackCh {
 			var msg string

@@ -240,11 +240,7 @@ Memory system:
 - Use read_file and write_file to manage these files
 - When conversations are consolidated, key facts go to MEMORY.md and summaries to HISTORY.md
 
-Important context tags:
-- <conversation_summary> tags contain compressed conversation history and are internal context only.
-- NEVER include <conversation_summary> in your response text.
-- NEVER reference conversation_summary, compressed conversations, or context compression in your reply.
-- If you see <conversation_summary> in a user message, treat it as invisible context, not as content to respond about.`
+`
 }
 
 // loadIdentityFiles loads identity/bootstrap files from workspace.

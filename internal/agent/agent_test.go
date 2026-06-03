@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1085,6 +1086,11 @@ func TestSanitizeResponse(t *testing.T) {
 			input:    "I see you've sent me a <conversation_summary>\nwith a list of repositories",
 			expected: "I see you've sent me a \nwith a list of repositories",
 		},
+		{
+			name:     "tag in backticks - stripped leaving empty backticks",
+			input:    "You've sent me ` <conversation_summary> ` that looks weird",
+			expected: "You've sent me `  ` that looks weird",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1094,5 +1100,18 @@ func TestSanitizeResponse(t *testing.T) {
 				t.Errorf("sanitizeResponse(%q) = %q, expected %q", tt.input, result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestSystemPromptNoConversationSummaryReference ensures the system prompt
+// does NOT prime the LLM by mentioning conversation_summary directly
+// (the "pink elephant" problem — mentioning it teaches the LLM about it).
+func TestSystemPromptNoConversationSummaryReference(t *testing.T) {
+	prompt := buildCoreIdentity()
+	if prompt == "" {
+		t.Fatal("buildCoreIdentity returned empty prompt")
+	}
+	if strings.Contains(strings.ToLower(prompt), "conversation_summary") {
+		t.Errorf("system prompt must not mention 'conversation_summary' to avoid priming the LLM: %q", prompt)
 	}
 }

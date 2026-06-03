@@ -32,7 +32,7 @@ func (r *Runner) Run(ctx context.Context, prompt string) (string, error) {
 	}
 
 	sys := `You are an isolated subagent. Execute the following task only. Do not call external tools or
-make network requests. Keep the response concise (max 500 tokens) and return final answer only.`
+make network requests. Keep the response concise (max 4096 tokens) and return final answer only.`
 
 	req := providers.ChatRequest{
 		Model:       r.model,

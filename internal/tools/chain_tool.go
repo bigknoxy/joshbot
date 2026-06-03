@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/bigknoxy/joshbot/internal/log"
@@ -86,8 +87,17 @@ func parseStepsArg(v any) ([]any, error) {
 // of previously executed named steps.
 func applyTemplates(prompt string, vars map[string]string) string {
 	result := prompt
-	for name, value := range vars {
-		result = strings.ReplaceAll(result, "{{"+name+"}}", value)
+	// Sort names by length descending to prevent substring collisions
+	// (e.g., {{a}} matching inside {{ab}}).
+	names := make([]string, 0, len(vars))
+	for name := range vars {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return len(names[i]) > len(names[j])
+	})
+	for _, name := range names {
+		result = strings.ReplaceAll(result, "{{"+name+"}}", vars[name])
 	}
 	return result
 }

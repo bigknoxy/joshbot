@@ -252,6 +252,60 @@ func TestChainTool_NotAllStepsSucceeded(t *testing.T) {
 	}
 }
 
+func TestChainTool_TemplateCollision(t *testing.T) {
+	// Variable names "a" and "ab" — "ab" is longer so must be replaced first
+	// to prevent {{a}} from matching inside {{ab}}.
+	vars := map[string]string{
+		"a":  "X",
+		"ab": "Y",
+	}
+	prompt := "{{a}} and {{ab}}"
+	result := applyTemplates(prompt, vars)
+	if result != "X and Y" {
+		t.Fatalf("expected 'X and Y', got '%s'", result)
+	}
+}
+
+func TestChainTool_TemplateNoMatch(t *testing.T) {
+	// Unmatched {{templates}} should be left as-is.
+	vars := map[string]string{
+		"known": "value",
+	}
+	prompt := "{{known}} and {{unknown}}"
+	result := applyTemplates(prompt, vars)
+	if result != "value and {{unknown}}" {
+		t.Fatalf("expected 'value and {{unknown}}', got '%s'", result)
+	}
+}
+
+func TestChainTool_parseStepsArg_JSONString(t *testing.T) {
+	steps, err := parseStepsArg(`[{"prompt":"hello"},{"prompt":"world"}]`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(steps))
+	}
+}
+
+func TestChainTool_parseStepsArg_SingleQuotes(t *testing.T) {
+	// LLMs often output single-quoted JSON-like strings.
+	steps, err := parseStepsArg(`[{'prompt':'hello'}]`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(steps))
+	}
+}
+
+func TestChainTool_parseStepsArg_Invalid(t *testing.T) {
+	_, err := parseStepsArg(42) // not a string and not a []any
+	if err == nil {
+		t.Fatal("expected error for invalid input type")
+	}
+}
+
 func TestChainTool_Ordering(t *testing.T) {
 	// Verify steps execute in order: output order matches input order.
 	runner := &mockSubagentRunner{

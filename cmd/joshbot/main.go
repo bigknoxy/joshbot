@@ -577,7 +577,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	toolsRegistry.Register(tools.NewMemorySearchTool(memoryManager))
 
 	// Create subagent runner for parallel and chain execution tools
-	subagentRunner := subagent.NewRunner(multiProvider, cfg.Agents.Defaults.Model, 500, 0.3, 60*time.Second)
+	subagentRunner := subagent.NewRunner(multiProvider, cfg.Agents.Defaults.Model, 4096, 0.3, 60*time.Second)
 	toolsRegistry.Register(tools.NewParallelSubagentTool(subagentRunner))
 	toolsRegistry.Register(tools.NewChainExecutionTool(subagentRunner))
 

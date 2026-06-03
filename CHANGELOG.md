@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] - 2026-06-03
+
+### Added
+- **Use case transcripts** — 5 detailed conversation transcripts in `tasks/use-cases.md` covering: Research + Code Generation, Self-Learning + Persistent Memory, Multi-Step Content Pipeline, Bug Investigation + Fix, and Skill Creation. Each includes exact tool schemas, parameters, execution paths, and expected outputs.
+- **Filesystem alias tests** — 9 test functions across 35 assertions covering all 6 filesystem aliases (read_file, write_file, edit_file, list_dir, glob, grep).
+- **Isolated unit tests** — Direct tests for `parseTasksArg`, `parseStepsArg`, `applyTemplates` with edge cases (empty arrays, overlapping template names, single-quoted JSON, invalid inputs).
+
+### Fixed
+- **Subagent maxTokens=500 truncated generated code** — Increased to 4096 so chain execution steps (e.g., code generation of ~100+ line Go files) complete without truncation. Also updated subagent system prompt from "max 500 tokens" to "max 4096 tokens".
+- **applyTemplates() variable name collision** — Sorts template variable names by length descending before iterating, preventing `{{a}}` from partially matching inside `{{ab}}`.
+
+## [1.28.1] - 2026-06-03
+
+### Fixed
+- **System prompt backfire (pink elephant)** — Removed all mentions of `<conversation_summary>` from the system prompt. The LLM was being primed to think about the tag, causing hallucinations of seeing it in the conversation. Defense is now purely structural (proper XML closing tags + output sanitization).
+
 ## [1.28.0] - 2026-06-03
 
 ### Fixed

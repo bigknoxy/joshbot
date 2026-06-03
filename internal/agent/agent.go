@@ -569,7 +569,7 @@ func (a *Agent) checkAndCompactContext(messages []providers.Message, sess *sessi
 		messages[0], // Keep system message
 		{
 			Role:    providers.RoleUser,
-			Content: "<conversation_summary>\n" + compressed + "\n</conversation_summary>",
+			Content: "<ctx_compress>\n" + compressed + "\n</ctx_compress>",
 		},
 	}
 
@@ -648,7 +648,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 			compressed, err := a.compressor.CompressMessages(model, providerMsgs, budget)
 			if err == nil && compressed != "" {
 				// Append a single summarized user message instead of full history
-				msgs = append(msgs, providers.Message{Role: providers.RoleUser, Content: "<conversation_summary>\n" + compressed + "\n</conversation_summary>"})
+				msgs = append(msgs, providers.Message{Role: providers.RoleUser, Content: "<ctx_compress>\n" + compressed + "\n</ctx_compress>"})
 				return msgs
 			}
 			// on error, fallthrough and append full messages (best-effort)
@@ -808,11 +808,11 @@ func truncate(s string, maxLen int) string {
 
 // sanitizeResponse strips internal context tags from LLM responses.
 func sanitizeResponse(content string) string {
-	// Strip <conversation_summary>...</conversation_summary> blocks (with or without content)
-	re := regexp.MustCompile(`(?s)<conversation_summary>.*?</conversation_summary>`)
+	// Strip <ctx_compress>...</ctx_compress> blocks (with or without content)
+	re := regexp.MustCompile(`(?s)<ctx_compress>.*?</ctx_compress>`)
 	content = re.ReplaceAllString(content, "")
-	// Strip any bare <conversation_summary> or </conversation_summary> tags
-	content = strings.ReplaceAll(content, "<conversation_summary>", "")
-	content = strings.ReplaceAll(content, "</conversation_summary>", "")
+	// Strip any bare <ctx_compress> or </ctx_compress> tags
+	content = strings.ReplaceAll(content, "<ctx_compress>", "")
+	content = strings.ReplaceAll(content, "</ctx_compress>", "")
 	return strings.TrimSpace(content)
 }

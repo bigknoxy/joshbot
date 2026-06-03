@@ -1057,18 +1057,18 @@ func TestSanitizeResponse(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "strips full conversation_summary block",
-			input:    "Here is my response.\n<conversation_summary>\nuser: hello\nassistant: hi\n</conversation_summary>\nMore text.",
+			name:     "strips full ctx_compress block",
+			input:    "Here is my response.\n<ctx_compress>\nuser: hello\nassistant: hi\n</ctx_compress>\nMore text.",
 			expected: "Here is my response.\n\nMore text.",
 		},
 		{
 			name:     "strips opening tag only",
-			input:    "I see you've sent me a <conversation_summary>",
+			input:    "I see you've sent me a <ctx_compress>",
 			expected: "I see you've sent me a",
 		},
 		{
 			name:     "strips closing tag only",
-			input:    "Here is the end </conversation_summary> of the summary.",
+			input:    "Here is the end </ctx_compress> of the summary.",
 			expected: "Here is the end  of the summary.",
 		},
 		{
@@ -1083,12 +1083,12 @@ func TestSanitizeResponse(t *testing.T) {
 		},
 		{
 			name:     "strips bare opening tag with newline",
-			input:    "I see you've sent me a <conversation_summary>\nwith a list of repositories",
+			input:    "I see you've sent me a <ctx_compress>\nwith a list of repositories",
 			expected: "I see you've sent me a \nwith a list of repositories",
 		},
 		{
 			name:     "tag in backticks - stripped leaving empty backticks",
-			input:    "You've sent me ` <conversation_summary> ` that looks weird",
+			input:    "You've sent me ` <ctx_compress> ` that looks weird",
 			expected: "You've sent me `  ` that looks weird",
 		},
 	}
@@ -1104,7 +1104,7 @@ func TestSanitizeResponse(t *testing.T) {
 }
 
 // TestSystemPromptNoConversationSummaryReference ensures the system prompt
-// does NOT prime the LLM by mentioning conversation_summary directly
+// does NOT prime the LLM by mentioning internal compression tags directly
 // (the "pink elephant" problem — mentioning it teaches the LLM about it).
 func TestSystemPromptNoConversationSummaryReference(t *testing.T) {
 	prompt := buildCoreIdentity()
@@ -1113,5 +1113,8 @@ func TestSystemPromptNoConversationSummaryReference(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(prompt), "conversation_summary") {
 		t.Errorf("system prompt must not mention 'conversation_summary' to avoid priming the LLM: %q", prompt)
+	}
+	if strings.Contains(strings.ToLower(prompt), "ctx_compress") {
+		t.Errorf("system prompt must not mention 'ctx_compress' to avoid priming the LLM: %q", prompt)
 	}
 }

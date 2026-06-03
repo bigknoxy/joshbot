@@ -29,7 +29,7 @@ func (m *mockProvider) Chat(ctx context.Context, req providers.ChatRequest) (*pr
 	m.lastReq = req
 	// detect if summary prompt
 	for _, msg := range req.Messages {
-		if strings.Contains(msg.Content, "Summarize") || strings.Contains(msg.Content, "conversation_summary") || strings.Contains(msg.Content, "<conversation_summary>") {
+		if strings.Contains(msg.Content, "Summarize") || strings.Contains(msg.Content, "ctx_compress") || strings.Contains(msg.Content, "<ctx_compress>") {
 			m.sawSummary = true
 		}
 		if strings.Contains(msg.Content, "Summarize the following") {
@@ -117,8 +117,8 @@ func TestSanitizeResponse_LeakPrevention(t *testing.T) {
 	if resp == "" {
 		t.Fatalf("expected non-empty response")
 	}
-	if strings.Contains(resp, "<conversation_summary>") || strings.Contains(resp, "</conversation_summary>") {
-		t.Fatalf("response leaked conversation_summary tags: %q", resp)
+	if strings.Contains(resp, "<ctx_compress>") || strings.Contains(resp, "</ctx_compress>") {
+		t.Fatalf("response leaked ctx_compress tags: %q", resp)
 	}
 }
 
@@ -175,7 +175,7 @@ func TestAgent_CompressionAndConsolidation(t *testing.T) {
 		t.Fatalf("expected non-empty response")
 	}
 
-	// Verify compressor triggered: mockProvider should have recorded sawSummary when it received a message containing <conversation_summary>
+	// Verify compressor triggered: mockProvider should have recorded sawSummary when it received a message containing <ctx_compress>
 	prov.mu.Lock()
 	saw := prov.sawSummary
 	prov.mu.Unlock()

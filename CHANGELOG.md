@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.0] - 2026-06-03
+
+### Fixed
+- **`<conversation_summary>` still leaking with weaker models** — Renamed internal compression tag from `<conversation_summary>` to `<ctx_compress>`. The old name was too semantically rich: weaker models (e.g., step-3.5-flash) saw "conversation summary" in context and responded to it even with v1.28.1's system prompt removal + output sanitization. The new name is semantically inert — models have no reason to reference it. Dogfooded with 7.5K Kubernetes deep-dive: zero tag leakage.
+
 ## [1.29.0] - 2026-06-03
 
 ### Added

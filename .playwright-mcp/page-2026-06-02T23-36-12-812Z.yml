@@ -1,0 +1,230 @@
+- generic [active] [ref=e1]:
+  - navigation [ref=e2]:
+    - link "joshbot" [ref=e3] [cursor=pointer]:
+      - /url: index.html
+    - generic [ref=e4]:
+      - link "Home" [ref=e5] [cursor=pointer]:
+        - /url: index.html
+      - link "How it works" [ref=e6] [cursor=pointer]:
+        - /url: index.html#how
+      - link "Use Cases" [ref=e7] [cursor=pointer]:
+        - /url: index.html#use-cases
+      - link "Architecture" [ref=e8] [cursor=pointer]:
+        - /url: architecture.html
+      - link "GitHub" [ref=e9] [cursor=pointer]:
+        - /url: https://github.com/bigknoxy/joshbot
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - heading "Architecture" [level=1] [ref=e12]
+      - generic [ref=e13]: joshbot · Go 1.24 · ~14,500 LOC · 520+ tests
+    - generic [ref=e14]:
+      - generic [ref=e15]: Overview
+      - heading "System Architecture" [level=2] [ref=e16]
+      - paragraph [ref=e17]:
+        - text: joshbot is built around a
+        - strong [ref=e18]: goroutine-based message bus
+        - text: that decouples chat channels from a ReAct agent loop. The agent is backed by a multi-provider LLM layer via OpenRouter-compatible APIs. Everything — memory, skills, tools — is file-based, making the system portable and auditable without a database.
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - generic [ref=e21]: Core
+          - generic [ref=e23]: Data
+          - generic [ref=e25]: I/O
+          - generic [ref=e27]: LLM
+          - generic [ref=e29]: Infrastructure
+        - generic [ref=e31]:
+          - generic [ref=e32]:
+            - generic [ref=e33]:
+              - text: CLI Channel
+              - generic [ref=e34]: bufio.Reader stdin
+            - generic [ref=e35]:
+              - text: Telegram Channel
+              - generic [ref=e36]: telebot long-polling
+          - generic [ref=e38]: chan InboundMessage
+          - generic [ref=e39]:
+            - text: Message Bus
+            - generic [ref=e40]: goroutine channel multiplexer
+          - generic [ref=e42]: routed to agent goroutine
+          - generic [ref=e43]:
+            - text: Agent (ReAct Loop)
+            - generic [ref=e44]: "max 20 iterations: think → act → observe"
+          - generic [ref=e45]:
+            - generic [ref=e46]:
+              - text: Tools Registry
+              - generic [ref=e47]: 20 built-in tools
+            - generic [ref=e48]:
+              - text: Memory System
+              - generic [ref=e49]: MEMORY.md + HISTORY.md
+            - generic [ref=e50]:
+              - text: Skills System
+              - generic [ref=e51]: SKILL.md auto-discovery
+            - generic [ref=e52]:
+              - text: LLM Providers
+              - generic [ref=e53]: OpenRouter, Anthropic, etc.
+          - generic [ref=e55]: chan OutboundMessage
+          - generic [ref=e56]:
+            - text: Message Bus
+            - generic [ref=e57]: response routing back to channel
+          - generic [ref=e59]:
+            - generic [ref=e60]:
+              - text: CLI Output
+              - generic [ref=e61]: stdout
+            - generic [ref=e62]:
+              - text: Telegram Output
+              - generic [ref=e63]: bot.send()
+    - generic [ref=e64]:
+      - generic [ref=e65]: Data Flow
+      - heading "Message Processing Pipeline" [level=2] [ref=e66]
+      - paragraph [ref=e67]: Every message — from CLI or Telegram — follows the same path through the system.
+      - generic [ref=e68]:
+        - generic [ref=e69]:
+          - generic [ref=e70]: "1"
+          - generic [ref=e71]:
+            - strong [ref=e72]: Channel Receives Message
+            - generic [ref=e73]:
+              - text: CLI reads stdin via bufio.Reader. Telegram polls updates via telebot long-polling. Both produce an
+              - code [ref=e74]: InboundMessage
+              - text: .
+        - generic [ref=e75]:
+          - generic [ref=e76]: "2"
+          - generic [ref=e77]:
+            - strong [ref=e78]: Bus Routes to Agent
+            - generic [ref=e79]:
+              - text: The message bus fans
+              - code [ref=e80]: InboundMessage
+              - text: into the agent goroutine via a channel. The bus handles multiplexing across channels.
+        - generic [ref=e81]:
+          - generic [ref=e82]: "3"
+          - generic [ref=e83]:
+            - strong [ref=e84]: Agent Assembles Context
+            - generic [ref=e85]: Identity files (IDENTITY.md, SOUL.md, USER.md, AGENTS.md) + MEMORY.md + skills summaries → system prompt. Session history loaded from JSONL files.
+        - generic [ref=e86]:
+          - generic [ref=e87]: "4"
+          - generic [ref=e88]:
+            - strong [ref=e89]: ReAct Loop Begins
+            - generic [ref=e90]: LLM responds with text and/or tool calls. Agent executes tools via the Registry, feeds results back as observations. Repeats up to 20 iterations.
+        - generic [ref=e91]:
+          - generic [ref=e92]: "5"
+          - generic [ref=e93]:
+            - strong [ref=e94]: Memory & Skills Update
+            - generic [ref=e95]: After each response, key facts are extracted into MEMORY.md. Repeated tool patterns trigger auto-skill creation via detection/extraction pipeline.
+        - generic [ref=e96]:
+          - generic [ref=e97]: "6"
+          - generic [ref=e98]:
+            - strong [ref=e99]: Response Sent Back
+            - generic [ref=e100]:
+              - text: Final response →
+              - code [ref=e101]: OutboundMessage
+              - text: on bus → routed to correct channel → displayed to user.
+    - generic [ref=e102]:
+      - generic [ref=e103]: Directory Structure
+      - heading "Code Map" [level=2] [ref=e104]
+      - paragraph [ref=e105]:
+        - text: The project follows Go conventions with
+        - code [ref=e106]: cmd/
+        - text: for the entry point and
+        - code [ref=e107]: internal/
+        - text: for all implementation packages.
+      - generic [ref=e108]: joshbot/ ├── cmd/joshbot/ ← CLI entry point, service wiring (~3,340 LOC) │ ├── main.go entry point, flags, gateway │ └── main_test.go ├── internal/ ← all implementation │ ├── agent/ ReAct loop, context assembly, prompt caching │ ├── memory/ structured fact store (fact.go, search.go) │ ├── skills/ discovery, detection, extraction, validation │ ├── tools/ 20 built-in tools + registry │ ├── channels/ CLI + Telegram channel implementations │ ├── bus/ goroutine message bus │ ├── providers/ LLM provider layer (OpenRouter, Anthropic, etc.) │ ├── session/ JSONL conversation persistence │ ├── subagent/ restricted subagent runner │ ├── cron/ task scheduler │ ├── heartbeat/ proactive wake-up checker │ ├── context/ budget manager, compression │ ├── config/ JSON config, env overrides │ ├── learning/ summary extraction │ ├── log/ structured logging (charmbracelet/log) │ ├── copilot/ GitHub Copilot auth │ ├── configure/ config wizard │ ├── service/ systemd/launchd install │ └── integration/ integration tests ├── docs/ documentation ├── skills/ workspace skills (SKILL.md files) ├── site/ ← website (this page) ├── README.md ├── AGENTS.md ├── CLAUDE.md ├── CHANGELOG.md └── VERSION
+    - generic [ref=e109]:
+      - generic [ref=e110]: Patterns
+      - heading "Key Architectural Patterns" [level=2] [ref=e111]
+      - paragraph [ref=e112]: These design decisions shape how every component works.
+      - generic [ref=e113]:
+        - generic [ref=e114]:
+          - heading "Message Bus" [level=4] [ref=e115]
+          - paragraph [ref=e116]:
+            - text: Channels decoupled from agent via
+            - code [ref=e117]: chan InboundMessage
+            - text: and
+            - code [ref=e118]: chan OutboundMessage
+            - text: . Adding a new channel requires zero agent changes.
+        - generic [ref=e119]:
+          - heading "ReAct Loop" [level=4] [ref=e120]
+          - paragraph [ref=e121]: LLM → tools → reflect → repeat (max 20 iterations). Each iteration appends tool results as observations for the next LLM call.
+        - generic [ref=e122]:
+          - heading "Plain-File Storage" [level=4] [ref=e123]
+          - paragraph [ref=e124]: No databases. MEMORY.md, HISTORY.md, SKILL.md files. Portable, auditable, grep-able, syncs via Dropbox/git.
+        - generic [ref=e125]:
+          - heading "Progressive Skill Loading" [level=4] [ref=e126]
+          - paragraph [ref=e127]: Skills summarized in context; full content loaded on demand. Keeps token overhead minimal until a skill is actually invoked.
+        - generic [ref=e128]:
+          - heading "Prompt Caching" [level=4] [ref=e129]
+          - paragraph [ref=e130]: Static system prompt segments cached with mtime-based invalidation. Reduces file I/O on every message — critical for memory/skill files read each turn.
+        - generic [ref=e131]:
+          - heading "Model-Centric Config" [level=4] [ref=e132]
+          - paragraph [ref=e133]: Provider auto-detected from model prefix (claude → Anthropic, gpt → OpenAI). Fallback chains for resilience. ExtraBody support for provider-specific fields.
+        - generic [ref=e134]:
+          - heading "Context Compression" [level=4] [ref=e135]
+          - paragraph [ref=e136]: Conversation history summarized when approaching token limits. Budget manager tracks and enforces per-iteration costs.
+        - generic [ref=e137]:
+          - heading "Subagent Delegation" [level=4] [ref=e138]
+          - paragraph [ref=e139]: Parallel fan-out or sequential chain execution. Each subagent gets a focused one-turn LLM call with its own system prompt. Results merged back into the parent agent context.
+    - generic [ref=e140]:
+      - generic [ref=e141]: Component Details
+      - heading "Key Components" [level=2] [ref=e142]
+      - heading "Agent (internal/agent/)" [level=3] [ref=e143]:
+        - text: Agent (
+        - code [ref=e144]: internal/agent/
+        - text: )
+      - paragraph [ref=e145]: The core ReAct loop. Each message triggers up to 20 think-act-observe iterations. System prompt is assembled from identity files + memory + skills summaries (with mtime-based caching). The agent serializes the tool schema from the Registry into the LLM's function calling format.
+      - heading "Tools (internal/tools/)" [level=3] [ref=e146]:
+        - text: Tools (
+        - code [ref=e147]: internal/tools/
+        - text: )
+      - paragraph [ref=e148]:
+        - text: 20 tools implement the
+        - code [ref=e149]: Tool
+        - text: "interface. Each declares Name, Description, Parameters, and Execute. The Registry handles discovery and execution. Tools include: filesystem, shell (with safety deny-list), web fetch (SSRF-protected), memory search, skill management, parallel subagent, chain execution, message sending, and more."
+      - heading "Memory System (internal/memory/)" [level=3] [ref=e150]:
+        - text: Memory System (
+        - code [ref=e151]: internal/memory/
+        - text: )
+      - paragraph [ref=e152]:
+        - text: "Two files:"
+        - code [ref=e153]: MEMORY.md
+        - text: (always in context — key facts, preferences, decisions) and
+        - code [ref=e154]: HISTORY.md
+        - text: (grep-searchable event log for recall). Facts are extracted after each conversation turn by the learning module.
+      - heading "Skills System (internal/skills/)" [level=3] [ref=e155]:
+        - text: Skills System (
+        - code [ref=e156]: internal/skills/
+        - text: )
+      - paragraph [ref=e157]:
+        - text: Markdown files with YAML frontmatter in
+        - code [ref=e158]: "workspace/skills/{name}/SKILL.md"
+        - text: ". Auto-discovered on startup. Progressive loading: summary only in system prompt, full content loaded when the skill is invoked. The detection module observes tool usage patterns and auto-creates skills."
+      - heading "Providers (internal/providers/)" [level=3] [ref=e159]:
+        - text: Providers (
+        - code [ref=e160]: internal/providers/
+        - text: )
+      - paragraph [ref=e161]:
+        - text: Multi-provider LLM support via a unified
+        - code [ref=e162]: Provider
+        - text: "interface. Registered providers: OpenRouter, OpenAI, NVIDIA, Groq, Ollama, Anthropic, Poolside, Azure, Custom, LiteLLM. Provider auto-selection by model prefix. ExtraBody support for provider-specific fields (e.g., poolside's chat_template_kwargs)."
+      - heading "Message Bus (internal/bus/)" [level=3] [ref=e163]:
+        - text: Message Bus (
+        - code [ref=e164]: internal/bus/
+        - text: )
+      - paragraph [ref=e165]: Goroutine-safe channel multiplexer. Inbound messages from any channel are routed to the agent goroutine. Outbound messages from the agent are routed back to the originating channel. This decoupling means channels and agent can be developed independently.
+    - generic [ref=e166]:
+      - generic [ref=e167]: Configuration
+      - heading "Model-Centric Config" [level=2] [ref=e168]
+      - paragraph [ref=e169]: Providers are auto-detected from model names. The config supports both legacy and model-centric formats.
+      - generic [ref=e171]: "{ \"models_config\": { \"models\": [ { \"name\": \"smart\", \"model\": \"anthropic/claude-sonnet-4\", \"api_key\": \"...\" }, { \"name\": \"fast\", \"model\": \"groq/llama-3.3-70b\", \"api_key\": \"...\" }, { \"name\": \"code\", \"model\": \"poolside/laguna-m.1\", \"api_key\": \"...\", \"extra_body\": { \"chat_template_kwargs\": { \"enable_thinking\": false } } } ], \"agent\": { \"model\": \"smart\", \"fallback\": [\"fast\"] } }, \"providers\": { \"openrouter\": { \"api_key\": \"...\", \"enabled\": true }, \"nvidia\": { \"api_key\": \"...\", \"enabled\": true } }, \"channels\": { \"telegram\": { \"enabled\": false, \"token\": \"\", \"allow_from\": [] } } }"
+      - paragraph [ref=e172]:
+        - text: "Environment variable overrides:"
+        - code [ref=e173]: JOSHBOT_PROVIDERS__OPENROUTER__API_KEY
+        - text: or
+        - code [ref=e174]: JOSHBOT_MODELS_CONFIG__AGENT__MODEL
+        - text: . Config is validated JSON, stored at
+        - code [ref=e175]: ~/.joshbot/config.json
+        - text: .
+  - contentinfo [ref=e176]:
+    - paragraph [ref=e177]:
+      - text: joshbot ·
+      - link "Home" [ref=e178] [cursor=pointer]:
+        - /url: index.html
+      - text: ·
+      - link "GitHub" [ref=e179] [cursor=pointer]:
+        - /url: https://github.com/bigknoxy/joshbot
+      - text: · MIT License

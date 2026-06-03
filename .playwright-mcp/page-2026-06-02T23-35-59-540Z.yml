@@ -1,0 +1,125 @@
+- generic [active] [ref=e1]:
+  - navigation [ref=e2]:
+    - link "joshbot" [ref=e3] [cursor=pointer]:
+      - /url: /
+    - generic [ref=e4]:
+      - link "How it works" [ref=e5] [cursor=pointer]:
+        - /url: "#how"
+      - link "Use Cases" [ref=e6] [cursor=pointer]:
+        - /url: "#use-cases"
+      - link "Architecture" [ref=e7] [cursor=pointer]:
+        - /url: architecture.html
+      - link "GitHub" [ref=e8] [cursor=pointer]:
+        - /url: https://github.com/bigknoxy/joshbot
+      - link "Get Started" [ref=e9] [cursor=pointer]:
+        - /url: https://github.com/bigknoxy/joshbot#quick-start
+  - generic [ref=e10]:
+    - generic [ref=e11]: $ _
+    - heading "your personal AI agent" [level=1] [ref=e12]:
+      - text: your personal
+      - text: AI agent
+    - paragraph [ref=e13]: joshbot is a lightweight, self-learning AI assistant that lives in your terminal. Memory, skills, tool use, Telegram — everything you need, nothing you don't.
+    - generic [ref=e14]:
+      - link "Install Now" [ref=e15] [cursor=pointer]:
+        - /url: https://github.com/bigknoxy/joshbot#quick-start
+      - link "How It Works" [ref=e16] [cursor=pointer]:
+        - /url: "#how"
+    - generic [ref=e17]:
+      - generic [ref=e18]: joshbot — interactive session
+      - generic [ref=e23]:
+        - generic [ref=e24]: $ joshbot agent
+        - generic [ref=e25]: "> what was that article about Go concurrency patterns?"
+        - generic [ref=e26]: "[memory_search] Found 3 relevant facts..."
+        - generic [ref=e27]: "You asked about this on March 12th. Key patterns: goroutines (cheap threads), channels (communicate via shared memory), and select (multiplex). Want me to fetch the full article?"
+        - generic [ref=e28]: ">|"
+  - generic [ref=e29]:
+    - generic [ref=e30]:
+      - generic [ref=e31]: How it works
+      - heading "ReAct loop, real results" [level=2] [ref=e32]:
+        - text: ReAct loop,
+        - text: real results
+      - paragraph [ref=e33]: joshbot uses a ReAct (Reasoning + Acting) loop — it thinks, uses tools, learns from results, and iterates — all within a single conversation.
+    - generic [ref=e34]:
+      - generic [ref=e35]:
+        - generic [ref=e36]: "01"
+        - heading "You speak" [level=3] [ref=e37]
+        - paragraph [ref=e38]: Send a message via CLI, Telegram, or script. Every channel feeds into a common message bus.
+      - generic [ref=e39]:
+        - generic [ref=e40]: "02"
+        - heading "It reasons" [level=3] [ref=e41]
+        - paragraph [ref=e42]: The LLM core analyzes your intent with full context — past conversations, stored memories, available skills and tools.
+      - generic [ref=e43]:
+        - generic [ref=e44]: "03"
+        - heading "It acts" [level=3] [ref=e45]
+        - paragraph [ref=e46]: Runs tools (search files, fetch web pages, execute code, delegate subagents) and observes results.
+      - generic [ref=e47]:
+        - generic [ref=e48]: "04"
+        - heading "It learns" [level=3] [ref=e49]
+        - paragraph [ref=e50]: Key facts are extracted and saved to long-term memory. Repeated tool patterns auto-create reusable skills.
+  - generic [ref=e52]:
+    - generic [ref=e53]:
+      - generic [ref=e54]: 14,500
+      - generic [ref=e55]: Lines of Go
+    - generic [ref=e56]:
+      - generic [ref=e57]: "46"
+      - generic [ref=e58]: Test Files
+    - generic [ref=e59]:
+      - generic [ref=e60]: 520+
+      - generic [ref=e61]: Test Functions
+    - generic [ref=e62]:
+      - generic [ref=e63]: "20"
+      - generic [ref=e64]: Built-in Tools
+  - generic [ref=e65]:
+    - generic [ref=e66]:
+      - generic [ref=e67]: Use Cases
+      - heading "What can it do?" [level=2] [ref=e68]
+      - paragraph [ref=e69]: From daily productivity to deep research — joshbot handles the spectrum.
+    - generic [ref=e70]:
+      - generic [ref=e71]:
+        - generic [ref=e72]: ⚡
+        - heading "Daily Briefing" [level=3] [ref=e73]
+        - paragraph [ref=e74]: Summarizes calendar, tasks, and priorities into a morning plan. Flag urgent items and draft replies.
+      - generic [ref=e75]:
+        - generic [ref=e76]: 🔬
+        - heading "Deep Research" [level=3] [ref=e77]
+        - paragraph [ref=e78]: Gathers information across multiple sources, cross-references, and returns a structured brief with citations.
+      - generic [ref=e79]:
+        - generic [ref=e80]: 🧠
+        - heading "Cross-Session Memory" [level=3] [ref=e81]
+        - paragraph [ref=e82]: Retains facts, preferences, and decisions across days. Retrieves relevant context without being reminded.
+      - generic [ref=e83]:
+        - generic [ref=e84]: 🛠️
+        - heading "Code & Engineering" [level=3] [ref=e85]
+        - paragraph [ref=e86]: Generates, explains, debugs, and refactors code. Runs lint/tests on results. Investigates bugs systematically.
+      - generic [ref=e87]:
+        - generic [ref=e88]: 📡
+        - heading "Workflow Automation" [level=3] [ref=e89]
+        - paragraph [ref=e90]: "React to triggers (new file, webhook, cron) to run pipelines: fetch → transform → notify → archive."
+      - generic [ref=e91]:
+        - generic [ref=e92]: 🧩
+        - heading "Auto Skill Creation" [level=3] [ref=e93]
+        - paragraph [ref=e94]: Observes repeated tool-use patterns and generates reusable skills. Common tasks become one-command operations.
+      - generic [ref=e95]:
+        - generic [ref=e96]: 🤖
+        - heading "Subagent Delegation" [level=3] [ref=e97]
+        - paragraph [ref=e98]: Fans out independent tasks to parallel subagents or chains steps sequentially. Each gets focused context.
+      - generic [ref=e99]:
+        - generic [ref=e100]: 📱
+        - heading "Telegram Integration" [level=3] [ref=e101]
+        - paragraph [ref=e102]: Chat from anywhere via Telegram. Full skill and memory access from your phone. Long-polling, no webhooks needed.
+  - generic [ref=e103]:
+    - generic [ref=e104]: Get Started
+    - heading "One command to install" [level=2] [ref=e105]
+    - paragraph [ref=e106]: Open source, MIT licensed. Your data stays on your machine.
+    - generic [ref=e107]:
+      - text: curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
+      - button "Copy" [ref=e108] [cursor=pointer]
+  - contentinfo [ref=e109]:
+    - paragraph [ref=e110]:
+      - text: joshbot —
+      - link "GitHub" [ref=e111] [cursor=pointer]:
+        - /url: https://github.com/bigknoxy/joshbot
+      - text: ·
+      - link "Architecture" [ref=e112] [cursor=pointer]:
+        - /url: architecture.html
+      - text: · MIT License

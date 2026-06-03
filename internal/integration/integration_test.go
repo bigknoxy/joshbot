@@ -86,6 +86,42 @@ func (m *inMemorySessionManager) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+func TestSanitizeResponse_LeakPrevention(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	cfg := cfgpkg.Defaults()
+	cfg.Agents.Defaults.Workspace = tmp
+	cfg.Agents.Defaults.Model = "small"
+	cfg.Agents.Defaults.MaxTokens = 200
+
+	mem, err := memory.New(tmp)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	if err := mem.Initialize(ctx); err != nil {
+		t.Fatalf("mem.Initialize: %v", err)
+	}
+
+	prov := &mockProvider{}
+	sessMgr := newInMemSessionManager()
+
+	a := agent.NewAgent(cfg, prov, nil, sessMgr, nil, agent.WithMemoryLoader(mem))
+
+	msg := bus.InboundMessage{SenderID: "tester", Channel: "cli", Content: "Tell me about quantum computing", Timestamp: time.Now()}
+
+	// First message: no issue expected
+	resp, err := a.Process(ctx, msg)
+	if err != nil {
+		t.Fatalf("Process error: %v", err)
+	}
+	if resp == "" {
+		t.Fatalf("expected non-empty response")
+	}
+	if strings.Contains(resp, "<conversation_summary>") || strings.Contains(resp, "</conversation_summary>") {
+		t.Fatalf("response leaked conversation_summary tags: %q", resp)
+	}
+}
+
 func TestAgent_CompressionAndConsolidation(t *testing.T) {
 	ctx := context.Background()
 

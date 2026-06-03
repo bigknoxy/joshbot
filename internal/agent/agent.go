@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -343,6 +344,9 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 				content = "I've processed your request."
 			}
 
+			// Sanitize: strip internal context tags from response
+			content = sanitizeResponse(content)
+
 			// Add assistant message to session
 			sess.AddMessage(session.Message{
 				Role:      session.RoleAssistant,
@@ -565,7 +569,7 @@ func (a *Agent) checkAndCompactContext(messages []providers.Message, sess *sessi
 		messages[0], // Keep system message
 		{
 			Role:    providers.RoleUser,
-			Content: "<conversation_summary>\n" + compressed,
+			Content: "<conversation_summary>\n" + compressed + "\n</conversation_summary>",
 		},
 	}
 
@@ -644,7 +648,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 			compressed, err := a.compressor.CompressMessages(model, providerMsgs, budget)
 			if err == nil && compressed != "" {
 				// Append a single summarized user message instead of full history
-				msgs = append(msgs, providers.Message{Role: providers.RoleUser, Content: "<conversation_summary>\n" + compressed})
+				msgs = append(msgs, providers.Message{Role: providers.RoleUser, Content: "<conversation_summary>\n" + compressed + "\n</conversation_summary>"})
 				return msgs
 			}
 			// on error, fallthrough and append full messages (best-effort)
@@ -800,4 +804,15 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// sanitizeResponse strips internal context tags from LLM responses.
+func sanitizeResponse(content string) string {
+	// Strip <conversation_summary>...</conversation_summary> blocks (with or without content)
+	re := regexp.MustCompile(`(?s)<conversation_summary>.*?</conversation_summary>`)
+	content = re.ReplaceAllString(content, "")
+	// Strip any bare <conversation_summary> or </conversation_summary> tags
+	content = strings.ReplaceAll(content, "<conversation_summary>", "")
+	content = strings.ReplaceAll(content, "</conversation_summary>", "")
+	return strings.TrimSpace(content)
 }

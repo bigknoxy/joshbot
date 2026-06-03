@@ -41,3 +41,6 @@ htmlcov/
 
 .lean-ctx/
 joshbot
+
+# Playwright browser testing artifacts
+.playwright-mcp/

@@ -1048,3 +1048,51 @@ func TestTruncate(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "strips full conversation_summary block",
+			input:    "Here is my response.\n<conversation_summary>\nuser: hello\nassistant: hi\n</conversation_summary>\nMore text.",
+			expected: "Here is my response.\n\nMore text.",
+		},
+		{
+			name:     "strips opening tag only",
+			input:    "I see you've sent me a <conversation_summary>",
+			expected: "I see you've sent me a",
+		},
+		{
+			name:     "strips closing tag only",
+			input:    "Here is the end </conversation_summary> of the summary.",
+			expected: "Here is the end  of the summary.",
+		},
+		{
+			name:     "no tags - unchanged",
+			input:    "Hello, how can I help you today?",
+			expected: "Hello, how can I help you today?",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "strips bare opening tag with newline",
+			input:    "I see you've sent me a <conversation_summary>\nwith a list of repositories",
+			expected: "I see you've sent me a \nwith a list of repositories",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeResponse(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeResponse(%q) = %q, expected %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}

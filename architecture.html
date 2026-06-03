@@ -7,25 +7,23 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏗️</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0f1117;
-  --bg-alt: #161822;
-  --surface: #1e2030;
-  --surface-2: #262840;
-  --border: #2e3050;
-  --accent: #7aa2f7;
-  --accent-2: #bb9af7;
-  --green: #9ece6a;
-  --orange: #ff9e64;
-  --red: #f7768e;
-  --cyan: #7dcfff;
-  --text: #c0caf5;
-  --text-dim: #565f89;
-  --text-bright: #e0e4f5;
+  --bg: #0a0e14;
+  --bg-alt: #111820;
+  --surface: #1a2332;
+  --border: #2a3a50;
+  --amber: #ffb545;
+  --amber-dim: #c8943a;
+  --green: #7ec699;
+  --green-bright: #a8e6cf;
+  --cyan: #68c4d8;
+  --text: #d4d8e0;
+  --text-dim: #7a8a9a;
+  --text-bright: #f0f2f5;
   --font-display: 'JetBrains Mono', monospace;
-  --font-body: 'Inter', -apple-system, sans-serif;
+  --font-body: 'Source Serif 4', 'Times New Roman', serif;
   --radius: 8px;
   --line: 1px solid var(--border);
 }
@@ -37,19 +35,33 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-body);
-  line-height: 1.6;
+  line-height: 1.7;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
 
-/* Nav */
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(255,181,69,0.015) 2px,
+    rgba(255,181,69,0.015) 4px
+  );
+}
+
 nav {
   position: fixed; top: 0; left: 0; right: 0;
   z-index: 100;
-  background: rgba(15,17,23,0.92);
+  background: rgba(10,14,20,0.92);
   backdrop-filter: blur(12px);
   border-bottom: var(--line);
   padding: 0 2rem;
-  height: 56px;
+  height: 60px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -57,20 +69,24 @@ nav {
 nav .logo {
   font-family: var(--font-display);
   font-weight: 800;
-  font-size: 1rem;
-  color: var(--accent);
+  font-size: 1.1rem;
+  color: var(--amber);
   text-decoration: none;
+  letter-spacing: -0.5px;
 }
-nav .nav-links { display: flex; gap: 1.5rem; align-items: center; }
+nav .logo span { color: var(--green); }
+nav .nav-links { display: flex; gap: 2rem; align-items: center; }
 nav .nav-links a {
   font-family: var(--font-display);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--text-dim);
   text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
   transition: color .2s;
 }
-nav .nav-links a:hover { color: var(--accent); }
-nav .nav-links .active { color: var(--accent); }
+nav .nav-links a:hover { color: var(--amber); }
+nav .nav-links .active { color: var(--amber); }
 
 .container {
   max-width: 960px;
@@ -78,7 +94,6 @@ nav .nav-links .active { color: var(--accent); }
   padding: 0 2rem;
 }
 
-/* Hero */
 .page-hero {
   padding: 120px 0 60px;
   border-bottom: var(--line);
@@ -89,22 +104,21 @@ nav .nav-links .active { color: var(--accent); }
   font-weight: 800;
   color: var(--text-bright);
   margin-bottom: 0.75rem;
-  letter-spacing: -1px;
+  letter-spacing: -2px;
 }
 .page-hero .meta {
   font-family: var(--font-display);
   font-size: 0.8rem;
   color: var(--text-dim);
 }
-.page-hero .meta span { color: var(--accent); }
+.page-hero .meta span { color: var(--amber); }
 
-/* Section */
 section { padding: 60px 0; border-bottom: var(--line); }
 section:last-of-type { border-bottom: none; }
 .section-label {
   font-family: var(--font-display);
-  font-size: 0.65rem;
-  color: var(--accent-2);
+  font-size: 0.7rem;
+  color: var(--amber-dim);
   text-transform: uppercase;
   letter-spacing: 2px;
   margin-bottom: 0.5rem;
@@ -121,15 +135,23 @@ section h3 {
   font-family: var(--font-display);
   font-size: 1rem;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--cyan);
   margin-bottom: 0.75rem;
 }
-section p, section li { color: var(--text); font-size: 0.95rem; line-height: 1.7; }
 section p { margin-bottom: 1rem; }
+section p, section li { color: var(--text); font-size: 0.95rem; line-height: 1.7; }
+section p code, li code {
+  font-family: var(--font-display);
+  font-size: 0.85em;
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--green);
+}
 section ul { padding-left: 1.25rem; margin-bottom: 1.5rem; }
 section li { margin-bottom: 0.3rem; }
+section strong { color: var(--text-bright); }
 
-/* Architecture diagram — pure CSS */
 .diagram-container {
   background: var(--bg-alt);
   border: var(--line);
@@ -165,21 +187,19 @@ section li { margin-bottom: 0.3rem; }
   transition: border-color .2s;
   min-width: 100px;
 }
-.box:hover { border-color: var(--accent); }
+.box:hover { border-color: var(--amber); }
 .box .name { color: var(--text-bright); font-weight: 600; }
 .box .desc { color: var(--text-dim); font-size: 0.65rem; margin-top: 2px; }
-.box.accent { border-color: var(--accent); }
-.box.accent .name { color: var(--accent); }
+.box.amber { border-color: var(--amber); }
+.box.amber .name { color: var(--amber); }
 .box.green { border-color: var(--green); }
 .box.green .name { color: var(--green); }
-.box.orange { border-color: var(--orange); }
-.box.orange .name { color: var(--orange); }
 .box.cyan { border-color: var(--cyan); }
 .box.cyan .name { color: var(--cyan); }
-.box.purple { border-color: var(--accent-2); }
-.box.purple .name { color: var(--accent-2); }
-.box.red { border-color: var(--red); }
-.box.red .name { color: var(--red); }
+.box.orange { border-color: #d48757; }
+.box.orange .name { color: #d48757; }
+.box.purple { border-color: #b480ce; }
+.box.purple .name { color: #b480ce; }
 .box.wide { min-width: 140px; }
 .box.full { width: 100%; max-width: 300px; }
 
@@ -197,7 +217,19 @@ section li { margin-bottom: 0.3rem; }
   margin: 2px 0;
 }
 
-/* Key patterns list */
+.color-key {
+  display: flex; flex-wrap: wrap; gap: 1rem;
+  margin: 1rem 0;
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+}
+.color-key .swatch {
+  display: flex; align-items: center; gap: 6px;
+}
+.color-key .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+}
+
 .pattern-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -219,7 +251,6 @@ section li { margin-bottom: 0.3rem; }
 }
 .pattern-card p { font-size: 0.85rem; color: var(--text-dim); margin: 0; }
 
-/* File tree */
 .file-tree {
   font-family: var(--font-display);
   font-size: 0.8rem;
@@ -232,11 +263,10 @@ section li { margin-bottom: 0.3rem; }
   white-space: pre;
   overflow-x: auto;
 }
-.file-tree .dir { color: var(--accent); }
+.file-tree .dir { color: var(--amber); }
 .file-tree .file { color: var(--text); }
 .file-tree .highlight { color: var(--green); }
 
-/* Data flow */
 .flow-list { counter-reset: flow; }
 .flow-item {
   counter-increment: flow;
@@ -251,7 +281,7 @@ section li { margin-bottom: 0.3rem; }
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 0.75rem;
-  color: var(--accent);
+  color: var(--amber);
   background: var(--surface);
   border: var(--line);
   border-radius: 6px;
@@ -259,36 +289,23 @@ section li { margin-bottom: 0.3rem; }
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
-.flow-item .flow-content { }
 .flow-item .flow-content strong { color: var(--text-bright); }
 .flow-item .flow-desc { font-size: 0.9rem; color: var(--text-dim); margin-top: 2px; }
 
-/* Color key */
-.color-key {
-  display: flex; flex-wrap: wrap; gap: 1rem;
-  margin: 1rem 0;
-  font-family: var(--font-display);
-  font-size: 0.7rem;
-}
-.color-key .swatch {
-  display: flex; align-items: center; gap: 6px;
-}
-.color-key .dot {
-  width: 10px; height: 10px; border-radius: 50%;
-}
-
-/* Footer */
 footer {
-  padding: 2rem 0;
+  border-top: var(--line);
+  padding: 3rem 2rem;
   text-align: center;
   font-family: var(--font-display);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--text-dim);
 }
-footer a { color: var(--accent); text-decoration: none; }
+footer a { color: var(--amber); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
 
 @media (max-width: 600px) {
   nav { padding: 0 1rem; }
+  nav .nav-links a:not(.active) { display: none; }
   .container { padding: 0 1rem; }
   .diagram-container { padding: 1rem; }
   .file-tree { font-size: 0.7rem; padding: 1rem; }
@@ -298,13 +315,14 @@ footer a { color: var(--accent); text-decoration: none; }
 <body>
 
 <nav>
-  <a href="index.html" class="logo">joshbot</a>
+  <a href="index.html" class="logo">josh<span>bot</span></a>
   <div class="nav-links">
     <a href="index.html">Home</a>
     <a href="index.html#how">How it works</a>
     <a href="index.html#use-cases">Use Cases</a>
     <a href="architecture.html" class="active">Architecture</a>
     <a href="https://github.com/bigknoxy/joshbot" target="_blank">GitHub</a>
+    <a href="https://github.com/bigknoxy/joshbot#quick-start" class="cta" style="background:var(--amber);color:var(--bg);padding:8px 18px;border-radius:var(--radius);font-weight:700;">Get Started</a>
   </div>
 </nav>
 
@@ -321,11 +339,11 @@ footer a { color: var(--accent); text-decoration: none; }
 
     <div class="diagram-container">
       <div class="color-key">
-        <span class="swatch"><span class="dot" style="background:var(--accent)"></span> Core</span>
+        <span class="swatch"><span class="dot" style="background:var(--amber)"></span> Core</span>
         <span class="swatch"><span class="dot" style="background:var(--green)"></span> Data</span>
-        <span class="swatch"><span class="dot" style="background:var(--orange)"></span> I/O</span>
+        <span class="swatch"><span class="dot" style="background:#d48757"></span> I/O</span>
         <span class="swatch"><span class="dot" style="background:var(--cyan)"></span> LLM</span>
-        <span class="swatch"><span class="dot" style="background:var(--accent-2)"></span> Infrastructure</span>
+        <span class="swatch"><span class="dot" style="background:#b480ce"></span> Infrastructure</span>
       </div>
 
       <div class="diagram">
@@ -335,10 +353,10 @@ footer a { color: var(--accent); text-decoration: none; }
         </div>
         <div class="arrow-down"></div>
         <div class="arrow-label">chan InboundMessage</div>
-        <div class="box accent full"><span class="name">Message Bus</span><div class="desc">goroutine channel multiplexer</div></div>
+        <div class="box amber full"><span class="name">Message Bus</span><div class="desc">goroutine channel multiplexer</div></div>
         <div class="arrow-down solid"></div>
         <div class="arrow-label">routed to agent goroutine</div>
-        <div class="box accent full"><span class="name">Agent (ReAct Loop)</span><div class="desc">max 20 iterations: think → act → observe</div></div>
+        <div class="box amber full"><span class="name">Agent (ReAct Loop)</span><div class="desc">max 20 iterations: think → act → observe</div></div>
         <div class="diagram-row wrap" style="margin-top: 8px;">
           <div class="box purple"><span class="name">Tools Registry</span><div class="desc">20 built-in tools</div></div>
           <div class="box green"><span class="name">Memory System</span><div class="desc">MEMORY.md + HISTORY.md</div></div>
@@ -347,7 +365,7 @@ footer a { color: var(--accent); text-decoration: none; }
         </div>
         <div class="arrow-down"></div>
         <div class="arrow-label">chan OutboundMessage</div>
-        <div class="box accent full"><span class="name">Message Bus</span><div class="desc">response routing back to channel</div></div>
+        <div class="box amber full"><span class="name">Message Bus</span><div class="desc">response routing back to channel</div></div>
         <div class="arrow-down"></div>
         <div class="diagram-row wrap">
           <div class="box orange wide"><span class="name">CLI Output</span><div class="desc">stdout</div></div>
@@ -541,7 +559,7 @@ footer a { color: var(--accent); text-decoration: none; }
 </div>
 
 <footer>
-  <p>joshbot &middot; <a href="index.html">Home</a> &middot; <a href="https://github.com/bigknoxy/joshbot">GitHub</a> &middot; MIT License</p>
+  <p>joshbot — <a href="index.html">Home</a> &middot; <a href="https://github.com/bigknoxy/joshbot">GitHub</a> &middot; MIT License</p>
 </footer>
 
 </body>

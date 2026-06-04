@@ -571,13 +571,63 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		skillsLoader,
 	)
 
+	// Create function to reload providers from config (for config tool hot-reload)
+	reloadProviders := func() error {
+		multiProvider.Clear()
+		if cfg.UseModelsConfig() {
+			resolvedModels := cfg.GetAllModelConfigs()
+			for i, resolved := range resolvedModels {
+				llmProvider := providers.NewProviderFromResolvedModel(resolved, &providers.DefaultLogger{})
+				var provider providers.Provider = llmProvider
+				if len(resolved.APIKeys) > 1 {
+					pool := providers.NewAPIKeyPool(resolved.APIKeys, 24*time.Hour, 3)
+					provider = providers.NewKeyRotatingProvider(llmProvider, pool)
+				}
+				multiProvider.Register(resolved.Name, provider, resolved.ModelID, i, true)
+			}
+		} else {
+			if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" && p.Enabled {
+				openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
+					APIKey: p.APIKey, APIBase: p.APIBase, ExtraHeaders: p.ExtraHeaders,
+					Model: cfg.Agents.Defaults.Model, MaxTokens: cfg.Agents.Defaults.MaxTokens,
+					Temperature: cfg.Agents.Defaults.Temperature,
+				})
+				if err != nil {
+					log.Warn("Failed to create OpenRouter provider", "error", err)
+				} else {
+					multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0, p.Enabled)
+				}
+			}
+			if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
+				nvidiaProvider, err := providers.GetProvider("nvidia", providers.Config{
+					APIKey: p.APIKey, APIBase: p.APIBase, ExtraHeaders: p.ExtraHeaders, Model: p.Model,
+				})
+				if err != nil {
+					log.Warn("Failed to create NVIDIA provider", "error", err)
+				} else {
+					model := p.Model
+					if model == "" { model = cfg.Agents.Defaults.Model }
+					multiProvider.Register("nvidia", nvidiaProvider, model, 1, p.Enabled)
+				}
+			}
+		}
+		return nil
+	}
+
+	// Register config tool
+	toolsRegistry.Register(tools.NewConfigureTool(cfg, reloadProviders))
+
 	// Create async callback channel and start processor for background task notifications
 	asyncCallbackCh := make(chan tools.AsyncResult, 100)
 	toolsRegistry.SetAsyncCallback(asyncCallbackCh)
 	toolsRegistry.Register(tools.NewMemorySearchTool(memoryManager))
 
 	// Create subagent runner for parallel and chain execution tools
-	subagentRunner := subagent.NewRunner(multiProvider, cfg.Agents.Defaults.Model, 4096, 0.3, 60*time.Second)
+	agentModel := cfg.Agents.Defaults.Model
+	if cfg.UseModelsConfig() {
+		agentModel = cfg.ModelsConfig.Agent.Model
+	}
+	subagentRunner := subagent.NewRunner(multiProvider, agentModel, 4096, 0.3, 60*time.Second)
 	toolsRegistry.Register(tools.NewParallelSubagentTool(subagentRunner))
 	toolsRegistry.Register(tools.NewChainExecutionTool(subagentRunner))
 
@@ -617,7 +667,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 
 	// Create skill self-creation components (Milestone 2)
 	skillDetector := skills.NewSkillDetector()
-	skillExtractor := skills.NewExtractor(multiProvider, cfg.Agents.Defaults.Model)
+	skillExtractor := skills.NewExtractor(multiProvider, agentModel)
 
 	// Enable async support in the registry
 	toolsRegistry.SetAsyncCallback(asyncCallbackCh)

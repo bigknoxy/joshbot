@@ -72,6 +72,17 @@ type Agent struct {
 	skillDetector *skills.SkillDetector
 	extractor     *skills.Extractor
 	skillLoader   *skills.Loader
+	modelName     string
+}
+
+func (a *Agent) getModelName() string {
+	if a.modelName != "" {
+		return a.modelName
+	}
+	if a.cfg.UseModelsConfig() {
+		return a.cfg.ModelsConfig.Agent.Model
+	}
+	return a.cfg.Agents.Defaults.Model
 }
 
 // Option is a functional option for configuring Agent.
@@ -304,7 +315,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 
 		// Call LLM
 		req := providers.ChatRequest{
-			Model:       a.cfg.Agents.Defaults.Model,
+			Model:       a.getModelName(),
 			Messages:    messages,
 			Temperature: a.cfg.Agents.Defaults.Temperature,
 			MaxTokens:   a.cfg.Agents.Defaults.MaxTokens,
@@ -337,8 +348,8 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		if len(assistantMsg.ToolCalls) == 0 {
 			content := assistantMsg.Content
 			if content == "" {
-				a.logger.Warn("Empty content from LLM - triggering fallback message",
-					"model", a.cfg.Agents.Defaults.Model,
+a.logger.Warn("Empty content from LLM - triggering fallback message",
+				"model", a.getModelName(),
 					"iteration", iteration+1,
 				)
 				content = "I've processed your request."
@@ -530,7 +541,7 @@ func (a *Agent) checkAndCompactContext(messages []providers.Message, sess *sessi
 		threshold = 0.7 // default fallback
 	}
 
-	model := a.cfg.Agents.Defaults.Model
+	model := a.getModelName()
 	maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 	budget := a.budget.ComputeBudget(model, maxCompletion)
 	thresholdBudget := int(float64(budget) * threshold)
@@ -621,7 +632,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 
 	// If we have a budget manager and compressor, consider compressing older messages
 	if a.budget != nil && a.compressor != nil {
-		model := a.cfg.Agents.Defaults.Model
+		model := a.getModelName()
 		maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 		budget := a.budget.ComputeBudget(model, maxCompletion)
 		budget -= ctxpkg.TokenEstimator(systemPrompt)
@@ -749,7 +760,7 @@ Tools: %d registered
 Memory window: %d
 
 Just type normally to chat with me!`,
-			a.cfg.Agents.Defaults.Model,
+			a.getModelName(),
 			toolCount,
 			a.cfg.Agents.Defaults.MemoryWindow,
 		)
@@ -771,7 +782,7 @@ Just type normally to chat with me!`
   Tools: %d registered
   Memory window: %d
   Max iterations: %d`,
-			a.cfg.Agents.Defaults.Model,
+			a.getModelName(),
 			toolCount,
 			a.cfg.Agents.Defaults.MemoryWindow,
 			a.cfg.Agents.Defaults.MaxToolIterations,

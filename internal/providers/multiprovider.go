@@ -80,6 +80,14 @@ func (mp *MultiProvider) Unregister(name string) {
 	mp.rebuildOrderedList()
 }
 
+// Clear removes all registered providers.
+func (mp *MultiProvider) Clear() {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	mp.entries = make(map[string]*ProviderEntry)
+	mp.orderedEntries = nil
+}
+
 // SetDefault sets the default provider.
 func (mp *MultiProvider) SetDefault(name string) {
 	mp.mu.Lock()
@@ -239,12 +247,14 @@ func (mp *MultiProvider) Transcribe(ctx context.Context, audioData []byte, promp
 	return entry.Provider.Transcribe(ctx, audioData, prompt)
 }
 
-// parseModel parses "provider:model" format.
+// parseModel resolves a model specification to a provider name and model name.
+// It handles "provider:model" format and direct provider name lookups.
 func (mp *MultiProvider) parseModel(modelSpec string) (providerName, modelName string) {
 	if modelSpec == "" {
 		return mp.defaultProvider, ""
 	}
 
+	// Check for "provider:model" format
 	if idx := strings.Index(modelSpec, ":"); idx > 0 {
 		potentialProvider := modelSpec[:idx]
 		potentialModel := modelSpec[idx+1:]
@@ -256,6 +266,14 @@ func (mp *MultiProvider) parseModel(modelSpec string) (providerName, modelName s
 		if exists {
 			return potentialProvider, potentialModel
 		}
+	}
+
+	// Check if modelSpec is itself a registered provider name (e.g., "smart")
+	mp.mu.RLock()
+	_, exists := mp.entries[modelSpec]
+	mp.mu.RUnlock()
+	if exists {
+		return modelSpec, ""
 	}
 
 	return mp.defaultProvider, modelSpec

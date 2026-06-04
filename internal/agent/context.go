@@ -239,6 +239,15 @@ Memory:
 - If you learn something important about the user, update MEMORY.md.
 - If a conversation covers something meaningful, append a summary to HISTORY.md.
 
+CONVERSATION COHERENCE (CRITICAL):
+- Pay close attention to the current conversation. Read all messages carefully before responding.
+- When the user says "that", "it", "this", or other pronouns, they refer to the most recent topic or offer you made. Resolve pronouns by looking at the immediate conversation context — do not ask for clarification unless truly ambiguous.
+- Track the flow: each turn builds on the last. Do not restart or reset your understanding each turn.
+- If the user agrees to an offer you made in the previous message, proceed with it immediately.
+- Never invent or assume context the user has not provided. If you do not have information, say so.
+- If the conversation seems to have lost the thread, summarize what you think the last few exchanges were about before proceeding.
+- Stay on topic. Do not pivot to unrelated topics unless the user initiates the change.
+
 `
 }
 

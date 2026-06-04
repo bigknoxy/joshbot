@@ -763,6 +763,12 @@ func (c *Config) Validate() error {
 		if len(c.ModelsConfig.Models) == 0 {
 			return errors.New("no models configured")
 		}
+		// Expand ~ in API keys if present
+		for i, m := range c.ModelsConfig.Models {
+			if strings.HasPrefix(m.APIKey, "~/") {
+				c.ModelsConfig.Models[i].APIKey = filepath.Join(os.Getenv("HOME"), m.APIKey[1:])
+			}
+		}
 
 		if c.ModelsConfig.Agent.Model == "" {
 			return errors.New("no active model configured")

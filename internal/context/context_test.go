@@ -138,3 +138,12 @@ func TestRegistryLookup_DefaultHeuristic(t *testing.T) {
 		t.Fatalf("expected small fallback 4096, got %d", info.ContextWindow)
 	}
 }
+
+func TestRegistryLookup_NvidiaModel(t *testing.T) {
+	r := NewRegistry()
+
+	info := r.Lookup("nvidia/stepfun-ai/step-3.5-flash")
+	if info.ContextWindow != 131072 {
+		t.Fatalf("expected 131072 for nvidia/stepfun-ai/step-3.5-flash, got %d", info.ContextWindow)
+	}
+}

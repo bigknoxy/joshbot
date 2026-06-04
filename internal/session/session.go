@@ -2,6 +2,8 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -34,10 +36,12 @@ type Message struct {
 
 // Session represents a conversation session.
 type Session struct {
-	ID        string    `json:"id"`
-	Messages  []Message `json:"messages"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                  string            `json:"id"`
+	Messages            []Message         `json:"messages"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
+	ConversationTopic   string            `json:"conversation_topic,omitempty"`
+	ConversationContext map[string]string `json:"conversation_context,omitempty"`
 }
 
 // NewSession creates a new session with the given ID.
@@ -72,6 +76,52 @@ func (s *Session) LastMessages(n int) []Message {
 		return s.Messages
 	}
 	return s.Messages[len(s.Messages)-n:]
+}
+
+// SetTopic summarizes the current conversation intent/topic.
+// Called each turn to maintain a running understanding of the conversation.
+func (s *Session) SetTopic(topic string) {
+	existing := s.ConversationTopic
+	if existing != "" && topic != existing {
+		s.ConversationTopic = topic
+	}
+	if existing == "" && topic != "" {
+		s.ConversationTopic = topic
+	}
+}
+
+// UpdateContext stores a key-value piece of conversation context (e.g., user preference, decision).
+func (s *Session) UpdateContext(key, value string) {
+	if s.ConversationContext == nil {
+		s.ConversationContext = make(map[string]string)
+	}
+	s.ConversationContext[key] = value
+}
+
+// ConversationSummary returns a short summary of the ongoing conversation for prompt injection.
+func (s *Session) ConversationSummary() string {
+	if s.ConversationTopic == "" && len(s.ConversationContext) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if s.ConversationTopic != "" {
+		b.WriteString(fmt.Sprintf("Current topic: %s", s.ConversationTopic))
+	}
+	if len(s.ConversationContext) > 0 {
+		if b.Len() > 0 {
+			b.WriteString(" | ")
+		}
+		b.WriteString("Context: ")
+		first := true
+		for k, v := range s.ConversationContext {
+			if !first {
+				b.WriteString(", ")
+			}
+			b.WriteString(fmt.Sprintf("%s: %s", k, v))
+			first = false
+		}
+	}
+	return b.String()
 }
 
 // MarshalJSON implements custom JSON marshaling for Session.

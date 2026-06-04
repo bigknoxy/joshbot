@@ -273,6 +273,48 @@ func TestGetModelName(t *testing.T) {
 	})
 }
 
+func TestGetResolvedModelName(t *testing.T) {
+	t.Run("model-centric mode resolves to actual model string", func(t *testing.T) {
+		cfg := &config.Config{
+			ModelsConfig: config.ModelsConfig{
+				Models: []config.ModelConfig{
+					{Name: "smart", Model: "nvidia/stepfun-ai/step-3.5-flash"},
+				},
+				Agent: config.AgentModelConfig{Model: "smart"},
+			},
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		got := agent.getResolvedModelName()
+		if got != "nvidia/stepfun-ai/step-3.5-flash" {
+			t.Errorf("expected %q, got %q", "nvidia/stepfun-ai/step-3.5-flash", got)
+		}
+	})
+
+	t.Run("explicit modelName overrides", func(t *testing.T) {
+		cfg := &config.Config{
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		agent.modelName = "custom-model"
+		got := agent.getResolvedModelName()
+		if got != "custom-model" {
+			t.Errorf("expected %q, got %q", "custom-model", got)
+		}
+	})
+
+	t.Run("legacy mode returns agents.defaults.model", func(t *testing.T) {
+		cfg := &config.Config{
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		got := agent.getResolvedModelName()
+		if got != "nvidia/stepfun-ai/step-3.5-flash" {
+			t.Errorf("expected %q, got %q", "nvidia/stepfun-ai/step-3.5-flash", got)
+		}
+	})
+}
+
 func TestNewAgentWithOptions(t *testing.T) {
 	cfg := config.Defaults()
 	provider := &mockProvider{}

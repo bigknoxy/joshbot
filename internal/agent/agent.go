@@ -85,6 +85,21 @@ func (a *Agent) getModelName() string {
 	return a.cfg.Agents.Defaults.Model
 }
 
+// getResolvedModelName returns the actual model string for context budgeting.
+// In model-centric mode, resolves "smart" -> "nvidia/stepfun-ai/step-3.5-flash".
+func (a *Agent) getResolvedModelName() string {
+	if a.modelName != "" {
+		return a.modelName
+	}
+	if !a.cfg.UseModelsConfig() {
+		return a.cfg.Agents.Defaults.Model
+	}
+	if modelConfig, err := a.cfg.GetActiveModel(); err == nil {
+		return modelConfig.Model
+	}
+	return a.cfg.ModelsConfig.Agent.Model
+}
+
 // Option is a functional option for configuring Agent.
 type Option func(*Agent)
 
@@ -246,8 +261,19 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 
 	startSessionLen := len(sess.Messages)
 
-	// Build system prompt
+	// Derive topic from user message if conversation is just starting
+	if sess.ConversationTopic == "" && len(msg.Content) > 5 {
+		topic := inferTopic(msg.Content)
+		if topic != "" {
+			sess.ConversationTopic = topic
+		}
+	}
+
+	// Build system prompt with conversation context
 	systemPrompt := a.BuildSystemPrompt(ctx)
+	if summary := sess.ConversationSummary(); summary != "" {
+		systemPrompt += "\n\n<conversation_context>\n" + summary + "\n</conversation_context>"
+	}
 
 	// Add user message to session
 	userMsg := session.Message{
@@ -285,6 +311,17 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 	// Save session
 	if err := a.sessions.Save(ctx, sess); err != nil {
 		a.logger.Warn("Failed to save session", "error", err)
+	}
+
+	// Update conversation topic based on what happened
+	if !isCommand(msg.Content) && responseContent != "" {
+		updatedTopic := updateTopic(sess.ConversationTopic, msg.Content, responseContent)
+		if updatedTopic != "" {
+			sess.ConversationTopic = updatedTopic
+			if err := a.sessions.Save(ctx, sess); err != nil {
+				a.logger.Warn("Failed to save updated topic", "error", err)
+			}
+		}
 	}
 
 	elapsed := time.Since(startTime)
@@ -541,7 +578,7 @@ func (a *Agent) checkAndCompactContext(messages []providers.Message, sess *sessi
 		threshold = 0.7 // default fallback
 	}
 
-	model := a.getModelName()
+	model := a.getResolvedModelName()
 	maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 	budget := a.budget.ComputeBudget(model, maxCompletion)
 	thresholdBudget := int(float64(budget) * threshold)
@@ -632,7 +669,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 
 	// If we have a budget manager and compressor, consider compressing older messages
 	if a.budget != nil && a.compressor != nil {
-		model := a.getModelName()
+		model := a.getResolvedModelName()
 		maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 		budget := a.budget.ComputeBudget(model, maxCompletion)
 		budget -= ctxpkg.TokenEstimator(systemPrompt)
@@ -826,4 +863,65 @@ func sanitizeResponse(content string) string {
 	content = strings.ReplaceAll(content, "<ctx_compress>", "")
 	content = strings.ReplaceAll(content, "</ctx_compress>", "")
 	return strings.TrimSpace(content)
+}
+
+// inferTopic infers a short topic from a user message.
+func inferTopic(content string) string {
+	content = strings.TrimSpace(content)
+	if len(content) < 5 {
+		return ""
+	}
+	lower := strings.ToLower(content)
+	// Remove common greetings
+	greetings := []string{"hi", "hello", "hey", "sup", "yo", "what's up", "howdy"}
+	for _, g := range greetings {
+		if lower == g || strings.HasPrefix(lower, g+" ") || strings.HasPrefix(lower, g+",") {
+			return ""
+		}
+	}
+	// Strip question words for cleaner topic
+	cleaned := strings.TrimPrefix(lower, "what ")
+	cleaned = strings.TrimPrefix(cleaned, "what's ")
+	cleaned = strings.TrimPrefix(cleaned, "what are ")
+	cleaned = strings.TrimPrefix(cleaned, "tell me about ")
+	cleaned = strings.TrimPrefix(cleaned, "tell me ")
+	// Take first ~60 chars as topic snippet
+	if len(cleaned) > 60 {
+		cleaned = cleaned[:60] + "..."
+	}
+	return cleaned
+}
+
+// updateTopic updates the conversation topic based on the latest exchange.
+func updateTopic(currentTopic, userMsg, assistantMsg string) string {
+	userLower := strings.ToLower(userMsg)
+	assistantLower := strings.ToLower(assistantMsg)
+
+	// If user is changing the subject with a clear new topic
+	if len(userMsg) > 10 && !isFollowUp(userLower) {
+		return inferTopic(userMsg)
+	}
+
+	// Extract key nouns from assistant response for topic refinement
+	if strings.Contains(assistantLower, "here's what") ||
+		strings.Contains(assistantLower, "i found") ||
+		strings.Contains(assistantLower, "according to") {
+		// Topic likely stayed the same, keep current
+		return currentTopic
+	}
+
+	return currentTopic
+}
+
+// isFollowUp checks if a message is a follow-up/continuation rather than a new topic.
+func isFollowUp(lower string) bool {
+	followUpWords := []string{"yes", "yeah", "do that", "go ahead", "tell me more",
+		"continue", "and", "also", "what about", "how about", "ok", "okay",
+		"sure", "great", "thanks", "cool"}
+	for _, w := range followUpWords {
+		if strings.HasPrefix(lower, w) || lower == w {
+			return true
+		}
+	}
+	return false
 }

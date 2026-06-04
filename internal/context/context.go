@@ -36,6 +36,7 @@ func NewRegistry() *Registry {
 		"openai/llama3.2":                  8192,
 		"meta-llama/llama-3.2-3b-instruct": 8192,
 		"openrouter/free":                  131072,
+		"nvidia/stepfun-ai/step-3.5-flash": 131072,
 	}}
 }
 
@@ -136,7 +137,7 @@ func lastNonEmptyContent(messages []providers.Message, maxChars int) (string, bo
 	return "", false
 }
 
-// CompressMessages returns a compacted string representation of messages limited by budget tokens.
+// CompressMessages returns a compacted string representation of messages limited by token budget.
 // It naively keeps the most recent messages until the token budget is met; if exceeded and a Provider
 // is available, it will ask the provider to summarize them.
 func (c *Compressor) CompressMessages(model string, messages []providers.Message, budget int) (string, error) {

@@ -50,9 +50,14 @@ func NewManager(sessionsDir string) (*Manager, error) {
 	}, nil
 }
 
-// sessionFilePath returns the file path for a session.
+// sessionFilePath returns the file path for a session's JSONL messages.
 func (m *Manager) sessionFilePath(sessionID string) string {
 	return filepath.Join(m.sessionsDir, fmt.Sprintf("%s.jsonl", sessionID))
+}
+
+// metadataFilePath returns the file path for session metadata.
+func (m *Manager) metadataFilePath(sessionID string) string {
+	return filepath.Join(m.sessionsDir, fmt.Sprintf("%s.meta.json", sessionID))
 }
 
 // Load loads a session from disk.
@@ -109,12 +114,27 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 	createdAt := messages[0].Timestamp
 	updatedAt := messages[len(messages)-1].Timestamp
 
-	return &Session{
+	sess := &Session{
 		ID:        sessionID,
 		Messages:  messages,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
-	}, nil
+	}
+
+	// Load optional metadata file for conversation topic/context
+	metaPath := m.metadataFilePath(sessionID)
+	if metaData, err := os.ReadFile(metaPath); err == nil {
+		var meta struct {
+			ConversationTopic   string            `json:"conversation_topic,omitempty"`
+			ConversationContext map[string]string `json:"conversation_context,omitempty"`
+		}
+		if err := json.Unmarshal(metaData, &meta); err == nil {
+			sess.ConversationTopic = meta.ConversationTopic
+			sess.ConversationContext = meta.ConversationContext
+		}
+	}
+
+	return sess, nil
 }
 
 // Save atomically saves a session to disk.
@@ -159,6 +179,30 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 		// Clean up temp file on failure
 		_ = os.Remove(tmpFile)
 		return fmt.Errorf("failed to rename temporary file: %w", err)
+	}
+
+	// Save conversation metadata separately if present
+	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 {
+		meta := struct {
+			ConversationTopic   string            `json:"conversation_topic,omitempty"`
+			ConversationContext map[string]string `json:"conversation_context,omitempty"`
+		}{
+			ConversationTopic:   s.ConversationTopic,
+			ConversationContext: s.ConversationContext,
+		}
+		metaData, err := json.Marshal(meta)
+		if err != nil {
+			return fmt.Errorf("failed to marshal session metadata: %w", err)
+		}
+		metaPath := m.metadataFilePath(s.ID)
+		tmpMeta := metaPath + ".tmp"
+		if err := os.WriteFile(tmpMeta, metaData, 0644); err != nil {
+			return fmt.Errorf("failed to write metadata temp file: %w", err)
+		}
+		if err := os.Rename(tmpMeta, metaPath); err != nil {
+			_ = os.Remove(tmpMeta)
+			return fmt.Errorf("failed to rename metadata file: %w", err)
+		}
 	}
 
 	return nil
@@ -219,6 +263,11 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 			return ErrSessionNotFound
 		}
 		return fmt.Errorf("failed to delete session: %w", err)
+	}
+
+	// Clean up metadata file if it exists
+	if metaPath := m.metadataFilePath(sessionID); metaPath != "" {
+		_ = os.Remove(metaPath)
 	}
 
 	return nil

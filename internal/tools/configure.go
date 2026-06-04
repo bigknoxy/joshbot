@@ -12,7 +12,7 @@ import (
 type ReloadProvidersFunc func() error
 
 type ConfigureTool struct {
-	cfg            *config.Config
+	cfg             *config.Config
 	reloadProviders ReloadProvidersFunc
 }
 

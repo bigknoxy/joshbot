@@ -606,7 +606,9 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 					log.Warn("Failed to create NVIDIA provider", "error", err)
 				} else {
 					model := p.Model
-					if model == "" { model = cfg.Agents.Defaults.Model }
+					if model == "" {
+						model = cfg.Agents.Defaults.Model
+					}
 					multiProvider.Register("nvidia", nvidiaProvider, model, 1, p.Enabled)
 				}
 			}

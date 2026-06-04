@@ -348,8 +348,8 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		if len(assistantMsg.ToolCalls) == 0 {
 			content := assistantMsg.Content
 			if content == "" {
-a.logger.Warn("Empty content from LLM - triggering fallback message",
-				"model", a.getModelName(),
+				a.logger.Warn("Empty content from LLM - triggering fallback message",
+					"model", a.getModelName(),
 					"iteration", iteration+1,
 				)
 				content = "I've processed your request."

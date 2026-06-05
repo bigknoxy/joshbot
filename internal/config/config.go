@@ -73,6 +73,8 @@ const (
 	DefaultCompactionThreshold = 0.7
 	// DefaultToolOutputMaxChars is the default max characters for tool output truncation.
 	DefaultToolOutputMaxChars = 4000
+	// DefaultMaxMemorySize is the default maximum bytes for MEMORY.md content loaded into context.
+	DefaultMaxMemorySize = 4096
 	// CurrentSchemaVersion is the current config schema version.
 	CurrentSchemaVersion = 4
 )
@@ -110,6 +112,7 @@ type AgentDefaults struct {
 	MaxToolIterations   int     `mapstructure:"max_tool_iterations" json:"max_tool_iterations" yaml:"max_tool_iterations"`
 	MemoryWindow        int     `mapstructure:"memory_window" json:"memory_window" yaml:"memory_window"`
 	CompactionThreshold float64 `mapstructure:"compaction_threshold" json:"compaction_threshold" yaml:"compaction_threshold"`
+	MaxMemorySize       int     `mapstructure:"max_memory_size" json:"max_memory_size" yaml:"max_memory_size"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -398,6 +401,11 @@ func applyEnvOverrides(cfg *Config) {
 		fmt.Sscanf(v, "%f", &cfg.Agents.Defaults.CompactionThreshold)
 	}
 
+	// Max memory size
+	if v := getEnv("AGENTS__DEFAULTS__MAX_MEMORY_SIZE"); v != "" {
+		fmt.Sscanf(v, "%d", &cfg.Agents.Defaults.MaxMemorySize)
+	}
+
 	// Telegram enabled
 	if v := getEnv("CHANNELS__TELEGRAM__ENABLED"); v != "" {
 		cfg.Channels.Telegram.Enabled = v == "true" || v == "1"
@@ -538,6 +546,7 @@ func Defaults() *Config {
 				MaxToolIterations:   DefaultMaxToolIterations,
 				MemoryWindow:        DefaultMemoryWindow,
 				CompactionThreshold: DefaultCompactionThreshold,
+				MaxMemorySize:       DefaultMaxMemorySize,
 			},
 		},
 		Channels: ChannelsConfig{
@@ -831,6 +840,11 @@ func (c *Config) Validate() error {
 	// Validate compaction_threshold is in valid range
 	if c.Agents.Defaults.CompactionThreshold <= 0 || c.Agents.Defaults.CompactionThreshold > 1 {
 		return errors.New("compaction_threshold must be between 0 and 1")
+	}
+
+	// Validate max_memory_size is positive
+	if c.Agents.Defaults.MaxMemorySize <= 0 {
+		return errors.New("max_memory_size must be positive")
 	}
 
 	// Validate exec timeout is positive

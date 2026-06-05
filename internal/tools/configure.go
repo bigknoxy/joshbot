@@ -25,7 +25,7 @@ func (t *ConfigureTool) Name() string {
 }
 
 func (t *ConfigureTool) Description() string {
-	return "Read and modify joshbot's configuration. Use this to list available models and settings, switch the active model, adjust settings like temperature and max_tokens, or view the current active configuration."
+	return "Read or modify joshbot config: list models, switch model, adjust settings (temperature, max_tokens)."
 }
 
 func (t *ConfigureTool) Parameters() []Parameter {
@@ -33,24 +33,24 @@ func (t *ConfigureTool) Parameters() []Parameter {
 		{
 			Name:        "operation",
 			Type:        ParamString,
-			Description: "Operation to perform: 'list_models' (list available models), 'status' (show current active config), 'switch_model' (switch active model by name), 'set' (change a setting), 'get' (get a config value).",
+			Description: "Operation: list_models, status, switch_model, set, get",
 			Required:    true,
 			Enum:        []string{"list_models", "status", "switch_model", "set", "get"},
 		},
 		{
 			Name:        "model",
 			Type:        ParamString,
-			Description: "Model name (required for 'switch_model' operation). Example: 'smart', 'fast'. Use 'list_models' to see available names.",
+			Description: "Model name (required for switch_model)",
 		},
 		{
 			Name:        "setting",
 			Type:        ParamString,
-			Description: "Setting name for 'get' or 'set' operations. Examples: 'temperature', 'max_tokens', 'model'.",
+			Description: "Setting name (get/set): temperature, max_tokens, model",
 		},
 		{
 			Name:        "value",
 			Type:        ParamString,
-			Description: "Value for the setting (required for 'set' operation). For temperature use a decimal like '0.7'. For model use a model name.",
+			Description: "Value for the setting (required for set)",
 		},
 	}
 }

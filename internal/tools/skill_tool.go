@@ -20,7 +20,7 @@ func NewSkillRegistryTool(loader *skills.Loader) *SkillRegistryTool {
 func (t *SkillRegistryTool) Name() string { return "skill_registry" }
 
 func (t *SkillRegistryTool) Description() string {
-	return "List, create, or delete skills in the skill registry. Actions: list (list all skills), create (create a new skill with YAML frontmatter + body), delete (delete a skill by name)."
+	return "List, create, or delete skills in the registry."
 }
 
 func (t *SkillRegistryTool) Parameters() []Parameter {
@@ -28,19 +28,19 @@ func (t *SkillRegistryTool) Parameters() []Parameter {
 		{
 			Name:        "action",
 			Type:        ParamString,
-			Description: "Action to perform: list, create, delete",
+			Description: "Action: list, create, delete",
 			Required:    true,
 			Enum:        []string{"list", "create", "delete"},
 		},
 		{
 			Name:        "name",
 			Type:        ParamString,
-			Description: "Skill name (required for create/delete)",
+			Description: "Skill name (required: create/delete)",
 		},
 		{
 			Name:        "content",
 			Type:        ParamString,
-			Description: "Full SKILL.md content including frontmatter and body (required for create)",
+			Description: "Full SKILL.md content (required: create)",
 		},
 	}
 }

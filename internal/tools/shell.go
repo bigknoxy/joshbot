@@ -60,9 +60,8 @@ func (t *ShellTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *ShellTool) Description() string {
-	desc := `Execute shell commands. Use this to run terminal commands, scripts, `
-	desc += `and interact with the system. Commands are subject to safety restrictions. `
-	desc += `Output is truncated to 4000 characters for large outputs.`
+	desc := `Execute shell commands (builds, tests, git, scripts). Safety restrictions active. `
+	desc += `Output truncated to 4000 chars.`
 	if len(t.allowList) > 0 {
 		desc += ` Only whitelisted commands are allowed.`
 	}
@@ -75,26 +74,26 @@ func (t *ShellTool) Parameters() []Parameter {
 		{
 			Name:        "command",
 			Type:        ParamString,
-			Description: "The shell command to execute",
+			Description: "Command to run",
 			Required:    true,
 		},
 		{
 			Name:        "timeout",
 			Type:        ParamInteger,
-			Description: "Timeout in seconds (default: 60)",
+			Description: "Timeout in seconds",
 			Required:    false,
 			Default:     60,
 		},
 		{
 			Name:        "working_dir",
 			Type:        ParamString,
-			Description: "Working directory for the command",
+			Description: "Working directory",
 			Required:    false,
 		},
 		{
 			Name:        "async",
 			Type:        ParamBoolean,
-			Description: "Run command asynchronously for long-running operations",
+			Description: "Run asynchronously for long operations",
 			Required:    false,
 			Default:     false,
 		},

@@ -23,7 +23,7 @@ func (t *SubagentConfigTool) Name() string {
 }
 
 func (t *SubagentConfigTool) Description() string {
-	return "Manage subagent configuration profiles stored in YAML config files. Use this to list available agent profiles, get details of a specific profile, or save a new agent profile."
+	return "Manage subagent config profiles: list, get, save, discover."
 }
 
 func (t *SubagentConfigTool) Parameters() []Parameter {
@@ -31,19 +31,19 @@ func (t *SubagentConfigTool) Parameters() []Parameter {
 		{
 			Name:        "operation",
 			Type:        ParamString,
-			Description: "Operation to perform: 'list' (list all configs), 'get' (get a config by name), 'save' (create/update a config), 'discover' (re-scan config directory).",
+			Description: "Operation: list, get, save, discover",
 			Required:    true,
 			Enum:        []string{"list", "get", "save", "discover"},
 		},
 		{
 			Name:        "name",
 			Type:        ParamString,
-			Description: "Name of the agent profile (required for 'get' and 'save' operations).",
+			Description: "Profile name (required: get/save)",
 		},
 		{
 			Name:        "config",
 			Type:        ParamObject,
-			Description: "Configuration object (required for 'save' operation). Fields: description, model, temperature, max_tokens, system_prompt, tools, skills, tags.",
+			Description: "Config object (required: save). Fields: description, model, temperature, max_tokens, system_prompt, tools, skills, tags.",
 		},
 	}
 }

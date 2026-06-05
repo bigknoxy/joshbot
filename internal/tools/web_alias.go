@@ -12,15 +12,15 @@ func (a *webAlias) Name() string {
 func (a *webAlias) Description() string {
 	switch a.name {
 	case "web_search":
-		return "Search the internet for current information, news, facts, and web pages. Supports general web search with multiple results."
+		return "Search the internet for current information, news, and web pages."
 	case "web_fetch":
-		return "Fetch and retrieve the full content of a specific URL. Useful for reading articles, documentation, or any web page content."
+		return "Fetch the full content of a URL (articles, docs, web pages)."
 	case "web_code":
-		return "Search for code examples, documentation, repositories, and programming solutions across the web."
+		return "Search for code examples, docs, and repositories."
 	case "web_company":
-		return "Research companies, products, funding, team, and business information."
+		return "Research companies, products, funding, and team info."
 	case "web_research":
-		return "Deep research on a topic using multiple sources for comprehensive information gathering."
+		return "Deep research on a topic using multiple sources."
 	default:
 		return a.web.Description()
 	}

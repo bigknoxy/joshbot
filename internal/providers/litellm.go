@@ -148,6 +148,7 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 	if req.Model == "" {
 		req.Model = p.cfg.Model
 	}
+	req.Model = config.StripProviderPrefix(req.Model)
 
 	// Set defaults from config
 	if req.MaxTokens == 0 && p.cfg.MaxTokens > 0 {
@@ -233,6 +234,7 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 	if req.Model == "" {
 		req.Model = p.cfg.Model
 	}
+	req.Model = config.StripProviderPrefix(req.Model)
 
 	// Set defaults from config
 	if req.MaxTokens == 0 && p.cfg.MaxTokens > 0 {

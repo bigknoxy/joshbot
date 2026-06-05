@@ -12,9 +12,10 @@ import (
 
 // Skill represents a discovered skill.
 type Skill struct {
-	Name         string
-	Description  string
-	Path         string
+	Name        string
+	Description string
+	Path        string
+	// Always when true injects full skill content into the system prompt at session start.
 	Always       bool
 	Requirements []string
 	Tags         []string
@@ -205,8 +206,7 @@ func parseYAMLList(s string) []string {
 }
 
 // LoadSummary returns XML summary of discovered skills. Implements SkillsLoader interface used by agent.
-// This returns ONLY summaries - not full content - to reduce prompt bloat.
-// Use LoadFullSkillContent() explicitly if you need the full content of a specific skill.
+// Skills with Always=true have their full content injected inline.
 func (l *Loader) LoadSummary(ctx context.Context) (string, error) {
 	if !l.loaded {
 		if err := l.Discover(); err != nil {
@@ -217,8 +217,11 @@ func (l *Loader) LoadSummary(ctx context.Context) (string, error) {
 	parts := []string{"Available skills (use read_file to load full skill content when needed):"}
 	for _, sk := range l.skills {
 		parts = append(parts, sk.ToSummaryXML())
-		// NOTE: Full content is NO LONGER included by default to reduce prompt bloat.
-		// If full content is needed for a specific skill, use GetSkillContent(name) explicitly.
+		if sk.Always {
+			if content := sk.GetContent(); content != "" {
+				parts = append(parts, fmt.Sprintf("  <skill-content name=\"%s\">\n%s\n  </skill-content>", sk.Name, content))
+			}
+		}
 	}
 	return strings.Join(parts, "\n"), nil
 }

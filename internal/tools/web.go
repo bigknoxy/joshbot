@@ -312,9 +312,7 @@ func (t *WebTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *WebTool) Description() string {
-	return `Search the internet and fetch web content. ` +
-		`Use the "operation" parameter to choose the type of operation. ` +
-		`For most tasks, use the dedicated web_search, web_fetch, or web_code tools directly.`
+	return `Search and fetch web content. Use web_search/web_fetch/web_code aliases for common operations.`
 }
 
 // Parameters returns the parameters for the tool.
@@ -323,26 +321,26 @@ func (t *WebTool) Parameters() []Parameter {
 		{
 			Name:        "operation",
 			Type:        ParamString,
-			Description: "The operation to perform: web_search, web_code, web_company, web_research, or web_fetch",
+			Description: "Operation: web_search, web_code, web_company, web_research, web_fetch",
 			Required:    true,
 			Enum:        []string{"web_search", "web_code", "web_company", "web_research", "web_fetch"},
 		},
 		{
 			Name:        "query",
 			Type:        ParamString,
-			Description: "Search query (for web_search, web_code, web_company, web_research)",
+			Description: "Search query",
 			Required:    false,
 		},
 		{
 			Name:        "url",
 			Type:        ParamString,
-			Description: "URL to fetch (for web_fetch)",
+			Description: "URL to fetch",
 			Required:    false,
 		},
 		{
 			Name:        "max_results",
 			Type:        ParamInteger,
-			Description: "Maximum number of search results (default: 5)",
+			Description: "Max results (default: 5)",
 			Required:    false,
 			Default:     5,
 		},

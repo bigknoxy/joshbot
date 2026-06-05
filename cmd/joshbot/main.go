@@ -316,7 +316,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	}
 
 	// Initialize memory manager
-	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace)
+	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace, memory.WithMaxSize(cfg.Agents.Defaults.MaxMemorySize))
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
 	}

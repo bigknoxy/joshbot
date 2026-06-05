@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.0] - 2026-06-05
+
+### Added
+- **Prompt optimization** — Core identity prompt reduced 411→299 words (27%). All 22 tool descriptions trimmed ~30-40%. Eval harness at `internal/agent/prompt_eval_test.go`.
+- **MEMORY.md size cap** — Configurable `max_memory_size` (default 4KB). Auto-trims oldest entries on overflow.
+- **Skill.Always field wired up** — Skills with `always: true` now inject full content into system prompt (was dead code).
+
+### Fixed
+- **Model prefix bug** — `StripProviderPrefix()` now called in `Chat()` and `ChatStream()` so provider prefixes (e.g., `nvidia/`) are stripped before sending to API.
+
 ## [1.30.0] - 2026-06-03
 
 ### Fixed

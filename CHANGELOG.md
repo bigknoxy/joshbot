@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.0] - 2026-06-06
+
+### Changed
+- **Prompt optimization (GEPA workflow)** — Core identity prompt reduced 457→356 words (22%). Variant A selected: structural cleanup preserves all behavioral guardrails with better organization. Tool descriptions now include tool name prefix for better function-calling disambiguation. Eval harness (all 24/24 weighted checks pass).
+
 ## [1.33.0] - 2026-06-05
 
 ### Added

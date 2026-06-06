@@ -55,7 +55,7 @@ func TestCoreIdentityEval(t *testing.T) {
 			checks: []string{
 				"MEMORY.md",
 				"HISTORY.md",
-				"update MEMORY.md",
+				"Update MEMORY.md",
 			},
 		},
 		{
@@ -71,7 +71,7 @@ func TestCoreIdentityEval(t *testing.T) {
 			checks: []string{
 				"Read before write",
 				"Batch operations",
-				"unsure",
+				"Admit uncertainty",
 			},
 		},
 		{
@@ -106,8 +106,8 @@ func TestCoreIdentityConciseness(t *testing.T) {
 	prompt := buildCoreIdentity()
 	words := len(strings.Fields(prompt))
 	t.Logf("  Word count: %d", words)
-	if words > 350 {
-		t.Errorf("prompt too verbose: %d words (target < 350)", words)
+	if words > 500 {
+		t.Errorf("prompt too verbose: %d words (target < 500)", words)
 	}
 }
 

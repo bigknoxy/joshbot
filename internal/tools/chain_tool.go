@@ -43,7 +43,7 @@ func (t *ChainExecutionTool) Name() string {
 }
 
 func (t *ChainExecutionTool) Description() string {
-	return "Execute subagent steps sequentially, feeding each step's output as context to the next."
+	return "chain_execution: execute subagent steps sequentially, feeding each step's output as context to the next."
 }
 
 func (t *ChainExecutionTool) Parameters() []Parameter {

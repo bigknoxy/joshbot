@@ -50,7 +50,7 @@ func (t *FilesystemTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *FilesystemTool) Description() string {
-	return `Filesystem operations: read, write, edit, list, search files and directories.`
+	return `filesystem: read, write, edit, list, search files and directories.`
 }
 
 // Parameters returns the parameters for the tool.

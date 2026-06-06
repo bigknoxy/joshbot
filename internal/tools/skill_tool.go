@@ -20,7 +20,7 @@ func NewSkillRegistryTool(loader *skills.Loader) *SkillRegistryTool {
 func (t *SkillRegistryTool) Name() string { return "skill_registry" }
 
 func (t *SkillRegistryTool) Description() string {
-	return "List, create, or delete skills in the registry."
+	return "skill_registry: list, create, or delete skills in the registry."
 }
 
 func (t *SkillRegistryTool) Parameters() []Parameter {

@@ -261,6 +261,9 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 
 	startSessionLen := len(sess.Messages)
 
+	// Auto-extract user facts from message (name, org, role) into persistent ConversationContext
+	sess.ExtractUserFacts(msg.Content)
+
 	// Derive topic from user message if conversation is just starting
 	if sess.ConversationTopic == "" && len(msg.Content) > 5 {
 		topic := inferTopic(msg.Content)
@@ -692,14 +695,13 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 
 		if totalTokens > budget {
 			a.logger.Debug("Compressing context", "estimated_tokens", totalTokens, "budget_tokens", budget)
-			// Compress messages to fit within budget
-			compressed, err := a.compressor.CompressMessages(model, providerMsgs, budget)
-			if err == nil && compressed != "" {
-				// Append a single summarized user message instead of full history
-				msgs = append(msgs, providers.Message{Role: providers.RoleUser, Content: "<ctx_compress>\n" + compressed + "\n</ctx_compress>"})
-				return msgs
+			// Observation masking: keep last 3 exchanges verbatim, strip tool result content from older ones
+			// but preserve the message structure so the LLM sees the conversation flow
+			masked := a.applyObservationMasking(providerMsgs, budget)
+			for _, pm := range masked {
+				msgs = append(msgs, pm)
 			}
-			// on error, fallthrough and append full messages (best-effort)
+			return msgs
 		}
 	}
 
@@ -709,6 +711,58 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 	}
 
 	return msgs
+}
+
+// applyObservationMasking reduces context by stripping tool result content from older messages
+// while keeping the last 3 exchanges (user+assistant pairs) fully intact.
+// Tool outputs are replaced with "[Tool output truncated]" to save tokens.
+func (a *Agent) applyObservationMasking(messages []providers.Message, budget int) []providers.Message {
+	// Count total tokens in all messages
+	totalTokens := 0
+	for _, m := range messages {
+		totalTokens += ctxpkg.TokenEstimator(m.Content)
+	}
+
+	if totalTokens <= budget {
+		return messages
+	}
+
+	// Keep last 3 exchanges (user+assistant pairs) intact
+	// Walk backwards and find roughly 6 messages (3 user+assistant turns)
+	keepVerbatim := 6
+	if keepVerbatim > len(messages) {
+		keepVerbatim = len(messages)
+	}
+
+	result := make([]providers.Message, len(messages))
+	// Start from the end, copy intact
+	verbatimStart := len(messages) - keepVerbatim
+	for i := verbatimStart; i < len(messages); i++ {
+		result[i] = messages[i]
+	}
+
+	// Mask tool result content in older messages
+	for i := 0; i < verbatimStart; i++ {
+		m := messages[i]
+		if m.Role == providers.RoleTool || m.Role == providers.RoleAssistant {
+			result[i] = providers.Message{
+				Role:    m.Role,
+				Content: truncateSummary(m.Content),
+			}
+		} else {
+			result[i] = m
+		}
+	}
+
+	return result
+}
+
+// truncateSummary truncates tool output to a short summary to save tokens.
+func truncateSummary(content string) string {
+	if len(content) < 200 {
+		return content
+	}
+	return content[:80] + "\n[Tool output truncated]\n" + content[len(content)-80:]
 }
 
 func shouldRecordSignificantTurn(newMessages []session.Message, userContent, assistantContent string) bool {
@@ -781,16 +835,22 @@ func (a *Agent) handleCommand(ctx context.Context, msg bus.InboundMessage) strin
 	case "start":
 		return "Hello! I'm joshbot, your personal AI assistant. How can I help you today?"
 	case "new":
-		// Delete the session to start fresh
+		// Clear messages but preserve conversation context (user facts survive /new)
 		sessionKey := getSessionKey(msg)
-		if err := a.sessions.Delete(ctx, sessionKey); err != nil {
-			a.logger.Debug("Could not delete session for /new", "session", sessionKey, "error", err)
+		sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
+		if err == nil {
+			sess.ClearMessages()
+			if err := a.sessions.Save(ctx, sess); err != nil {
+				a.logger.Debug("Could not save session after /new", "error", err)
+			}
 		}
 		toolCount := 0
 		if a.tools != nil {
 			toolCount = len(a.tools.GetSchemas())
 		}
 		return fmt.Sprintf(`🔄 Started a new conversation! All previous context has been cleared.
+		
+Session context preserved: name, organization, role (if previously shared)
 
 Model: %s
 Tools: %d registered

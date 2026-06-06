@@ -44,7 +44,7 @@ func (t *ParallelSubagentTool) Name() string {
 }
 
 func (t *ParallelSubagentTool) Description() string {
-	return "Run multiple subagent tasks in parallel for independent work (research, file analysis, etc.)."
+	return "parallel_subagent: run multiple subagent tasks in parallel for independent work (research, file analysis, etc.)."
 }
 
 func (t *ParallelSubagentTool) Parameters() []Parameter {

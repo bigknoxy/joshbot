@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -96,6 +97,50 @@ func (s *Session) UpdateContext(key, value string) {
 		s.ConversationContext = make(map[string]string)
 	}
 	s.ConversationContext[key] = value
+}
+
+// ExtractUserFacts scans a user message for self-descriptive patterns and stores them in ConversationContext.
+// Recognized patterns: "I'm/I am [name]", "I work at [org]", "I'm a [role]", "my name is [name]", etc.
+func (s *Session) ExtractUserFacts(msg string) {
+	if s.ConversationContext == nil {
+		s.ConversationContext = make(map[string]string)
+	}
+	lower := strings.ToLower(strings.TrimSpace(msg))
+
+	// "my name is X" or "I'm X" (only if X looks like a name)
+	if m := namePattern.FindStringSubmatch(lower); m != nil {
+		if _, exists := s.ConversationContext["user_name"]; !exists {
+			s.ConversationContext["user_name"] = strings.Title(m[1])
+		}
+	}
+
+	// "I work at X" or "I'm at X"
+	if m := orgPattern.FindStringSubmatch(lower); m != nil {
+		org := strings.TrimSpace(m[1])
+		if len(org) > 2 {
+			s.ConversationContext["organization"] = org
+		}
+	}
+
+	// "I'm a [role]" or "I'm an [role]"
+	if m := rolePattern.FindStringSubmatch(lower); m != nil {
+		role := strings.TrimSpace(m[1])
+		if len(role) > 2 {
+			s.ConversationContext["role"] = role
+		}
+	}
+}
+
+var (
+	namePattern = regexp.MustCompile(`my name is (\w[\w\s]{0,20}\w)`)
+	orgPattern  = regexp.MustCompile(`i work at ([\w\s]{2,40}?)(?:\.|,|$)`)
+	rolePattern = regexp.MustCompile(`i'm (?:an?|a) ([\w\s]{2,40}?)(?:\.|,|$)`)
+)
+
+// ClearMessages removes all conversation messages but preserves conversation context and topic.
+func (s *Session) ClearMessages() {
+	s.Messages = make([]Message, 0)
+	s.UpdatedAt = time.Now().UTC()
 }
 
 // ConversationSummary returns a short summary of the ongoing conversation for prompt injection.

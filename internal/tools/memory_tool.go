@@ -18,7 +18,7 @@ func NewMemorySearchTool(mem *memory.Manager) *MemorySearchTool {
 func (t *MemorySearchTool) Name() string { return "memory_search" }
 
 func (t *MemorySearchTool) Description() string {
-	return "Search long-term memory for user facts and past decisions."
+	return "memory_search: search long-term memory for user facts and past decisions."
 }
 
 func (t *MemorySearchTool) Parameters() []Parameter {

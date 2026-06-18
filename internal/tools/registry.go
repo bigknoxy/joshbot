@@ -404,6 +404,10 @@ func RegistryWithDefaults(
 		_ = registry.Register(channelTool)
 	}
 
+	// Data tool
+	dataTool := NewDataTool(workspace, restrictToWorkspace)
+	_ = registry.Register(dataTool)
+
 	// Skill registry tool (optional)
 	if skillLoader != nil {
 		skillTool := NewSkillRegistryTool(skillLoader)

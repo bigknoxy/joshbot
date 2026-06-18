@@ -54,6 +54,10 @@ Docker: `docker build -t joshbot . && docker run -it joshbot gateway`
 go test ./...                                          # All tests
 go test -race ./...                                    # With race detector
 go test -v ./internal/tools -run TestShell             # Single test
+
+# Eval tests (requires -tags evalinternal)
+go test -v -tags evalinternal ./eval/... -run TestToolTasksWithScriptedProvider  # 20 tool tasks
+go test -v -tags evalinternal ./eval/... -run TestDataToolEvalTasksWithScriptedProvider  # 9 data tasks
 ```
 
 Tests colocated with `_test.go` suffix. Integration tests in `tests/` plus `internal/integration/`. Python test scripts in `tests/` (legacy from migration).

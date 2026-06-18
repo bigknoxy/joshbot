@@ -419,6 +419,7 @@ After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 | `cron` | Schedule reminders/tasks |
 | `memory_search` | Search stored facts by keyword, category, or tags |
 | `skill_registry` | List, create, and delete skills |
+| `data` | Read/write JSON, YAML, CSV; query with dot notation |
 
 **Security defaults:**
 - `web_fetch` blocks localhost, private IP ranges, and metadata hosts (SSRF protection).

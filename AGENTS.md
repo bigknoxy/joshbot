@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-joshbot is a lightweight personal AI assistant (~14,500 LOC Go non-test, 520 test functions across 46 test files) with self-learning memory, auto-skill-creation from tool usage patterns, and Telegram integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
+joshbot is a lightweight personal AI assistant (~19,640 LOC Go non-test, 597 test functions across 48 test files) with self-learning memory, auto-skill-creation from tool usage patterns, and Telegram integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
 
 Module: `github.com/bigknoxy/joshbot`. Go 1.24.0.
 
@@ -69,7 +69,7 @@ go mod tidy
 ## Code Architecture
 
 ```
-cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~3,340 LOC
+cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~3,704 LOC
   internal/
     agent/agent.go             -- ReAct loop (max 20 iterations)
     agent/context.go           -- System prompt assembly (identity files + memory + skills)
@@ -77,6 +77,7 @@ cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~3,
     channels/cli.go            -- CLI readline channel (bufio.Reader)
     channels/telegram.go       -- Telegram long-polling channel (telebot)
     config/config.go           -- JSON config, env overrides (JOSHBOT_ prefix)
+    configure/configure.go     -- Config wizard, provider selection, non-interactive configure
     context/context.go         -- Context propagation, registry, budget manager
     copilot/auth.go            -- GitHub Copilot auth flow
     cron/cron.go               -- Cron scheduler

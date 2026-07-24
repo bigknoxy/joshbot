@@ -41,13 +41,38 @@ func NewShellToolWithMaxOutput(timeout time.Duration, workspace string, restrict
 // defaultDenyList returns the default deny list for dangerous commands.
 func defaultDenyList() []string {
 	return []string{
+		// Filesystem destruction
 		"rm -rf /",
 		"rm -rf /*",
+		"rm -rf ~",
+		"rm -rf /home",
+		"rm -rf /root",
 		"mkfs",
 		"dd if=/dev/zero",
-		":(){:|:&};:", // Fork bomb
+		"dd if=",
 		">/dev/sda",
+		"> /dev/sd",
 		"chmod -R 777 /",
+		"chmod -R 777",
+		// System shutdown / reboot
+		"shutdown",
+		"reboot",
+		"halt",
+		"init 0",
+		"init 6",
+		"systemctl poweroff",
+		"systemctl reboot",
+		// Process destruction
+		":(){:|:&};:", // Fork bomb
+		"kill -9 -1",
+		"kill -9 1",
+		"killall -9",
+		// Disk manipulation
+		"fdisk",
+		"cfdisk",
+		"mount ",
+		"umount",
+		// Remote code execution via pipe
 		"wget .* | sh",
 		"curl .* | sh",
 	}

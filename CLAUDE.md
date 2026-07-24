@@ -1,6 +1,6 @@
 # joshbot — Architect's Guide
 
-joshbot is a self-hosted Go personal AI assistant (~14.5K LOC non-test, 520 test functions in 46 files). Single binary, zero runtime deps.
+joshbot is a self-hosted Go personal AI assistant (~19.6K LOC non-test, 597 test functions in 48 files). Single binary, zero runtime deps.
 
 ## Key facts
 

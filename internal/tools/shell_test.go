@@ -75,3 +75,39 @@ func TestShellToolDenyListStillAppliesWithAllowList(t *testing.T) {
 		t.Fatal("expected rm -rf / to be denied")
 	}
 }
+
+func TestShellToolDenyListBlocksDangerousCommands(t *testing.T) {
+	ws := t.TempDir()
+	tool := NewShellTool(2*time.Second, ws, false)
+
+	dangerousCommands := []string{
+		"rm -rf ~",
+		"rm -rf /home",
+		"rm -rf /root",
+		"shutdown",
+		"reboot",
+		"halt",
+		"init 0",
+		"init 6",
+		"kill -9 -1",
+		"kill -9 1",
+		"fdisk /dev/sda",
+		"cfdisk /dev/sda",
+		"mount /dev/sda1 /mnt",
+		"umount /mnt",
+		"dd if=/dev/sda of=/dev/null",
+		"chmod -R 777 /",
+		"chmod -R 777 /home",
+		"systemctl poweroff",
+		"systemctl reboot",
+	}
+
+	for _, cmd := range dangerousCommands {
+		res := tool.Execute(context.Background(), map[string]any{
+			"command": cmd,
+		})
+		if res.Error == nil {
+			t.Errorf("expected command %q to be denied, but it was allowed", cmd)
+		}
+	}
+}

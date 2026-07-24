@@ -34,6 +34,9 @@ jobs:
             exit 1
           fi
 
+      - name: Build
+        run: go build ./cmd/joshbot
+
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.out ./...
 

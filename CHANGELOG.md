@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] - 2026-07-24
+
+### Added
+- **ConfigureTool for in-chat config management** — New `configure` tool allows listing available models and settings, switching the active model, adjusting settings like temperature and max_tokens, and viewing the current active configuration — all from within a conversation.
+
+### Fixed
+- **Model-centric routing fix** — Fixed model routing when using the model-centric config format (`models_config`). Provider is now correctly auto-detected from the model prefix.
+- **Identity rewrite** — Updated workspace identity files (`IDENTITY.md`, `SOUL.md`, `USER.md`) for improved system prompt coherence.
+- **Conversation coherence improvements** — Enhanced context assembly and prompt optimization for more coherent multi-turn conversations.
+
+## [1.31.0] - 2026-07-24
+
+### Added
+- **ConfigureTool** — In-chat configuration management tool with `list`, `get`, `set`, and `save` operations for models, temperature, max_tokens, workspace, and other settings.
+
+### Fixed
+- **Model-centric routing** — Fixed model routing logic for the model-centric config format.
+- **gofmt formatting** — Fixed formatting in 3 files.
+
 ## [1.30.0] - 2026-06-03
 
 ### Fixed

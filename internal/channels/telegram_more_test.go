@@ -2,6 +2,8 @@ package channels
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +151,62 @@ func TestTelegramChannel_StopWhenRunning(t *testing.T) {
 	case <-tg.stopCh:
 	default:
 		t.Error("stopCh should be closed after Stop")
+	}
+}
+
+// TestTelegramChannel_StopStopsPollerGoroutine exercises the real
+// Start-shaped path: it hands a live *telebot.Bot polling a fake Telegram
+// API server to runBot (the same way Start() does), then calls Stop() and
+// asserts the goroutine blocked inside runBot (via bot.Start()) actually
+// returns.
+//
+// bot.Close() (the Telegram Bot API "close" session-teardown RPC) never
+// touches the internal channel that unblocks bot.Start()'s event loop, so
+// runBot leaks the polling goroutine forever when Stop() calls it. Only
+// bot.Stop() does. Before the fix, this test times out waiting for runBot
+// to return.
+func TestTelegramChannel_StopStopsPollerGoroutine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":[]}`))
+	}))
+	defer srv.Close()
+
+	bot, err := telebot.NewBot(telebot.Settings{
+		Token:   "test-token",
+		URL:     srv.URL,
+		Poller:  &telebot.LongPoller{Timeout: 10 * time.Millisecond},
+		Offline: true, // skip the getMe() network call NewBot would otherwise make
+	})
+	if err != nil {
+		t.Fatalf("failed to create test bot: %v", err)
+	}
+
+	tg := newTestTelegramChannel()
+	tg.mu.Lock()
+	tg.running = true
+	tg.bot = bot
+	tg.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		tg.runBot(context.Background(), bot)
+		close(done)
+	}()
+
+	// Give the poller goroutine time to actually start polling the fake
+	// server before we ask it to stop.
+	time.Sleep(150 * time.Millisecond)
+
+	if err := tg.Stop(); err != nil {
+		t.Fatalf("Stop returned %v", err)
+	}
+
+	select {
+	case <-done:
+		// runBot returned: bot.Start() unblocked and the poller goroutine exited.
+	case <-time.After(2 * time.Second):
+		t.Fatal("runBot did not return after Stop(); the underlying poller goroutine leaked")
 	}
 }
 

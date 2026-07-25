@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"runtime/debug"
 	"strconv"
@@ -244,6 +243,10 @@ func (t *TelegramChannel) runBot(ctx context.Context, bot *telebot.Bot) {
 
 			// Set up handlers on new bot
 			t.setupHandlers(newBot)
+
+			// Rebind the loop's local bot so the next iteration restarts
+			// the new bot instead of the stale one.
+			bot = newBot
 		}
 	}
 }
@@ -335,7 +338,7 @@ func (t *TelegramChannel) handleMessage(ctx telebot.Context) (err error) {
 	}()
 
 	msg := ctx.Message()
-	fmt.Fprintf(os.Stderr, "!!! handleMessage called sender=%d text=%q\n", msg.Sender.ID, msg.Text)
+	log.Debug("handleMessage called", "sender", msg.Sender.ID)
 
 	// Check if it's a command - let specific handlers deal with it
 	if strings.HasPrefix(msg.Text, "/") {
@@ -393,7 +396,7 @@ Just send me a message and I'll respond!`
 // handleNew handles the /new command to start a new session.
 func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
 	msg := ctx.Message()
-	fmt.Fprintf(os.Stderr, "!!! handleNew called sender=%d text=%q\n", msg.Sender.ID, msg.Text)
+	log.Debug("handleNew called", "sender", msg.Sender.ID)
 
 	// Send new session command to bus
 	inbound := bus.InboundMessage{
@@ -855,9 +858,12 @@ func (t *TelegramChannel) Stop() error {
 	t.running = false
 	close(t.stopCh)
 
-	// Stop the bot
+	// Stop the bot's long poller so runBot's blocking bot.Start() call
+	// returns. bot.Close() is the Telegram Bot API "close" session-teardown
+	// RPC (for moving a bot between API servers) and never unblocks
+	// bot.Start(), which would leak the poller goroutine.
 	if t.bot != nil {
-		t.bot.Close()
+		t.bot.Stop()
 		t.bot = nil
 	}
 

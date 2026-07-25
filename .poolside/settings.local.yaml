@@ -1,0 +1,11 @@
+tools:
+    shell:
+        allow:
+            - cd *
+            - git log *
+            - ls *
+            - echo *
+            - go version
+            - which go
+            - find *
+            - head *

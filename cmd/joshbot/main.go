@@ -81,6 +81,25 @@ func detectRunningContext() runningContext {
 var Version = "dev"
 
 func main() {
+	// The sandbox helper is handled before the CLI framework starts.
+	//
+	// It re-execs this binary to confine a single shell command: the helper
+	// process restricts itself with Landlock — which is irreversible and
+	// inherited by everything it spawns — runs the command, and exits. Doing
+	// that inside joshbot's own long-lived process would permanently sandbox
+	// the agent. See internal/tools/sandbox_helper.go.
+	//
+	// It is intentionally not a registered command: it takes no user-facing
+	// arguments, and setting up logging or config first would be wasted work
+	// in a process that exists to run one command and die.
+	if len(os.Args) > 1 && os.Args[1] == tools.SandboxHelperArg {
+		code, err := tools.RunSandboxHelper(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+		}
+		os.Exit(code)
+	}
+
 	if err := runApp(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
@@ -568,6 +587,29 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	budget := ctxpkg.NewBudgetManager(registry, 100)
 	compressor := &ctxpkg.Compressor{Provider: multiProvider}
 
+	// Resolve the shell sandbox setting. A value we do not recognise is an
+	// error rather than a silent fallback to "off": an operator who typed it
+	// wrong would otherwise believe commands were contained when they were not.
+	sandboxMode, ok := tools.ParseSandboxMode(cfg.Tools.ShellSandbox)
+	if !ok {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf(
+			"tools.shell_sandbox has unknown value %q; use \"off\" or \"workspace\"", cfg.Tools.ShellSandbox)
+	}
+	if sandboxMode != tools.SandboxOff {
+		if !tools.SandboxAvailable() {
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf(
+				"tools.shell_sandbox is %q but %s; set it to \"off\" to run without containment",
+				sandboxMode, tools.SandboxDescription())
+		}
+		if !tools.SandboxSupported() {
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf(
+				"tools.shell_sandbox is %q but the running kernel does not provide %s; "+
+					"set it to \"off\" to run without containment", sandboxMode, tools.SandboxDescription())
+		}
+		log.Info("Shell sandbox enabled", "mode", sandboxMode,
+			"mechanism", tools.SandboxDescription(), "network", cfg.Tools.ShellSandboxAllowNetwork)
+	}
+
 	// Create tools registry with defaults
 	toolsRegistry := tools.RegistryWithDefaults(
 		cfg.Agents.Defaults.Workspace,
@@ -578,6 +620,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.ShellAllowList,
 		cfg.Tools.FilesystemAllowedPaths,
 		skillsLoader,
+		tools.WithShellSandbox(sandboxMode, cfg.Tools.ShellSandboxAllowNetwork),
 	)
 
 	// Create function to reload providers from config (for config tool hot-reload)

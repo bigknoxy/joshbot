@@ -329,6 +329,25 @@ func DefaultRegistry() *Registry {
 	return NewRegistry()
 }
 
+// registrySettings holds optional configuration for RegistryWithDefaults.
+type registrySettings struct {
+	sandbox      SandboxMode
+	allowNetwork bool
+}
+
+// RegistryOption adjusts optional registry behaviour. Options are used rather
+// than more positional parameters, which this constructor already has enough of.
+type RegistryOption func(*registrySettings)
+
+// WithShellSandbox turns on OS-level containment for shell commands.
+// allowNetwork permits outbound TCP from those commands.
+func WithShellSandbox(mode SandboxMode, allowNetwork bool) RegistryOption {
+	return func(s *registrySettings) {
+		s.sandbox = mode
+		s.allowNetwork = allowNetwork
+	}
+}
+
 // RegistryWithDefaults creates a registry with standard tools configured.
 func RegistryWithDefaults(
 	workspace string,
@@ -339,7 +358,13 @@ func RegistryWithDefaults(
 	shellAllowList []string,
 	filesystemAllowedPaths []string,
 	skillLoader *skills.Loader,
+	opts ...RegistryOption,
 ) *Registry {
+	settings := registrySettings{sandbox: SandboxOff}
+	for _, opt := range opts {
+		opt(&settings)
+	}
+
 	registry := NewRegistry()
 
 	// Filesystem tool
@@ -378,6 +403,7 @@ func RegistryWithDefaults(
 		Restrict:  restrictToWorkspace,
 		AllowList: shellAllowList,
 	})
+	shellTool.SetSandbox(settings.sandbox, settings.allowNetwork)
 	_ = registry.Register(shellTool)
 
 	// Web tool

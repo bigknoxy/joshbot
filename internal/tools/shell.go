@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +20,22 @@ type ShellTool struct {
 	denyList       []string // Extra patterns, applied on top of the built-in rules
 	allowList      []string // If non-empty, only these commands are allowed
 	maxOutputChars int      // Maximum characters to truncate output to
+
+	// sandbox controls OS-level containment of spawned commands. See
+	// sandbox.go; SandboxOff reproduces the behaviour from before it existed.
+	sandbox      SandboxMode
+	allowNetwork bool
+	// helperPath is the binary re-executed to apply the sandbox. Defaults to
+	// this executable; tests point it at their own binary.
+	helperPath string
+}
+
+// SetSandbox enables OS-level containment for spawned commands. allowNetwork
+// permits outbound TCP, which is off by default because exfiltrating what was
+// read is the usual payoff for an attack that reaches this far.
+func (t *ShellTool) SetSandbox(mode SandboxMode, allowNetwork bool) {
+	t.sandbox = mode
+	t.allowNetwork = allowNetwork
 }
 
 // NewShellTool creates a new ShellTool.
@@ -149,10 +166,46 @@ func (t *ShellTool) isDenied(cmd string) string {
 	return screen(cmd, t.denyList)
 }
 
+// buildExecCmd constructs the command to run, either directly or through the
+// sandbox helper.
+//
+// When containment is on it fails rather than falling back to an unconfined
+// run. An operator who switched the sandbox on and silently got no sandbox is
+// worse off than one who never switched it on, because they would stop
+// thinking about it.
+func (t *ShellTool) buildExecCmd(ctx context.Context, cmd, workingDir string) (*exec.Cmd, error) {
+	if t.sandbox == SandboxOff {
+		return exec.CommandContext(ctx, "sh", "-c", cmd), nil
+	}
+
+	if err := sandboxPreflight(t.sandbox, SandboxAvailable(), SandboxSupported()); err != nil {
+		return nil, err
+	}
+
+	helper := t.helperPath
+	if helper == "" {
+		self, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("shell sandbox needs to re-exec this binary but its path could not be determined: %w", err)
+		}
+		helper = self
+	}
+
+	ws := workingDir
+	if ws == "" {
+		ws = t.workspace
+	}
+
+	return exec.CommandContext(ctx, helper, SandboxHelperArg,
+		ws, strconv.FormatBool(t.allowNetwork), cmd), nil
+}
+
 // runCommand executes the command and returns the result.
 func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) ToolResult {
-	// Use shell -c to run the command
-	execCmd := exec.CommandContext(ctx, "sh", "-c", cmd)
+	execCmd, err := t.buildExecCmd(ctx, cmd, workingDir)
+	if err != nil {
+		return ToolResult{Error: err}
+	}
 
 	// Hand the child a reduced environment. A nil Env would inherit this
 	// process's, which includes every provider API key — readable with a bare

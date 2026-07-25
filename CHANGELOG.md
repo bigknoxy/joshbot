@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **OS-level sandbox for shell commands** (`tools.shell_sandbox`) — Opt-in containment via Landlock on Linux: filesystem access is confined to the workspace and build caches, and outbound TCP is denied unless `tools.shell_sandbox_allow_network` is set. Neither `$HOME` nor the shared `/tmp` is granted, so SSH keys, cloud credentials and joshbot's own config are unreachable. This is the boundary the deny list in `shell_deny.go` cannot be: screening has to anticipate every dangerous command an attacker might write, while the kernel refuses the access however it was spelled. Off by default because enabling it changes what existing setups can do. It fails closed — an unknown mode, a platform without an implementation, or a kernel without Landlock all produce a startup error rather than an unconfined run.
+
 ## [1.37.0] - 2026-07-25
 
 ### Security

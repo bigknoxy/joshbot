@@ -80,6 +80,10 @@ func TestSandboxPreflight(t *testing.T) {
 		{"on and fully capable", SandboxWorkspace, true, true, false},
 		{"on but not implemented here", SandboxWorkspace, false, false, true},
 		{"on, implemented, kernel lacks it", SandboxWorkspace, true, false, true},
+		// Separates the two checks. Without this case the availability check
+		// is redundant — the support check catches the same inputs — and
+		// deleting it goes unnoticed.
+		{"on, kernel capable but no implementation", SandboxWorkspace, false, true, true},
 	}
 
 	for _, tc := range cases {

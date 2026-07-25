@@ -244,6 +244,10 @@ func (t *TelegramChannel) runBot(ctx context.Context, bot *telebot.Bot) {
 
 			// Set up handlers on new bot
 			t.setupHandlers(newBot)
+
+			// Rebind the loop's local bot so the next iteration restarts
+			// the new bot instead of the stale one.
+			bot = newBot
 		}
 	}
 }
@@ -855,9 +859,12 @@ func (t *TelegramChannel) Stop() error {
 	t.running = false
 	close(t.stopCh)
 
-	// Stop the bot
+	// Stop the bot's long poller so runBot's blocking bot.Start() call
+	// returns. bot.Close() is the Telegram Bot API "close" session-teardown
+	// RPC (for moving a bot between API servers) and never unblocks
+	// bot.Start(), which would leak the poller goroutine.
 	if t.bot != nil {
-		t.bot.Close()
+		t.bot.Stop()
 		t.bot = nil
 	}
 

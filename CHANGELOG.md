@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Telegram could hang on long replies containing an unbalanced code fence** — A reply over the 4096-character limit whose ``` fences did not pair up made the message splitter loop forever, so the message was never delivered, no error was reported, and the Telegram sender stopped processing further outbound messages. Long code-heavy answers were the common trigger.
+- **Dangerous shell commands could evade the safety deny list** — Padded whitespace (`rm -rf  /`), reordered or split flags (`rm -fr /`, `rm -r -f /`), quote splicing (`r"m" -rf /`), wrapper commands (`sudo`, `env`, `nohup`, `timeout`), command substitution (`$(...)`, backticks), and `$IFS` separators all bypassed the previous substring matcher.
+
+### Changed
+- **Shell command screening rewritten** — Commands are now split into segments at unquoted separators, unwrapped, and matched against structural rules rather than literal substrings. This also removes false rejections such as `echo shutdown` and `ls | sha256sum`. It remains defence in depth, not a security boundary: isolation still requires an OS-level sandbox.
+- **`ShellToolConfig.DenyList` is now additive** — Custom patterns apply on top of the built-in rules instead of replacing them, so configuration can tighten screening but not weaken it.
+
+### Added
+- Test coverage for `internal/channels` (47.5% → 59.8%) and a regression suite for shell command screening.
+
 ## [1.32.0] - 2026-07-24
 
 ### Added

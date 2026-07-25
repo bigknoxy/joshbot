@@ -39,6 +39,13 @@ go vet ./... && gofmt -l .                   # CI gates on both
 `tools`, `memory`, `skills`, `session`, `context`, `config`, `cron`, `heartbeat`,
 `subagent`, `service` (build-tagged per-OS), `learning`, `integration`.
 
+## Panel review
+
+`.claude/skills/panel-review/` runs a five-expert review (security, evals,
+experience, growth, Go systems) that debates and scores a change. Charters are in
+`references/experts.md` and are harness-portable. See the Panel Review section of
+`AGENTS.md` for how to run it.
+
 ## Important gotchas
 
 - `internal/` is the source of truth. `pkg/` is a stale incomplete refactor — do not edit.
@@ -48,7 +55,7 @@ go vet ./... && gofmt -l .                   # CI gates on both
 - Env var nesting uses `__`: `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY`. Shorthand `JOSHBOT_OPENROUTER_API_KEY` still works.
 - Session key is computed from `Channel:SenderID` — there is no `SessionKey` field.
 - `internal/service/` is build-tagged (`factory_linux.go` / `factory_darwin.go` / `factory_other.go`) — all must export the same signature.
-- Telegram hard-fails over 4096 chars; joshbot does not split messages.
+- Telegram hard-fails over 4096 chars; `Send` splits longer content via `splitMessage` (code-fence aware, byte-indexed).
 
 ## Website (site/)
 

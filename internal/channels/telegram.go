@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -895,11 +896,15 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		}
 	}
 
-	parts := splitMessage(msg.Content, TelegramMaxMessageLen)
-
-	// Reserve header space for parts after the first
-	// Header format: "\n\n— *Part N of M* —\n\n" ≈ 30 bytes max
+	// Parts after the first carry a "— Part N of M —" header. Re-split with
+	// that reserved so header+part still fits, rather than truncating the
+	// part afterwards — truncation used to chop off the closing code fence
+	// that splitMessage had just added.
 	const partHeaderOverhead = 35
+	parts := splitMessage(msg.Content, TelegramMaxMessageLen)
+	if len(parts) > 1 {
+		parts = splitMessage(msg.Content, TelegramMaxMessageLen-partHeaderOverhead)
+	}
 
 	for i, part := range parts {
 		partOpts := telebot.SendOptions{ParseMode: parseMode}
@@ -914,13 +919,7 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 
 		content := part
 		if i > 0 {
-			header := fmt.Sprintf("\n\n— *Part %d of %d* —\n\n", i+1, len(parts))
-			// Trim part if header pushes it over limit
-			maxPartLen := TelegramMaxMessageLen - len(header)
-			if len(part) > maxPartLen {
-				part = part[:maxPartLen]
-			}
-			content = header + part
+			content = fmt.Sprintf("\n\n— *Part %d of %d* —\n\n", i+1, len(parts)) + part
 		}
 
 		var lastErr error
@@ -969,9 +968,16 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 // Avoids splitting inside markdown code blocks by closing them before the
 // split and reopening them after. Tries to split on newlines first.
 func splitMessage(content string, maxLen int) []string {
-	if len(content) <= maxLen {
+	if maxLen <= 0 || len(content) <= maxLen {
 		return []string{content}
 	}
+
+	// Closing a block costs fenceClose bytes on this part and reopening costs
+	// fenceOpen bytes on the next one.
+	const (
+		fenceClose = "\n```"
+		fenceOpen  = "```\n"
+	)
 
 	var parts []string
 	for len(content) > 0 {
@@ -980,10 +986,25 @@ func splitMessage(content string, maxLen int) []string {
 			break
 		}
 
-		splitAt := strings.LastIndex(content[:maxLen], "\n")
-		if splitAt <= 0 {
-			splitAt = maxLen
+		// Reserve room for the closing fence up front. Appending it after
+		// slicing at maxLen would push the part past Telegram's hard limit,
+		// and Telegram rejects the whole send rather than truncating.
+		limit := maxLen
+		if strings.Count(content[:maxLen], "```")%2 == 1 {
+			limit = maxLen - len(fenceClose)
 		}
+		if limit < 1 {
+			limit = 1
+		}
+
+		splitAt := strings.LastIndex(content[:limit], "\n")
+		// Reopening a block prepends fenceOpen to the remainder. Splitting at
+		// or before that length would leave the remainder no shorter than it
+		// started, so the loop would never terminate. Hard split instead.
+		if splitAt <= len(fenceOpen) {
+			splitAt = limit
+		}
+		splitAt = runeBoundary(content, splitAt)
 
 		prefix := content[:splitAt]
 		suffix := content[splitAt:]
@@ -991,19 +1012,18 @@ func splitMessage(content string, maxLen int) []string {
 		// If the prefix has an odd number of code fences, we're mid-code-block.
 		// Close the block at the end of this part and reopen at the start of the next.
 		if strings.Count(prefix, "```")%2 == 1 {
-			prefix = prefix + "\n```"
-			suffix = "```\n" + suffix
-			// If closing the block pushed this part over maxLen+4,
-			// fall back to a hard split and just close the block there.
-			if len(prefix) > maxLen+4 {
+			prefix += fenceClose
+			suffix = fenceOpen + suffix
+		}
+
+		// The remainder must always shrink and every part must carry at least
+		// one byte; anything else would hang the outbound consumer.
+		if len(suffix) >= len(content) || len(prefix) == 0 {
+			splitAt = runeBoundary(content, maxLen)
+			if splitAt == 0 {
 				splitAt = maxLen
-				prefix = content[:splitAt]
-				suffix = content[splitAt:]
-				if strings.Count(prefix, "```")%2 == 1 {
-					prefix = prefix + "\n```"
-					suffix = "```\n" + suffix
-				}
 			}
+			prefix, suffix = content[:splitAt], content[splitAt:]
 		}
 
 		parts = append(parts, prefix)
@@ -1011,6 +1031,20 @@ func splitMessage(content string, maxLen int) []string {
 	}
 
 	return parts
+}
+
+// runeBoundary backs idx up to the start of a UTF-8 rune so that a hard split
+// never cuts a multibyte character in half. Telegram counts UTF-16 code
+// units, so a byte limit is always conservative — the risk here is corruption,
+// not overflow.
+func runeBoundary(s string, idx int) int {
+	if idx >= len(s) {
+		return len(s)
+	}
+	for idx > 0 && !utf8.RuneStart(s[idx]) {
+		idx--
+	}
+	return idx
 }
 
 // isRetryable determines if an error should trigger a retry.

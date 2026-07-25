@@ -137,10 +137,26 @@ func lastNonEmptyContent(messages []providers.Message, maxChars int) (string, bo
 	return "", false
 }
 
+// minPlausibleSummaryChars is the floor below which a provider-generated
+// summary is treated as degenerate — an empty completion, a refusal stub,
+// a truncated stream — rather than a genuine summary of 50+ messages of
+// conversation, and is therefore rejected in favor of the deterministic
+// fallback. This is a length heuristic only; it is deliberately not an
+// LLM-as-judge check.
+const minPlausibleSummaryChars = 15
+
+// isPlausibleSummary reports whether s, once surrounding whitespace is
+// trimmed, is non-empty and at least minChars long.
+func isPlausibleSummary(s string, minChars int) bool {
+	return len(strings.TrimSpace(s)) >= minChars
+}
+
 // CompressMessages returns a compacted string representation of messages limited by token budget.
 // It naively keeps the most recent messages until the token budget is met; if exceeded and a Provider
-// is available, it will ask the provider to summarize them.
-func (c *Compressor) CompressMessages(model string, messages []providers.Message, budget int) (string, error) {
+// is available, it will ask the provider to summarize them. ctx governs the provider call(s) and is
+// the caller's responsibility to cancel/time out; CompressMessages does not create its own background
+// context for provider requests.
+func (c *Compressor) CompressMessages(ctx context.Context, model string, messages []providers.Message, budget int) (string, error) {
 	if len(messages) == 0 {
 		return "", fmt.Errorf("no messages to compress")
 	}
@@ -173,10 +189,14 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 			},
 			MaxTokens: 200,
 		}
-		resp, err := c.Provider.Chat(context.Background(), req)
-		if err == nil && len(resp.Choices) > 0 {
+		resp, err := c.Provider.Chat(ctx, req)
+		if err == nil && len(resp.Choices) > 0 && isPlausibleSummary(resp.Choices[0].Message.Content, minPlausibleSummaryChars) {
 			return resp.Choices[0].Message.Content, nil
 		}
+		// A missing/empty/whitespace-only/implausibly-short summary (refusal,
+		// truncated stream, provider error) is a failed compression: fall
+		// through to the deterministic newest-backwards join below instead of
+		// returning an empty compressed context with a nil error.
 	}
 	// join messages from newest backwards until budget
 	var parts []string
@@ -213,8 +233,8 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 			},
 			MaxTokens: 200,
 		}
-		resp, err := c.Provider.Chat(context.Background(), req)
-		if err == nil && len(resp.Choices) > 0 && resp.Choices[0].Message.Content != "" {
+		resp, err := c.Provider.Chat(ctx, req)
+		if err == nil && len(resp.Choices) > 0 && isPlausibleSummary(resp.Choices[0].Message.Content, 1) {
 			return resp.Choices[0].Message.Content, nil
 		}
 	}

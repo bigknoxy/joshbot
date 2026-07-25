@@ -508,7 +508,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		}
 
 		// Proactive context compaction: check if we need to compact after tool execution
-		messages = a.checkAndCompactContext(messages, sess)
+		messages = a.checkAndCompactContext(ctx, messages, sess)
 	}
 
 	// Hit max iterations
@@ -570,7 +570,7 @@ func (a *Agent) afterReActDetection(finalOutput string, toolRecords []skills.Too
 
 // checkAndCompactContext estimates current message tokens and compacts context if threshold is exceeded.
 // It returns the original messages if under threshold, or compacted messages otherwise.
-func (a *Agent) checkAndCompactContext(messages []providers.Message, sess *session.Session) []providers.Message {
+func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers.Message, sess *session.Session) []providers.Message {
 	// Only proceed if we have budget manager and compressor
 	if a.budget == nil || a.compressor == nil {
 		return messages
@@ -609,7 +609,7 @@ func (a *Agent) checkAndCompactContext(messages []providers.Message, sess *sessi
 
 	// Get session messages for compression (excluding system prompt)
 	sessionMsgs := messages[1:] // Skip system message
-	compressed, err := a.compressor.CompressMessages(model, sessionMsgs, thresholdBudget)
+	compressed, err := a.compressor.CompressMessages(ctx, model, sessionMsgs, thresholdBudget)
 	if err != nil {
 		a.logger.Warn("Context compaction failed", "error", err)
 		return messages

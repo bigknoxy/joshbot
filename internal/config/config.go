@@ -968,7 +968,9 @@ func Save(cfg *Config) error {
 	}
 
 	configPath := filepath.Join(DefaultHome, "config.json")
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+	// 0600: this file holds live provider API keys, so group and other must
+	// have no access to it.
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		return err
 	}
 
@@ -1047,7 +1049,9 @@ func migrateConfig(cfg *Config, rawJSON []byte) error {
 		if _, err := os.Stat(configPath); err == nil {
 			backupPath := configPath + ".bak"
 			if data, err := os.ReadFile(configPath); err == nil {
-				_ = os.WriteFile(backupPath, data, 0o644)
+				// The backup is a verbatim copy of config.json, API keys
+				// included, so it gets the same 0600 treatment.
+				_ = os.WriteFile(backupPath, data, 0o600)
 				logger.Info("Backed up config", "to", backupPath)
 			}
 		}

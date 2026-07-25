@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Provider API keys were handed to every shell command** — `exec.Cmd` with a nil `Env` inherits the parent's environment, and `runCommand` never assigned one, so any command the model ran received joshbot's full environment including `JOSHBOT_PROVIDERS__*__API_KEY`. A bare `env` was enough to read them: no filesystem access, no deny-list rule involved, and no filesystem sandbox would have helped. Spawned commands now get an allowlisted environment, screened a second time for credential-shaped names.
+- **`config.json` was written world-readable (0644)** — It holds live provider API keys, so every account on the machine could read them, which also made any containment of the shell tool beside the point. Now written 0600, along with the migration backup that copies it verbatim.
+
 ## [1.36.0] - 2026-07-25
 
 ### Security

@@ -31,7 +31,7 @@ func TestCompressMessages_NoProvider_UnderBudget(t *testing.T) {
 	}
 	c := &Compressor{Provider: nil}
 	// generous budget
-	out, err := c.CompressMessages("test-model", msgs, 1000)
+	out, err := c.CompressMessages(context.Background(), "test-model", msgs, 1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestCompressMessages_WithProvider_ExceedsBudget(t *testing.T) {
 	}
 	mock := &mockProv{resp: "SUMMARY"}
 	c := &Compressor{Provider: mock}
-	out, err := c.CompressMessages("test-model", msgs, 10) // tiny budget forces summarization
+	out, err := c.CompressMessages(context.Background(), "test-model", msgs, 10) // tiny budget forces summarization
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestCompressMessages_SingleMessageExceedsBudget(t *testing.T) {
 	}
 	c := &Compressor{Provider: nil}
 	// tiny budget that the single message exceeds
-	out, err := c.CompressMessages("test-model", msgs, 50)
+	out, err := c.CompressMessages(context.Background(), "test-model", msgs, 50)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestCompressMessages_ProviderReturnsEmpty(t *testing.T) {
 	}
 	mock := &mockProv{resp: ""}
 	c := &Compressor{Provider: mock}
-	out, err := c.CompressMessages("test-model", msgs, 10)
+	out, err := c.CompressMessages(context.Background(), "test-model", msgs, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestCompressMessages_AllEmptyContent(t *testing.T) {
 		{Role: providers.RoleAssistant, Content: ""},
 	}
 	c := &Compressor{Provider: nil}
-	out, err := c.CompressMessages("test-model", msgs, 100)
+	out, err := c.CompressMessages(context.Background(), "test-model", msgs, 100)
 	if err == nil {
 		t.Fatalf("expected error for all-empty messages, got nil, out=%q", out)
 	}
@@ -111,7 +111,7 @@ func TestCompressMessages_ToolResultTriggersCompaction(t *testing.T) {
 		{Role: providers.RoleAssistant, Content: "The Royals won 5-3."},
 	}
 	c := &Compressor{Provider: nil}
-	out, err := c.CompressMessages("test-model", msgs, 10)
+	out, err := c.CompressMessages(context.Background(), "test-model", msgs, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

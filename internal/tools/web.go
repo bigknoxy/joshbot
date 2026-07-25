@@ -13,20 +13,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/log"
 )
-
-// Private IP ranges to block (SSRF protection)
-var privateIPRanges = []string{
-	"127.0.0.0/8",                 // Loopback
-	"10.0.0.0/8",                  // Private network
-	"172.16.0.0/12",               // Private network
-	"192.168.0.0/16",              // Private network
-	"169.254.169.254/32",          // AWS/GCP/Azure metadata
-	"metadata.google.internal/32", // GCP metadata
-}
 
 // Blocked hosts for SSRF protection
 var blockedHosts = map[string]bool{
@@ -281,6 +272,34 @@ type WebTool struct {
 	maxRetries      int
 	baseDelay       time.Duration
 	exaCLIAvailable bool
+	// resolveIP resolves a hostname to its addresses. It exists so tests can
+	// drive the SSRF check without depending on real DNS.
+	resolveIP func(host string) ([]net.IP, error)
+}
+
+// guardedDialControl refuses to connect to a non-public address.
+//
+// This runs after DNS resolution and immediately before the socket connects,
+// which makes it the real enforcement point: validateURLForSSRF checks a
+// hostname up front, but the transport resolves the name again when it dials,
+// so a name that answers with a public IP once and a private IP a moment later
+// (DNS rebinding) would otherwise slip past the up-front check. It also covers
+// request paths that never call validateURLForSSRF at all.
+func guardedDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("blocked connection to unparseable address %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// The dialer hands us a resolved literal. Anything else is unexpected,
+		// so fail closed rather than guess.
+		return fmt.Errorf("blocked connection to non-literal address %q", host)
+	}
+	if isBlockedIP(ip) {
+		return fmt.Errorf("blocked connection to non-public address %s", ip)
+	}
+	return nil
 }
 
 // NewWebTool creates a new WebTool.
@@ -291,9 +310,17 @@ func NewWebTool(timeout time.Duration, searchAPI string) *WebTool {
 		log.Debug("exa-cli not found, will use HTTP fallback")
 	}
 
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   guardedDialControl,
+	}).DialContext
+
 	return &WebTool{
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -302,6 +329,7 @@ func NewWebTool(timeout time.Duration, searchAPI string) *WebTool {
 		maxRetries:      3,
 		baseDelay:       1 * time.Second,
 		exaCLIAvailable: exaAvailable,
+		resolveIP:       net.LookupIP,
 	}
 }
 
@@ -656,12 +684,18 @@ func (t *WebTool) doSearch(searchURL string, maxResults int) ToolResult {
 			if location != "" {
 				log.Debug("Following redirect", "location", location)
 				// Update request URL to redirect location
-				req.URL, err = req.URL.Parse(location)
+				redirectURL, err := req.URL.Parse(location)
 				if err != nil {
 					return ToolResult{Error: fmt.Errorf("failed to parse redirect location: %w", err)}
 				}
-				req.URL.Scheme = "https" // Force HTTPS for redirects
-				continue                 // Retry with new URL
+				redirectURL.Scheme = "https" // Force HTTPS for redirects
+				// A redirect target is attacker-influenced: the search engine
+				// chooses it. It gets the same check as any other URL.
+				if err := t.validateURLForSSRF(redirectURL.String()); err != nil {
+					return ToolResult{Error: fmt.Errorf("refusing to follow redirect: %w", err)}
+				}
+				req.URL = redirectURL
+				continue // Retry with new URL
 			}
 
 			// No Location header - retry after delay
@@ -895,31 +929,72 @@ func (t *WebTool) validateURLForSSRF(urlStr string) error {
 	// Check for IP addresses
 	ip := net.ParseIP(hostname)
 	if ip != nil {
-		// Check if it's a private IP
-		if isPrivateIP(ip) {
-			return fmt.Errorf("access to private IP addresses is blocked: %s", ip.String())
-		}
-		// Also block documentation/reserved ranges
-		if ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			return fmt.Errorf("access to reserved IP addresses is blocked: %s", ip.String())
+		if isBlockedIP(ip) {
+			return fmt.Errorf("access to non-public IP addresses is blocked: %s", ip.String())
 		}
 		return nil
 	}
 
-	// For hostnames, resolve and check the resolved IP
-	// Only do DNS lookup if the hostname might resolve to a private IP
+	// Names that are unambiguously internal are refused without resolving.
 	if isPotentiallyPrivateHostname(hostname) {
-		ips, err := net.LookupIP(hostname)
-		if err == nil {
-			for _, resolvedIP := range ips {
-				if isPrivateIP(resolvedIP) {
-					return fmt.Errorf("hostname %s resolves to private IP: %s", hostname, resolvedIP.String())
-				}
-			}
+		return fmt.Errorf("access to internal hostname %s is blocked", hostname)
+	}
+
+	// Every remaining hostname is resolved and checked. This must not be
+	// conditional: an attacker controls their own DNS, so the name carries no
+	// signal about where it points. A lookup that fails is treated as unsafe
+	// rather than safe — we cannot show the target is public, and a fetch we
+	// cannot resolve would fail anyway.
+	resolve := t.resolveIP
+	if resolve == nil {
+		resolve = net.LookupIP
+	}
+	ips, err := resolve(hostname)
+	if err != nil {
+		return fmt.Errorf("cannot verify %s is safe to fetch: DNS lookup failed: %w", hostname, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("cannot verify %s is safe to fetch: hostname resolved to no addresses", hostname)
+	}
+	for _, resolvedIP := range ips {
+		if isBlockedIP(resolvedIP) {
+			return fmt.Errorf("hostname %s resolves to a non-public address: %s", hostname, resolvedIP.String())
 		}
 	}
 
 	return nil
+}
+
+// isBlockedIP reports whether an address is anything other than a routable
+// public address. It is deliberately broader than isPrivateIP: the metadata
+// endpoint every cloud SSRF attack targets (169.254.169.254) is link-local,
+// not private, and was missed by the private-range check alone.
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
+		return true
+	}
+	if isPrivateIP(ip) {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 0: // 0.0.0.0/8 "this network"
+			return true
+		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127: // 100.64.0.0/10 carrier NAT
+			return true
+		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0: // 192.0.0.0/24 IETF assignments
+			return true
+		case ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19): // 198.18.0.0/15 benchmarking
+			return true
+		case ip4[0] >= 240: // 240.0.0.0/4 reserved, incl. broadcast
+			return true
+		}
+	}
+	return false
 }
 
 // isPrivateIP checks if an IP is in a private range.

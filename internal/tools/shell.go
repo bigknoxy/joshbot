@@ -178,13 +178,8 @@ func (t *ShellTool) buildExecCmd(ctx context.Context, cmd, workingDir string) (*
 		return exec.CommandContext(ctx, "sh", "-c", cmd), nil
 	}
 
-	if !SandboxAvailable() {
-		return nil, fmt.Errorf("shell sandbox is set to %q but %s; either run on Linux or set the sandbox to \"off\"",
-			t.sandbox, SandboxDescription())
-	}
-	if !SandboxSupported() {
-		return nil, fmt.Errorf("shell sandbox is set to %q but the running kernel does not provide %s; "+
-			"refusing to run unconfined", t.sandbox, SandboxDescription())
+	if err := sandboxPreflight(t.sandbox, SandboxAvailable(), SandboxSupported()); err != nil {
+		return nil, err
 	}
 
 	helper := t.helperPath

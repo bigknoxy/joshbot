@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +121,29 @@ func DefaultSandboxPolicy(workspace string) SandboxPolicy {
 	}
 
 	return p
+}
+
+// sandboxPreflight reports why containment cannot be enforced, or nil if it
+// can.
+//
+// Both the shell tool and the helper must refuse rather than run unconfined
+// when a sandbox was asked for and cannot be delivered, so the decision lives
+// in one place. Taking the two capability answers as parameters keeps it
+// testable on any machine — otherwise the refusal paths could only be
+// exercised on a kernel that happens to lack Landlock.
+func sandboxPreflight(mode SandboxMode, available, supported bool) error {
+	if mode == SandboxOff {
+		return nil
+	}
+	if !available {
+		return fmt.Errorf("shell sandbox is set to %q but %s; set it to \"off\" to run without containment",
+			mode, SandboxDescription())
+	}
+	if !supported {
+		return fmt.Errorf("shell sandbox is set to %q but the running kernel does not provide %s; "+
+			"refusing to run unconfined", mode, SandboxDescription())
+	}
+	return nil
 }
 
 // SandboxTempDir returns the private scratch directory a sandboxed command

@@ -50,12 +50,8 @@ func RunSandboxHelper(args []string) (int, error) {
 	}
 	command := args[2]
 
-	if !SandboxAvailable() {
-		return 2, fmt.Errorf("sandbox helper: %s", SandboxDescription())
-	}
-	if !SandboxSupported() {
-		return 2, fmt.Errorf("sandbox helper: %s is built in but the running kernel does not provide it; "+
-			"refusing to run the command unconfined after containment was requested", SandboxDescription())
+	if err := sandboxPreflight(SandboxWorkspace, SandboxAvailable(), SandboxSupported()); err != nil {
+		return 2, fmt.Errorf("sandbox helper: %w", err)
 	}
 
 	// Create the private scratch directory before restricting, since afterwards

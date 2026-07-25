@@ -58,9 +58,9 @@ ENV PATH=/usr/local/bin:$PATH
 # Expose ports (if needed for future HTTP server)
 EXPOSE 8080
 
-# Health check
+# Health check - uses version (doesn't require config) for resilience
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD joshbot status > /dev/null 2>&1 || exit 1
+    CMD joshbot version > /dev/null 2>&1 || exit 1
 
 # Default command
 ENTRYPOINT ["joshbot"]

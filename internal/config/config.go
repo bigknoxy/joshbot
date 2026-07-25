@@ -237,6 +237,14 @@ type ToolsConfig struct {
 	ShellAllowList         []string       `mapstructure:"shell_allow_list" json:"shell_allow_list" yaml:"shell_allow_list"`
 	FilesystemAllowedPaths []string       `mapstructure:"filesystem_allowed_paths" json:"filesystem_allowed_paths" yaml:"filesystem_allowed_paths"`
 	ToolOutputMaxChars     int            `mapstructure:"tool_output_max_chars" json:"tool_output_max_chars" yaml:"tool_output_max_chars"`
+	// ShellSandbox selects OS-level containment for shell commands:
+	// "off" (default) or "workspace". Linux only; on other platforms a
+	// non-off value is reported as an error rather than silently ignored.
+	ShellSandbox string `mapstructure:"shell_sandbox" json:"shell_sandbox,omitempty" yaml:"shell_sandbox,omitempty"`
+	// ShellSandboxAllowNetwork permits outbound TCP from sandboxed commands.
+	// Off by default: exfiltrating what was read is the usual goal of an
+	// attack that gets as far as running commands.
+	ShellSandboxAllowNetwork bool `mapstructure:"shell_sandbox_allow_network" json:"shell_sandbox_allow_network,omitempty" yaml:"shell_sandbox_allow_network,omitempty"`
 }
 
 // GatewayConfig holds gateway server configuration.

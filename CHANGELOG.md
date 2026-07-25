@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`--config` ignored the file name it was given** — Only the directory was used, so `--config /path/staging.json` loaded `/path/config.json`, and three configs in one directory all resolved to the same file. A path with no `config.json` beside it silently fell back to defaults, leaving the impression the file had been read. The home override was also reverted immediately after loading, so sessions, media, cron, the skills trust store and `Save` still pointed at `~/.joshbot`: joshbot read one file and wrote another. `configure` and `onboard` ignored the flag entirely — `configure --config x.json --api-key ...` reported success while writing the key to `~/.joshbot/config.json`.
+
 ## [1.39.0] - 2026-07-25
 
 ### Security

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-07-25
+
 ### Security
 - **Workspace skills could install permanent instructions without review** — A `SKILL.md` under the workspace was discovered and injected into the system prompt: its description always, and with `always: true` its entire body inline on every request, surviving restarts. Nothing checked its origin, and `always` was never validated. Because the agent's own `skill_registry` tool writes skills, text steered by a fetched page, a chat message or a document could induce the agent to write standing instructions it would then follow indefinitely; anything else able to write to the workspace — a cloned repo, an extracted archive — had the same effect without involving the model. Workspace skills are now inert until approved with `joshbot skills trust`, approval is recorded outside the workspace and bound to a hash of the file so edits revoke it, and creating a skill never approves it.
 

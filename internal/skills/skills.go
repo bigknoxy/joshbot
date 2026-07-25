@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -19,8 +20,15 @@ type Skill struct {
 	Always       bool
 	Requirements []string
 	Tags         []string
-	content      *string
-	available    *bool
+	// Bundled marks a skill that shipped with the release rather than being
+	// found in the workspace. Bundled skills need no per-install approval.
+	Bundled bool
+	// Trusted reports whether this exact content has been approved. Untrusted
+	// workspace skills are never offered to the model — not even their name,
+	// which is attacker-controlled text like everything else in the file.
+	Trusted   bool
+	content   *string
+	available *bool
 }
 
 // Available checks requirements (bin: / env:)
@@ -90,6 +98,9 @@ type Loader struct {
 	workspaceDir string
 	skills       map[string]*Skill
 	loaded       bool
+	// trust gates workspace skills. A nil store means nothing from the
+	// workspace is approved, which is the safe direction to fail.
+	trust *TrustStore
 }
 
 // NewLoader creates a new skills loader. workspace should be the workspace root (contains skills/).
@@ -104,31 +115,103 @@ func NewLoader(workspace string) (*Loader, error) {
 	return l, nil
 }
 
+// SetTrustStore attaches the approval record used to gate workspace skills.
+// Without one, no workspace skill is trusted — failing closed, because the
+// alternative is treating "provenance not configured" as "everything is fine".
+func (l *Loader) SetTrustStore(store *TrustStore) {
+	l.trust = store
+	l.Invalidate()
+}
+
+// TrustStore returns the attached approval record, which may be nil.
+func (l *Loader) TrustStore() *TrustStore { return l.trust }
+
 // Discover scans bundled and workspace skills. Workspace overrides bundled.
 func (l *Loader) Discover() error {
 	l.skills = map[string]*Skill{}
 
-	_ = filepath.WalkDir(l.bundledDir, l.walkSkillDir)
-	_ = filepath.WalkDir(l.workspaceDir, l.walkSkillDir)
+	_ = filepath.WalkDir(l.bundledDir, l.walk(true))
+	_ = filepath.WalkDir(l.workspaceDir, l.walk(false))
 
 	l.loaded = true
 	return nil
 }
 
-// walkSkillDir is the filepath.WalkDir callback that registers discovered skills.
-func (l *Loader) walkSkillDir(path string, d fs.DirEntry, err error) error {
-	if err != nil || !d.IsDir() {
-		return nil
+// Trust approves a discovered workspace skill's current content.
+//
+// This is an operator action. Nothing the agent can reach calls it: the
+// skill_registry tool writes skills but never approves them, so whatever
+// induced the agent to write a skill has not also caused it to be believed.
+func (l *Loader) Trust(name string) error {
+	if l.trust == nil {
+		return fmt.Errorf("no trust store configured; cannot approve skill %q", name)
 	}
-	skillFile := filepath.Join(path, "SKILL.md")
-	if _, err := os.Stat(skillFile); err != nil {
-		return nil
+	sk := l.GetSkill(name)
+	if sk == nil {
+		return fmt.Errorf("skill %q not found", name)
 	}
-	name := filepath.Base(path)
-	if sk := l.parseSkill(path, name); sk != nil {
-		l.skills[sk.Name] = sk
+	if sk.Bundled {
+		return fmt.Errorf("skill %q ships with joshbot and does not need approval", name)
 	}
+	if err := l.trust.Trust(name, sk.Path); err != nil {
+		return err
+	}
+	l.Invalidate()
 	return nil
+}
+
+// Untrust revokes approval, making the skill inert again.
+func (l *Loader) Untrust(name string) error {
+	if l.trust == nil {
+		return fmt.Errorf("no trust store configured")
+	}
+	if err := l.trust.Untrust(name); err != nil {
+		return err
+	}
+	l.Invalidate()
+	return nil
+}
+
+// Untrusted lists discovered workspace skills awaiting approval, sorted by
+// name. These are withheld from the model but must stay visible to the
+// operator, or there is no way to approve them.
+func (l *Loader) Untrusted() []*Skill {
+	if !l.loaded {
+		_ = l.Discover()
+	}
+	var out []*Skill
+	for _, sk := range l.skills {
+		if !sk.Trusted {
+			out = append(out, sk)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// walk returns the filepath.WalkDir callback that registers discovered
+// skills, recording whether they came from the bundled set or the workspace.
+func (l *Loader) walk(bundled bool) fs.WalkDirFunc {
+	return func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		skillFile := filepath.Join(path, "SKILL.md")
+		if _, err := os.Stat(skillFile); err != nil {
+			return nil
+		}
+		name := filepath.Base(path)
+		sk := l.parseSkill(path, name)
+		if sk == nil {
+			return nil
+		}
+		sk.Bundled = bundled
+		// Bundled skills arrive with the binary. Workspace skills are content
+		// of unknown origin until an operator says otherwise.
+		sk.Trusted = bundled || l.trust.IsTrusted(sk.Name, sk.Path)
+		l.skills[sk.Name] = sk
+		return nil
+	}
 }
 
 func (l *Loader) parseSkill(dir, defaultName string) *Skill {
@@ -216,6 +299,13 @@ func (l *Loader) LoadSummary(ctx context.Context) (string, error) {
 
 	parts := []string{"Available skills (use read_file to load full skill content when needed):"}
 	for _, sk := range l.skills {
+		// Untrusted workspace skills are withheld entirely. Offering only the
+		// name and description would still put attacker-chosen text in the
+		// prompt, and would advertise a skill the model could then be talked
+		// into loading in full.
+		if !sk.Trusted {
+			continue
+		}
 		parts = append(parts, sk.ToSummaryXML())
 		if sk.Always {
 			if content := sk.GetContent(); content != "" {
@@ -233,6 +323,11 @@ func (l *Loader) LoadFullSkillContent(ctx context.Context, skillName string) (st
 	sk := l.GetSkill(skillName)
 	if sk == nil {
 		return "", nil
+	}
+	// The summary withholds untrusted skills, but this is reachable by name
+	// from elsewhere; an unapproved skill must not be loadable by guessing it.
+	if !sk.Trusted {
+		return "", fmt.Errorf("skill %q has not been approved; run 'joshbot skills trust %s' after reviewing it", skillName, skillName)
 	}
 	return sk.GetContent(), nil
 }

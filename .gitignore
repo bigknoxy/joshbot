@@ -40,7 +40,10 @@ htmlcov/
 *.out
 
 .lean-ctx/
-joshbot
+# The built binary at the repo root. Anchored with a leading slash: a bare
+# "joshbot" also matches the cmd/joshbot directory, which silently ignored any
+# newly added file in the main package.
+/joshbot
 
 # Playwright browser testing artifacts
 .playwright-mcp/

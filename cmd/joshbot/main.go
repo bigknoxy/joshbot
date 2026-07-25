@@ -196,6 +196,38 @@ func runApp() error {
 				Action: runStatus,
 			},
 			{
+				Name:  "skills",
+				Usage: "Review and approve workspace skills",
+				Description: "Workspace skills become part of the agent's instructions, so they are\n" +
+					"inert until you approve them. Approval is bound to the file's contents:\n" +
+					"editing an approved skill revokes it until you approve it again.",
+				Subcommands: []*cli.Command{
+					{
+						Name:   "list",
+						Usage:  "List skills and whether they are approved",
+						Action: runSkillsList,
+					},
+					{
+						Name:      "trust",
+						Usage:     "Approve a skill after reviewing it (use --all to approve every pending skill)",
+						ArgsUsage: "[skill name]",
+						Flags: []cli.Flag{
+							&cli.BoolFlag{
+								Name:  "all",
+								Usage: "Approve every skill currently awaiting review",
+							},
+						},
+						Action: runSkillsTrust,
+					},
+					{
+						Name:      "untrust",
+						Usage:     "Revoke approval for a skill",
+						ArgsUsage: "<skill name>",
+						Action:    runSkillsUntrust,
+					},
+				},
+			},
+			{
 				Name:    "configure",
 				Aliases: []string{"config"},
 				Usage:   "Configure LLM providers and settings",
@@ -349,8 +381,28 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
 	}
+	// Workspace skills become part of the agent's standing instructions, so
+	// they are gated on operator approval. See internal/skills/trust.go.
+	skillsTrust, err := skills.LoadTrustStore(skills.DefaultTrustStorePath(config.DefaultHome))
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to load skills trust store: %w", err)
+	}
+	skillsLoader.SetTrustStore(skillsTrust)
+
 	// Discover skills now so agent has summaries available
 	_ = skillsLoader.Discover()
+
+	// Withheld skills must be announced. An operator who upgraded and found
+	// their skills quietly stopped working would reasonably call that a bug.
+	if pending := skillsLoader.Untrusted(); len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for _, sk := range pending {
+			names = append(names, sk.Name)
+		}
+		log.Warn("Skills are awaiting review and are not in use",
+			"skills", strings.Join(names, ", "),
+			"approve_with", "joshbot skills trust <name>  (or --all)")
+	}
 
 	// Initialize message bus
 	msgBus := bus.NewMessageBus()
@@ -2535,6 +2587,15 @@ func runStatus(c *cli.Context) error {
 	}
 	fmt.Printf("Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
 	fmt.Printf("Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
+
+	// Skills awaiting review belong here, not only in a startup log line. In
+	// gateway mode that log goes to the journal, where an operator would never
+	// see it — they would just get a quietly worse assistant. `status` is
+	// where someone looks when something seems off.
+	if pending := pendingSkillNames(cfg); len(pending) > 0 {
+		fmt.Printf("Skills:         %d awaiting review (%s)\n", len(pending), strings.Join(pending, ", "))
+		fmt.Println("                not in use — review then run: joshbot skills trust <name>")
+	}
 	fmt.Println()
 
 	if memorySize > 0 || historySize > 0 {

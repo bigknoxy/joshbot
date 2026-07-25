@@ -154,6 +154,12 @@ func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) Tool
 	// Use shell -c to run the command
 	execCmd := exec.CommandContext(ctx, "sh", "-c", cmd)
 
+	// Hand the child a reduced environment. A nil Env would inherit this
+	// process's, which includes every provider API key — readable with a bare
+	// `env`, without touching the filesystem and without tripping any deny-list
+	// rule. See shell_env.go.
+	execCmd.Env = sanitizedEnv()
+
 	// Set working directory
 	if workingDir != "" {
 		// Verify the directory exists

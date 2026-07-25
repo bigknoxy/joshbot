@@ -268,7 +268,8 @@ For backward compatibility, the old format still works:
 {
   "providers": {
     "openrouter": {
-      "api_key": "sk-or-v1-your-key-here"
+      "api_key": "sk-or-v1-your-key-here",
+      "enabled": true
     }
   },
   "agents": {

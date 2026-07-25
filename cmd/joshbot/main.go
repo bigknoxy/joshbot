@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -545,6 +546,14 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 				multiProvider.Register("custom", customProvider, model, priority, p.Enabled)
 				log.Info("Registered custom provider", "api_base", p.APIBase)
 			}
+		}
+
+		// Fail fast if the legacy provider map produced zero usable providers,
+		// rather than deferring to an opaque "no providers configured" error
+		// the first time Chat() is called. Distinguishes an empty config from
+		// providers present but none enabled (issue #71).
+		if len(multiProvider.GetProviderNames()) == 0 {
+			return nil, nil, nil, nil, nil, nil, noProvidersRegisteredError(cfg.Providers)
 		}
 	}
 
@@ -2479,14 +2488,7 @@ func runStatus(c *cli.Context) error {
 		}
 		fmt.Printf("Models:         %s\n", strings.Join(modelNames, ", "))
 	} else {
-		providerNames := make([]string, 0, len(cfg.Providers))
-		for name := range cfg.Providers {
-			providerNames = append(providerNames, name)
-		}
-		if len(providerNames) == 0 {
-			providerNames = []string{"none"}
-		}
-		fmt.Printf("Providers:      %s\n", strings.Join(providerNames, ", "))
+		fmt.Printf("Providers:      %s\n", formatProviderStatus(cfg.Providers))
 	}
 	fmt.Printf("Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
 	fmt.Printf("Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
@@ -3487,6 +3489,75 @@ func runAuthStatus(c *cli.Context) error {
 }
 
 // Helper functions
+
+// providerRequiresAPIKey reports whether the named legacy provider must have
+// a non-empty api_key to be registered by setupComponents. Keep this in sync
+// with the gating conditions there: openrouter/nvidia/groq/poolside/custom
+// all require p.APIKey != "", while ollama (local server) and github-copilot
+// (OAuth token file, not api_key) do not.
+func providerRequiresAPIKey(name string) bool {
+	switch name {
+	case "ollama", "github-copilot":
+		return false
+	default:
+		return true
+	}
+}
+
+// formatProviderStatus renders the legacy providers map for `joshbot status`,
+// flagging any provider that setupComponents will NOT register: either
+// because "enabled": true is missing, or (for providers that need one)
+// because api_key is empty. This mirrors the registration gates in
+// setupComponents so status never claims a provider is configured when it
+// is actually inert. See issue #71.
+func formatProviderStatus(providersCfg map[string]config.ProviderConfig) string {
+	if len(providersCfg) == 0 {
+		return "none"
+	}
+
+	names := make([]string, 0, len(providersCfg))
+	for name := range providersCfg {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		p := providersCfg[name]
+		switch {
+		case !p.Enabled:
+			parts = append(parts, fmt.Sprintf(`%s (disabled — set "enabled": true)`, name))
+		case providerRequiresAPIKey(name) && p.APIKey == "":
+			parts = append(parts, fmt.Sprintf(`%s (disabled — missing "api_key")`, name))
+		default:
+			parts = append(parts, name)
+		}
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+// noProvidersRegisteredError builds the diagnostic error returned when the
+// legacy provider config yields zero registered providers. It distinguishes
+// "no providers in config at all" from "providers present but none enabled",
+// naming the enabled field in the latter case so a hand-editing user has
+// somewhere to look. See issue #71.
+func noProvidersRegisteredError(providersCfg map[string]config.ProviderConfig) error {
+	if len(providersCfg) == 0 {
+		return fmt.Errorf("no providers configured. Run 'joshbot onboard' first")
+	}
+
+	names := make([]string, 0, len(providersCfg))
+	for name := range providersCfg {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return fmt.Errorf(
+		"no providers enabled: %d provider(s) found in config (%s) but none have \"enabled\": true — add \"enabled\": true to the provider you want to use",
+		len(providersCfg), strings.Join(names, ", "),
+	)
+}
 
 func boolToEnabled(b bool) string {
 	if b {

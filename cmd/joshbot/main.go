@@ -2587,6 +2587,15 @@ func runStatus(c *cli.Context) error {
 	}
 	fmt.Printf("Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
 	fmt.Printf("Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
+
+	// Skills awaiting review belong here, not only in a startup log line. In
+	// gateway mode that log goes to the journal, where an operator would never
+	// see it — they would just get a quietly worse assistant. `status` is
+	// where someone looks when something seems off.
+	if pending := pendingSkillNames(cfg); len(pending) > 0 {
+		fmt.Printf("Skills:         %d awaiting review (%s)\n", len(pending), strings.Join(pending, ", "))
+		fmt.Println("                not in use — review then run: joshbot skills trust <name>")
+	}
 	fmt.Println()
 
 	if memorySize > 0 || historySize > 0 {

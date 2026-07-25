@@ -125,3 +125,29 @@ func runSkillsUntrust(c *cli.Context) error {
 	fmt.Printf("Revoked %s; it will not be used until approved again.\n", name)
 	return nil
 }
+
+// pendingSkillNames returns skills awaiting review, for the status output.
+//
+// Failures are swallowed on purpose: this is a diagnostic line, and a status
+// command that errors out because the skills directory is unreadable would be
+// less useful than one that omits a line.
+func pendingSkillNames(cfg *config.Config) []string {
+	loader, err := skills.NewLoader(cfg.Agents.Defaults.Workspace)
+	if err != nil {
+		return nil
+	}
+	store, err := skills.LoadTrustStore(skills.DefaultTrustStorePath(config.DefaultHome))
+	if err != nil {
+		return nil
+	}
+	loader.SetTrustStore(store)
+	if err := loader.Discover(); err != nil {
+		return nil
+	}
+
+	var names []string
+	for _, sk := range loader.Untrusted() {
+		names = append(names, sk.Name)
+	}
+	return names
+}

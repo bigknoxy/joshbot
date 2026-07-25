@@ -7,9 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.37.0] - 2026-07-25
+
 ### Security
 - **Provider API keys were handed to every shell command** — `exec.Cmd` with a nil `Env` inherits the parent's environment, and `runCommand` never assigned one, so any command the model ran received joshbot's full environment including `JOSHBOT_PROVIDERS__*__API_KEY`. A bare `env` was enough to read them: no filesystem access, no deny-list rule involved, and no filesystem sandbox would have helped. Spawned commands now get an allowlisted environment, screened a second time for credential-shaped names.
 - **`config.json` was written world-readable (0644)** — It holds live provider API keys, so every account on the machine could read them, which also made any containment of the shell tool beside the point. Now written 0600, along with the migration backup that copies it verbatim.
+
+### Fixed
+- **Every Telegram message was written to stderr in plaintext** — Two debug statements left in since May printed each sender ID and full message text directly to stderr, bypassing the log-level system entirely, so a personal assistant's whole conversation landed in the journal regardless of `log_level`.
+- **Stopping the Telegram channel did not stop it** — `Stop()` called telebot's `Close()` (the Bot API session-teardown RPC) instead of `Stop()`, so the long-poller goroutine never exited while the channel logged "Telegram channel stopped". Harmless only because the single call site sits immediately before process exit; anything restarting the channel in-process would have produced two concurrent `getUpdates` pollers, which Telegram rejects.
+- **`joshbot status` reported disabled providers as configured** — A provider without `"enabled": true` is silently skipped, but `status` listed it anyway, so the one command you would run to diagnose the problem confirmed the broken config looked fine. Startup now fails with a message naming the actual cause — the missing `enabled` flag or a missing `api_key`, whichever it is — and the README's legacy example no longer omits `enabled`.
+- **Memory consolidation stored whatever the model returned** — A refusal, meta-commentary or a wall of prose became a permanent fact in `MEMORY.md`, which is loaded into every subsequent turn's context. Output now passes a deterministic content gate before anything is persisted; a completion yielding no valid facts is logged and discarded.
+- **Context compression could silently erase a conversation** — Past 50 messages, a provider returning a choice with empty content made `CompressMessages` return an empty string with a nil error, skipping the deterministic fallback. The assistant would forget everything before that point and carry on. Degenerate summaries are now rejected, and the provider call takes a caller-supplied context so cancellation propagates.
 
 ## [1.36.0] - 2026-07-25
 

@@ -149,10 +149,12 @@ joshbot/
 │   ├── bus/               # Internal message bus
 │   ├── channels/          # Chat channels (CLI, Telegram)
 │   ├── config/            # Configuration loading
+│   ├── configure/         # `joshbot configure` wizard and provider setup
 │   ├── context/           # LLM context and system prompt
 │   ├── copilot/           # GitHub Copilot integration
 │   ├── cron/              # Scheduled task runner
 │   ├── heartbeat/         # Proactive task system
+│   ├── integration/       # Cross-package integration tests
 │   ├── learning/          # Self-learning memory
 │   ├── log/               # Structured logging
 │   ├── memory/            # MEMORY.md + HISTORY.md management
@@ -161,13 +163,13 @@ joshbot/
 │   ├── session/           # Session management
 │   ├── skills/            # Skill discovery and loading
 │   ├── subagent/          # Subagent delegation
-│   └── tools/             # Tool system and implementations
-├── pkg/
+│   └── tools/             # Tool system and implementations (incl. shell sandbox, env allowlisting)
+├── pkg/                   # Stale, incomplete refactor — internal/ is the source of truth, do not edit
 │   ├── bus/               # Public message bus types
 │   └── channels/          # Public channel types
 ├── docs/                  # Documentation
-├── workspace/             # User data (skills, memory)
-└── tasks/                 # Task tracking
+├── skills/                # Bundled skill sources (memory, cron, github, skill-creator)
+└── tasks/                 # Task tracking notes
 ```
 
 For more details on architecture and component interactions, see [AGENTS.md](./AGENTS.md).

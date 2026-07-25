@@ -65,7 +65,7 @@ go build -o joshbot ./cmd/joshbot
 
 ```bash
 docker build -t joshbot .
-docker run -it -v ~/.joshbot:/root/.joshbot joshbot onboard
+docker run -it -v ~/.joshbot:/home/joshbot/.joshbot joshbot onboard
 ```
 
 ## Usage
@@ -77,6 +77,12 @@ joshbot agent --debug # CLI chat with debug logging
 joshbot gateway # Start all channels (Telegram, etc.)
 joshbot gateway --debug # Gateway with debug logging
 joshbot status # Show configuration and status
+joshbot skills list # Review workspace skills and approval state
+joshbot skills trust <name> # Approve a workspace skill after reviewing it
+joshbot configure # Configure LLM providers and settings
+joshbot auth github-copilot # Authenticate with GitHub Copilot
+joshbot service install # Install joshbot as a system service
+joshbot update # Update to the latest release
 joshbot uninstall # Remove joshbot binary and config
 ```
 
@@ -150,6 +156,17 @@ Skills are markdown files that extend joshbot's capabilities without code change
 ### Creating Custom Skills
 
 joshbot can create its own skills! Ask it to learn something, and it will create `~/.joshbot/workspace/skills/{name}/SKILL.md` with YAML frontmatter.
+
+A workspace skill becomes part of the agent's standing instructions, so it is **inert until an operator approves it** — including skills the agent creates for itself. Approval is bound to the file's SHA-256, so editing an approved skill revokes it until it's approved again. Bundled skills (the ones listed above) are exempt.
+
+```bash
+joshbot skills list          # See what's pending
+joshbot skills trust <name>  # Approve after reviewing the file
+joshbot skills trust --all   # Approve every pending skill
+joshbot skills untrust <name> # Revoke approval
+```
+
+`joshbot status` also flags any skills awaiting review.
 
 Skills use **progressive loading**:
 - **Level 1:** Name + description always in context (~100 tokens)
@@ -294,10 +311,21 @@ For backward compatibility, the old format still works:
     "exec": { "timeout": 60 },
     "restrict_to_workspace": true,
     "shell_allow_list": [],
-    "filesystem_allowed_paths": []
+    "filesystem_allowed_paths": [],
+    "shell_sandbox": "off",
+    "shell_sandbox_allow_network": false
   }
 }
 ```
+
+### Shell Sandbox
+
+`tools.shell_sandbox` adds OS-level containment for shell commands, on top of the deny list (which screens command text — a filter, not a boundary). It's off by default so upgrading doesn't silently change what an existing setup can do.
+
+- `"off"` (default) — no containment beyond the deny list.
+- `"workspace"` — confines the filesystem to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); `$HOME` and everything else outside that is unreachable. Outbound TCP is denied unless `tools.shell_sandbox_allow_network` is `true`.
+
+Implemented via [Landlock](https://landlock.io/) and **Linux-only**. It fails closed: an unrecognized value, running on a non-Linux OS, or a kernel without Landlock support is a startup error rather than a silent no-op — set it back to `"off"` if you need to run without containment.
 
 ### Environment Variables
 
@@ -414,27 +442,35 @@ After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 | `write_file` | Write/create files |
 | `edit_file` | Find-and-replace editing |
 | `list_dir` | List directory contents |
-| `shell` | Execute shell commands (with safety guards) |
-| `web_search` | Search the web (requires Brave API key) |
+| `glob` | Find files by pattern |
+| `grep` | Search file contents |
+| `shell` | Execute shell commands (deny-listed, allowlisted env, optional Linux sandbox) |
+| `web_search` | Search the web (exa-cli / Exa MCP / DuckDuckGo — no key required) |
 | `web_fetch` | Fetch and extract web page content |
-| `message` | Send messages to channels |
-| `spawn` | Create background tasks |
-| `cron` | Schedule reminders/tasks |
+| `message` | Send messages to other channels |
 | `memory_search` | Search stored facts by keyword, category, or tags |
-| `skill_registry` | List, create, and delete skills |
+| `skill_registry` | List, create, and delete skills (workspace skills need `joshbot skills trust` before use) |
+| `parallel_subagent` | Run multiple subagent tasks in parallel |
+| `chain_execution` | Run subagent steps sequentially, feeding output forward |
 
 **Security defaults:**
-- `web_fetch` blocks localhost, private IP ranges, and metadata hosts (SSRF protection).
+- `web_fetch` and `web_search` block localhost, private IP ranges, and metadata hosts (SSRF protection), enforced at dial time.
 - `restrict_to_workspace` limits file and shell operations to the workspace unless explicitly allowed.
+- Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
+- `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock, Linux only) — see [Shell Sandbox](#shell-sandbox) below.
 
 ## Chat Commands
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Start a conversation |
-| `/new` | Start fresh (saves memory first) |
-| `/help` | Show available commands |
-| `/status` | Show system status |
+| Command | Channel | Description |
+|---------|---------|-------------|
+| `/start` | Telegram | Start a conversation (shows the help text) |
+| `/new` | Both | Start a new session (clears context) |
+| `/help` | Both | Show available commands |
+| `/clear` | CLI | Clear the terminal screen |
+| `/history` | CLI | Show input history |
+| `/quit`, `/exit` | CLI | Exit the program |
+
+There is no `/status` chat command — use `joshbot status` from the shell instead.
 
 ## Architecture
 
@@ -451,8 +487,8 @@ joshbot/
 │   ├── providers/   # LLM provider layer
 │   ├── session/     # Conversation persistence (JSONL)
 │   ├── cron/        # Task scheduling
-│   └── heartbeat/   # Proactive wake-ups
-└── config/          # Configuration
+│   ├── heartbeat/   # Proactive wake-ups
+│   └── config/      # Configuration loading
 ```
 
 **Key patterns:**

@@ -51,6 +51,10 @@ Include examples, best practices, and common patterns.
 - When you discover a useful pattern that should be remembered
 - When integrating with a new tool or service
 
+## New Skills Need Operator Approval
+
+A skill you create in the workspace is written to disk but is inert: it is withheld from your own context until an operator reviews it and runs `joshbot skills trust <name>`. After creating a skill, tell the user it needs approval before it will actually be available to you. Editing an already-approved skill revokes its approval, so it needs re-trusting after any change.
+
 ## Workspace Skills Override Bundled
 
-If you create a workspace skill with the same name as a bundled skill, your workspace version takes priority. This lets you customize built-in behaviors.
+If you create a workspace skill with the same name as a bundled skill, your workspace version replaces it in the registry — but is still subject to the approval rule above. Until it's trusted, that name resolves to nothing rather than falling back to the bundled version, so the built-in behavior effectively disappears until the operator approves (or you delete) the workspace copy.

@@ -19,7 +19,8 @@ You have a two-file memory system for maintaining context across conversations:
 - Location: `memory/HISTORY.md` in your workspace
 - **Append-only** log of timestamped conversation summaries
 - NOT loaded into context (to save space) - search it when needed
-- Search with: `grep` tool directly, or `shell` with `grep -i "keyword" memory/HISTORY.md`
+- Search raw entries with: `grep` tool directly, or `shell` with `grep -i "keyword" memory/HISTORY.md`
+- For extracted long-term facts (as opposed to raw history text), prefer the `memory_search` tool — it searches structured facts by relevance rather than literal text match
 - Each entry is 2-5 sentences with timestamp `[YYYY-MM-DD HH:MM]`
 
 ## Best Practices

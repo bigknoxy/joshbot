@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **SSRF protection in `web_fetch` could be bypassed by any attacker-controlled hostname** — The private-address check only resolved a hostname when the name itself contained a keyword such as `metadata` or `localhost`, so any other name reached any address it pointed at, including loopback, private networks and cloud metadata endpoints. Two further defects made the keyword list ineffective even for the names it covered: a failed DNS lookup counted as safe, and the private-range check excluded link-local, where `169.254.169.254` lives. The combination meant `http://metadata.google.internal/` was allowed despite being listed in the tool's own block list. Reachable in the default configuration — `web_fetch` has no enable flag — including via indirect prompt injection from a page the assistant was asked to read. Addresses are now checked after resolution and again at dial time, which also closes the DNS-rebinding window and covers the search-engine redirect path, which followed `Location` headers with no check at all.
+
 ## [1.35.1] - 2026-07-25
 
 ### Fixed

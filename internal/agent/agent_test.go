@@ -615,10 +615,13 @@ func TestAgentProcessCommandNew(t *testing.T) {
 		t.Error("expected non-empty response")
 	}
 
-	// Verify session was deleted
-	_, err = sessions.Load(ctx, "cli:user123")
-	if err != session.ErrSessionNotFound {
-		t.Errorf("expected session to be deleted, got error: %v", err)
+	// Verify session messages were cleared but session still exists
+	loaded, err := sessions.Load(ctx, "cli:user123")
+	if err != nil {
+		t.Fatalf("expected session to still exist after /new: %v", err)
+	}
+	if len(loaded.Messages) != 0 {
+		t.Errorf("expected no messages after /new, got %d", len(loaded.Messages))
 	}
 }
 

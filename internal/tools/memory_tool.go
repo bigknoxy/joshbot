@@ -18,7 +18,7 @@ func NewMemorySearchTool(mem *memory.Manager) *MemorySearchTool {
 func (t *MemorySearchTool) Name() string { return "memory_search" }
 
 func (t *MemorySearchTool) Description() string {
-	return "Search long-term memory for facts about the user, preferences, projects, and past decisions."
+	return "memory_search: search long-term memory for user facts and past decisions."
 }
 
 func (t *MemorySearchTool) Parameters() []Parameter {
@@ -26,13 +26,13 @@ func (t *MemorySearchTool) Parameters() []Parameter {
 		{
 			Name:        "query",
 			Type:        "string",
-			Description: "Search text to find in memory",
+			Description: "Search text",
 			Required:    true,
 		},
 		{
 			Name:        "max_results",
 			Type:        "integer",
-			Description: "Maximum number of results (default 5)",
+			Description: "Max results (default 5)",
 		},
 	}
 }

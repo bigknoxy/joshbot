@@ -230,3 +230,53 @@ Return a helpful error message explaining alternatives when systemctl is not fou
 **Decision**: Added `TestMain()` to `internal/config/config_test.go` that saves all `JOSHBOT_` env vars, clears them before tests, and restores them after.
 
 **Prevention Rule**: Any config package that reads environment variables must use `TestMain` or equivalent to isolate tests from the user's shell environment. Env-sensitive tests should never assume a clean environment.
+
+---
+
+## 2026-06-04 Core Identity Prompt Optimized (411 → 299 words)
+
+**Context**: The `buildCoreIdentity()` function in `internal/agent/context.go` is the foundational system prompt sent on every LLM interaction. At 411 words / ~300 tokens, it was verbose and would benefit from conciseness.
+
+**Decision**: Replaced with Variant C (Action-Oriented) at 299 words (27% reduction). Uses verb-led directives ("Read before write"), Do/Don't discipline, and flat bullet structure. Removed redundant prose and contradictory patterns. Structure: IDENTITY → WORK DISCIPLINE → TOOL DIRECTIVES → MEMORY RULES → CONVERSATION RULES.
+
+**Verification**: 17 required content checks pass (identity, all 5 tools, memory, coherence rules), 8 banned phrases absent, no contradictions, word count under 350 target. All 14 cache invalidation tests pass — cache logic depends on file mtimes, not prompt content.
+
+**Prompt eval harness** created at `internal/agent/prompt_eval_test.go` with 5 test functions (Eval, Conciseness, NoContradictions, ActionableInstructions) for future prompt changes.
+
+**Remaining concerns**: Other prompt surfaces (subagent system prompt at ~50 tokens, skill extraction prompt at ~200 tokens, context compression prompts at ~25 tokens) could benefit from similar treatment but are much smaller. The memory skill (~1200 chars loaded as full content) is the next highest-leverage surface.
+
+---
+
+## 2026-06-04 All Tool Descriptions Trimmed (~30-40% reduction)
+
+**Context**: Tool schemas dominate every LLM call at ~19KB compact JSON — ~10× larger than `buildCoreIdentity()`. The Description() and Parameter description strings across 22 tools (11 base + 6 filesystem aliases + 5 web aliases) contained verbose prose.
+
+**Files changed**: `internal/tools/filesystem.go`, `shell.go`, `web.go`, `message.go`, `memory_tool.go`, `configure.go`, `chain_tool.go`, `subagent_tool.go`, `skill_tool.go`, `agent_config_tool.go`, `web_alias.go`
+
+**Pattern**: Removed redundant explanations ("Use this to..."), parenthetical elaborations, and empty filler words. Parameter descriptions shortened from phrases like "Skill name (required for create/delete)" to "Skill name (required: create/delete)". Tool descriptions shortened from complete sentences to concise directives.
+
+**Verification**: `go build ./cmd/joshbot` clean, `gofmt -d .` empty, `go test -race ./...` all 19 packages pass with fresh cache.
+
+---
+
+## 2026-06-04 Skill.Always Field Wired Up (was dead code)
+
+**Context**: The `Skill.Always` field in `internal/skills/skills.go` was parsed from SKILL.md frontmatter but never read by any production code. The `skills/memory/SKILL.md` had `always: true` but it did nothing — all skills were loaded as one-line XML summaries regardless.
+
+**Decision**: Modified `LoadSummary()` to check `Always` — skills with `Always == true` now inject their full content (via `GetContent()`) wrapped in `<skill-content name="...">...</skill-content>` after the summary line. Non-always skills keep the existing one-line summary behavior. Removed stale "NOTE: Full content is NO LONGER included" comment.
+
+**Impact**: The memory skill (~1200 chars) is now actually injected into every session's system prompt as intended. Other skills (skill-creator, cron, github) remain as summaries.
+
+**Verification**: `go test ./internal/skills/` — 54 tests pass. `go test ./internal/agent/` — all pass.
+
+---
+
+## 2026-06-04 MEMORY.md Size Capped at 4KB
+
+**Context**: MEMORY.md has no size limit — the learning system appends facts periodically, causing unbounded growth that silently bloats the system prompt.
+
+**Decision**: Added `MaxMemorySize` config field (default 4096 bytes) to `AgentDefaults`. `LoadMemory()` now trims content if it exceeds the limit: splits on `\n---\n`, keeps the header + newest entries until under limit. Trimmed version is written back to disk.
+
+**Files changed**: `internal/config/config.go` (new field + default + validation), `internal/memory/memory.go` (trimming logic + functional option), `cmd/joshbot/main.go` (plumb config), `internal/memory/memory_test.go` (8 new test cases).
+
+**Verification**: `go test -race ./...` — all 23 packages pass. 8 new memory tests cover under-limit, over-limit, no-separator, header-exceeds, empty, and end-to-end scenarios.

@@ -31,10 +31,7 @@ func (t *MessageTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *MessageTool) Description() string {
-	return `Send a message to a DIFFERENT channel than the current conversation. ` +
-		`Use this to proactively reach out via Telegram while working on a task. ` +
-		`DO NOT use this to respond to the current conversation - just return your response as text. ` +
-		`Example: If the user asks you to notify them on Telegram when a long task is done, use this tool.`
+	return `Send a message to a different channel (e.g., Telegram). Not for responding to current conversation - return response as text instead.`
 }
 
 // Parameters returns the parameters for the tool.
@@ -43,7 +40,7 @@ func (t *MessageTool) Parameters() []Parameter {
 		{
 			Name:        "channel",
 			Type:        ParamString,
-			Description: "Target channel (e.g., 'telegram', 'cli', or same to reply to current)",
+			Description: "Target channel: telegram, cli, or same",
 			Required:    false,
 			Default:     "same",
 		},
@@ -115,10 +112,7 @@ func (t *ChannelMessageTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *ChannelMessageTool) Description() string {
-	return `Send a message to a DIFFERENT channel than the current conversation. ` +
-		`Use this to proactively reach out via Telegram while working on a task. ` +
-		`DO NOT use this to respond to the current conversation - just return your response as text. ` +
-		`Example: If the user asks you to notify them on Telegram when a long task is done, use this tool.`
+	return `Send a message to a different channel (e.g., Telegram). Not for responding to current conversation - return response as text instead.`
 }
 
 // Parameters returns the parameters for the tool.
@@ -127,7 +121,7 @@ func (t *ChannelMessageTool) Parameters() []Parameter {
 		{
 			Name:        "operation",
 			Type:        ParamString,
-			Description: "The operation to perform: send_message",
+			Description: "Operation: send_message",
 			Required:    true,
 			Enum:        []string{"send_message"},
 		},
@@ -148,7 +142,7 @@ func (t *ChannelMessageTool) Parameters() []Parameter {
 		{
 			Name:        "metadata",
 			Type:        ParamObject,
-			Description: "Optional metadata (e.g., parse_mode for Telegram)",
+			Description: "Optional metadata (e.g., parse_mode)",
 			Required:    false,
 		},
 	}

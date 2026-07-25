@@ -44,7 +44,7 @@ func (t *ParallelSubagentTool) Name() string {
 }
 
 func (t *ParallelSubagentTool) Description() string {
-	return "Execute multiple independent tasks in parallel using subagents. Use this when you need to research multiple topics, analyze multiple files, or perform independent work simultaneously."
+	return "parallel_subagent: run multiple subagent tasks in parallel for independent work (research, file analysis, etc.)."
 }
 
 func (t *ParallelSubagentTool) Parameters() []Parameter {
@@ -52,13 +52,13 @@ func (t *ParallelSubagentTool) Parameters() []Parameter {
 		{
 			Name:        "tasks",
 			Type:        ParamArray,
-			Description: "Array of tasks to execute in parallel. Each task has a 'prompt' (the instruction for the subagent) and optional 'description' (label for the result).",
+			Description: "Tasks to run in parallel. Each has: prompt (instruction), description (label).",
 			Required:    true,
 		},
 		{
 			Name:        "concurrency",
 			Type:        ParamInteger,
-			Description: "Maximum number of tasks to run simultaneously (default 5).",
+			Description: "Max concurrent tasks (default 5).",
 			Default:     5.0,
 		},
 	}

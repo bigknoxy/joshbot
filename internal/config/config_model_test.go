@@ -324,6 +324,7 @@ func TestValidate_ModelsConfig(t *testing.T) {
 						MaxToolIterations:   20,
 						MemoryWindow:        10,
 						CompactionThreshold: 0.7,
+						MaxMemorySize:       4096,
 					},
 				},
 				Tools: ToolsConfig{

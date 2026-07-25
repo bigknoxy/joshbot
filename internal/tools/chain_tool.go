@@ -43,7 +43,7 @@ func (t *ChainExecutionTool) Name() string {
 }
 
 func (t *ChainExecutionTool) Description() string {
-	return "Execute multiple subagent tasks sequentially, where each step's output is fed as context into the next step. Use this when you need to perform a multi-step analysis where each step builds on the previous results."
+	return "chain_execution: execute subagent steps sequentially, feeding each step's output as context to the next."
 }
 
 func (t *ChainExecutionTool) Parameters() []Parameter {
@@ -51,13 +51,13 @@ func (t *ChainExecutionTool) Parameters() []Parameter {
 		{
 			Name:        "steps",
 			Type:        ParamArray,
-			Description: "Array of steps to execute sequentially. Each step has a 'prompt' (required instruction for the subagent), optional 'description' (label for the result), and optional 'name' (variable name for template substitution in later steps).",
+			Description: "Steps to execute sequentially. Each step has: prompt (required), description (label), name (variable for template substitution).",
 			Required:    true,
 		},
 		{
 			Name:        "context",
 			Type:        ParamString,
-			Description: "Initial context/background to provide to the first step.",
+			Description: "Initial context for the first step.",
 		},
 	}
 }

@@ -668,6 +668,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 	window := a.cfg.Agents.Defaults.MemoryWindow
 	if window > 0 && len(providerMsgs) > window {
 		providerMsgs = providerMsgs[len(providerMsgs)-window:]
+		providerMsgs = dropOrphanedToolResults(providerMsgs)
 	}
 
 	// If we have a budget manager and compressor, consider compressing older messages
@@ -713,6 +714,18 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 	return msgs
 }
 
+// dropOrphanedToolResults removes tool messages at the head of a truncated
+// history whose announcing assistant message was cut away. Sending a tool
+// result that answers nothing makes an OpenAI-compatible provider reject the
+// whole request with a 400.
+func dropOrphanedToolResults(messages []providers.Message) []providers.Message {
+	start := 0
+	for start < len(messages) && messages[start].Role == providers.RoleTool {
+		start++
+	}
+	return messages[start:]
+}
+
 // applyObservationMasking reduces context by stripping tool result content from older messages
 // while keeping the last 3 exchanges (user+assistant pairs) fully intact.
 // Tool outputs are replaced with "[Tool output truncated]" to save tokens.
@@ -741,14 +754,16 @@ func (a *Agent) applyObservationMasking(messages []providers.Message, budget int
 		result[i] = messages[i]
 	}
 
-	// Mask tool result content in older messages
+	// Mask tool result content in older messages. Only the content is
+	// replaced: ToolCalls and ToolCallID must survive, because an
+	// OpenAI-compatible provider rejects a tool message with no tool_call_id,
+	// or an announced tool call with no answering result, with a 400.
 	for i := 0; i < verbatimStart; i++ {
 		m := messages[i]
 		if m.Role == providers.RoleTool || m.Role == providers.RoleAssistant {
-			result[i] = providers.Message{
-				Role:    m.Role,
-				Content: truncateSummary(m.Content),
-			}
+			masked := m
+			masked.Content = truncateSummary(m.Content)
+			result[i] = masked
 		} else {
 			result[i] = m
 		}

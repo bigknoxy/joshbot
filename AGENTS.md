@@ -58,6 +58,33 @@ go test -v ./internal/tools -run TestShell             # Single test
 
 Tests colocated with `_test.go` suffix. Integration tests in `tests/` plus `internal/integration/`. Python test scripts in `tests/` (legacy from migration).
 
+### Behavioural eval harness (`internal/agent`)
+
+`evalharness_test.go` runs the **real ReAct loop** against a scripted provider that
+replays a fixed sequence of model turns and records every request. No network, no
+API key, no clock dependence — it runs in normal CI.
+
+```bash
+go test ./internal/agent -run 'TestEval_' -v
+```
+
+Add a scenario by declaring a `trajectoryScenario` (scripted turns, tool outputs,
+seeded history, budget/window knobs) and passing it to `runTrajectoryEval`. Assert
+on the **trajectory** — `res.requests` (what was sent to the model), `res.invocations`
+(what was dispatched), `res.sess` (what was persisted) — not on the reply text.
+
+Always call `assertProtocolInvariants(t, res)`. It enforces the wire-format rules an
+OpenAI-compatible provider rejects with a 400: every tool message carries a
+`tool_call_id`, every id answers a call announced by an earlier assistant message, and
+every announced call receives a result. Two shipped bugs were found this way, both of
+which broke only long conversations. Keep this call in every new scenario so evals
+added later inherit the checks.
+
+Do not confuse this with `prompt_eval_test.go`, `prompt_optimizer_test.go` and
+`prompt_variants_test.go` — those are a **prompt lint**. They score the system prompt
+string with `strings.Contains` and never invoke the agent, a model, or a tool. They
+cannot catch behavioural regressions.
+
 ## Linting & Formatting
 
 ```bash

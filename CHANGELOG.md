@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.35.0] - 2026-07-25
+
+### Security
+- **`golang.org/x/text` bumped v0.3.7 → v0.30.0 (CVE-2022-32149)** — Denial of service in language tag parsing. The package is reachable from this build.
 
 ### Fixed
 - **Telegram could hang on long replies containing an unbalanced code fence** — A reply over the 4096-character limit whose ``` fences did not pair up made the message splitter loop forever, so the message was never delivered, no error was reported, and the Telegram sender stopped processing further outbound messages. Long code-heavy answers were the common trigger.
@@ -18,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Test coverage for `internal/channels` (47.5% → 59.8%) and a regression suite for shell command screening.
+- **Panel review workflow** — A repo-scoped five-expert review (security, evals, experience, growth, Go systems) that analyses, debates and scores a change. Charters live in `.claude/skills/panel-review/references/experts.md` and are harness-portable. See the Panel Review section of `AGENTS.md`.
 
 ## [1.34.0] - 2026-06-06
 

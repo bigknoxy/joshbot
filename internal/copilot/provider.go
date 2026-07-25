@@ -147,7 +147,7 @@ func (p *CopilotProvider) parseError(body []byte, statusCode int) error {
 	return fmt.Errorf("API request failed with status %d: %s", statusCode, string(body))
 }
 
-const copilotCatalogURL = "https://models.github.ai/catalog/models"
+var copilotCatalogURL = "https://models.github.ai/catalog/models"
 
 type copilotCatalogModel struct {
 	ID           string   `json:"id"`

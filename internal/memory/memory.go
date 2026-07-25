@@ -227,7 +227,11 @@ func (m *Manager) WriteFacts(ctx context.Context, facts []Fact) error {
 func (m *Manager) ReconcileFacts(ctx context.Context, facts []Fact) error {
 	existing, err := m.loadFactsLocked()
 	if err != nil {
-		return err
+		// Treat missing file as no existing facts
+		if !os.IsNotExist(err) {
+			return err
+		}
+		existing = nil
 	}
 
 	factMap := make(map[string]Fact, len(existing))
@@ -266,16 +270,16 @@ func (m *Manager) ReconcileFacts(ctx context.Context, facts []Fact) error {
 const defaultMemoryTemplate = `# Long-Term Memory
 
 ## User Information
-- (facts about the user will accumulate here)
+<!-- facts about the user will accumulate here -->
 
 ## Preferences
-- (preferences, likes, dislikes)
+<!-- preferences, likes, dislikes -->
 
 ## Projects & Context
-- (project details and decisions)
+<!-- project details and decisions -->
 
 ## Important Notes
-- (critical reminders the agent must never forget)
+<!-- critical reminders the agent must never forget -->
 `
 
 const defaultHistoryTemplate = `# Conversation History

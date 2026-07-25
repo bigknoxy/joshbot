@@ -43,6 +43,22 @@ jobs:
       - name: Display coverage summary
         run: go tool cover -func=coverage.out
 
+      - name: Check coverage threshold
+        run: |
+          TOTAL=$(go tool cover -func=coverage.out | grep 'total:' | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${TOTAL}%"
+          if [ "$(echo "${TOTAL} < 45" | bc -l)" = "1" ]; then
+            echo "FAIL: Total coverage ${TOTAL}% is below 45% threshold"
+            exit 1
+          fi
+          echo "PASS: Total coverage ${TOTAL}% meets 45% threshold"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.out
+          fail_ci_if_error: false
+
   deploy-pages:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest

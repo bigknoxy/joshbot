@@ -883,7 +883,7 @@ func (c *Config) Validate() error {
 // Priority: env vars > config file > defaults
 func Load() (*Config, error) {
 	// Check for config file
-	configPath := filepath.Join(DefaultHome, "config.json")
+	configPath := ConfigPath()
 	if _, err := os.Stat(configPath); err == nil {
 		// Try to load from file
 		data, err := os.ReadFile(configPath)
@@ -965,7 +965,7 @@ func Load() (*Config, error) {
 // Save saves the configuration to the config file.
 func Save(cfg *Config) error {
 	// Ensure config directory exists
-	if err := os.MkdirAll(DefaultHome, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(ConfigPath()), 0o755); err != nil {
 		return err
 	}
 
@@ -975,7 +975,7 @@ func Save(cfg *Config) error {
 		return err
 	}
 
-	configPath := filepath.Join(DefaultHome, "config.json")
+	configPath := ConfigPath()
 	// 0600: this file holds live provider API keys, so group and other must
 	// have no access to it.
 	if err := os.WriteFile(configPath, data, 0o600); err != nil {
@@ -1053,7 +1053,7 @@ func migrateConfig(cfg *Config, rawJSON []byte) error {
 		cfg.SchemaVersion = 1
 
 		// Backup old config
-		configPath := filepath.Join(DefaultHome, "config.json")
+		configPath := ConfigPath()
 		if _, err := os.Stat(configPath); err == nil {
 			backupPath := configPath + ".bak"
 			if data, err := os.ReadFile(configPath); err == nil {

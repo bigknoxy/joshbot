@@ -343,12 +343,16 @@ func loadConfig(cfgPath string) (*config.Config, error) {
 	var cfg *config.Config
 	var err error
 
+	// An explicit --config names a file, and everything derived from the home
+	// follows it. The previous version used only the directory, discarding the
+	// file name, and restored the global afterwards — so joshbot read one file
+	// and wrote another. See internal/config/path.go.
+	//
+	// "~/.joshbot/config.json" is compared literally because that is the flag's
+	// DefaultText: an untilded string the shell never expands, so it means "the
+	// user did not choose a path" rather than an actual location.
 	if cfgPath != "" && cfgPath != "~/.joshbot/config.json" {
-		// Load from custom path - temporarily override DefaultHome
-		oldHome := config.DefaultHome
-		config.DefaultHome = filepath.Dir(cfgPath)
-		defer func() { config.DefaultHome = oldHome }()
-		cfg, err = config.Load()
+		cfg, err = config.LoadFrom(cfgPath)
 	} else {
 		cfg, err = config.Load()
 	}
@@ -1690,7 +1694,7 @@ func runOnboard(c *cli.Context) error {
 	if hasExisting && (keepData || force) {
 		// Try to load existing config for defaults
 		var err error
-		existingCfg, err = config.Load()
+		existingCfg, err = loadConfig(c.Path("config"))
 		if err != nil {
 			log.Warn("Failed to load existing config, will use defaults", "error", err)
 		}
@@ -1740,7 +1744,7 @@ func runOnboard(c *cli.Context) error {
 				// Keep existing data: load config and run prompts with defaults
 				skipFileCreation = true
 				var err error
-				existingCfg, err = config.Load()
+				existingCfg, err = loadConfig(c.Path("config"))
 				if err != nil {
 					log.Warn("Failed to load existing config, will use defaults", "error", err)
 				}
@@ -2608,7 +2612,9 @@ func runStatus(c *cli.Context) error {
 
 // runConfigure handles the configure command.
 func runConfigure(c *cli.Context) error {
-	cfg, err := config.Load()
+	// Via loadConfig, not config.Load: otherwise --config selects the file
+	// this command reads for display but not the one it writes to.
+	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
 		return err
 	}

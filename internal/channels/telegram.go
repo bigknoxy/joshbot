@@ -86,9 +86,18 @@ func normalizeUsername(username string) string {
 }
 
 // IsAllowed checks if a user is in the allowlist.
+// Entries may be a numeric Telegram user ID, a @username, or a "First Last"
+// display name.
 func (t *TelegramChannel) IsAllowed(userID int64, username, firstName, lastName string) bool {
 	// If allowlist is empty, allow everyone
 	if len(t.allowSet) == 0 {
+		return true
+	}
+
+	// Check by numeric user ID. This is the form the README documents, and
+	// it is the only stable identifier — a user can change their username
+	// and display name at any time.
+	if _, ok := t.allowSet[strconv.FormatInt(userID, 10)]; ok {
 		return true
 	}
 
@@ -966,14 +975,15 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 
 // splitMessage splits a message into chunks of at most maxLen bytes each.
 // Avoids splitting inside markdown code blocks by closing them before the
-// split and reopening them after. Tries to split on newlines first.
+// split and reopening them after. Tries to split on newlines first. A
+// non-positive maxLen leaves the content unsplit.
 func splitMessage(content string, maxLen int) []string {
 	if maxLen <= 0 || len(content) <= maxLen {
 		return []string{content}
 	}
 
-	// Closing a block costs fenceClose bytes on this part and reopening costs
-	// fenceOpen bytes on the next one.
+	// Closing a block appends fenceClose to this part and reopening prepends
+	// fenceOpen to the next one; both have to fit inside maxLen.
 	const (
 		fenceClose = "\n```"
 		fenceOpen  = "```\n"

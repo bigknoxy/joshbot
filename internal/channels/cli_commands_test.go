@@ -232,8 +232,7 @@ func TestCLIChannel_ConsumeOutboundFiltersByChannel(t *testing.T) {
 		// Give the consumer a chance to drain before shutting it down.
 		deadline := time.After(2 * time.Second)
 		for {
-			if inbound, outbound := mb.QueueLength(); outbound == 0 {
-				_ = inbound
+			if _, outbound := mb.QueueLength(); outbound == 0 {
 				break
 			}
 			select {

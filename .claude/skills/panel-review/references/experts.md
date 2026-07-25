@@ -66,8 +66,9 @@ command text is defence in depth. Only an OS boundary is a boundary.
   tool. The indirect prompt-injection path.
 - `internal/skills/` — auto-discovers any `SKILL.md` in the workspace, and the
   agent can author its own. No signing or provenance.
-- `internal/channels/telegram.go` — `IsAllowed` matches usernames and first/last
-  names only; a numeric Telegram user ID in `allow_from` never matches.
+- `internal/channels/telegram.go` — `IsAllowed` gates inbound messages against
+  `allow_from`, matching numeric user IDs, usernames, and display names. An
+  empty allowlist still permits everyone.
 - `internal/tools/filesystem.go`, `path_guard.go` — workspace containment.
 - `install.sh`, `.github/workflows/release.yml` — release integrity. Checksums are
   verified but soft-fail when `checksums.txt` is missing.

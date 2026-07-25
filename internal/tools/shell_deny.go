@@ -132,7 +132,8 @@ var execSinks = []string{
 }
 
 // dangerousPaths are roots where a recursive delete or ownership change is
-// never a legitimate request.
+// never a legitimate request. The empty string is "/" after isDangerousPath
+// has trimmed its trailing slash.
 var dangerousPaths = map[string]bool{
 	"": true, "~": true, "$home": true, "${home}": true,
 	"/home": true, "/root": true, "/etc": true, "/usr": true, "/var": true,
@@ -233,7 +234,7 @@ func splitSegments(cmd string) []shellSegment {
 			for j < len(r) && r[j] != '`' {
 				j++
 			}
-			subs = append(subs, string(r[i+1:min(j, len(r))]))
+			subs = append(subs, string(r[i+1:j]))
 			i = j
 			continue
 		}
@@ -263,12 +264,11 @@ func splitSegments(cmd string) []shellSegment {
 			// this, "(rm -rf /)" screens as command "(rm".
 			flush(false)
 		case '|':
+			flush(false)
 			if i+1 < len(r) && r[i+1] == '|' { // || is control flow, not a pipe
-				flush(false)
 				i++
 				continue
 			}
-			flush(false)
 			piped = true
 		case '&':
 			// Keep redirect forms (&>, &>>, 2>&1, >&2) as literal text.
@@ -344,10 +344,10 @@ func effectiveTokens(seg string) []string {
 			}
 		case skipped && numeric.MatchString(head):
 		default:
-			out := make([]string, len(tokens))
-			copy(out, tokens)
-			out[0] = base
-			return out
+			// tokens is the slice strings.Fields allocated above, so the
+			// command word can be replaced with its base name in place.
+			tokens[0] = base
+			return tokens
 		}
 		tokens = tokens[1:]
 	}
@@ -385,6 +385,12 @@ func isReadOnly(args []string) bool {
 		hasShortFlag(args, 'n') || hasLongFlag(args, "dry-run")
 }
 
+// isRecursive reports whether args select the recursive form of a command.
+// Only the recursive forms of rm, chmod, chown and chgrp are screened.
+func isRecursive(args []string) bool {
+	return hasShortFlag(args, 'r') || hasLongFlag(args, "recursive")
+}
+
 // operands returns the non-flag arguments, honouring the -- terminator.
 func operands(args []string) []string {
 	var out []string
@@ -415,15 +421,25 @@ func isDangerousPath(target string) bool {
 	return dangerousPaths[t]
 }
 
+// dangerousOperand returns the first operand of args that resolves to a
+// system root, which is what makes a recursive operation unacceptable.
+func dangerousOperand(args []string) (string, bool) {
+	for _, o := range operands(args) {
+		if isDangerousPath(o) {
+			return o, true
+		}
+	}
+	return "", false
+}
+
 // inlineProgram returns the argument passed to an interpreter's -c/-e flag,
 // which is code that will actually run.
 func inlineProgram(args []string) (string, bool) {
 	for i, a := range args {
 		if a == "-c" || a == "-e" || a == "--command" {
-			if i+1 < len(args) {
-				return strings.Join(args[i+1:], " "), true
-			}
-			return "", true
+			// A trailing -c with no argument joins to "", which is correct:
+			// the flag was present but there is no code to screen.
+			return strings.Join(args[i+1:], " "), true
 		}
 		if strings.HasPrefix(a, "-c") && len(a) > 2 {
 			return a[2:] + " " + strings.Join(args[i+1:], " "), true
@@ -492,11 +508,9 @@ func screenSegment(seg shellSegment, depth int) string {
 		}
 
 	case "rm":
-		if hasShortFlag(args, 'r') || hasLongFlag(args, "recursive") {
-			for _, target := range operands(args) {
-				if isDangerousPath(target) {
-					return "recursive delete of " + target
-				}
+		if isRecursive(args) {
+			if target, ok := dangerousOperand(args); ok {
+				return "recursive delete of " + target
 			}
 		}
 
@@ -504,10 +518,8 @@ func screenSegment(seg shellSegment, depth int) string {
 		// find / -delete and find / -exec rm are deletes wearing a disguise.
 		if hasLongFlag(args, "delete") || strings.Contains(seg.text, "-delete") ||
 			strings.Contains(seg.text, "-exec rm") {
-			for _, target := range operands(args) {
-				if isDangerousPath(target) {
-					return "recursive delete of " + target + " via find"
-				}
+			if target, ok := dangerousOperand(args); ok {
+				return "recursive delete of " + target + " via find"
 			}
 		}
 
@@ -569,24 +581,23 @@ func screenSegment(seg shellSegment, depth int) string {
 		}
 
 	case "chmod":
-		if hasShortFlag(args, 'r') || hasLongFlag(args, "recursive") {
+		// Checked operand by operand, so "chmod -R / 777" is reported as the
+		// root it targets rather than as the mode it sets.
+		if isRecursive(args) {
 			for _, o := range operands(args) {
-				switch o {
-				case "777", "0777", "a+rwx":
+				switch {
+				case o == "777" || o == "0777" || o == "a+rwx":
 					return "recursive world-writable chmod"
-				}
-				if isDangerousPath(o) {
+				case isDangerousPath(o):
 					return "recursive chmod of " + o
 				}
 			}
 		}
 
 	case "chown", "chgrp":
-		if hasShortFlag(args, 'r') || hasLongFlag(args, "recursive") {
-			for _, o := range operands(args) {
-				if isDangerousPath(o) {
-					return "recursive ownership change of " + o
-				}
+		if isRecursive(args) {
+			if target, ok := dangerousOperand(args); ok {
+				return "recursive ownership change of " + target
 			}
 		}
 	}

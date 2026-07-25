@@ -338,14 +338,31 @@ func TestTelegramChannel_IsAllowedVariants(t *testing.T) {
 		}
 	})
 
-	// Documents current behaviour: allow_from is matched against the username
-	// and the first/last name only. A numeric Telegram user ID in the list is
-	// never matched, and the userID argument is unused.
-	t.Run("numeric user id is not matched", func(t *testing.T) {
+	// The README tells users to put their numeric Telegram ID in allow_from,
+	// and it is the only identifier a user cannot change, so it must match.
+	t.Run("matches numeric user id", func(t *testing.T) {
 		tg := newTestTelegramChannel("12345")
-		if tg.IsAllowed(12345, "", "", "") {
-			t.Error("IsAllowed unexpectedly started matching numeric user IDs; " +
-				"if that is now supported, update this test and the docs for allow_from")
+		if !tg.IsAllowed(12345, "", "", "") {
+			t.Error("expected a numeric user ID in allow_from to match")
+		}
+		if !tg.IsAllowed(12345, "someoneelse", "Other", "Name") {
+			t.Error("expected the ID to match regardless of the display name")
+		}
+		if tg.IsAllowed(999, "", "", "") {
+			t.Error("expected a different user ID to be rejected")
+		}
+	})
+
+	t.Run("mixed id and username entries", func(t *testing.T) {
+		tg := newTestTelegramChannel("12345", "@josh")
+		if !tg.IsAllowed(12345, "", "", "") {
+			t.Error("expected the numeric entry to match")
+		}
+		if !tg.IsAllowed(777, "josh", "", "") {
+			t.Error("expected the username entry to match")
+		}
+		if tg.IsAllowed(777, "mallory", "", "") {
+			t.Error("expected an unlisted user to be rejected")
 		}
 	})
 }
@@ -430,10 +447,10 @@ func TestSplitMessage_EveryPartFitsTheLimit(t *testing.T) {
 // A hard split must not cut a multibyte character in half.
 func TestSplitMessage_PreservesUTF8(t *testing.T) {
 	cases := map[string]string{
-		"japanese": strings.Repeat("漢", 3000),
-		"emoji":    strings.Repeat("🙂", 2000),
-		"mixed":    strings.Repeat("aé漢🙂", 1000),
-		"in aence": "```\n" + strings.Repeat("漢", 3000),
+		"japanese":   strings.Repeat("漢", 3000),
+		"emoji":      strings.Repeat("🙂", 2000),
+		"mixed":      strings.Repeat("aé漢🙂", 1000),
+		"in a fence": "```\n" + strings.Repeat("漢", 3000),
 	}
 
 	for name, content := range cases {

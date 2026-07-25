@@ -2,10 +2,17 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.18.x, 1.19.x | :white_check_mark: |
-| < 1.18         | :x:                |
+joshbot is a single-maintainer project and fixes land on the latest release
+only. Pinning version numbers here is what let this section go stale by more
+than a dozen releases, so it now states the policy rather than a snapshot.
+
+| Version | Supported |
+| ------- | --------- |
+| [Latest release](https://github.com/bigknoxy/joshbot/releases/latest) | :white_check_mark: |
+| Anything earlier | :x: |
+
+If you are running an older build, upgrade before reporting — the issue may
+already be fixed.
 
 ## Reporting a Vulnerability
 

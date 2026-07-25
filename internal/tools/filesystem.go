@@ -50,8 +50,7 @@ func (t *FilesystemTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *FilesystemTool) Description() string {
-	return `Filesystem operations including reading, writing, editing, listing, and searching files. ` +
-		`Use this tool to interact with files and directories in the workspace.`
+	return `filesystem: read, write, edit, list, search files and directories.`
 }
 
 // Parameters returns the parameters for the tool.
@@ -60,51 +59,51 @@ func (t *FilesystemTool) Parameters() []Parameter {
 		{
 			Name:        "operation",
 			Type:        ParamString,
-			Description: "The operation to perform: read_file, write_file, edit_file, list_dir, glob, grep",
+			Description: "Operation: read_file, write_file, edit_file, list_dir, glob, grep",
 			Required:    true,
 			Enum:        []string{"read_file", "write_file", "edit_file", "list_dir", "glob", "grep"},
 		},
 		{
 			Name:        "path",
 			Type:        ParamString,
-			Description: "The file or directory path (relative to workspace if restricting)",
+			Description: "File or directory path",
 			Required:    false,
 		},
 		{
 			Name:        "content",
 			Type:        ParamString,
-			Description: "Content to write (for write_file operation)",
+			Description: "File content (write_file)",
 			Required:    false,
 		},
 		{
 			Name:        "search",
 			Type:        ParamString,
-			Description: "Search pattern (for grep or edit_file)",
+			Description: "Search pattern (grep/edit_file)",
 			Required:    false,
 		},
 		{
 			Name:        "replace",
 			Type:        ParamString,
-			Description: "Replacement text (for edit_file)",
+			Description: "Replacement text (edit_file)",
 			Required:    false,
 		},
 		{
 			Name:        "pattern",
 			Type:        ParamString,
-			Description: "Glob pattern (for glob operation)",
+			Description: "Glob pattern (glob)",
 			Required:    false,
 		},
 		{
 			Name:        "offset",
 			Type:        ParamInteger,
-			Description: "Line offset to start reading from (for read_file, 0-indexed)",
+			Description: "Line offset (read_file, 0-indexed)",
 			Required:    false,
 			Default:     0,
 		},
 		{
 			Name:        "limit",
 			Type:        ParamInteger,
-			Description: "Number of lines to read (for read_file)",
+			Description: "Line count (read_file)",
 			Required:    false,
 			Default:     100,
 		},

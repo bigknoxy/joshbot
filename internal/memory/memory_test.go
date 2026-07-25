@@ -532,3 +532,207 @@ func TestManager_MultipleWrites(t *testing.T) {
 		}
 	}
 }
+
+// --- MEMORY.md size cap tests ---
+
+func TestTrimMemoryContent_UnderLimit(t *testing.T) {
+	t.Parallel()
+	content := "# Long-Term Memory\n\n## User Info\n- some fact\n"
+	maxSize := len(content) + 100 // well over
+	result := trimMemoryContent(content, maxSize)
+	if result != content {
+		t.Fatalf("expected content unchanged, got %q", result)
+	}
+}
+
+func TestTrimMemoryContent_OverLimitWithSeparators(t *testing.T) {
+	t.Parallel()
+	// Build content: header + 3 entries separated by ---
+	header := "# Long-Term Memory\n\n"
+	entry1 := "---\n\n- oldest fact\n"
+	entry2 := "---\n\n- middle fact\n"
+	entry3 := "---\n\n- newest fact"
+
+	content := header + entry1 + entry2 + entry3
+	// maxSize that fits header + newest entry only
+	maxSize := len(header) + len("\n---\n\n- newest fact") + 5 // just enough for header + newest
+	// But not enough for header + newest + middle
+
+	result := trimMemoryContent(content, maxSize)
+
+	// Should keep header
+	if !strings.HasPrefix(result, header) {
+		t.Fatalf("expected result to start with header, got %q", result)
+	}
+
+	// Should contain "newest fact" (kept from end)
+	if !strings.Contains(result, "newest fact") {
+		t.Fatalf("expected result to contain 'newest fact', got %q", result)
+	}
+
+	// Should NOT contain "oldest fact" (trimmed from start)
+	if strings.Contains(result, "oldest fact") {
+		t.Fatalf("expected result NOT to contain 'oldest fact', got %q", result)
+	}
+
+	// Result length must not exceed maxSize
+	if len(result) > maxSize {
+		t.Fatalf("result length %d exceeds maxSize %d", len(result), maxSize)
+	}
+}
+
+func TestTrimMemoryContent_OverLimitNoSeparators(t *testing.T) {
+	t.Parallel()
+	// Content without any --- separators, exceeding maxSize
+	content := "# Long-Term Memory\n\n## User Info\n- a very long fact that goes on and on and on and on"
+	maxSize := 40
+	result := trimMemoryContent(content, maxSize)
+
+	if len(result) > maxSize {
+		t.Fatalf("result length %d exceeds maxSize %d", len(result), maxSize)
+	}
+	if len(result) != maxSize {
+		t.Fatalf("expected result length %d, got %d", maxSize, len(result))
+	}
+	if result != content[:maxSize] {
+		t.Fatalf("expected truncated content, got %q", result)
+	}
+}
+
+func TestTrimMemoryContent_HeaderExceedsMaxSize(t *testing.T) {
+	t.Parallel()
+	// Header alone is bigger than maxSize
+	header := "# Very Long Header That Goes On And On And On And On And On\n\n"
+	entry := "---\n\n- some fact"
+	content := header + entry
+	maxSize := 20
+
+	result := trimMemoryContent(content, maxSize)
+	if len(result) > maxSize {
+		t.Fatalf("result length %d exceeds maxSize %d", len(result), maxSize)
+	}
+	// Should just be truncated header
+	if result != header[:maxSize] {
+		t.Fatalf("expected truncated header, got %q", result)
+	}
+}
+
+func TestTrimMemoryContent_EmptyContent(t *testing.T) {
+	t.Parallel()
+	result := trimMemoryContent("", 100)
+	if result != "" {
+		t.Fatalf("expected empty result, got %q", result)
+	}
+}
+
+func TestTrimMemoryContent_AllEntriesFit(t *testing.T) {
+	t.Parallel()
+	content := "# Header\n\n---\n\nentry1\n\n---\n\nentry2\n\n---\n\nentry3"
+	maxSize := 999 // way over
+	result := trimMemoryContent(content, maxSize)
+	if result != content {
+		t.Fatalf("expected content unchanged, got %q", result)
+	}
+}
+
+func TestLoadMemory_WithMaxSize_TrimsOverLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	// Create manager with small maxSize
+	mgr, err := New(dir, WithMaxSize(20))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Write content that exceeds maxSize
+	// After WriteMemory adds trailing newline, content is ~29 bytes
+	bigContent := "# Header\n\n---\n\nold\n\n---\n\nnew"
+	if err := mgr.WriteMemory(ctx, bigContent); err != nil {
+		t.Fatalf("WriteMemory() error = %v", err)
+	}
+
+	// LoadMemory should trim it to <= 20 bytes
+	got, err := mgr.LoadMemory(ctx)
+	if err != nil {
+		t.Fatalf("LoadMemory() error = %v", err)
+	}
+	if len(got) > 20 {
+		t.Fatalf("LoadMemory() returned %d bytes, want <= 20", len(got))
+	}
+	// Should contain header and newest entry, but not oldest
+	if !strings.Contains(got, "# Header") {
+		t.Errorf("expected result to contain header, got %q", got)
+	}
+	if !strings.Contains(got, "new") {
+		t.Errorf("expected result to contain 'new', got %q", got)
+	}
+	if strings.Contains(got, "old") {
+		t.Errorf("expected result NOT to contain 'old', got %q", got)
+	}
+
+	// File on disk should also be trimmed
+	data, err := os.ReadFile(mgr.MemoryPath())
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	if len(data) > 20 {
+		t.Fatalf("file on disk is %d bytes, want <= 20", len(data))
+	}
+}
+
+func TestLoadMemory_WithMaxSize_UnderLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	mgr, err := New(dir, WithMaxSize(4096))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := mgr.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	// Default template should be well under 4096 bytes
+	content, err := mgr.LoadMemory(ctx)
+	if err != nil {
+		t.Fatalf("LoadMemory() error = %v", err)
+	}
+	if content == "" {
+		t.Fatal("expected non-empty content")
+	}
+	if len(content) > 4096 {
+		t.Fatalf("content length %d exceeds 4096", len(content))
+	}
+}
+
+func TestNew_DefaultMaxSize(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mgr, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Default maxSize should be 4096
+	if mgr.maxSize != 4096 {
+		t.Fatalf("expected default maxSize 4096, got %d", mgr.maxSize)
+	}
+}
+
+func TestNew_WithMaxSize_ZeroIgnored(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mgr, err := New(dir, WithMaxSize(0))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Zero should be ignored and default to 4096
+	if mgr.maxSize != 4096 {
+		t.Fatalf("expected maxSize 4096, got %d", mgr.maxSize)
+	}
+}

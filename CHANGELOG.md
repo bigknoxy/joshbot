@@ -19,6 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Test coverage for `internal/channels` (47.5% → 59.8%) and a regression suite for shell command screening.
 
+## [1.34.0] - 2026-06-06
+
+> 1.33.0 and 1.34.0 were tagged from a release branch that was not merged
+> back to `main` until 2026-07-25. Their dates therefore predate 1.31.0 and
+> 1.32.0, which were released from `main` in the meantime.
+
+### Changed
+- **Prompt optimization (GEPA workflow)** — Core identity prompt reduced 457→356 words (22%). Variant A selected: structural cleanup preserves all behavioral guardrails with better organization. Tool descriptions now include tool name prefix for better function-calling disambiguation. Eval harness (all 24/24 weighted checks pass).
+
+## [1.33.0] - 2026-06-05
+
+### Added
+- **Prompt optimization** — Core identity prompt reduced 411→299 words (27%). All 22 tool descriptions trimmed ~30-40%. Eval harness at `internal/agent/prompt_eval_test.go`.
+- **MEMORY.md size cap** — Configurable `max_memory_size` (default 4KB). Auto-trims oldest entries on overflow.
+- **Skill.Always field wired up** — Skills with `always: true` now inject full content into system prompt (was dead code).
+
+### Fixed
+- **Model prefix bug** — `StripProviderPrefix()` now called in `Chat()` and `ChatStream()` so provider prefixes (e.g., `nvidia/`) are stripped before sending to API.
 ## [1.32.0] - 2026-07-24
 
 ### Added

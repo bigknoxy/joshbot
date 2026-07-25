@@ -23,8 +23,14 @@ func TestSkillRegistryTool_Description(t *testing.T) {
 	if desc == "" {
 		t.Error("Description() returned empty string")
 	}
-	if !strings.Contains(desc, "List, create, or delete") {
-		t.Errorf("Description() = %q, expected to contain 'List, create, or delete'", desc)
+	// v1.34.0 gave every tool description a "<tool_name>: " prefix so that
+	// function-calling models can disambiguate them, which also lowercased the
+	// first word. Assert both properties rather than the old exact string.
+	if !strings.HasPrefix(desc, "skill_registry: ") {
+		t.Errorf("Description() = %q, expected the tool-name prefix", desc)
+	}
+	if !strings.Contains(strings.ToLower(desc), "list, create, or delete") {
+		t.Errorf("Description() = %q, expected it to describe list/create/delete", desc)
 	}
 }
 

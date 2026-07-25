@@ -186,3 +186,31 @@ func TestNoProvidersRegisteredError(t *testing.T) {
 		}
 	})
 }
+
+// An enabled provider with no api_key must not be told to set "enabled": true —
+// it already is. A diagnostic that names the wrong cause is the bug this issue
+// was filed about.
+func TestNoProvidersRegisteredError_EnabledButKeyless(t *testing.T) {
+	err := noProvidersRegisteredError(map[string]config.ProviderConfig{
+		"openrouter": {Enabled: true, APIKey: ""},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), `add "enabled": true`) {
+		t.Errorf("error blames the enabled flag on an already-enabled provider: %v", err)
+	}
+	if !strings.Contains(err.Error(), "api_key") {
+		t.Errorf("error should name the missing api_key; got %v", err)
+	}
+}
+
+// ollama needs no api_key, so an enabled ollama with no key is not the cause.
+func TestNoProvidersRegisteredError_KeylessProviderNotBlamed(t *testing.T) {
+	err := noProvidersRegisteredError(map[string]config.ProviderConfig{
+		"openrouter": {Enabled: false, APIKey: "sk-x"},
+	})
+	if !strings.Contains(err.Error(), `"enabled": true`) {
+		t.Errorf("a disabled provider should still point at the enabled flag; got %v", err)
+	}
+}

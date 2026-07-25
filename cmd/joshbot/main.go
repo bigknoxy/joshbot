@@ -3538,20 +3538,35 @@ func formatProviderStatus(providersCfg map[string]config.ProviderConfig) string 
 }
 
 // noProvidersRegisteredError builds the diagnostic error returned when the
-// legacy provider config yields zero registered providers. It distinguishes
-// "no providers in config at all" from "providers present but none enabled",
-// naming the enabled field in the latter case so a hand-editing user has
-// somewhere to look. See issue #71.
+// legacy provider config yields zero registered providers.
+//
+// It names the actual cause rather than guessing. A provider can fail to
+// register for two different reasons, and telling someone to set
+// "enabled": true when it is already set is exactly the kind of misleading
+// diagnostic issue #71 was filed about. See issue #71.
 func noProvidersRegisteredError(providersCfg map[string]config.ProviderConfig) error {
 	if len(providersCfg) == 0 {
 		return fmt.Errorf("no providers configured. Run 'joshbot onboard' first")
 	}
 
 	names := make([]string, 0, len(providersCfg))
-	for name := range providersCfg {
+	var keyless []string
+	for name, p := range providersCfg {
 		names = append(names, name)
+		if p.Enabled && providerRequiresAPIKey(name) && p.APIKey == "" {
+			keyless = append(keyless, name)
+		}
 	}
 	sort.Strings(names)
+	sort.Strings(keyless)
+
+	// Enabled but unusable: the enabled flag is not the problem.
+	if len(keyless) > 0 {
+		return fmt.Errorf(
+			"no providers usable: %s enabled but missing \"api_key\" — set an api_key, or run 'joshbot configure'",
+			strings.Join(keyless, ", "),
+		)
+	}
 
 	return fmt.Errorf(
 		"no providers enabled: %d provider(s) found in config (%s) but none have \"enabled\": true — add \"enabled\": true to the provider you want to use",

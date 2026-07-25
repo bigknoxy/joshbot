@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Long conversations were rejected by the LLM provider** — Once a conversation grew past the token budget, context reduction rebuilt older messages without their tool-call linkage, so joshbot sent `tool` messages carrying no `tool_call_id`. OpenAI-compatible endpoints reject that request with a 400, meaning long sessions failed while short ones worked. The memory window could orphan a tool result the same way by cutting between an assistant tool call and its result.
+
+### Added
+- **Behavioural eval harness for the ReAct loop** (`internal/agent/evalharness_test.go`) — Runs the real loop against a scripted provider that records every request, so tests assert the trajectory (what was sent, dispatched and persisted) rather than the reply text. Runs in CI with no network or API key. `assertProtocolInvariants` enforces provider wire-format rules on every scenario. Validated by mutation testing: 9 of 9 deliberately introduced regressions were caught. `internal/agent` coverage 63.5% → 75.3%.
+
 ## [1.35.0] - 2026-07-25
 
 ### Security

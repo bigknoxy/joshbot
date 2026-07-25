@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +186,64 @@ func TestGuardedDialControl(t *testing.T) {
 	if err := guardedDialControl("tcp", "example.com:80", nil); err == nil {
 		t.Error("guardedDialControl allowed an unresolved hostname")
 	}
+}
+
+// doSearch follows Location headers itself instead of letting the http client
+// do it, so a search engine (or anyone who can answer as one) chooses the next
+// URL. Before this was checked, that was an unvalidated hop.
+func TestSSRF_SearchRedirectIsValidated(t *testing.T) {
+	current, err := url.Parse("https://html.duckduckgo.com/html/?q=test")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	tool := stubResolver(t, map[string][]string{
+		"html.duckduckgo.com": {"93.184.216.34"},
+		"results.example":     {"93.184.216.34"},
+		"internal.example":    {"10.0.0.7"},
+	})
+
+	blocked := []struct {
+		name     string
+		location string
+	}{
+		{"cloud metadata by address", "http://169.254.169.254/latest/meta-data/"},
+		{"loopback", "http://127.0.0.1/admin"},
+		{"private address", "https://192.168.1.1/"},
+		{"hostname resolving inside", "https://internal.example/"},
+		{"internal hostname", "https://metadata.google.internal/"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			next, err := tool.resolveSearchRedirect(current, tc.location)
+			if err == nil {
+				t.Fatalf("followed redirect to %s (got %s)", tc.location, next)
+			}
+			if !strings.Contains(err.Error(), "refusing to follow redirect") {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+
+	t.Run("public target is followed", func(t *testing.T) {
+		next, err := tool.resolveSearchRedirect(current, "https://results.example/page/2")
+		if err != nil {
+			t.Fatalf("public redirect was refused: %v", err)
+		}
+		if next.Host != "results.example" || next.Path != "/page/2" {
+			t.Errorf("redirect resolved to %s", next)
+		}
+	})
+
+	t.Run("relative target keeps the current host", func(t *testing.T) {
+		next, err := tool.resolveSearchRedirect(current, "/html/?q=test&p=2")
+		if err != nil {
+			t.Fatalf("relative redirect was refused: %v", err)
+		}
+		if next.Host != "html.duckduckgo.com" {
+			t.Errorf("relative redirect resolved to %s", next)
+		}
+	})
 }
 
 func TestIsPrivateIP(t *testing.T) {

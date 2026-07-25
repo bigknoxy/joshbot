@@ -683,16 +683,9 @@ func (t *WebTool) doSearch(searchURL string, maxResults int) ToolResult {
 			location := resp.Header.Get("Location")
 			if location != "" {
 				log.Debug("Following redirect", "location", location)
-				// Update request URL to redirect location
-				redirectURL, err := req.URL.Parse(location)
+				redirectURL, err := t.resolveSearchRedirect(req.URL, location)
 				if err != nil {
-					return ToolResult{Error: fmt.Errorf("failed to parse redirect location: %w", err)}
-				}
-				redirectURL.Scheme = "https" // Force HTTPS for redirects
-				// A redirect target is attacker-influenced: the search engine
-				// chooses it. It gets the same check as any other URL.
-				if err := t.validateURLForSSRF(redirectURL.String()); err != nil {
-					return ToolResult{Error: fmt.Errorf("refusing to follow redirect: %w", err)}
+					return ToolResult{Error: err}
 				}
 				req.URL = redirectURL
 				continue // Retry with new URL
@@ -963,6 +956,25 @@ func (t *WebTool) validateURLForSSRF(urlStr string) error {
 	}
 
 	return nil
+}
+
+// resolveSearchRedirect returns the URL a search-engine redirect points to,
+// or an error if it must not be followed.
+//
+// The target is attacker-influenced — the search engine picks it, and doSearch
+// follows Location headers itself rather than letting the http client do it —
+// so it gets the same check as any other URL. Kept separate from doSearch so
+// the decision is testable without standing up a server.
+func (t *WebTool) resolveSearchRedirect(current *url.URL, location string) (*url.URL, error) {
+	next, err := current.Parse(location)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse redirect location: %w", err)
+	}
+	next.Scheme = "https" // Force HTTPS for redirects
+	if err := t.validateURLForSSRF(next.String()); err != nil {
+		return nil, fmt.Errorf("refusing to follow redirect: %w", err)
+	}
+	return next, nil
 }
 
 // isBlockedIP reports whether an address is anything other than a routable

@@ -16,7 +16,7 @@ type ShellTool struct {
 	timeout        time.Duration
 	workspace      string
 	restrict       bool
-	denyList       []string
+	denyList       []string // Extra patterns, applied on top of the built-in rules
 	allowList      []string // If non-empty, only these commands are allowed
 	maxOutputChars int      // Maximum characters to truncate output to
 }
@@ -32,49 +32,8 @@ func NewShellToolWithMaxOutput(timeout time.Duration, workspace string, restrict
 		timeout:        timeout,
 		workspace:      workspace,
 		restrict:       restrict,
-		denyList:       defaultDenyList(),
 		allowList:      allowList,
 		maxOutputChars: maxOutputChars,
-	}
-}
-
-// defaultDenyList returns the default deny list for dangerous commands.
-func defaultDenyList() []string {
-	return []string{
-		// Filesystem destruction
-		"rm -rf /",
-		"rm -rf /*",
-		"rm -rf ~",
-		"rm -rf /home",
-		"rm -rf /root",
-		"mkfs",
-		"dd if=/dev/zero",
-		"dd if=",
-		">/dev/sda",
-		"> /dev/sd",
-		"chmod -R 777 /",
-		"chmod -R 777",
-		// System shutdown / reboot
-		"shutdown",
-		"reboot",
-		"halt",
-		"init 0",
-		"init 6",
-		"systemctl poweroff",
-		"systemctl reboot",
-		// Process destruction
-		":(){:|:&};:", // Fork bomb
-		"kill -9 -1",
-		"kill -9 1",
-		"killall -9",
-		// Disk manipulation
-		"fdisk",
-		"cfdisk",
-		"mount ",
-		"umount",
-		// Remote code execution via pipe
-		"wget .* | sh",
-		"curl .* | sh",
 	}
 }
 
@@ -185,46 +144,10 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	return t.runCommand(execCtx, cmd, workingDir)
 }
 
-// isDenied checks if a command matches any deny list pattern.
+// isDenied checks whether a command is too dangerous to run, returning a
+// reason when it is. See shell_deny.go for how commands are screened.
 func (t *ShellTool) isDenied(cmd string) string {
-	cmdLower := strings.ToLower(cmd)
-
-	// Check exact matches
-	for _, pattern := range t.denyList {
-		if strings.Contains(cmdLower, strings.ToLower(pattern)) {
-			return pattern
-		}
-	}
-
-	// Additional checks
-	// Check for multiple rm -rf
-	if strings.Count(cmdLower, "rm -rf") > 1 {
-		return "multiple rm -rf"
-	}
-
-	// Check for piping to shell
-	if (strings.Contains(cmdLower, "| sh") || strings.Contains(cmdLower, "| bash")) &&
-		!strings.HasPrefix(cmdLower, "#") {
-		return "pipe to shell"
-	}
-
-	// Check for background processes
-	if strings.Contains(cmdLower, "&") && !strings.HasPrefix(cmdLower, "#") {
-		// Allow some common background patterns
-		allowed := []string{"&>", "&>>", "2>&1", "1>&2"}
-		isAllowed := false
-		for _, a := range allowed {
-			if strings.Contains(cmdLower, a) {
-				isAllowed = true
-				break
-			}
-		}
-		if !isAllowed {
-			return "background execution"
-		}
-	}
-
-	return ""
+	return screen(cmd, t.denyList)
 }
 
 // runCommand executes the command and returns the result.
@@ -468,9 +391,12 @@ func (t *ShellTool) ExecuteAsync(ctx context.Context, args map[string]any, callb
 
 // ShellToolConfig holds configuration for the shell tool.
 type ShellToolConfig struct {
-	Timeout        time.Duration
-	Workspace      string
-	Restrict       bool
+	Timeout   time.Duration
+	Workspace string
+	Restrict  bool
+	// DenyList holds extra substring patterns to reject. They are matched
+	// against the normalised command in addition to the built-in structural
+	// rules, which cannot be switched off from configuration.
 	DenyList       []string
 	AllowList      []string
 	MaxOutputChars int

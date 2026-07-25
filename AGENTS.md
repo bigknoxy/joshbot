@@ -234,7 +234,8 @@ channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
 | `internal/skills/skills.go` | Skill discovery and progressive loading |
 | `internal/tools/tool.go` | Tool interface (implement this to add new tools) |
 | `internal/tools/registry.go` | Tool registration and execution |
-| `internal/tools/shell.go` | Shell exec with safety deny-list |
+| `internal/tools/shell.go` | Shell exec; `isDenied` delegates screening to `shell_deny.go` |
+| `internal/tools/shell_deny.go` | Command screening: quote-aware segmentation, wrapper stripping, structural rules. Defence in depth, not a security boundary |
 | `internal/channels/telegram.go` | Telegram channel implementation |
 | `internal/config/config.go` | All configuration structs, model-centric config, provider detection |
 | `internal/bus/bus.go` | Channel-based message bus |
@@ -250,6 +251,60 @@ channels/ --> bus/MessageBus --> agent/Agent --> providers/LiteLLMProvider
 - **New tool**: Create in `internal/tools/`, implement `Tool` interface, register via `tools.RegistryWithDefaults()`
 - **New channel**: Create in `internal/channels/`, implement channel logic, register in `main.go` gateway cmd
 - **New skill**: Create `workspace/skills/{name}/SKILL.md` with YAML frontmatter (auto-discovered)
+
+## Panel Review (agent-assisted code review)
+
+A repo-scoped review workflow that runs five expert perspectives over a change,
+has them debate, and produces a scored verdict. Useful before merging anything
+that touches tool execution, config, or public surface.
+
+**Files** (none of this is joshbot runtime code — it configures coding agents):
+
+| Path | Role |
+|---|---|
+| `.claude/skills/panel-review/SKILL.md` | The workflow: frame → analyse → debate → score → report |
+| `.claude/skills/panel-review/references/experts.md` | **Canonical charters for all five experts** |
+| `.claude/skills/panel-review/references/scoring.md` | Rubric, default weights, report template |
+| `.claude/agents/panel-*.md` | Claude Code agent-type wrappers that point at `experts.md` |
+
+**The five experts**: `panel-agent-security` (prompt injection, tool abuse, trust
+boundaries), `panel-llm-evals` (is the behaviour verifiable, would a silent
+regression be caught), `panel-agent-experience` (onboarding, config, over-blocking,
+failure legibility), `panel-oss-growth` (adoption, positioning, doc drift),
+`panel-go-systems` (goroutine lifecycle, loop termination, build tags, coverage).
+
+**Running it from any harness.** `references/experts.md` is the single source of
+truth and deliberately does not depend on Claude Code's agent registry, so the
+panel is portable:
+
+1. Read `SKILL.md` for the workflow and `references/experts.md` for the charters.
+2. Write the framing block (subject, artifacts, decision, constraints) once and
+   give the identical block to every expert.
+3. Spawn five subagents **concurrently**, each given only the framing block plus
+   its own `## panel-<name>` section from `experts.md`. Keeping them isolated in
+   this round is the point — experts who see each other's drafts converge early
+   and the debate round stops being useful. If your harness has no subagents, work
+   the five charters sequentially yourself, writing each verdict down before
+   reading the next charter.
+4. Give every expert the other four reports and require each to challenge at least
+   one finding and to concede or hold on challenges against it.
+5. Score with `references/scoring.md` (weighted composite, 0–10 per expert, high is
+   good, `N/A` allowed) and report using its template. Any blocking concern
+   overrides the composite.
+
+**Claude Code shortcut**: invoke the `panel-review` skill, or spawn
+`subagent_type: panel-agent-security` and so on. The agent registry is read at
+session start, so newly added `.claude/agents/*.md` need a new session before they
+resolve — fall back to a general-purpose agent pointed at `experts.md`.
+
+**Scaling**: one or two experts for a focused single-lane question, all five for a
+normal change, five plus a second debate round for direction-setting decisions.
+Say which experts you skipped and why.
+
+Charters carry joshbot-specific grounding (known weak points, file paths, the
+OpenClaw CVE threat model). Verify those claims against the code before citing
+them — the repo moves faster than the charter, and a finding built on a stale
+charter is a false finding.
 
 ## Config
 
@@ -293,7 +348,7 @@ This is merged into the chat completion request body via `marshalBody()` in `int
 
 ## Gotchas
 
-- **Telegram message limit**: Telegram Bot API enforces 4096 char max per message. joshbot does not split long messages — exceeding this causes send failure (not retryable). Ensure output stays under limit.
+- **Telegram message limit**: Telegram Bot API enforces 4096 char max per message (not retryable on failure). `Send` splits longer content via `splitMessage` in `internal/channels/telegram.go`, closing and reopening markdown code fences across the boundary. Parts may exceed `maxLen` by up to 4 bytes because of the reopened fence. `splitMessage` indexes by byte, not rune.
 - **CLI stdin blocking**: `bufio.NewReader(os.Stdin).ReadString('\n')` blocks on stdin and can't be interrupted by context cancellation
 - **Session key format**: `"channel:senderID"` (e.g., `"cli:cli-user"`, `"telegram:johndoe"`). Computed from `Channel:SenderID` — no explicit SessionKey field
 - **OutboundMessage**: Uses `ChannelID` (not `ChatID`) for routing responses back to the correct chat

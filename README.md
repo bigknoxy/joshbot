@@ -1,7 +1,7 @@
 # joshbot
 
 [![CI](https://github.com/bigknoxy/joshbot/actions/workflows/ci.yml/badge.svg)](https://github.com/bigknoxy/joshbot/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/bigknoxy/joshbot/branch/main/graph/badge.svg)](https://codecov.io/gh/bigknoxy/joshbot)
+[![Coverage](docs/coverage-badge.svg)](https://github.com/bigknoxy/joshbot/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/bigknoxy/joshbot.svg)](https://pkg.go.dev/github.com/bigknoxy/joshbot)
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/dl/)
 [![GitHub release](https://img.shields.io/github/v/release/bigknoxy/joshbot?include_prereleases)](https://github.com/bigknoxy/joshbot/releases/latest)

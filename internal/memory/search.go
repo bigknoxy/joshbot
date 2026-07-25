@@ -123,8 +123,8 @@ func parseFacts(content string) ([]Fact, error) {
 			continue
 		}
 
-		// Fact line
-		if strings.HasPrefix(trimmed, "- [") && currentCategory != "" {
+		// Fact line (with or without timestamp)
+		if strings.HasPrefix(trimmed, "- ") && currentCategory != "" {
 			fact := parseFactLine(trimmed, currentCategory)
 			if fact != nil {
 				facts = append(facts, *fact)
@@ -159,16 +159,23 @@ func parseFactLine(line string, category FactCategory) *Fact {
 		content = strings.TrimSpace(rest[:idx])
 		metaStr := rest[idx+1:]
 		if end := strings.Index(metaStr, ")"); end > 0 {
-			for _, p := range strings.Split(metaStr[:end], ",") {
-				p = strings.TrimSpace(p)
-				switch {
-				case strings.HasPrefix(p, "confidence:"):
-					fmt.Sscanf(strings.TrimSpace(strings.TrimPrefix(p, "confidence:")), "%f", &confidence)
-				case strings.HasPrefix(p, "tags:"):
-					for _, tag := range strings.Split(strings.TrimPrefix(p, "tags:"), ",") {
-						if t := strings.TrimSpace(tag); t != "" {
-							tags = append(tags, t)
-						}
+			metaContent := metaStr[:end]
+
+			// Parse confidence value (up to next comma or end)
+			if confIdx := strings.Index(metaContent, "confidence:"); confIdx >= 0 {
+				confPart := metaContent[confIdx+len("confidence:"):]
+				if commaIdx := strings.Index(confPart, ","); commaIdx > 0 {
+					confPart = confPart[:commaIdx]
+				}
+				fmt.Sscanf(strings.TrimSpace(confPart), "%f", &confidence)
+			}
+
+			// Parse tags — everything after "tags:" until end of metadata
+			if tagsIdx := strings.Index(metaContent, "tags:"); tagsIdx >= 0 {
+				tagsPart := metaContent[tagsIdx+len("tags:"):]
+				for _, tag := range strings.Split(tagsPart, ",") {
+					if t := strings.TrimSpace(tag); t != "" {
+						tags = append(tags, t)
 					}
 				}
 			}

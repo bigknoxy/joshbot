@@ -1238,13 +1238,13 @@ func (t *TelegramChannel) ParseMarkdown(text string) (string, error) {
 	italicRegex := regexp.MustCompile(`__(.+?)__|_(.+?)_`)
 	text = italicRegex.ReplaceAllString(text, "<i>$1$2</i>")
 
+	// Pre: ```code``` -> <pre>code</pre> (must run before inline code)
+	preRegex := regexp.MustCompile("```(.+?)```")
+	text = preRegex.ReplaceAllString(text, "<pre>$1</pre>")
+
 	// Code: `code` -> <code>code</code>
 	codeRegex := regexp.MustCompile("`(.+?)`")
 	text = codeRegex.ReplaceAllString(text, "<code>$1</code>")
-
-	// Pre: ```code``` -> <pre>code</pre>
-	preRegex := regexp.MustCompile("```(.+?)```")
-	text = preRegex.ReplaceAllString(text, "<pre>$1</pre>")
 
 	// Links: [text](url) -> <a href="url">text</a>
 	linkRegex := regexp.MustCompile(`\[(.+?)\]\((.+?)\)`)

@@ -17,7 +17,7 @@ A lightweight personal AI assistant written in Go, featuring self-learning memor
 - **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
 - **Telegram Integration** - Chat from your phone with full media support
 - **Interactive CLI** - Rich terminal interface with markdown rendering
-- **Multi-Provider LLM** - OpenRouter, Anthropic, OpenAI, Groq, DeepSeek, Gemini, NVIDIA, and more
+- **Multi-Provider LLM** - OpenRouter, Anthropic, OpenAI, Groq, Poolside, DeepSeek, Gemini, NVIDIA, and more
 - **Model-Centric Config** - Simplified model configuration with provider auto-detection and fallback chains
 - **Prompt Caching** - Intelligent caching of system prompts with mtime-based invalidation for faster responses
 - **Tool Use** - File operations, shell commands, web search, scheduling, and more
@@ -276,6 +276,32 @@ The new model-centric format is simpler and more intuitive. Define models direct
 | `deepseek/` | DeepSeek | `https://api.deepseek.com/v1` |
 | `gemini/` | Google Gemini | `https://generativelanguage.googleapis.com/v1beta` |
 | `cerebras/` | Cerebras | `https://api.cerebras.ai/v1` |
+| `poolside/` | Poolside | `https://inference.poolside.ai/v1` |
+
+The prefix is stripped before the request is sent, because for most providers it
+is joshbot's routing hint rather than part of the model name. **Poolside is the
+exception** — its published IDs really are `poolside/laguna-s-2.1`, so the prefix
+is kept. Nothing else needs to change; just use the ID exactly as the provider
+lists it.
+
+### Poolside
+
+```bash
+joshbot configure \
+  --provider poolside \
+  --api-key "$POOLSIDE_API_KEY" \
+  --model poolside/laguna-s-2.1
+```
+
+The API base defaults to `https://inference.poolside.ai/v1`, so `--api-base` is
+optional. Current models are `poolside/laguna-s-2.1` and `poolside/laguna-xs-2.1`
+(`poolside/laguna-m.1` is deprecated as of 2026-07-28). Ask the endpoint for the
+authoritative list:
+
+```bash
+curl -s https://inference.poolside.ai/v1/models \
+  -H "Authorization: Bearer $POOLSIDE_API_KEY" | jq -r '.data[].id'
+```
 
 ### Legacy Provider Configuration (Still Supported)
 

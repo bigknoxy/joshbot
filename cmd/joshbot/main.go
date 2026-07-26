@@ -238,7 +238,7 @@ func runApp() error {
 					},
 					&cli.StringFlag{
 						Name:  "provider",
-						Usage: "Provider to configure (nvidia, openrouter, groq, ollama, github-copilot)",
+						Usage: "Provider to configure (openrouter, openai, anthropic, poolside, nvidia, groq, ollama, azure, custom, litellm, github-copilot)",
 					},
 					&cli.StringFlag{
 						Name:  "api-key",
@@ -2660,7 +2660,18 @@ func runConfigure(c *cli.Context) error {
 		if err := conf.ConfigureProvider(opts); err != nil {
 			return err
 		}
-		fmt.Printf("Provider %q configured with model %q.\n", opts.Name, cfg.Providers[opts.Name].Model)
+		// Report the model that will actually be used. When --model is omitted
+		// the provider entry is left empty and the effective model comes from
+		// the agent defaults or the provider's registered default; printing the
+		// empty provider field made a working setup look broken.
+		effectiveModel := cfg.Providers[opts.Name].Model
+		if effectiveModel == "" {
+			effectiveModel = cfg.Agents.Defaults.Model
+		}
+		if effectiveModel == "" {
+			effectiveModel = providers.GetDefaultModel(opts.Name)
+		}
+		fmt.Printf("Provider %q configured with model %q.\n", opts.Name, effectiveModel)
 	}
 
 	if provider := c.String("set-default"); provider != "" {
@@ -2966,15 +2977,19 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			p.Model = strings.TrimSpace(modelInput)
 		}
 	case "poolside":
+		// Taken from the registry, not written out again here: the previous
+		// hardcoded default was "https://api.poolside.ai/v1", a host that does
+		// not resolve, so the wizard handed every user a broken config.
+		poolsideBase := providers.GetDefaultAPIBaseFor("poolside")
 		if exists && p.APIBase != "" {
 			fmt.Printf("API base URL [%s]: ", p.APIBase)
 		} else {
-			fmt.Print("API base URL [https://api.poolside.ai/v1]: ")
+			fmt.Printf("API base URL [%s]: ", poolsideBase)
 		}
 		fmt.Scanln(&apiBase)
 		if apiBase == "" {
 			if p.APIBase == "" {
-				apiBase = "https://api.poolside.ai/v1"
+				apiBase = poolsideBase
 			} else {
 				apiBase = p.APIBase
 			}

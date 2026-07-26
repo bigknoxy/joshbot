@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Every quoted number in the docs re-measured** — `AGENTS.md` claimed 19,640 LOC, 597 test functions and 48 test files against an actual 22,813 / 1,056 / 83, so the test-file count was off by 73%. `CLAUDE.md` and `site/architecture.html` were closer but also stale, and a "~30ms startup" claim was deleted rather than carried forward — it measures nearer 10ms and nothing keeps it honest. `AGENTS.md` also described `internal/channels/cli.go` as the CLI channel; it has no callers at all, and the live interactive CLI is `runAgentLoop` in `cmd/joshbot/main.go`.
+
 ## [1.41.0] - 2026-07-26
 
 ### Added

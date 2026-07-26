@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/bigknoxy/joshbot/internal/config"
 )
 
 // The install script and the release workflow agree on asset names only by
@@ -155,5 +157,23 @@ func TestDocsReferenceTheRootInstaller(t *testing.T) {
 		if !strings.Contains(readRepoFile(t, doc), wantURL) {
 			t.Errorf("%s does not advertise %s", doc, wantURL)
 		}
+	}
+}
+
+// TestDefaultReminderChannel pins where a scheduled reminder is delivered when
+// the agent does not name a channel.
+func TestDefaultReminderChannel(t *testing.T) {
+	var cfg config.Config
+	if got := defaultReminderChannel(&cfg); got != "cli" {
+		t.Errorf("with no channels enabled = %q, want %q", got, "cli")
+	}
+
+	cfg.Channels.Telegram.Enabled = true
+	if got := defaultReminderChannel(&cfg); got != "telegram" {
+		t.Errorf("with telegram enabled = %q, want %q", got, "telegram")
+	}
+
+	if got := defaultReminderChannel(nil); got != "cli" {
+		t.Errorf("with nil config = %q, want %q", got, "cli")
 	}
 }

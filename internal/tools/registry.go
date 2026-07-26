@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bigknoxy/joshbot/internal/cron"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/charmbracelet/log"
@@ -331,8 +332,10 @@ func DefaultRegistry() *Registry {
 
 // registrySettings holds optional configuration for RegistryWithDefaults.
 type registrySettings struct {
-	sandbox      SandboxMode
-	allowNetwork bool
+	sandbox            SandboxMode
+	allowNetwork       bool
+	cronService        *cron.Service
+	cronDefaultChannel string
 }
 
 // RegistryOption adjusts optional registry behaviour. Options are used rather
@@ -345,6 +348,15 @@ func WithShellSandbox(mode SandboxMode, allowNetwork bool) RegistryOption {
 	return func(s *registrySettings) {
 		s.sandbox = mode
 		s.allowNetwork = allowNetwork
+	}
+}
+
+// WithCronService registers the cron tool against a running scheduler.
+// defaultChannel is where a reminder is delivered when the caller names none.
+func WithCronService(svc *cron.Service, defaultChannel string) RegistryOption {
+	return func(s *registrySettings) {
+		s.cronService = svc
+		s.cronDefaultChannel = defaultChannel
 	}
 }
 
@@ -434,6 +446,14 @@ func RegistryWithDefaults(
 	if skillLoader != nil {
 		skillTool := NewSkillRegistryTool(skillLoader)
 		_ = registry.Register(skillTool)
+	}
+
+	// Cron tool (optional): only offered when a scheduler is running, so the
+	// agent is never told it can schedule something that nothing will deliver.
+	if settings.cronService != nil {
+		if err := registry.Register(NewCronTool(settings.cronService, settings.cronDefaultChannel)); err != nil {
+			log.Error("failed to register cron tool", "error", err)
+		}
 	}
 
 	return registry

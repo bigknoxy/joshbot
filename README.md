@@ -22,7 +22,7 @@ A lightweight personal AI assistant written in Go, featuring self-learning memor
 - **Prompt Caching** - Intelligent caching of system prompts with mtime-based invalidation for faster responses
 - **Tool Use** - File operations, shell commands, web search, scheduling, and more
 - **Proactive Tasks** - Heartbeat system for autonomous task processing
-- **Scheduled Reminders** - Cron-based task scheduling with natural delay syntax
+- **Scheduled Reminders** - Ask for a reminder in `30m`, `2h` or `1d`, one-off or repeating; jobs persist across restarts
 
 ## Requirements
 
@@ -151,7 +151,7 @@ Skills are markdown files that extend joshbot's capabilities without code change
 | `memory` | Memory system usage (always loaded) |
 | `skill-creator` | How to create new skills |
 | `github` | GitHub CLI patterns (requires `gh` binary) |
-| `cron` | Scheduling guidance |
+| `cron` | Scheduling guidance for the `cron` tool |
 
 ### Creating Custom Skills
 

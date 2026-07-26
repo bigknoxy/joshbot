@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.40.2] - 2026-07-26
+
 ### Fixed
 - **Poolside never worked** — joshbot strips the provider prefix from a model name before sending it, which is right for providers where the prefix is joshbot's own routing hint. Poolside's published model IDs genuinely begin with `poolside/`, so every request went out as `laguna-s-2.1` and came back `404 {"error":"please check the model you provided"}`. This applied to the provider's own registered default, `poolside/laguna-m.1`, so no poolside configuration could work out of the box. Confirmed against the live API: the full ID answers 200, the stripped one 404. Prefixes that form part of the model ID are now kept.
 

@@ -388,7 +388,19 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			Tools:       toolSchemas,
 		}
 
-		resp, err := a.provider.Chat(ctx, req)
+		// When streaming is enabled and a stream sink is attached to the
+		// request context, use ChatStream and forward text deltas to the
+		// sink as they arrive. Otherwise, use the non-streaming Chat path.
+		sink := streamSinkFromContext(ctx)
+		streaming := a.cfg.Agents.Defaults.Streaming && sink != nil
+
+		var resp *providers.ChatResponse
+		var err error
+		if streaming {
+			resp, err = a.streamChat(ctx, req, sink)
+		} else {
+			resp, err = a.provider.Chat(ctx, req)
+		}
 		if err != nil {
 			return "", fmt.Errorf("LLM call failed: %w", err)
 		}
@@ -558,6 +570,83 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	// Hit max iterations
 	a.logger.Warn("Hit max iterations", "max", a.maxIterations)
 	return "I've been working on this for a while. Here's what I found so far - let me know if you'd like me to continue.", nil
+}
+
+// streamChat sends a streaming chat request, forwards text deltas to the
+// sink as they arrive, and accumulates the full response using the stage-2
+// ChunkAccumulator. On mid-stream failure, a visible error marker is
+// appended to whatever text was already shown — never silently truncated.
+//
+// The returned *ChatResponse has the same shape as the non-streaming Chat
+// path, so everything downstream of the call site is unchanged.
+func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink StreamSink) (*providers.ChatResponse, error) {
+	stream, err := a.provider.ChatStream(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("stream failed to open: %w", err)
+	}
+
+	acc := providers.NewChunkAccumulator()
+	var accumulatedContent string
+
+	for chunk := range stream {
+		if err := acc.Accumulate(chunk); err != nil {
+			// Stream error mid-flight — append a visible marker to what
+			// was already shown. Return partial content, not an error,
+			// so the caller sees the text that was already delivered.
+			if accumulatedContent != "" {
+				marker := "\n[stream error: " + err.Error() + "]"
+				sink(StreamEvent{Delta: marker, Done: true})
+				accumulatedContent += marker
+			}
+			return &providers.ChatResponse{
+				ID:    "stream-error",
+				Model: req.Model,
+				Choices: []providers.Choice{
+					{
+						Message: providers.Message{
+							Role:    providers.RoleAssistant,
+							Content: accumulatedContent,
+						},
+					},
+				},
+			}, nil
+		}
+
+		// Forward text deltas to the sink as they arrive.
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" {
+				accumulatedContent += choice.Delta.Content
+				sink(StreamEvent{Delta: choice.Delta.Content})
+			}
+		}
+	}
+
+	resp, err := acc.Result()
+	if err != nil {
+		// Stream ended with a truncation error — append a visible marker.
+		marker := "\n[stream error: " + err.Error() + "]"
+		if accumulatedContent != "" {
+			sink(StreamEvent{Delta: marker, Done: true})
+			accumulatedContent += marker
+		}
+		return &providers.ChatResponse{
+			ID:    "stream-error",
+			Model: req.Model,
+			Choices: []providers.Choice{
+				{
+					Message: providers.Message{
+						Role:    providers.RoleAssistant,
+						Content: accumulatedContent,
+					},
+				},
+			},
+		}, nil
+	}
+
+	// Signal completion to the sink.
+	sink(StreamEvent{Done: true})
+
+	return resp, nil
 }
 
 // afterReActDetection records the trace and, if a strong-enough candidate is

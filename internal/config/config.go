@@ -113,6 +113,9 @@ type AgentDefaults struct {
 	MemoryWindow        int     `mapstructure:"memory_window" json:"memory_window" yaml:"memory_window"`
 	CompactionThreshold float64 `mapstructure:"compaction_threshold" json:"compaction_threshold" yaml:"compaction_threshold"`
 	MaxMemorySize       int     `mapstructure:"max_memory_size" json:"max_memory_size" yaml:"max_memory_size"`
+	// Streaming enables incremental text delivery via ChatStream when a
+	// stream sink is attached to the request context. Default false.
+	Streaming bool `mapstructure:"streaming" json:"streaming" yaml:"streaming"`
 }
 
 // ModelConfig defines a single model with its API configuration.

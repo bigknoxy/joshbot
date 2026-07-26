@@ -35,7 +35,7 @@ func TestRunAgentLoopProcessesInput(t *testing.T) {
 
 	mock := &mockAgent{}
 	// messageSender is nil in tests - chat ID won't be set but that's fine for unit tests
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -62,7 +62,7 @@ func TestRunAgentLoopExitsOnEOF(t *testing.T) {
 
 	mock := &mockAgent{}
 	// messageSender is nil in tests - chat ID won't be set but that's fine for unit tests
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -84,7 +84,7 @@ func TestRunAgentLoopSetsChatID(t *testing.T) {
 	input := bytes.NewBufferString("hello\nexit\n")
 
 	mock := &mockAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, sender); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, sender, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestRunAgentLoop_NonTTY_NoProgressCallbackWired(t *testing.T) {
 	input := bytes.NewBufferString("hello\nexit\n")
 
 	mock := &mockProgressAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -167,7 +167,7 @@ func TestRunAgentLoop_TTY_PrintsToolProgressLines(t *testing.T) {
 	input := bytes.NewBufferString("hello\nexit\n")
 
 	mock := &mockProgressAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestRunAgentLoop_TTY_ExitsCleanlyOnDoneWhileSpinnerRunning(t *testing.T) {
 
 	returned := make(chan error, 1)
 	go func() {
-		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil)
+		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil, false)
 	}()
 
 	close(done)
@@ -247,7 +247,7 @@ func TestRunAgentLoop_TTY_SpinnerRunsWhileWaiting(t *testing.T) {
 	mock := &slowAgent{release: make(chan struct{})}
 	returned := make(chan error, 1)
 	go func() {
-		returned <- runAgentLoop(ctx, cancel, done, input, &output, mock, nil)
+		returned <- runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false)
 	}()
 
 	// Give the spinner goroutine a couple of tick intervals to draw at

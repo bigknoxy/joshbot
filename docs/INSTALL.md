@@ -427,7 +427,8 @@ The old format is still supported for backward compatibility:
       "max_tokens": 8192,
       "temperature": 0.7,
       "max_tool_iterations": 20,
-      "memory_window": 50
+      "memory_window": 50,
+      "streaming": false
     }
   },
   "channels": {

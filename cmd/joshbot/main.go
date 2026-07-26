@@ -957,7 +957,7 @@ func runAgent(c *cli.Context) error {
 	done := make(chan struct{})
 	setupGracefulShutdown(ctx, cancel, done)
 
-	if err := runAgentLoop(ctx, cancel, done, os.Stdin, os.Stdout, agentInstance, messageSender); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, os.Stdin, os.Stdout, agentInstance, messageSender, cfg.Agents.Defaults.Streaming); err != nil {
 		return err
 	}
 	return nil
@@ -1037,6 +1037,24 @@ func (p *cliProgress) onToolEvent(e agent.ToolProgressEvent) {
 	}
 }
 
+// onStreamEvent is the agent.StreamSink wired into the Agent when streaming
+// is enabled. It writes incremental text deltas directly to the output,
+// stopping the spinner on the first delta so the spinner's \r does not fight
+// the streamed text.
+func (p *cliProgress) onStreamEvent(e agent.StreamEvent) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Stop the spinner on the first delta — once text starts flowing, the
+	// spinner is wrong (it implies "still thinking" over partial output).
+	if p.spinCancel != nil {
+		close(p.spinCancel)
+		<-p.spinDone
+		p.spinCancel = nil
+		fmt.Fprint(p.out, clearLine)
+	}
+	fmt.Fprint(p.out, e.Delta)
+}
+
 var spinnerFrames = [...]string{"|", "/", "-", "\\"}
 
 // startSpinner begins printing an elapsed-time spinner on a single line,
@@ -1080,7 +1098,7 @@ func (p *cliProgress) stopSpinner() {
 	p.mu.Unlock()
 }
 
-func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor, messageSender *tools.BusMessageSender) error {
+func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor, messageSender *tools.BusMessageSender, streaming bool) error {
 	// Set chat ID for CLI mode so message tools can send messages proactively
 	if messageSender != nil {
 		messageSender.SetChatID("cli", "cli_user")
@@ -1181,9 +1199,16 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		// *agent.Agent receives it via progressFromContext (concurrency-safe,
 		// no shared mutable state on Agent). Mocks that still implement
 		// progressCapable receive it via SetProgressCallback above.
+		//
+		// When streaming is enabled and output is a TTY, also attach a
+		// stream sink so text deltas are written incrementally. The spinner
+		// is stopped on the first delta by onStreamEvent.
 		processCtx := ctx
 		if progress != nil {
 			processCtx = agent.WithSink(ctx, progress.onToolEvent)
+		}
+		if streaming && progress != nil {
+			processCtx = agent.WithStreamSink(processCtx, progress.onStreamEvent)
 		}
 		response, procErr := agentInstance.Process(processCtx, msg)
 		if progress != nil {
@@ -1195,7 +1220,14 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 			continue
 		}
 
-		fmt.Fprintf(output, "\n%s\n\n", strings.TrimSpace(response))
+		// When streaming, the response was already written incrementally by
+		// the stream sink — don't print it again. When not streaming, print
+		// the full response as before.
+		if streaming && progress != nil {
+			fmt.Fprint(output, "\n\n")
+		} else {
+			fmt.Fprintf(output, "\n%s\n\n", strings.TrimSpace(response))
+		}
 
 		if readErr == io.EOF {
 			cancel()

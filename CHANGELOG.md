@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Telegram command menu** — `/start`, `/help` and `/new` have always had handlers, but `setMyCommands` was never called, so none of them appeared behind Telegram's menu button or autocompleted. They are now registered on startup, scoped to private chats. Registration failure is logged and the bot starts regardless.
+- **Unknown Telegram commands get an answer** — any text starting with `/` that no handler claimed was dropped on the floor, so a typo like `/nwe` produced no reply at all. It now gets an "Unknown command" message listing the real ones. Users outside `allow_from` still get nothing.
+
+### Fixed
+- **"Typing…" vanished mid-answer on Telegram** — the chat action was sent once per inbound message, but Telegram clears it after 5 seconds while an agent turn with tool calls routinely runs far longer, leaving the user watching an idle chat. The indicator is now refreshed every 4 seconds per chat until the reply is sent or the channel shuts down.
+
 ## [1.40.3] - 2026-07-26
 
 ### Fixed

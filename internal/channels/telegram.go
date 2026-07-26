@@ -47,6 +47,42 @@ type TelegramChannel struct {
 
 	// Polling configuration
 	pollTimeout time.Duration
+
+	// Typing keep-alive. Telegram clears a chat action after 5 seconds, so a
+	// long agent turn needs the action re-sent on a timer. One entry per chat,
+	// guarded by mu; the channel in it stops that chat's keep-alive.
+	typingStop     map[string]chan struct{}
+	typingInterval time.Duration
+	// typingMaxDuration bounds a keep-alive. Nothing calls stopTyping if the
+	// agent turn dies without producing a reply, and an uncapped goroutine
+	// would then call the Bot API every few seconds for the life of the
+	// process — burning rate limit and showing a permanent "typing…".
+	typingMaxDuration time.Duration
+
+	// notifier overrides the bot for chat-action and command-menu calls.
+	// Only tests set it; in production it stays nil and the bot is used.
+	notifier telegramNotifier
+
+	// apiURL and offline point createBot at a stub Bot API. Only tests set
+	// them; empty/false means the real api.telegram.org.
+	apiURL  string
+	offline bool
+}
+
+// telegramNotifier is the slice of *telebot.Bot this channel needs for chat
+// actions and command-menu registration. It exists so both can be tested
+// without a live Telegram connection.
+type telegramNotifier interface {
+	Notify(to telebot.Recipient, action telebot.ChatAction, threadID ...int) error
+	SetCommands(opts ...interface{}) error
+}
+
+// botCommands is the command menu shown in the Telegram UI. Every entry here
+// must have a matching handler registered in setupHandlers.
+var botCommands = []telebot.Command{
+	{Text: "start", Description: "Show what this bot can do"},
+	{Text: "help", Description: "Show the list of commands"},
+	{Text: "new", Description: "Start a new session"},
 }
 
 // NewTelegramChannel creates a new Telegram channel instance.
@@ -71,6 +107,11 @@ func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *Telegr
 		retryDelay:    500 * time.Millisecond,
 		maxRetryDelay: 5 * time.Second,
 		pollTimeout:   60 * time.Second,
+		typingStop:    make(map[string]chan struct{}),
+		// Telegram clears a chat action after 5s; re-send just under that.
+		typingInterval: 4 * time.Second,
+		// Longer than any sane agent turn, short enough to not leak forever.
+		typingMaxDuration: 10 * time.Minute,
 	}
 }
 
@@ -168,6 +209,8 @@ func (t *TelegramChannel) createBot(ctx context.Context) (*telebot.Bot, error) {
 		Token:   t.cfg.Token,
 		Poller:  &telebot.LongPoller{Timeout: t.pollTimeout},
 		Verbose: false,
+		URL:     t.apiURL,
+		Offline: t.offline,
 	}
 
 	// Add proxy if configured
@@ -189,6 +232,11 @@ func (t *TelegramChannel) createBot(ctx context.Context) (*telebot.Bot, error) {
 
 	// Set up message handlers
 	t.setupHandlers(bot)
+
+	// Publish the command menu so Telegram shows the menu button and
+	// autocompletes commands. Best effort: a failure here must not stop the
+	// bot from starting.
+	t.registerCommandsBestEffort(bot)
 
 	return bot, nil
 }
@@ -342,7 +390,20 @@ func (t *TelegramChannel) handleMessage(ctx telebot.Context) (err error) {
 
 	// Check if it's a command - let specific handlers deal with it
 	if strings.HasPrefix(msg.Text, "/") {
-		// Commands are handled by their specific handlers
+		if isKnownCommand(msg.Text) {
+			// Commands are handled by their specific handlers
+			return nil
+		}
+		// An unknown command reaches OnText because no handler claimed it.
+		// Say so rather than swallowing it, but never leak the command list
+		// to someone outside the allowlist.
+		if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
+			return nil
+		}
+		_, err := ctx.Bot().Send(ctx.Sender(), unknownCommandText(msg.Text))
+		if err != nil {
+			log.Error("failed to send unknown-command reply", "error", err)
+		}
 		return nil
 	}
 
@@ -357,7 +418,7 @@ func (t *TelegramChannel) handleMessage(ctx telebot.Context) (err error) {
 	}
 
 	// Show typing indicator
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	// Convert to InboundMessage and send to bus
 	inbound := t.convertToInboundMessage(msg)
@@ -368,6 +429,43 @@ func (t *TelegramChannel) handleMessage(ctx telebot.Context) (err error) {
 	}
 
 	return nil
+}
+
+// commandName extracts the bare command from message text: "/new extra" and
+// "/new@joshbot" both yield "new".
+func commandName(text string) string {
+	name := strings.TrimPrefix(text, "/")
+	if i := strings.IndexAny(name, " \t\n"); i >= 0 {
+		name = name[:i]
+	}
+	if i := strings.Index(name, "@"); i >= 0 {
+		name = name[:i]
+	}
+	return strings.ToLower(name)
+}
+
+// isKnownCommand reports whether the text names a command that has its own
+// handler registered in setupHandlers.
+func isKnownCommand(text string) bool {
+	name := commandName(text)
+	for _, c := range botCommands {
+		if c.Text == name {
+			return true
+		}
+	}
+	return false
+}
+
+// unknownCommandText tells the user their command does not exist and lists the
+// ones that do.
+func unknownCommandText(text string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Unknown command: /%s\n\nAvailable commands:", commandName(text))
+	for _, c := range botCommands {
+		fmt.Fprintf(&b, "\n/%s - %s", c.Text, c.Description)
+	}
+	b.WriteString("\n\nOr just send me a message.")
+	return b.String()
 }
 
 // handleStart handles the /start command.
@@ -430,7 +528,7 @@ func (t *TelegramChannel) handlePhoto(ctx telebot.Context) error {
 	}
 
 	// Show typing indicator
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	// Build content with photo info
 	photo := msg.Photo
@@ -477,7 +575,7 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 		return nil
 	}
 
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	voice := msg.Voice
 	content := "[Voice message]"
@@ -523,7 +621,7 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 		return nil
 	}
 
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	doc := msg.Document
 	content := fmt.Sprintf("[Document: %s]", doc.FileName)
@@ -570,7 +668,7 @@ func (t *TelegramChannel) handleAudio(ctx telebot.Context) error {
 		return nil
 	}
 
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	audio := msg.Audio
 	content := fmt.Sprintf("[Audio: %s]", audio.Title)
@@ -619,7 +717,7 @@ func (t *TelegramChannel) handleVideo(ctx telebot.Context) error {
 		return nil
 	}
 
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	video := msg.Video
 	content := "[Video]"
@@ -830,20 +928,157 @@ func (t *TelegramChannel) downloadFile(file telebot.File, mediaType string, chat
 	log.Info("downloaded file", "media_type", mediaType, "filename", filename, "chat_id", chatID, "message_id", messageID)
 }
 
-// sendTyping sends a typing indicator to the user.
-func (t *TelegramChannel) sendTyping(recipient telebot.Recipient) {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
+// startTyping shows "typing…" for a chat and keeps it alive until stopTyping
+// is called, the channel shuts down, or the process exits. Telegram clears a
+// chat action after 5 seconds, but an agent turn routinely runs far longer, so
+// a single sendChatAction leaves the user staring at an idle chat.
+// Calling it again for a chat that is already typing is a no-op.
+func (t *TelegramChannel) startTyping(recipient telebot.Recipient) {
+	key, ok := recipientKey(recipient)
+	if !ok {
 		return
 	}
 
-	_, err := bot.Send(recipient, telebot.Typing)
-	if err != nil {
+	t.mu.Lock()
+	notifier := t.currentNotifierLocked()
+	if notifier == nil {
+		t.mu.Unlock()
+		return
+	}
+	if _, ok := t.typingStop[key]; ok {
+		t.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	t.typingStop[key] = stop
+	interval := t.typingInterval
+	maxDuration := t.typingMaxDuration
+	shutdown := t.stopCh
+	t.mu.Unlock()
+
+	go func() {
+		notifyTyping(notifier, recipient)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		var expired <-chan time.Time
+		if maxDuration > 0 {
+			timer := time.NewTimer(maxDuration)
+			defer timer.Stop()
+			expired = timer.C
+		}
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-shutdown:
+				return
+			case <-expired:
+				// Give up rather than type at Telegram forever. Clear the map
+				// entry so a later message for this chat can start again.
+				t.clearTyping(key, stop)
+				return
+			case <-ticker.C:
+				notifyTyping(notifier, recipient)
+			}
+		}
+	}()
+}
+
+// stopTyping ends the keep-alive for a chat. Stopping a chat that is not
+// typing is a no-op.
+func (t *TelegramChannel) stopTyping(recipient telebot.Recipient) {
+	key, ok := recipientKey(recipient)
+	if !ok {
+		return
+	}
+
+	t.mu.Lock()
+	stop, ok := t.typingStop[key]
+	if ok {
+		delete(t.typingStop, key)
+	}
+	t.mu.Unlock()
+
+	if ok {
+		close(stop)
+	}
+}
+
+// clearTyping removes a chat's keep-alive entry, but only if it is still the
+// one this goroutine owns — a newer keep-alive for the same chat must not be
+// evicted by an older one expiring.
+func (t *TelegramChannel) clearTyping(key string, own chan struct{}) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if cur, ok := t.typingStop[key]; ok && cur == own {
+		delete(t.typingStop, key)
+	}
+}
+
+// recipientKey returns the map key for a recipient, reporting false when there
+// is nothing usable to key on. A nil *telebot.Chat or *telebot.User carried in
+// a non-nil interface would panic inside Recipient(), so both are screened.
+func recipientKey(recipient telebot.Recipient) (string, bool) {
+	switch r := recipient.(type) {
+	case nil:
+		return "", false
+	case *telebot.Chat:
+		if r == nil {
+			return "", false
+		}
+	case *telebot.User:
+		if r == nil {
+			return "", false
+		}
+	}
+	key := recipient.Recipient()
+	if key == "" {
+		return "", false
+	}
+	return key, true
+}
+
+// currentNotifierLocked returns the notifier to use for chat actions and the
+// command menu. Callers must hold mu.
+func (t *TelegramChannel) currentNotifierLocked() telegramNotifier {
+	if t.notifier != nil {
+		return t.notifier
+	}
+	if t.bot != nil {
+		return t.bot
+	}
+	return nil
+}
+
+func notifyTyping(notifier telegramNotifier, recipient telebot.Recipient) {
+	if err := notifier.Notify(recipient, telebot.Typing); err != nil {
 		log.Debug("failed to send typing indicator", "error", err)
 	}
+}
+
+// registerCommands publishes the command menu so Telegram shows the menu
+// button and autocompletes commands in private chats.
+func (t *TelegramChannel) registerCommands(notifier telegramNotifier) error {
+	if notifier == nil {
+		return fmt.Errorf("no bot available to register commands")
+	}
+	return notifier.SetCommands(
+		botCommands,
+		telebot.CommandScope{Type: telebot.CommandScopeAllPrivateChats},
+	)
+}
+
+// registerCommandsBestEffort registers the command menu, logging rather than
+// failing: a missing menu must never stop the bot from starting.
+func (t *TelegramChannel) registerCommandsBestEffort(notifier telegramNotifier) {
+	if err := t.registerCommands(notifier); err != nil {
+		log.Warn("failed to register Telegram command menu", "error", err)
+		return
+	}
+	log.Debug("registered Telegram command menu", "commands", len(botCommands))
 }
 
 // Stop gracefully shuts down the Telegram channel.
@@ -857,6 +1092,10 @@ func (t *TelegramChannel) Stop() error {
 
 	t.running = false
 	close(t.stopCh)
+
+	// The keep-alive goroutines also select on stopCh, so closing it is what
+	// actually stops them; dropping the entries just releases the map.
+	t.typingStop = make(map[string]chan struct{})
 
 	// Stop the bot's long poller so runBot's blocking bot.Start() call
 	// returns. bot.Close() is the Telegram Bot API "close" session-teardown
@@ -900,6 +1139,10 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 	if recipient == nil {
 		return fmt.Errorf("no valid recipient specified")
 	}
+
+	// The reply is on its way, so the "typing…" keep-alive for this chat has
+	// done its job.
+	t.stopTyping(recipient)
 
 	parseMode := telebot.ModeDefault
 	if pm, ok := msg.Metadata["parse_mode"].(string); ok {

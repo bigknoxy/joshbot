@@ -109,8 +109,9 @@ func TestTelegramChannel_SendPathsWithoutBot(t *testing.T) {
 	})
 
 	// These return nothing; the assertion is that they do not panic.
-	t.Run("sendTyping", func(t *testing.T) {
-		tg.sendTyping(recipient)
+	t.Run("startTyping", func(t *testing.T) {
+		tg.startTyping(recipient)
+		tg.stopTyping(recipient)
 	})
 
 	t.Run("downloadFile", func(t *testing.T) {

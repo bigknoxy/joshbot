@@ -460,6 +460,15 @@ After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 
 5. Run: `joshbot gateway`
 
+On startup joshbot registers its command menu with Telegram (`/start`, `/help`,
+`/new`), so they appear behind the menu button and autocomplete as you type. If
+Telegram rejects the registration it is logged and the bot starts anyway. A
+command that does not exist gets an "Unknown command" reply listing the real
+ones instead of silence.
+
+While the agent is working, the "typing…" indicator is refreshed every 4 seconds
+until the reply is sent, so it stays visible for the whole turn.
+
 ## Built-in Tools
 
 | Tool | Description |

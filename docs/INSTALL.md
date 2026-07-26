@@ -262,7 +262,7 @@ joshbot status
 ╔═══════════════════════════════════════════╗
 ║            joshbot status                ║
 ╚═══════════════════════════════════════════╝
-Version:        1.39.1
+Version:        1.39.2
 Config file:    ~/.joshbot/config.json (exists)
 Workspace:      ~/.joshbot/workspace (exists)
 Sessions:       ~/.joshbot/sessions

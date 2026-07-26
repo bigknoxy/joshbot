@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The interactive agent could not be stopped** — `joshbot agent` ignored Ctrl-C, and ignored `kill` too: three SIGINTs and a SIGTERM all left it running, and only SIGKILL worked. Two compounding causes. The input loop checked for shutdown only *between* reads, so a signal arriving while it sat at the prompt — which is essentially always — was never observed. And the signal handler consumed exactly one signal before exiting, while `signal.Notify` had already disabled Go's default termination for SIGINT, SIGTERM and SIGHUP, so every later signal was swallowed by a listener that was no longer there. Reading now happens on its own goroutine and the loop selects over input, shutdown and context cancellation together; a second signal exits immediately rather than being absorbed.
+
+### Fixed
 - **Poolside could not be configured correctly by any route** — three separate defects, all found by dogfooding against the live API. The interactive `configure` wizard offered `https://api.poolside.ai/v1` as the default endpoint, **a host that does not resolve**, so anyone accepting the default got a config that could never connect; the real endpoint is `https://inference.poolside.ai/v1`. The registered default model, `poolside/laguna-m.1`, carries a deprecation date of 2026-07-28 — two days out — so the out-of-the-box choice was about to stop working; it is now `poolside/laguna-s-2.1`. And `configure --help` omitted poolside from the list of providers it accepts, alongside five others. The endpoint is now recorded once in the provider registry (`ProviderInfo.DefaultAPIBase`) and read from there by the wizard, with a test asserting the declared endpoint matches the one the factory actually dials — the duplicate copy is what drifted.
 
 ## [1.40.2] - 2026-07-26

@@ -48,3 +48,6 @@ htmlcov/
 # Playwright browser testing artifacts
 .playwright-mcp/
 *.env
+
+# Agent worktrees (transient)
+.claude/worktrees/

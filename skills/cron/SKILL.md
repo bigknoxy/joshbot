@@ -7,35 +7,63 @@ tags: [scheduling, automation]
 
 # Scheduling & Reminders
 
-Use the `cron` tool to schedule tasks and reminders.
+Use the `cron` tool to schedule a message to be delivered back to the user later.
 
-## Creating Reminders
+When a job fires, its message is delivered to the chosen channel as if the user
+had sent it — so write the message as the reminder text itself.
 
-### One-time delay
+## Creating a reminder
+
+Schedules are **durations**, not cron expressions. Accepted units are `s`, `m`,
+`h` and `d`, and they can be combined (`1h30m`).
+
+One-time, the default:
+
+```json
+{"action": "create", "schedule": "30m", "message": "Your meeting starts in 30 minutes"}
 ```
-cron create --name "Meeting reminder" --schedule "30m" --message "Your meeting starts in 30 minutes!"
+
+Recurring — set `repeat` to true, and `schedule` becomes the interval:
+
+```json
+{"action": "create", "schedule": "24h", "message": "Time for standup", "repeat": true}
 ```
 
-Delay formats: `5m` (minutes), `2h` (hours), `1d` (days)
+Delivery goes to the current channel unless you name one:
 
-### Recurring (cron expression)
+```json
+{"action": "create", "schedule": "2h", "message": "Take a break", "channel": "telegram"}
 ```
-cron create --name "Daily standup" --schedule "0 9 * * *" --message "Time for standup!"
+
+`create` returns the job ID. Keep it if the user might want to cancel.
+
+## Managing reminders
+
+```json
+{"action": "list"}
+{"action": "delete", "job_id": "job-1753142400-3"}
 ```
 
-Common cron expressions:
-- `*/5 * * * *` - Every 5 minutes
-- `0 * * * *` - Every hour
-- `0 9 * * *` - Daily at 9 AM
-- `0 9 * * 1-5` - Weekdays at 9 AM
-- `0 0 * * 0` - Weekly on Sunday
+`list` shows each job's ID, schedule, target channel and message. Run it first
+when the user asks to cancel something but does not know the ID.
 
-## Managing Tasks
-- `cron list` - View all scheduled tasks
-- `cron delete --job_id "..."` - Remove a task
+## Limits worth knowing
 
-## Best Practices
-1. Name tasks descriptively so they're easy to identify
-2. Always specify the target channel for message delivery
-3. Use reasonable intervals (not every minute unless necessary)
-4. Clean up tasks that are no longer needed
+- **No calendar scheduling.** "Every weekday at 9am" cannot be expressed. The
+  closest is `{"repeat": true, "schedule": "24h"}`, which fires 24 hours after
+  it is created and every 24 hours after that. Say so rather than implying the
+  reminder is pinned to a clock time.
+- One-time reminders are removed once they fire. Recurring ones run until
+  deleted.
+- Reminders are persisted, so they survive a restart — but the countdown
+  **restarts with them**. A "remind me in 30 minutes" that is 29 minutes in when
+  joshbot restarts will fire 30 minutes after the restart, not one minute later.
+  For anything time-critical, tell the user this rather than letting them assume
+  the original moment is kept.
+
+## Best practices
+
+1. Confirm what you scheduled, in plain terms, including when it will fire.
+2. Prefer the user's own wording for the message — they are the one who reads it.
+3. Use sensible intervals; a recurring job every few minutes becomes noise.
+4. Offer to clean up recurring reminders that are no longer wanted.

@@ -667,6 +667,11 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	}
 
 	// Create tools registry with defaults
+	// The cron service is built before the registry so the cron tool can be
+	// registered against it. It is started further down with the other
+	// background services.
+	cronSvc := cron.NewService(msgBus, cfg.Agents.Defaults.Workspace)
+
 	toolsRegistry := tools.RegistryWithDefaults(
 		cfg.Agents.Defaults.Workspace,
 		cfg.Tools.RestrictToWorkspace,
@@ -677,6 +682,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.FilesystemAllowedPaths,
 		skillsLoader,
 		tools.WithShellSandbox(sandboxMode, cfg.Tools.ShellSandboxAllowNetwork),
+		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
 	)
 
 	// Create function to reload providers from config (for config tool hot-reload)
@@ -798,7 +804,6 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	)
 
 	// Start background services (best-effort)
-	cronSvc := cron.NewService(msgBus, cfg.Agents.Defaults.Workspace)
 	cronSvc.Start()
 	hb := heartbeat.NewService(msgBus, cfg.Agents.Defaults.Workspace)
 	hb.SetInterval(5 * time.Minute) // shorter default for local setups
@@ -811,6 +816,16 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
 	return msgBus, multiProvider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
+}
+
+// defaultReminderChannel picks where a scheduled reminder goes when the agent
+// does not name a channel. A reminder delivered to a CLI session nobody is
+// sitting at is lost, so a configured Telegram channel wins.
+func defaultReminderChannel(cfg *config.Config) string {
+	if cfg != nil && cfg.Channels.Telegram.Enabled {
+		return "telegram"
+	}
+	return "cli"
 }
 
 // indexOf returns the index of needle in haystack, or -1 if not found.

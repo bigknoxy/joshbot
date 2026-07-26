@@ -1,6 +1,6 @@
 # Design: response streaming
 
-Status: **draft.** Stage 1 (per-request sink plumbing, issue #115) is implemented; stages 2–5 are not.
+Status: **draft.** Stages 1–2 implemented (per-request sink plumbing, chunk accumulator); stages 3–5 are not.
 
 ## Goal
 

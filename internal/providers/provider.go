@@ -48,10 +48,14 @@ type Message struct {
 
 // ToolCall represents a tool call made by the model.
 type ToolCall struct {
+	// Index identifies which tool call this fragment belongs to in a
+	// streaming response. Present only in StreamChoice.Delta.ToolCalls;
+	// zero in non-streaming responses.
+	Index int `json:"index,omitempty"`
 	// ID is the unique identifier for this tool call
-	ID string `json:"id"`
+	ID string `json:"id,omitempty"`
 	// Type is the type of tool call (function)
-	Type string `json:"type"`
+	Type string `json:"type,omitempty"`
 	// Function is the function call details
 	Function FunctionCall `json:"function"`
 }
@@ -59,9 +63,9 @@ type ToolCall struct {
 // FunctionCall represents a function call within a tool call.
 type FunctionCall struct {
 	// Name is the name of the function to call
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 	// Arguments is the JSON string of arguments to pass to the function
-	Arguments string `json:"arguments"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // Tool represents a tool that can be called by the model.

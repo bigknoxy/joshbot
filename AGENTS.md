@@ -439,6 +439,26 @@ Two pages live in `site/`:
 
 The header nav on both pages must be kept in sync (same links, same active state logic).
 
+## HARD RULE: documentation ships with the change
+
+**A change that alters observable behaviour updates the docs in the same PR.** Not a
+follow-up, not an issue. A change is not done until the docs match. See the table in
+`CLAUDE.md` for which file covers what.
+
+Non-negotiable parts:
+
+- **Verify before writing.** Read the source — or run the command — for every documented
+  command, flag, config key or behaviour. Config keys must match the `json:`/`mapstructure:`
+  struct tags exactly.
+- **No unverifiable numbers.** LOC, test counts, tool counts, binary sizes: measure them
+  when you write them, or leave them out. A stale number reads as authoritative.
+- **Removing a stale claim matters as much as adding a true one.** Drift runs both ways.
+- **`site/index.html` and `site/architecture.html` are in scope.** They drift fastest
+  because nothing fails when they are wrong.
+
+This rule exists because the softer version did not work: `CLAUDE.md` already said the
+site MUST stay in sync while the site sat eight releases out of date.
+
 ## Pre-Release Checklist
 
 ```bash
@@ -449,6 +469,16 @@ go test -race ./...
 ./joshbot agent -m "hello"    # Verify response
 ./joshbot status               # Verify config
 ```
+
+Documentation gate — a release does not go out with any of these unchecked:
+
+- [ ] `README.md`, `docs/INSTALL.md` — commands, flags, config keys, examples current
+- [ ] `site/index.html`, `site/architecture.html` — capabilities, architecture, counts
+- [ ] `SECURITY.md` — matches what is actually enforced
+- [ ] `CLAUDE.md`, `AGENTS.md` — gotchas cover anything that would surprise an agent
+- [ ] `skills/*/SKILL.md` — no instruction the tools no longer permit
+- [ ] `CHANGELOG.md` — entry under `[Unreleased]`
+- [ ] Every quoted count or size re-measured, not carried over
 
 ## Release Process
 1. Push changes to main first

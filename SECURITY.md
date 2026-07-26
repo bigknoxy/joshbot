@@ -45,20 +45,26 @@ Please include the following information in your report:
 
 When running joshbot:
 
-- **API Keys**: Never commit API keys or tokens to version control. Use environment variables or the config file with restricted permissions (`~/.joshbot/config.json` should be `0600`)
-- **Shell Tool**: The shell tool executes commands with the same permissions as the joshbot process. Run joshbot with the minimum required privileges
+- **API Keys**: Never commit API keys or tokens to version control. Use environment variables or the config file — `~/.joshbot/config.json` is written `0600` automatically
+- **Shell Tool**: The shell tool executes commands with the same permissions as the joshbot process by default. Run joshbot with the minimum required privileges, and consider enabling `tools.shell_sandbox` (see below) for real containment
 - **Telegram Bot Token**: Keep your Telegram bot token secure. If compromised, regenerate it via @BotFather immediately
 - **Memory Files**: `MEMORY.md` and `HISTORY.md` may contain sensitive information. Ensure `~/.joshbot/` directory permissions are restrictive
+- **Workspace Skills**: A `SKILL.md` becomes part of the agent's standing instructions, so treat one you didn't write yourself as untrusted input until you've read it and run `joshbot skills trust <name>`
 - **Updates**: Keep joshbot updated to the latest version to receive security patches
 
 ### Security Architecture
 
 - **No secret logging**: API keys and tokens are never written to logs
-- **File permissions**: Auth files are created with `0600` permissions
+- **File permissions**: Config (`config.json`), auth tokens, and the skills trust store are all written `0600`
 - **Input validation**: All tool inputs are validated before execution
-- **Sandbox awareness**: joshbot runs with the same permissions as the user — it does not implement its own sandbox
+- **Command screening is defence in depth, not a boundary**: the shell tool's deny list closes known-dangerous command shapes, but no deny list can be sound against an adversarial model or a prompt-injected instruction. The only hard boundary is the OS-level sandbox below.
+- **Shell sandbox (opt-in, Linux only)**: setting `tools.shell_sandbox: "workspace"` confines shell commands via Landlock — filesystem access limited to the workspace and toolchain caches, outbound TCP denied unless `tools.shell_sandbox_allow_network` is `true`. It's off by default (existing behavior is unchanged unless you opt in), and it fails closed: an unrecognized value, a non-Linux host, or a kernel without Landlock support is a startup error rather than a silent no-op.
+- **Environment isolation**: shell commands no longer inherit joshbot's own process environment. They receive an allowlisted subset (PATH, common toolchain variables) with anything credential-shaped — API keys, tokens, secrets — stripped, so a spawned command cannot read joshbot's own provider credentials via `env`.
+- **Skill approval**: a `SKILL.md` found in the workspace — including one the agent creates for itself via `skill_registry` — is inert until approved via `joshbot skills trust`. Approval is bound to the file's SHA-256, so editing an approved skill revokes it. Skills bundled with the release are exempt.
 
 ### Tool-Specific Security Notes
 
+- **`shell` tool**: Screens commands against a deny list (defence in depth, not a boundary — see above) and, when `restrict_to_workspace` is set, confines the working directory. Enable `tools.shell_sandbox` for actual OS-level containment.
 - **`memory_search` tool**: Can read all stored facts, including potentially sensitive information in MEMORY.md. Access control is file-permission based — ensure `~/.joshbot/` directory permissions are restrictive.
-- **`skill_registry` tool**: Can create, list, and delete skills (SKILL.md files). Skill creation writes files under `~/.joshbot/workspace/skills/` and can introduce new instructions for the agent to follow. Treat skill changes as configuration changes — review skill content before use.
+- **`skill_registry` tool**: Can create, list, and delete skills (SKILL.md files). Skill creation writes files under `~/.joshbot/workspace/skills/`, but a newly created skill does not take effect until an operator approves it with `joshbot skills trust` — see Skill Approval above. Treat skill changes as configuration changes — review skill content before approving.
+- **`web_fetch` / `web_search` tools**: Refuse to connect to localhost, private IP ranges, and cloud metadata hosts, enforced at connection time (not just URL string matching) to resist DNS-rebinding-style bypasses.

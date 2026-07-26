@@ -55,3 +55,5 @@ gh search prs "query"         # Search PRs
 - Always check `gh auth status` before operations
 - Use `--json` flag for machine-readable output
 - Use `--jq` for filtering JSON output
+- Shell commands run with a stripped-down environment — variables that look like credentials (including `GH_TOKEN`/`GITHUB_TOKEN`) are never passed through. Authenticate with `gh auth login` (its on-disk config under `HOME` is preserved) rather than relying on a token env var.
+- If the operator has turned on `tools.shell_sandbox: workspace`, outbound network is blocked by default (`tools.shell_sandbox_allow_network` must be on) — `gh` commands will fail with a network error until that's enabled.

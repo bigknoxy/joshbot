@@ -53,6 +53,7 @@ experience, growth, Go systems) that debates and scores a change. Charters are i
 - `internal/` is the source of truth. `pkg/` is a stale incomplete refactor — do not edit.
 - All CLI commands work non-interactively (agent -m, onboard --force, configure --provider --api-key, uninstall --force, etc.)
 - ExtraBody support for providers needing custom JSON body fields (poolside chat_template_kwargs, etc.)
+- Model names are routed by prefix and the prefix is stripped before sending — except for providers listed in `prefixesPartOfModelID` (`internal/config/config.go`), where the prefix is part of the real model ID. Poolside is the only one today: `poolside/laguna-s-2.1` must be sent whole, or the API answers 404.
 - Providers need `"enabled": true` in config to activate — omitting it silently disables them.
 - Env var nesting uses `__`: `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY`. Shorthand `JOSHBOT_OPENROUTER_API_KEY` still works.
 - Session key is computed from `Channel:SenderID` — there is no `SessionKey` field.

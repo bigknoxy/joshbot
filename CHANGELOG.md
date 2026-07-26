@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Two abandoned copies of the install and uninstall scripts** — `scripts/install.sh` and `scripts/uninstall.sh` were forks frozen before the v-prefixed asset-name fix landed in the repo-root copies. The `scripts/` installer tried three naming patterns, none of which matched what `release.yml` actually publishes, and downgraded a checksum mismatch to a warning it continued past; the `scripts/` uninstaller predated systemd/launchd/pipx removal. Nothing referenced either file except a `.goreleaser.yaml` glob, and the advertised `curl | bash` path was never affected — but both were what a reader looking in `scripts/` would find first. Deleted, the glob repointed, and the naming contract between `install.sh` and `.github/workflows/release.yml` is now pinned by tests so the two cannot drift silently again.
+
 ## [1.39.1] - 2026-07-25
 
 ### Fixed

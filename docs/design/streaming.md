@@ -140,14 +140,19 @@ real mileage.
 
 ## Staging
 
-Each stage is independently shippable and independently revertable.
+Each stage is independently shippable and independently revertable. Every stage
+has a tracked issue with its own acceptance criteria — read the issue, not just
+this list.
 
-1. **Per-request sink plumbing.** Context-carried; move the existing progress
-   callback onto it. No behaviour change, no streaming yet. Clears the blocker.
-2. **Chunk accumulator + tests.** Pure function, no I/O. Fragmented tool args,
-   multi-choice, finish reasons, empty/malformed chunks.
-3. **`reactLoop` streams when a sink is attached; CLI sink.** Behind
-   `agents.defaults.streaming`, default off.
-4. **Telegram sink.** Throttled edits, rate-limit handling, composition with
-   typing/split/parse-mode.
-5. **Default on, docs.** Only after real dogfooding on both channels.
+1. **[#115] Per-request sink plumbing.** Context-carried; move the existing
+   progress callback onto it. No behaviour change, no streaming yet. Clears the
+   blocker above.
+2. **[#116] Chunk accumulator + tests.** Pure function, no I/O. Fragmented tool
+   args, multi-choice, finish reasons, empty/malformed chunks. Independent of
+   #115, so the two can run in parallel.
+3. **[#117] `reactLoop` streams when a sink is attached; CLI sink.** Behind
+   `agents.defaults.streaming`, default off. Needs #115 and #116.
+4. **[#118] Telegram sink.** Throttled edits, rate-limit handling, composition
+   with typing/split/parse-mode. Needs #115 and #117.
+5. **[#119] Default on, docs sweep.** Only after real dogfooding on both
+   channels.

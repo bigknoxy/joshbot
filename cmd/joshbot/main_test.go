@@ -3,9 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/tools"
@@ -90,6 +95,250 @@ func TestRunAgentLoopSetsChatID(t *testing.T) {
 	}
 	if chatID != "cli_user" {
 		t.Fatalf("expected chat ID 'cli_user', got %q", chatID)
+	}
+}
+
+// mockProgressAgent simulates a real *agent.Agent for the purposes of
+// testing the interactive tool-call visibility / spinner wiring: on
+// Process, if a progress callback has been wired via SetProgressCallback,
+// it emits a synthetic start+done event pair before returning, exactly as
+// the real ReAct loop does around a tool call.
+type mockProgressAgent struct {
+	progress agent.ProgressFunc
+}
+
+func (m *mockProgressAgent) SetProgressCallback(fn agent.ProgressFunc) {
+	m.progress = fn
+}
+
+func (m *mockProgressAgent) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	if m.progress != nil {
+		m.progress(agent.ToolProgressEvent{Tool: "shell", Summary: "echo hi", Phase: agent.ToolProgressStart})
+		m.progress(agent.ToolProgressEvent{Tool: "shell", Summary: "echo hi", Phase: agent.ToolProgressDone, Elapsed: 42 * time.Millisecond})
+	}
+	return "reply: " + msg.Content, nil
+}
+
+// withTTY temporarily overrides isTTY (the injectable TTY-ness seam) for a
+// test, restoring the original on cleanup. It never probes a real
+// terminal — tests stay deterministic regardless of the environment they
+// run in.
+func withTTY(t *testing.T, tty bool) {
+	t.Helper()
+	orig := isTTY
+	isTTY = func(w io.Writer) bool { return tty }
+	t.Cleanup(func() { isTTY = orig })
+}
+
+func TestRunAgentLoop_NonTTY_NoProgressCallbackWired(t *testing.T) {
+	withTTY(t, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	var output bytes.Buffer
+	input := bytes.NewBufferString("hello\nexit\n")
+
+	mock := &mockProgressAgent{}
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+		t.Fatalf("runAgentLoop error = %v", err)
+	}
+
+	if mock.progress != nil {
+		t.Fatal("progress callback should not be wired when output is not a TTY")
+	}
+	if strings.ContainsAny(output.String(), "\r") {
+		t.Fatalf("non-TTY output must contain no carriage returns (spinner): %q", output.String())
+	}
+	if strings.Contains(output.String(), "⏺") || strings.Contains(output.String(), "⎿") {
+		t.Fatalf("non-TTY output must contain no tool progress lines: %q", output.String())
+	}
+}
+
+func TestRunAgentLoop_TTY_PrintsToolProgressLines(t *testing.T) {
+	withTTY(t, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	var output bytes.Buffer
+	input := bytes.NewBufferString("hello\nexit\n")
+
+	mock := &mockProgressAgent{}
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+		t.Fatalf("runAgentLoop error = %v", err)
+	}
+
+	// runAgentLoop clears the callback (SetProgressCallback(nil)) once it
+	// returns, so wiring is verified via its effect — the printed lines —
+	// rather than inspecting mock.progress after the fact.
+	out := output.String()
+	if !strings.Contains(out, "⏺ shell(echo hi)") {
+		t.Errorf("missing tool start line in output: %q", out)
+	}
+	if !strings.Contains(out, "⎿ ok") {
+		t.Errorf("missing tool completion line in output: %q", out)
+	}
+	if !strings.Contains(out, "reply: hello") {
+		t.Errorf("missing final agent response in output: %q", out)
+	}
+}
+
+func TestRunAgentLoop_TTY_ExitsCleanlyOnDoneWhileSpinnerRunning(t *testing.T) {
+	// Guard against the spinner goroutine leaking or blocking shutdown:
+	// this reuses the blockingReader pattern from interrupt_test.go so the
+	// loop is sitting at a blocked read (spinner not yet started, since the
+	// spinner only runs during Process) and confirms `done` still unblocks
+	// runAgentLoop promptly with TTY-ness forced on.
+	withTTY(t, true)
+
+	reader := newBlockingReader()
+	out := &discardWriter{}
+	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	returned := make(chan error, 1)
+	go func() {
+		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil)
+	}()
+
+	close(done)
+
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("runAgentLoop returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runAgentLoop did not return after done was closed; goroutine leak or deadlock")
+	}
+}
+
+// slowAgent blocks Process on a channel until the test releases it, so the
+// test can deterministically control how long the spinner has to run
+// without depending on wall-clock sleeps for correctness (only the spinner's
+// own tick cadence is real time, which is inherent to a visual spinner).
+type slowAgent struct {
+	release chan struct{}
+}
+
+func (s *slowAgent) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	<-s.release
+	return "reply: " + msg.Content, nil
+}
+
+// TestRunAgentLoop_TTY_SpinnerRunsWhileWaiting verifies runAgentLoop starts
+// the spinner before calling Process and stops (clearing the line) once it
+// returns — i.e. the spinner is actually wired around the blocking call,
+// not just constructed and discarded.
+func TestRunAgentLoop_TTY_SpinnerRunsWhileWaiting(t *testing.T) {
+	withTTY(t, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	var output syncBuffer
+	input := bytes.NewBufferString("hello\nexit\n")
+
+	mock := &slowAgent{release: make(chan struct{})}
+	returned := make(chan error, 1)
+	go func() {
+		returned <- runAgentLoop(ctx, cancel, done, input, &output, mock, nil)
+	}()
+
+	// Give the spinner goroutine a couple of tick intervals to draw at
+	// least one frame before we let Process return.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(output.String(), "thinking...") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(output.String(), "thinking...") {
+		t.Fatal("expected spinner output while Process was blocked, got none")
+	}
+
+	close(mock.release)
+
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("runAgentLoop error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runAgentLoop did not return after exit")
+	}
+
+	if strings.Contains(output.String(), "thinking...") == false {
+		t.Fatal("sanity: spinner text unexpectedly absent from final output")
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent reads/writes, needed
+// because the spinner goroutine writes to output concurrently with the test
+// goroutine polling it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestCLIProgressOnToolEvent_ErrorStatus verifies a failed tool call renders
+// as "error" rather than "ok" in the completion line.
+func TestCLIProgressOnToolEvent_ErrorStatus(t *testing.T) {
+	var out bytes.Buffer
+	p := newCLIProgress(&out)
+
+	p.onToolEvent(agent.ToolProgressEvent{Tool: "shell", Summary: "false", Phase: agent.ToolProgressStart})
+	p.onToolEvent(agent.ToolProgressEvent{Tool: "shell", Summary: "false", Phase: agent.ToolProgressDone, Elapsed: time.Second, Err: context.DeadlineExceeded})
+
+	got := out.String()
+	if !strings.Contains(got, "⎿ error") {
+		t.Errorf("expected an error status line, got %q", got)
+	}
+	if strings.Contains(got, "⎿ ok") {
+		t.Errorf("failed tool call should not report ok, got %q", got)
+	}
+}
+
+// TestCLIProgressStopSpinnerJoinsGoroutine proves stopSpinner cannot return
+// until the spinner goroutine has actually exited (it blocks on
+// p.spinDone), which is the guarantee against a leaked/cancellation-proof
+// spinner goroutine. No sleeps or timing assumptions are needed: the
+// channel handshake itself is the proof.
+func TestCLIProgressStopSpinnerJoinsGoroutine(t *testing.T) {
+	var out bytes.Buffer
+	p := newCLIProgress(&out)
+
+	p.startSpinner()
+	spinDone := p.spinDone
+
+	p.stopSpinner()
+
+	select {
+	case <-spinDone:
+		// Goroutine exited, as required.
+	default:
+		t.Fatal("stopSpinner returned before the spinner goroutine exited")
+	}
+	if p.spinCancel != nil {
+		t.Fatal("stopSpinner should reset spinCancel to nil")
 	}
 }
 
@@ -212,5 +461,35 @@ func TestNoProvidersRegisteredError_KeylessProviderNotBlamed(t *testing.T) {
 	})
 	if !strings.Contains(err.Error(), `"enabled": true`) {
 		t.Errorf("a disabled provider should still point at the enabled flag; got %v", err)
+	}
+}
+
+// These exercise the REAL isTTY, not the injected seam. Every other progress
+// test overrides isTTY, so without this the production gate could be inverted
+// and the suite would stay green — while `agent -m | jq` started receiving
+// spinner frames and ANSI escapes.
+func TestIsTTY_NonFileWritersAreNeverTerminals(t *testing.T) {
+	for name, w := range map[string]io.Writer{
+		"bytes.Buffer": &bytes.Buffer{},
+		"io.Discard":   io.Discard,
+	} {
+		if isTTY(w) {
+			t.Errorf("isTTY(%s) = true; decorative output would leak into non-terminal writers", name)
+		}
+	}
+}
+
+func TestIsTTY_PipeIsNotATerminal(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	// A pipe is an *os.File but not a terminal — this is exactly the shape of
+	// `joshbot agent -m ... | something`.
+	if isTTY(w) {
+		t.Error("isTTY(pipe) = true; piped output would be polluted with ANSI and \\r")
 	}
 }

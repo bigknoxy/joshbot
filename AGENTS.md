@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-joshbot is a lightweight personal AI assistant (~22,813 LOC Go non-test, 1,056 test functions across 83 test files) with self-learning memory, auto-skill-creation from tool usage patterns, and Telegram integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
+joshbot is a lightweight personal AI assistant (~19,640 LOC Go non-test, 597 test functions across 48 test files) with self-learning memory, auto-skill-creation from tool usage patterns, and Telegram integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
 
 Module: `github.com/bigknoxy/joshbot`. Go 1.24.0.
 
@@ -96,12 +96,12 @@ go mod tidy
 ## Code Architecture
 
 ```
-cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~3,980 LOC
+cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~3,704 LOC
   internal/
     agent/agent.go             -- ReAct loop (max 20 iterations)
     agent/context.go           -- System prompt assembly (identity files + memory + skills)
     bus/bus.go                 -- Channel-based message bus (Inbound/OutboundMessage in bus.go)
-    channels/cli.go            -- DEAD CODE: no callers; live CLI is runAgentLoop in cmd/joshbot/main.go
+    channels/cli.go            -- CLI readline channel (bufio.Reader)
     channels/telegram.go       -- Telegram long-polling channel (telebot)
     config/config.go           -- JSON config, env overrides (JOSHBOT_ prefix)
     configure/configure.go     -- Config wizard, provider selection, non-interactive configure
@@ -390,6 +390,7 @@ This is merged into the chat completion request body via `marshalBody()` in `int
 - **`StripProviderPrefix` must not touch poolside model IDs**: joshbot routes on a model prefix (`groq/…` → Groq) and strips it before sending, because for most providers the prefix is joshbot's own routing hint. Poolside is the exception — its published IDs *are* `poolside/laguna-s-2.1`, so stripping produces a name the API rejects with `404 {"error":"please check the model you provided"}`. `prefixesPartOfModelID` in `internal/config/config.go` holds that exception; add to it when onboarding any provider whose `/v1/models` listing includes the prefix in the `id`. Check the provider's real listing before assuming — this bug shipped for months and made poolside unusable, including its own registered default `poolside/laguna-m.1`. Both the streaming and non-streaming call sites go through this one function, so fixing it there covers both.
 - **`internal/channels/cli.go` is dead code**: `NewCLIChannel` has no caller anywhere in `cmd/` or `internal/`. The interactive CLI is `runAgentLoop` in `cmd/joshbot/main.go` — note the `> ` prompt, not `CLIChannel`'s `>>> `. Changing `cli.go` changes nothing a user sees; fix `runAgentLoop` instead. Its `printHelp` also advertises ↑/↓ history that no code provides.
 - **Never leave a blocking read inside a `select` with `default:`**: that pattern made `joshbot agent` unkillable (issue #104) — shutdown was checked only between reads, so a signal arriving at the prompt was never seen. Read on a goroutine and select over input, `done` and `ctx.Done()` together. Related: `signal.Notify` **disables Go's default termination** for every signal it registers, so a handler that consumes one signal and returns leaves the process deaf to SIGINT/SIGTERM forever. `setupGracefulShutdown` now loops and exits immediately on a second signal; keep it that way.
+- **A Telegram parse-entity rejection is silent data loss, not a normal error**: sending with a parse mode set returns `400 ... can't parse entities` whenever the text contains malformed Markdown/HTML, which LLM output produces routinely (a stray `_`, an unclosed backtick, a bare `<tag>`). `isRetryable` has no case for it, so before the fallback existed the reply was abandoned and the user saw nothing at all. `Send` now retries each part once with `ParseMode` cleared; `isParseEntityError` matches Telegram's specific description substrings, case-insensitively. Do **not** widen it to match bare `400` — that would silently downgrade `chat not found` and similar real failures to unformatted sends and hide them.
 - **`pkg/` is stale**: `pkg/` duplicates `internal/bus` and `internal/channels` — do not edit unless purposely finishing the refactor
 - **Web tool refuses non-public addresses at dial time**: `NewWebTool` installs `guardedDialControl` on its transport (`internal/tools/web.go`), so the client rejects any connection to loopback, RFC1918, link-local or other non-public addresses regardless of which code path issued the request. Two consequences: an `httptest` server (which listens on `127.0.0.1`) cannot be reached through `WebTool.httpClient`, so test HTTP paths by extracting the decision into a function and testing that directly; and `WebToolConfig.SearchAPI` cannot point at a LAN or localhost search engine. Do not weaken the guard to make a test pass — it is the enforcement point that survives DNS rebinding, and `validateURLForSSRF` alone does not.
 - **`--config` names a file, and the home follows it**: `config.LoadFrom(path)` loads exactly that path and anchors `DefaultHome` to its directory, so sessions, media, cron, the skills trust store and `Save` all agree with the config that was loaded. Resolve the config file through `config.ConfigPath()`, never `filepath.Join(DefaultHome, "config.json")` — that ignores an explicitly chosen file name. CLI commands must read config via `loadConfig(c.Path("config"))`, not `config.Load()`, or the flag silently does not reach them. A missing path is an error, never a fallback to defaults.

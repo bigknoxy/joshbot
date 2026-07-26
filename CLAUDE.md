@@ -1,15 +1,15 @@
 # joshbot — Architect's Guide
 
-joshbot is a self-hosted Go personal AI assistant (~22.8K LOC non-test, 1,056 test functions across 83 files). Single binary, zero runtime deps.
+joshbot is a self-hosted Go personal AI assistant (~22.1K LOC non-test, 985 test functions across 73 files). Single binary, zero runtime deps.
 
 **`AGENTS.md` (repo root) is the full agent guide** — key interfaces, code style, naming, concurrency and logging patterns, complete gotchas list. Read it before non-trivial work. This file is the quick index.
 
 ## Key facts
 
 - **Go 1.24.0**, module `github.com/bigknoxy/joshbot`
-- **~17MB binary**
+- **~17MB binary**, ~30ms startup
 - **Architecture**: goroutine message bus → ReAct agent loop → multi-provider LLM
-- **Channels**: CLI (`runAgentLoop` in `cmd/joshbot/main.go`) + Telegram (long-polling, telebot)
+- **Channels**: CLI (readline) + Telegram (long-polling, telebot)
 - **Providers**: openrouter, openai, nvidia, groq, ollama, anthropic, poolside, azure, custom, litellm, github-copilot (device-flow auth via `joshbot auth github-copilot`)
 - **Config**: `~/.joshbot/config.json`, env vars with `JOSHBOT_` prefix, two formats (legacy + model-centric)
 - **Memory**: MEMORY.md (always in context) + HISTORY.md (appended event log) + fact extraction + consolidation
@@ -60,6 +60,7 @@ experience, growth, Go systems) that debates and scores a change. Charters are i
 - Env var nesting uses `__`: `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY`. Shorthand `JOSHBOT_OPENROUTER_API_KEY` still works.
 - Session key is computed from `Channel:SenderID` — there is no `SessionKey` field.
 - `internal/service/` is build-tagged (`factory_linux.go` / `factory_darwin.go` / `factory_other.go`) — all must export the same signature.
+- A Telegram send with a parse mode set fails with `400 can't parse entities` on malformed Markdown/HTML, which is routine in LLM output. `isRetryable` does not cover it, so `Send` retries that part once with `ParseMode` cleared (`isParseEntityError`). Match narrowly on the description text; matching bare `400` would downgrade `chat not found` to plain text and hide real failures.
 - Telegram hard-fails over 4096 chars; `Send` splits longer content via `splitMessage` (code-fence aware, byte-indexed).
 - Telegram clears a chat action after 5 seconds, so "typing…" needs a keep-alive: `startTyping`/`stopTyping` run one goroutine per chat re-sending every 4s, stopped by `Send` or by `stopCh`. The `botCommands` slice is the single source for both the `SetCommands` menu and the unknown-command fallback — a new `bot.Handle("/x", ...)` must be added there too.
 - Shell commands run with an allowlisted environment (`internal/tools/shell_env.go`), not the full parent env — no provider API keys, and anything credential-shaped by name (TOKEN, SECRET, API_KEY, etc.) is stripped even if otherwise allowlisted. A workflow relying on `GH_TOKEN`/`GITHUB_TOKEN` as an env var will not see it; use `gh auth login`'s on-disk config instead.
@@ -101,20 +102,7 @@ Rules that make this stick:
   the `json:`/`mapstructure:` struct tags exactly.
 - **No unverifiable numbers.** LOC, test counts, tool counts and binary sizes must be
   measured at the time of writing or removed. A stale number is worse than none: it
-  reads as authoritative. Two traps have produced wrong figures here, so scope the
-  measurement explicitly to `./internal ./cmd` rather than sweeping from the repo root:
-
-  ```bash
-  find ./internal ./cmd -name '*.go' ! -name '*_test.go' -exec cat {} + | wc -l
-  grep -rhE '^func Test' --include='*_test.go' ./internal ./cmd ./tests | wc -l
-  find ./internal ./cmd ./tests -name '*_test.go' | wc -l
-  ```
-
-  A bare `find .` also descends into `.claude/worktrees/`, where agents keep whole
-  copies of the repo — that alone inflated the LOC count from 22,813 to 68,487. And
-  `grep -rho` suppresses filenames, so a later `grep -v /pkg/` silently filters
-  nothing. Sanity-check by running a count with and without the exclusion and
-  confirming the two differ.
+  reads as authoritative.
 - **Stale claims count as bugs.** Deleting a claim that is no longer true is as
   important as adding one that is. Drift runs both ways.
 - **`site/*.html` is not optional.** It is the public face and it drifts fastest,

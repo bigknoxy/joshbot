@@ -191,11 +191,23 @@ func TestTelegramChannel_TypingIsPerChat(t *testing.T) {
 }
 
 // fakeTelegramServer answers the handful of Bot API calls these tests make and
-// records the text of every sendMessage.
+// records the text and parse_mode of every sendMessage. If rejectParseMode is
+// set, any sendMessage carrying that parse_mode gets Telegram's real
+// can't-parse-entities error body instead of success — this is what a
+// malformed Markdown reply from the LLM looks like in production.
 type fakeTelegramServer struct {
 	*httptest.Server
-	mu   sync.Mutex
-	sent []string
+	mu              sync.Mutex
+	sent            []string
+	parseModes      []string
+	rejectParseMode string
+	// rejectAll answers every sendMessage with the parse-entity error,
+	// whatever parse mode it carried. Needed to exercise the guard that stops
+	// a plain-text send from attempting a pointless "fallback" to plain text.
+	rejectAll bool
+	// attempts counts every sendMessage request, including rejected ones;
+	// `sent` only records the ones that succeeded.
+	attempts int
 }
 
 func newFakeTelegramServer(t *testing.T) *fakeTelegramServer {
@@ -205,11 +217,27 @@ func newFakeTelegramServer(t *testing.T) *fakeTelegramServer {
 		body, _ := io.ReadAll(r.Body)
 		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
 			var payload struct {
-				Text string `json:"text"`
+				Text      string `json:"text"`
+				ParseMode string `json:"parse_mode"`
 			}
 			_ = json.Unmarshal(body, &payload)
+
+			f.mu.Lock()
+			reject := f.rejectParseMode
+			rejectAll := f.rejectAll
+			f.attempts++
+			f.mu.Unlock()
+
+			if rejectAll || (reject != "" && strings.EqualFold(payload.ParseMode, reject)) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: can't parse entities: Character '_' is reserved and must be escaped with the preceding '\\'"}`))
+				return
+			}
+
 			f.mu.Lock()
 			f.sent = append(f.sent, payload.Text)
+			f.parseModes = append(f.parseModes, payload.ParseMode)
 			f.mu.Unlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -223,6 +251,18 @@ func (f *fakeTelegramServer) texts() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.sent...)
+}
+
+func (f *fakeTelegramServer) attemptCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts
+}
+
+func (f *fakeTelegramServer) modes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.parseModes...)
 }
 
 func (f *fakeTelegramServer) bot(t *testing.T) *telebot.Bot {
@@ -262,6 +302,182 @@ func TestTelegramChannel_SendStopsTyping(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	if fake.count() != after {
 		t.Fatalf("typing kept firing after the reply was sent: %d -> %d", after, fake.count())
+	}
+}
+
+// This is the core bug: a Markdown-formatted reply containing an unescaped
+// entity (very common in LLM output — underscores, asterisks, stray
+// backticks) must not vanish. Telegram rejects it with 400 can't-parse-
+// entities; Send must retry once as plain text rather than dropping the
+// message.
+func TestTelegramChannel_SendFallsBackToPlainTextOnParseEntityError(t *testing.T) {
+	srv := newFakeTelegramServer(t)
+	srv.rejectParseMode = "Markdown"
+	tg := newTestTelegramChannel()
+	tg.mu.Lock()
+	tg.bot = srv.bot(t)
+	tg.notifier = &fakeNotifier{}
+	tg.mu.Unlock()
+
+	content := "unescaped _ entity"
+	err := tg.Send(bus.OutboundMessage{
+		Channel:   "telegram",
+		ChannelID: "1",
+		Content:   content,
+		Metadata:  map[string]any{"parse_mode": "markdown"},
+	})
+	if err != nil {
+		t.Fatalf("Send returned %v; the message must never be lost to a formatting error", err)
+	}
+
+	texts := srv.texts()
+	if len(texts) != 1 || texts[0] != content {
+		t.Fatalf("expected the plain-text fallback to deliver the content, got %v", texts)
+	}
+	modes := srv.modes()
+	if len(modes) != 1 || modes[0] != "" {
+		t.Fatalf("expected the fallback send to use no parse_mode, got %v", modes)
+	}
+}
+
+// The fallback exists to strip formatting. A send that carried no parse mode
+// has nothing to strip, so it must NOT make a second identical attempt --
+// that would hand one failure a free retry outside the maxRetries budget.
+//
+// This is the guard `partOpts.ParseMode != telebot.ModeDefault`. Without this
+// test that guard can be deleted and every other test still passes.
+func TestTelegramChannel_PlainTextSendDoesNotAttemptFallback(t *testing.T) {
+	srv := newFakeTelegramServer(t)
+	srv.rejectAll = true // parse-entity error even for a plain-text send
+	tg := newTestTelegramChannel()
+	tg.mu.Lock()
+	tg.bot = srv.bot(t)
+	tg.notifier = &fakeNotifier{}
+	tg.maxRetries = 1
+	tg.retryDelay = time.Millisecond
+	tg.mu.Unlock()
+
+	// No parse_mode metadata, so the send goes out as plain text.
+	err := tg.Send(bus.OutboundMessage{Channel: "telegram", ChannelID: "1", Content: "plain text"})
+	if err == nil {
+		t.Fatal("expected the send to fail; the fake server rejects everything")
+	}
+	if got := srv.attemptCount(); got != 1 {
+		t.Errorf("plain-text send made %d attempts, want 1 — the fallback fired "+
+			"despite there being no formatting to remove", got)
+	}
+}
+
+// A successful plain send is the control: no rejection, no fallback, one call.
+func TestTelegramChannel_PlainTextSendSucceedsUntouched(t *testing.T) {
+	srv := newFakeTelegramServer(t)
+	tg := newTestTelegramChannel()
+	tg.mu.Lock()
+	tg.bot = srv.bot(t)
+	tg.notifier = &fakeNotifier{}
+	tg.maxRetries = 1
+	tg.mu.Unlock()
+
+	if err := tg.Send(bus.OutboundMessage{Channel: "telegram", ChannelID: "1", Content: "plain text"}); err != nil {
+		t.Fatalf("Send returned %v", err)
+	}
+	if got := srv.attemptCount(); got != 1 {
+		t.Errorf("made %d attempts for a successful plain send, want 1", got)
+	}
+}
+
+// splitMessage produces multiple parts for long content; every part must get
+// its own fallback, not just the first.
+func TestTelegramChannel_SendFallsBackOnEveryPartOfASplitMessage(t *testing.T) {
+	srv := newFakeTelegramServer(t)
+	srv.rejectParseMode = "Markdown"
+	tg := newTestTelegramChannel()
+	tg.mu.Lock()
+	tg.bot = srv.bot(t)
+	tg.notifier = &fakeNotifier{}
+	tg.mu.Unlock()
+
+	// Build content long enough that splitMessage produces at least two parts.
+	content := strings.Repeat("a_b ", 2000)
+	err := tg.Send(bus.OutboundMessage{
+		Channel:   "telegram",
+		ChannelID: "1",
+		Content:   content,
+		Metadata:  map[string]any{"parse_mode": "markdown"},
+	})
+	if err != nil {
+		t.Fatalf("Send returned %v", err)
+	}
+
+	texts := srv.texts()
+	if len(texts) < 2 {
+		t.Fatalf("expected the long message to be split into multiple parts, got %d", len(texts))
+	}
+	modes := srv.modes()
+	for i, m := range modes {
+		if m != "" {
+			t.Fatalf("part %d was delivered with parse_mode %q; every part must fall back to plain text", i, m)
+		}
+	}
+}
+
+// A non-formatting failure (e.g. a genuine network error, or another 400)
+// must retry/fail normally and must not be silently downgraded to plain
+// text — only the parse-entity failure mode gets the fallback.
+func TestTelegramChannel_SendDoesNotFallBackOnUnrelatedError(t *testing.T) {
+	var mu sync.Mutex
+	sendCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			mu.Lock()
+			sendCount++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1,"chat":{"id":1}}}`))
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegramChannel()
+	tg.mu.Lock()
+	bot, err := telebot.NewBot(telebot.Settings{
+		Token:   "test-token",
+		URL:     srv.URL,
+		Poller:  &telebot.LongPoller{Timeout: 10 * time.Millisecond},
+		Offline: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to create test bot: %v", err)
+	}
+	tg.bot = bot
+	tg.notifier = &fakeNotifier{}
+	tg.maxRetries = 1
+	tg.mu.Unlock()
+
+	sendErr := tg.Send(bus.OutboundMessage{
+		Channel:   "telegram",
+		ChannelID: "1",
+		Content:   "hello",
+		Metadata:  map[string]any{"parse_mode": "markdown"},
+	})
+	if sendErr == nil {
+		t.Fatal("expected Send to return an error for an unrelated 400, not silently downgrade")
+	}
+	if !strings.Contains(sendErr.Error(), "chat not found") {
+		t.Fatalf("expected the original error to be preserved, got %v", sendErr)
+	}
+
+	// maxRetries=1 means exactly one sendMessage attempt; a fallback attempt
+	// for a non-formatting error would show up as a second call.
+	mu.Lock()
+	got := sendCount
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected exactly 1 sendMessage call for an unrelated error, got %d (fallback must only trigger on parse-entity errors)", got)
 	}
 }
 

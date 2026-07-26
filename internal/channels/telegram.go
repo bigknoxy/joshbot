@@ -1189,6 +1189,25 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 				lastErr = nil
 				break
 			}
+
+			// Never lose a message to a formatting error: Telegram rejected
+			// the entities in this part, so retry the same content once with
+			// ParseMode cleared. Plain text always sends. Clearing partOpts
+			// (not just this attempt) means a later retry in this same loop
+			// also stays plain rather than re-triggering the same rejection.
+			if isParseEntityError(err) && partOpts.ParseMode != telebot.ModeDefault {
+				log.Warn("telegram rejected message formatting, retrying as plain text",
+					"part", i+1, "total_parts", len(parts), "error", err,
+				)
+				partOpts.ParseMode = telebot.ModeDefault
+				if _, fallbackErr := bot.Send(recipient, content, &partOpts); fallbackErr == nil {
+					lastErr = nil
+					break
+				} else {
+					err = fallbackErr
+				}
+			}
+
 			lastErr = err
 			log.Warn("failed to send message part, retrying",
 				"attempt", attempt+1, "max_retries", t.maxRetries,
@@ -1304,6 +1323,46 @@ func runeBoundary(s string, idx int) int {
 		idx--
 	}
 	return idx
+}
+
+// isParseEntityError reports whether err is Telegram rejecting a message's
+// formatting rather than some other failure. LLM output routinely contains
+// unescaped Markdown/HTML (stray `_`, `*`, unclosed backticks, `<x>`), and
+// Telegram's 400 for that case must never be treated as a generic retryable
+// or non-retryable error — see isRetryable, which has no special case for it
+// and would otherwise let the whole reply be silently dropped. Matches are
+// deliberately narrow (specific description substrings, case-insensitive),
+// never on "400" alone: other 400s exist (chat not found, message to reply
+// not found, etc.) and must not be silently downgraded to plain text.
+func isParseEntityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+
+	// Telegram prefixes entity failures with "can't parse entities:" (older
+	// API versions used "can't parse message text:"), so the first two
+	// patterns carry the weight. The rest are defensive against phrasings we
+	// have not observed and may match nothing in practice.
+	//
+	// The asymmetry justifies erring wide: missing a real formatting error
+	// loses the reply entirely, which is the bug this exists to prevent, while
+	// a false positive costs one extra plain-text attempt that either succeeds
+	// (user gets an unformatted reply instead of none) or fails and falls
+	// through to the normal retry path. Matching bare "400" would be too wide
+	// — that would swallow "chat not found" and similar real failures.
+	patterns := []string{
+		"can't parse entities",
+		"can't parse message text",
+		"unsupported start tag",
+		"unclosed",
+	}
+	for _, p := range patterns {
+		if strings.Contains(errStr, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRetryable determines if an error should trigger a retry.

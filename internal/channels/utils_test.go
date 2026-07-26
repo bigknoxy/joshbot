@@ -176,6 +176,67 @@ func TestIsRetryable_UnknownError(t *testing.T) {
 	}
 }
 
+// Telegram's parse-entity failures must never be treated as ordinary
+// retryable errors here: retrying the same formatted content would just fail
+// again. isParseEntityError, not isRetryable, is what drives the plain-text
+// fallback in Send.
+func TestIsParseEntityError_CantParseEntities(t *testing.T) {
+	err := &testError{"telegram: Bad Request: can't parse entities: Character '_' is reserved and must be escaped (400)"}
+	if !isParseEntityError(err) {
+		t.Error("expected 'can't parse entities' to be detected as a parse-entity error")
+	}
+}
+
+func TestIsParseEntityError_CantParseMessageText(t *testing.T) {
+	err := &testError{"telegram: Bad Request: can't parse message text: unclosed markup (400)"}
+	if !isParseEntityError(err) {
+		t.Error("expected 'can't parse message text' to be detected as a parse-entity error")
+	}
+}
+
+func TestIsParseEntityError_UnsupportedStartTag(t *testing.T) {
+	err := &testError{"telegram: Bad Request: unsupported start tag \"foo\" at byte offset 3 (400)"}
+	if !isParseEntityError(err) {
+		t.Error("expected 'unsupported start tag' to be detected as a parse-entity error")
+	}
+}
+
+func TestIsParseEntityError_Unclosed(t *testing.T) {
+	err := &testError{"telegram: Bad Request: can't find end of the entity starting at byte offset 0, unclosed (400)"}
+	if !isParseEntityError(err) {
+		t.Error("expected 'unclosed' to be detected as a parse-entity error")
+	}
+}
+
+func TestIsParseEntityError_CaseInsensitive(t *testing.T) {
+	err := &testError{"telegram: Bad Request: CAN'T PARSE ENTITIES: whoops (400)"}
+	if !isParseEntityError(err) {
+		t.Error("expected match to be case-insensitive")
+	}
+}
+
+// Other 400s (e.g. chat not found) must not be silently downgraded to plain
+// text — matching on "400" alone would wrongly catch these.
+func TestIsParseEntityError_OtherBadRequestNotMatched(t *testing.T) {
+	err := &testError{"telegram: Bad Request: chat not found (400)"}
+	if isParseEntityError(err) {
+		t.Error("a generic 400 must not be treated as a parse-entity error")
+	}
+}
+
+func TestIsParseEntityError_NonBadRequestNotMatched(t *testing.T) {
+	err := &testError{"telegram: Forbidden: bot was blocked by the user (403)"}
+	if isParseEntityError(err) {
+		t.Error("a non-parse error must not be treated as a parse-entity error")
+	}
+}
+
+func TestIsParseEntityError_NilError(t *testing.T) {
+	if isParseEntityError(nil) {
+		t.Error("nil error must not be treated as a parse-entity error")
+	}
+}
+
 func TestIsRetryable_NilError(t *testing.T) {
 	// isRetryable with nil error would panic, so we don't test that
 	// But we can test with an empty error message

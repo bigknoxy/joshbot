@@ -55,11 +55,13 @@ when the user asks to cancel something but does not know the ID.
   reminder is pinned to a clock time.
 - One-time reminders are removed once they fire. Recurring ones run until
   deleted.
-- Reminders are persisted, so they survive a restart — but the countdown
-  **restarts with them**. A "remind me in 30 minutes" that is 29 minutes in when
-  joshbot restarts will fire 30 minutes after the restart, not one minute later.
-  For anything time-critical, tell the user this rather than letting them assume
-  the original moment is kept.
+- Reminders are persisted with their due moment, so a restart keeps the original
+  deadline. A "remind me in 30 minutes" that is 29 minutes in when joshbot
+  restarts still fires about a minute later. One that came due while joshbot was
+  stopped fires shortly after it starts again, rather than being lost.
+- Reminders that were scheduled before this behaviour existed have no recorded
+  due moment; the first time they are loaded their countdown starts over from
+  that point.
 
 ## Best practices
 

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A one-shot reminder's countdown restarted with the process** — `delay:` schedules were stored as a duration only, so on every start the scheduler called `time.After(duration)` again. A "remind me in 30 minutes" that was 29 minutes in when joshbot restarted fired 30 minutes *after* the restart, and a reminder could be pushed back indefinitely by routine restarts. Jobs now persist an absolute `due_at`, so a restart waits out only the remaining time, and a reminder that came due while joshbot was stopped fires shortly after it starts instead of being lost. Reminders saved before this change have no `due_at`; they are backfilled as due one duration from load — the previous behaviour — so an existing `jobs.json` does not fire everything at once. Recurring (`every:`) jobs are unchanged.
+
 ## [1.40.0] - 2026-07-26
 
 ### Added

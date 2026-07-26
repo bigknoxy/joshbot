@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-07-26
+
 ### Added
 - **Interactive CLI progress indicators** — `joshbot agent` in interactive mode used to go silent for the whole ReAct loop (often 30–90s with tool calls), giving no signal the process was working, stuck, or dead. It now shows a single-line elapsed-time spinner while waiting on the model, and announces each tool call with a completion line and elapsed time (e.g. `⏺ shell(go test ./...)` / `⎿ ok (1.2s)`). Wired via an optional `agent.ProgressFunc` callback (nil by default — zero behaviour change for other callers) and gated on stdout being a real terminal, so piped and non-interactive output (`agent -m`, `scripts/verify-local.sh`) stays clean and undecorated.
 

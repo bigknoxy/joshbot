@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **`internal/channels/cli.go` deleted** — 497 lines implementing a CLI `Channel` that nothing ever constructed. `NewCLIChannel` had no caller in `cmd/` or `internal/`; the interactive CLI has always been `runAgentLoop` in `cmd/joshbot/main.go`. It was not merely unused but actively harmful: it carried its own copy of the input loop, and the first diagnosis of the unkillable-process bug (#104) was written against it before the live path was identified. The `Channel` interface it hosted moved to `internal/channels/channel.go`; the 22 tests that exercised only the dead code were removed with it, and `stripHTML`, its one general-purpose helper, had no non-test caller either. Coverage stays above the CI floor at 54.6%.
+
 ## [1.42.0] - 2026-07-26
 
 ### Added

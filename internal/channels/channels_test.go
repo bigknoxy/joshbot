@@ -1,127 +1,12 @@
 package channels
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
 )
-
-// TestCLIChannel_NewChannel tests that CLIChannel can be created correctly.
-func TestCLIChannel_NewChannel(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	cli := NewCLIChannel(msgBus)
-
-	if cli.Name() != "cli" {
-		t.Errorf("expected name 'cli', got %s", cli.Name())
-	}
-}
-
-// TestCLIChannel_StartStop tests that CLIChannel can start and stop gracefully.
-func TestCLIChannel_StartStop(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	cli := NewCLIChannel(msgBus)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Start in a goroutine since it blocks on input
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cli.Start(ctx)
-	}()
-
-	// Let it start briefly
-	time.Sleep(10 * time.Millisecond)
-
-	// Stop the channel
-	cancel()
-	cli.Stop()
-
-	// Wait for the goroutine to finish
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Logf("channel stopped with error: %v", err)
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Log("channel did not stop in time")
-	}
-}
-
-// TestCLIChannel_ProcessInputCommands tests command handling.
-func TestCLIChannel_ProcessInputCommands(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	cli := NewCLIChannel(msgBus)
-	ctx := context.Background()
-
-	// Test /help command
-	err := cli.processInput(ctx, "/help")
-	if err != nil {
-		t.Errorf("processInput /help returned error: %v", err)
-	}
-
-	// Test /new command
-	err = cli.processInput(ctx, "/new")
-	if err != nil {
-		t.Errorf("processInput /new returned error: %v", err)
-	}
-
-	// Test empty input
-	err = cli.processInput(ctx, "")
-	if err != nil {
-		t.Errorf("processInput empty returned error: %v", err)
-	}
-}
-
-// TestCLIChannel_IsAllowed tests that IsAllowed always returns true for CLI.
-func TestCLIChannel_IsAllowed(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	cli := NewCLIChannel(msgBus)
-
-	// CLI should not implement IsAllowed, but Channel interface doesn't require it
-	// This test just verifies the CLI works without it
-	if cli.Name() != "cli" {
-		t.Errorf("expected name 'cli', got %s", cli.Name())
-	}
-}
-
-// TestCLIChannel_readInput_NoPanic tests that readInput doesn't panic with empty input.
-// Note: This test is mainly to verify the function compiles and runs without panic.
-func TestCLIChannel_readInput_NoPanic(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	cli := NewCLIChannel(msgBus)
-
-	// In a real terminal, this would block waiting for input
-	// We just verify the function exists and is callable
-	_ = cli.prompt
-}
-
-// TestCLIChannel_History tests that input history is maintained correctly.
-func TestCLIChannel_History(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	cli := NewCLIChannel(msgBus)
-	ctx := context.Background()
-
-	// Add some inputs to history (non-consecutive duplicates should be allowed)
-	cli.processInput(ctx, "hello")
-	cli.processInput(ctx, "world")
-	cli.processInput(ctx, "test")
-	// Non-consecutive "hello" - should be added (not consecutive duplicate)
-	cli.processInput(ctx, "hello")
-
-	// We expect 4 entries since hello appears twice but not consecutively
-	if len(cli.inputHistory) != 4 {
-		t.Errorf("expected 4 history items, got %d", len(cli.inputHistory))
-	}
-
-	// Consecutive duplicate should not be added
-	cli.processInput(ctx, "hello")
-	if len(cli.inputHistory) != 4 {
-		t.Errorf("expected 4 history items after consecutive duplicate, got %d", len(cli.inputHistory))
-	}
-}
 
 // TestTelegramChannel_NewChannel tests that TelegramChannel can be created.
 func TestTelegramChannel_NewChannel(t *testing.T) {

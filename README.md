@@ -86,6 +86,27 @@ joshbot update # Update to the latest release
 joshbot uninstall # Remove joshbot binary and config
 ```
 
+### Interactive CLI progress indicators
+
+When `joshbot agent` runs interactively in a real terminal, it now shows
+what's happening while it works instead of going silent for the length of
+the ReAct loop:
+
+- A single-line elapsed-time spinner is shown while waiting on the model
+  ("thinking...").
+- Each tool call the agent makes is announced, and its completion is shown
+  with elapsed time, e.g.:
+
+  ```
+  ⏺ shell(go test ./...)
+  ⎿ ok (1.2s)
+  ```
+
+This is purely cosmetic and terminal-aware: it is disabled automatically
+when stdout is not a TTY (piped output, `joshbot agent -m "..."`,
+`scripts/verify-local.sh`, etc.), so scripted and non-interactive usage stays
+clean and parseable — no spinner, no ANSI codes, no progress lines.
+
 ### Debug Mode
 
 Use `--debug` flag to enable detailed logging for troubleshooting:

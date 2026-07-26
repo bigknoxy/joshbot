@@ -17,8 +17,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/mattn/go-isatty"
 
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
@@ -962,10 +965,134 @@ type agentProcessor interface {
 	Process(context.Context, bus.InboundMessage) (string, error)
 }
 
+// progressCapable is implemented by *agent.Agent. It is checked via a type
+// assertion rather than added to agentProcessor because most callers of
+// agentProcessor (tests, non-interactive single-message mode) have no use
+// for a progress callback; wiring it in is strictly opt-in.
+type progressCapable interface {
+	SetProgressCallback(agent.ProgressFunc)
+}
+
+// isTTY reports whether w is connected to an interactive terminal. It is a
+// variable (not a plain function) so tests can inject deterministic
+// TTY-ness instead of depending on whatever terminal (or lack of one) the
+// test process happens to run under.
+//
+// In production, only *os.File can be a terminal; io.Writer implementations
+// used by tests (bytes.Buffer, io.Discard, custom mocks) never satisfy the
+// *os.File type assertion and so are correctly treated as non-TTY without
+// any special-casing.
+var isTTY = func(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	return isatty.IsTerminal(f.Fd())
+}
+
+// cliProgress renders tool-call visibility lines and a spinner/elapsed-time
+// indicator for the interactive CLI loop. All output goes through a single
+// mutex so the spinner goroutine and synchronous tool-progress callbacks
+// (invoked from within agentInstance.Process) never interleave mid-line.
+//
+// It is only ever constructed when output is a real TTY (see isTTY) — never
+// print decorative output (spinner, \r, ANSI clear codes) to a non-terminal,
+// since piped/non-interactive output must stay clean and parseable.
+type cliProgress struct {
+	mu         sync.Mutex
+	out        io.Writer
+	spinCancel chan struct{}
+	spinDone   chan struct{}
+}
+
+func newCLIProgress(out io.Writer) *cliProgress {
+	return &cliProgress{out: out}
+}
+
+const clearLine = "\r\033[K"
+
+// onToolEvent is the agent.ProgressFunc wired into the Agent. It clears the
+// spinner line and prints a start/completion line for the tool call.
+func (p *cliProgress) onToolEvent(e agent.ToolProgressEvent) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fmt.Fprint(p.out, clearLine)
+	switch e.Phase {
+	case agent.ToolProgressStart:
+		label := e.Tool
+		if e.Summary != "" {
+			label = fmt.Sprintf("%s(%s)", e.Tool, e.Summary)
+		}
+		fmt.Fprintf(p.out, "⏺ %s\n", label)
+	case agent.ToolProgressDone:
+		status := "ok"
+		if e.Err != nil {
+			status = "error"
+		}
+		fmt.Fprintf(p.out, "⎿ %s (%.1fs)\n", status, e.Elapsed.Seconds())
+	}
+}
+
+var spinnerFrames = [...]string{"|", "/", "-", "\\"}
+
+// startSpinner begins printing an elapsed-time spinner on a single line,
+// updated in place via \r, until stopSpinner is called. It must be
+// followed by exactly one stopSpinner call; the spinner goroutine exits as
+// soon as stopSpinner signals it, so it never leaks or blocks shutdown.
+func (p *cliProgress) startSpinner() {
+	p.spinCancel = make(chan struct{})
+	p.spinDone = make(chan struct{})
+	go func() {
+		defer close(p.spinDone)
+		ticker := time.NewTicker(150 * time.Millisecond)
+		defer ticker.Stop()
+		start := time.Now()
+		i := 0
+		for {
+			select {
+			case <-p.spinCancel:
+				return
+			case <-ticker.C:
+				p.mu.Lock()
+				fmt.Fprintf(p.out, "\r%s thinking... (%.1fs)", spinnerFrames[i%len(spinnerFrames)], time.Since(start).Seconds())
+				p.mu.Unlock()
+				i++
+			}
+		}
+	}()
+}
+
+// stopSpinner cancels the spinner goroutine, waits for it to exit, and
+// clears the spinner line so subsequent output starts on a clean line.
+func (p *cliProgress) stopSpinner() {
+	if p.spinCancel == nil {
+		return
+	}
+	close(p.spinCancel)
+	<-p.spinDone
+	p.spinCancel = nil
+	p.mu.Lock()
+	fmt.Fprint(p.out, clearLine)
+	p.mu.Unlock()
+}
+
 func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor, messageSender *tools.BusMessageSender) error {
 	// Set chat ID for CLI mode so message tools can send messages proactively
 	if messageSender != nil {
 		messageSender.SetChatID("cli", "cli_user")
+	}
+
+	// Tool-call visibility and the spinner are strictly opt-in: only wired
+	// up when output is a real terminal, so piped/non-interactive output
+	// (e.g. a script driving `joshbot agent` over a pipe) never sees
+	// decorative ANSI/\r content.
+	var progress *cliProgress
+	if isTTY(output) {
+		progress = newCLIProgress(output)
+		if pc, ok := agentInstance.(progressCapable); ok {
+			pc.SetProgressCallback(progress.onToolEvent)
+			defer pc.SetProgressCallback(nil)
+		}
 	}
 
 	reader := bufio.NewReader(input)
@@ -1043,7 +1170,13 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 			},
 		}
 
+		if progress != nil {
+			progress.startSpinner()
+		}
 		response, procErr := agentInstance.Process(ctx, msg)
+		if progress != nil {
+			progress.stopSpinner()
+		}
 		if procErr != nil {
 			log.Error("Agent error", "error", procErr)
 			fmt.Fprintf(output, "Error: %v\n", procErr)

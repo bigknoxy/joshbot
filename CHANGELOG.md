@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Interactive CLI progress indicators** — `joshbot agent` in interactive mode used to go silent for the whole ReAct loop (often 30–90s with tool calls), giving no signal the process was working, stuck, or dead. It now shows a single-line elapsed-time spinner while waiting on the model, and announces each tool call with a completion line and elapsed time (e.g. `⏺ shell(go test ./...)` / `⎿ ok (1.2s)`). Wired via an optional `agent.ProgressFunc` callback (nil by default — zero behaviour change for other callers) and gated on stdout being a real terminal, so piped and non-interactive output (`agent -m`, `scripts/verify-local.sh`) stays clean and undecorated.
+
+### Changed
+- **Every quoted number in the docs re-measured** — `AGENTS.md` claimed 19,640 LOC, 597 test functions and 48 test files against an actual 22,813 / 1,056 / 83, so the test-file count was off by 73%. `CLAUDE.md` and `site/architecture.html` were closer but also stale, and a "~30ms startup" claim was deleted rather than carried forward — it measures nearer 10ms and nothing keeps it honest. `AGENTS.md` also described `internal/channels/cli.go` as the CLI channel; it has no callers at all, and the live interactive CLI is `runAgentLoop` in `cmd/joshbot/main.go`.
+
 ### Fixed
 - **Telegram silently dropped replies whose formatting it rejected** — when a message was sent with a Markdown or HTML parse mode, Telegram answered `400 ... can't parse entities` for anything malformed, and LLM output produces that constantly: a stray `_`, an unclosed backtick, a bare `<tag>`. `isRetryable` has no case for it, so the send was abandoned and the user saw **nothing at all** — no reply, no error. Each part of a message is now retried once with the parse mode cleared, and plain text always sends. Matching is on Telegram's specific description text, never on the bare `400`, so unrelated failures such as `chat not found` are not quietly downgraded to unformatted output.
 

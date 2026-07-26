@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,5 +247,49 @@ func TestLegacyEveryJobWithoutDueAt_Loads(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatal("legacy recurring job did not keep firing")
 		}
+	}
+}
+
+// The on-disk shape is user-visible (workspace/cron/jobs.json) and is what a
+// legacy-compatibility decision keys off, so pin it. Note `omitempty` does NOT
+// drop a zero time.Time — encoding/json never considers a struct empty — so a
+// recurring job carries an explicit zero due_at rather than omitting the field.
+func TestJobsFileShape(t *testing.T) {
+	t.Parallel()
+	ws := t.TempDir()
+	s := NewService(bus.NewMessageBus(), ws)
+
+	if err := s.AddJob(Job{ID: "once", Schedule: "delay:30m", Channel: "cli", Content: "stretch"}); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	if err := s.AddJob(Job{ID: "rep", Schedule: "every:24h", Channel: "cli", Content: "standup"}); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(ws, "cron", "jobs.json"))
+	if err != nil {
+		t.Fatalf("read jobs.json: %v", err)
+	}
+	var jobs []Job
+	if err := json.Unmarshal(data, &jobs); err != nil {
+		t.Fatalf("jobs.json is not valid JSON: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 jobs on disk, got %d", len(jobs))
+	}
+
+	byID := map[string]Job{}
+	for _, j := range jobs {
+		byID[j.ID] = j
+	}
+	if byID["once"].DueAt.IsZero() {
+		t.Error("one-shot job persisted without a due moment")
+	}
+	if !byID["rep"].DueAt.IsZero() {
+		t.Errorf("recurring job persisted a due moment: %v", byID["rep"].DueAt)
+	}
+	// Round-trip: what is written must read back with the same meaning.
+	if !strings.Contains(string(data), `"due_at"`) {
+		t.Error(`jobs.json is missing the "due_at" field`)
 	}
 }

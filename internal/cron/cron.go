@@ -30,7 +30,12 @@ type Job struct {
 	// when the job is added and persisted, so a restart resumes the original
 	// countdown instead of starting a new one. Recurring ("every:") jobs leave
 	// it zero.
-	DueAt time.Time `json:"due_at,omitempty"`
+	//
+	// Not omitempty: encoding/json never treats a struct as empty, so the field
+	// is always written. A zero value ("0001-01-01T00:00:00Z") means no due
+	// moment was recorded — which is what recurring jobs and pre-due_at jobs
+	// carry, and what the legacy backfill in loadLocked keys off.
+	DueAt time.Time `json:"due_at"`
 }
 
 // Service schedules jobs and publishes InboundMessage to the bus when triggered.

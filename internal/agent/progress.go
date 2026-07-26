@@ -37,26 +37,10 @@ type ToolProgressEvent struct {
 // ProgressFunc receives ToolProgressEvents from the ReAct loop. It must
 // return promptly — it is called synchronously from the loop and a slow or
 // blocking callback stalls tool execution.
+//
+// ProgressFunc is carried per-request via the context (see WithSink), not
+// stored on Agent, so concurrent Process calls never cross-deliver events.
 type ProgressFunc func(ToolProgressEvent)
-
-// WithProgressCallback injects an optional progress callback invoked around
-// each tool call in the ReAct loop. Nil (the default, and the effect of
-// never calling this option) means zero behavior change: no callback is
-// ever invoked.
-func WithProgressCallback(fn ProgressFunc) Option {
-	return func(a *Agent) {
-		a.progress = fn
-	}
-}
-
-// SetProgressCallback attaches (or clears, via nil) a progress callback on
-// an already-constructed Agent. This exists alongside WithProgressCallback
-// because callers such as cmd/joshbot construct the Agent once (shared
-// across interactive and non-interactive code paths) and only want the
-// callback wired up when actually running the interactive terminal loop.
-func (a *Agent) SetProgressCallback(fn ProgressFunc) {
-	a.progress = fn
-}
 
 // keyArgFields lists, per tool name, the argument keys (in priority order)
 // most useful to show a human as a one-line summary of what the tool is

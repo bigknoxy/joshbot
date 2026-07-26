@@ -73,7 +73,6 @@ type Agent struct {
 	extractor     *skills.Extractor
 	skillLoader   *skills.Loader
 	modelName     string
-	progress      ProgressFunc
 }
 
 func (a *Agent) getModelName() string {
@@ -461,8 +460,9 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			}
 
 			// Execute tool
-			if a.progress != nil {
-				a.progress(ToolProgressEvent{
+			progress := progressFromContext(ctx)
+			if progress != nil {
+				progress(ToolProgressEvent{
 					Tool:    tc.Function.Name,
 					Summary: summarizeToolArgs(tc.Function.Name, args),
 					Phase:   ToolProgressStart,
@@ -470,8 +470,8 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			}
 			toolStart := time.Now()
 			result, isAsync := a.tools.ExecuteWithContext(ctx, tc.Function.Name, args, channel, channelID, nil)
-			if a.progress != nil {
-				a.progress(ToolProgressEvent{
+			if progress != nil {
+				progress(ToolProgressEvent{
 					Tool:    tc.Function.Name,
 					Summary: summarizeToolArgs(tc.Function.Name, args),
 					Phase:   ToolProgressDone,

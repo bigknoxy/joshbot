@@ -186,10 +186,25 @@ func DetectProvider(model string) ProviderInfo {
 	return ProviderInfo{Name: "unknown", APIFormat: "openai", BaseURL: ""}
 }
 
-// StripProviderPrefix removes the provider prefix from a model name.
+// prefixesPartOfModelID lists providers whose published model IDs genuinely
+// begin with the prefix — it identifies the model, it is not a routing hint
+// joshbot added. Stripping it produces a name the API does not know.
+//
+// Poolside is one: https://inference.poolside.ai/v1/models lists
+// "poolside/laguna-s-2.1", and the chat endpoint answers 200 for that and
+// 404 "please check the model you provided" for "laguna-s-2.1".
+var prefixesPartOfModelID = map[string]bool{
+	"poolside/": true,
+}
+
+// StripProviderPrefix removes the provider prefix from a model name, except
+// where the prefix is part of the model ID the provider expects.
 func StripProviderPrefix(model string) string {
 	for prefix := range providerPrefixes {
 		if strings.HasPrefix(model, prefix) {
+			if prefixesPartOfModelID[prefix] {
+				return model
+			}
 			return strings.TrimPrefix(model, prefix)
 		}
 	}

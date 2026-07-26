@@ -51,6 +51,8 @@ experience, growth, Go systems) that debates and scores a change. Charters are i
 ## Important gotchas
 
 - `internal/` is the source of truth. `pkg/` is a stale incomplete refactor — do not edit.
+- `internal/channels/cli.go` is **dead code** — `NewCLIChannel` has no callers. The live interactive CLI is `runAgentLoop` in `cmd/joshbot/main.go`.
+- A blocking read inside a `select` with `default:` makes shutdown unobservable; `signal.Notify` also disables default termination, so a one-shot signal handler leaves the process unkillable (issue #104).
 - All CLI commands work non-interactively (agent -m, onboard --force, configure --provider --api-key, uninstall --force, etc.)
 - ExtraBody support for providers needing custom JSON body fields (poolside chat_template_kwargs, etc.)
 - Model names are routed by prefix and the prefix is stripped before sending — except for providers listed in `prefixesPartOfModelID` (`internal/config/config.go`), where the prefix is part of the real model ID. Poolside is the only one today: `poolside/laguna-s-2.1` must be sent whole, or the API answers 404.

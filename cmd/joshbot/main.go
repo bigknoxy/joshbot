@@ -844,15 +844,29 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, done 
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	go func() {
-		sig := <-sigChan
-		switch sig {
-		case syscall.SIGHUP:
-			log.Warn("Received SIGHUP signal, gracefully restarting...", "signal", sig)
-		default:
-			log.Warn("Received signal, shutting down...", "signal", sig)
+		first := true
+		for sig := range sigChan {
+			switch sig {
+			case syscall.SIGHUP:
+				log.Warn("Received SIGHUP signal, gracefully restarting...", "signal", sig)
+				continue
+			}
+
+			if first {
+				log.Warn("Received signal, shutting down...", "signal", sig)
+				first = false
+				cancel()
+				close(done)
+				continue
+			}
+
+			// signal.Notify disables Go's default termination for every signal
+			// it registers, so if this goroutine handled only one the process
+			// would become unkillable by anything short of SIGKILL. A second
+			// signal means the operator asked twice: leave immediately.
+			log.Warn("Received second signal, exiting immediately", "signal", sig)
+			os.Exit(130)
 		}
-		cancel()
-		close(done)
 	}()
 }
 
@@ -956,16 +970,52 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 
 	reader := bufio.NewReader(input)
 	fmt.Fprintln(output, "joshbot agent mode. Type 'exit' to quit.")
+
+	// Reading happens on its own goroutine so a blocked read cannot make the
+	// loop deaf to shutdown. Checking `done` only between reads meant a signal
+	// arriving while sitting at the prompt was never observed, and the process
+	// could only be killed with SIGKILL (issue #104).
+	type readResult struct {
+		line string
+		err  error
+	}
+	lines := make(chan readResult)
+	go func() {
+		defer close(lines)
+		for {
+			line, err := reader.ReadString('\n')
+			select {
+			case lines <- readResult{line: line, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
+		fmt.Fprint(output, "> ")
+
+		var line string
+		var readErr error
 		select {
 		case <-done:
 			log.Info("Agent shutdown complete")
 			return nil
-		default:
+		case <-ctx.Done():
+			log.Info("Agent shutdown complete")
+			return nil
+		case res, ok := <-lines:
+			if !ok {
+				// The reader goroutine is finished; nothing more can arrive.
+				cancel()
+				return nil
+			}
+			line, readErr = res.line, res.err
 		}
 
-		fmt.Fprint(output, "> ")
-		line, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
 			return fmt.Errorf("failed to read input: %w", readErr)
 		}

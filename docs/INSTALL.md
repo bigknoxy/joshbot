@@ -248,7 +248,7 @@ Gateway mode enables:
 - Telegram bot integration
 - Background task processing
 - Heartbeat service for proactive tasks
-- Scheduled reminders (cron)
+- Scheduled reminders (`cron` tool — durations like `30m`, `2h`, `1d`)
 
 ### Check Status
 
@@ -310,7 +310,7 @@ joshbot stores all configuration and data in `~/.joshbot/`:
 ├── skills.trust         # Approved workspace skills (0600)
 ├── sessions/            # Conversation history (JSONL)
 ├── media/               # Downloaded media files
-├── cron/                # Reserved, currently unused
+├── cron/                # Created but unused; jobs live in workspace/cron/jobs.json
 └── workspace/           # Memory, skills, and context files
     ├── SOUL.md          # Personality definition
     ├── USER.md          # User profile

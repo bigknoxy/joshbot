@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`cron` tool — scheduled reminders the agent can actually create** — joshbot advertised scheduled reminders, shipped a skill teaching the agent to run `cron create ...`, and started a scheduler at boot, but no tool existed and nothing outside `internal/cron` ever called `AddJob`: the scheduler ran with a permanently empty job list and every attempt produced a confident-sounding failure. The tool exposes create/list/delete, is registered only when a scheduler is actually running, and returns the job ID so a reminder can be cancelled. Schedules are durations (`30m`, `2h`, `1d`, `1h30m`), one-off or repeating.
+
+### Fixed
+- **Scheduled jobs could not be deleted, and one-shot jobs fired forever** — `internal/cron` had no `DeleteJob` or `ListJobs` at all. A `delay:` job was never removed after firing, so every restart replayed every reminder the user had ever set. `AddJob` also read `running` without holding the mutex (a data race under `-race`), accepted schedules the scheduler could not run and then silently never fired them, and `Stop` closed a channel that `Start` never recreated, so the service could not be restarted. Deleting a job now stops its timer rather than only removing the record.
+- **The cron skill documented an interface that never existed** — it taught 5-field cron expressions (`0 9 * * *`), a `--name` flag and shell-style invocation, none of which the scheduler or tool support. Rewritten to match the real tool, including the fact that a one-shot reminder's countdown restarts if joshbot restarts. A new test fails the build if a bundled skill names a tool joshbot does not have — the drift that produced this.
+- **Landing page claimed trigger types that do not exist** — "React to triggers (new file, webhook, cron)" described file-watch and webhook triggers with no implementation anywhere in the codebase. Replaced with what actually ships: duration-based reminders and the heartbeat.
+
 ## [1.39.2] - 2026-07-26
 
 ### Fixed

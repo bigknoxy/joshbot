@@ -14,9 +14,9 @@ joshbot is a self-hosted Go personal AI assistant (~22.1K LOC non-test, 985 test
 - **Config**: `~/.joshbot/config.json`, env vars with `JOSHBOT_` prefix, two formats (legacy + model-centric)
 - **Memory**: MEMORY.md (always in context) + HISTORY.md (appended event log) + fact extraction + consolidation
 - **Skills**: SKILL.md files with YAML frontmatter, auto-discovered from workspace, progressive loading
-- **Tools**: filesystem, shell (deny-listed), web (exa-cli/DuckDuckGo/MCP), message, skill_registry, memory_search
+- **Tools**: filesystem, shell (deny-listed), web (exa-cli/DuckDuckGo/MCP), message, skill_registry, memory_search, cron
 - **Sessions**: JSONL files at `~/.joshbot/sessions/`, keyed `channel:senderID`
-- **Cron**: Jobs persisted as JSON at `workspace/cron/jobs.json` (see `internal/cron`); no agent-facing tool currently adds/lists/deletes jobs — see gotchas
+- **Cron**: Scheduled reminders via the `cron` tool (create/list/delete); jobs persisted as JSON at `workspace/cron/jobs.json` (see `internal/cron`)
 - **Heartbeat**: Unchecked task scanner via HEARTBEAT.md
 
 ## Commands
@@ -61,6 +61,9 @@ experience, growth, Go systems) that debates and scores a change. Charters are i
 - Shell commands run with an allowlisted environment (`internal/tools/shell_env.go`), not the full parent env — no provider API keys, and anything credential-shaped by name (TOKEN, SECRET, API_KEY, etc.) is stripped even if otherwise allowlisted. A workflow relying on `GH_TOKEN`/`GITHUB_TOKEN` as an env var will not see it; use `gh auth login`'s on-disk config instead.
 - `tools.shell_sandbox` (`"off"` default, `"workspace"`) applies Landlock filesystem containment on Linux via a re-exec helper; `tools.shell_sandbox_allow_network` (off by default) gates outbound TCP when sandboxed.
 - Workspace skills (anything under `workspace/skills/`, as opposed to the bundled `skills/` dir) are inert until an operator runs `joshbot skills trust <name>`; trust is bound to a content hash in `~/.joshbot/skills.trust`, so editing a trusted skill revokes it. `Loader.Create` (used by the skill_registry tool) writes but never approves. A workspace skill that reuses a bundled skill's name replaces it in the registry and is withheld until trusted — it does not silently "take over" the bundled behavior.
+- The `cron` tool takes **durations** (`30m`, `2h`, `1d`, `1h30m`), never 5-field cron expressions — `internal/cron` only knows `delay:<d>` and `every:<d>`. It is registered only when a `cron.Service` is passed via `tools.WithCronService`, so the agent is never offered a scheduler that is not running.
+- A one-shot cron job's countdown **restarts on restart**: a persisted `delay:30m` fires 30 minutes after the next start, not at the originally intended moment. Recurring jobs run until deleted; one-shot jobs delete themselves once they fire.
+- A bundled skill that names a tool joshbot does not have fails only at runtime, as a confident-sounding error. `TestBundledSkillsOnlyReferenceRegisteredTools` in `internal/tools` catches this — it keys off the phrase ``the `x` tool``, so keep that phrasing when documenting a tool in a skill.
 
 ## Website (site/)
 

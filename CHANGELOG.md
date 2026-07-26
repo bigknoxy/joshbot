@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-07-26
+
 ### Added
 - **`cron` tool — scheduled reminders the agent can actually create** — joshbot advertised scheduled reminders, shipped a skill teaching the agent to run `cron create ...`, and started a scheduler at boot, but no tool existed and nothing outside `internal/cron` ever called `AddJob`: the scheduler ran with a permanently empty job list and every attempt produced a confident-sounding failure. The tool exposes create/list/delete, is registered only when a scheduler is actually running, and returns the job ID so a reminder can be cancelled. Schedules are durations (`30m`, `2h`, `1d`, `1h30m`), one-off or repeating.
 

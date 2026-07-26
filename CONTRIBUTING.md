@@ -110,7 +110,7 @@ For detailed coding conventions and guidelines, see [AGENTS.md](./AGENTS.md). Ke
 
 5. **Submit a Pull Request**
    - Describe what changed and why
-   - Reference any related issues
+   - **Tie the PR to a GitHub issue** — include `Fixes #NNN` (or `Closes #NNN`) in the PR body so the issue auto-closes on merge. Every PR must reference an issue; do not open a PR without one. If no issue exists, create one first.
    - Include verification steps you performed
 
 ## Commit Message Guidelines

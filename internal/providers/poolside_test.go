@@ -6,9 +6,11 @@ import (
 )
 
 // Verified live against https://inference.poolside.ai/v1/models on 2026-07-26:
-//   poolside/laguna-m.1     deprecation_date 2026-07-28
-//   poolside/laguna-xs-2.1  no deprecation
-//   poolside/laguna-s-2.1   no deprecation
+//
+//	poolside/laguna-m.1     deprecation_date 2026-07-28
+//	poolside/laguna-xs-2.1  no deprecation
+//	poolside/laguna-s-2.1   no deprecation
+//
 // The registered default must not be a model that is about to be withdrawn.
 func TestPoolsideDefaultModelIsNotDeprecated(t *testing.T) {
 	got := GetDefaultModel("poolside")

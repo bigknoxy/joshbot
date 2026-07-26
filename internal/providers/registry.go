@@ -270,8 +270,8 @@ func init() {
 		// current second-generation model and has none. The "poolside/" prefix
 		// is part of the ID the API expects — see prefixesPartOfModelID.
 		DefaultModel: "poolside/laguna-s-2.1",
-		DisplayName:    "Poolside",
-		Description:    "AI for software development",
+		DisplayName:  "Poolside",
+		Description:  "AI for software development",
 	})
 
 	// Register Azure (requires API base, no default model)

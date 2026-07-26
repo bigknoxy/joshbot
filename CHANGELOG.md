@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Poolside could not be configured correctly by any route** — three separate defects, all found by dogfooding against the live API. The interactive `configure` wizard offered `https://api.poolside.ai/v1` as the default endpoint, **a host that does not resolve**, so anyone accepting the default got a config that could never connect; the real endpoint is `https://inference.poolside.ai/v1`. The registered default model, `poolside/laguna-m.1`, carries a deprecation date of 2026-07-28 — two days out — so the out-of-the-box choice was about to stop working; it is now `poolside/laguna-s-2.1`. And `configure --help` omitted poolside from the list of providers it accepts, alongside five others. The endpoint is now recorded once in the provider registry (`ProviderInfo.DefaultAPIBase`) and read from there by the wizard, with a test asserting the declared endpoint matches the one the factory actually dials — the duplicate copy is what drifted.
+
 ## [1.40.2] - 2026-07-26
 
 ### Fixed

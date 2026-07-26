@@ -2660,7 +2660,18 @@ func runConfigure(c *cli.Context) error {
 		if err := conf.ConfigureProvider(opts); err != nil {
 			return err
 		}
-		fmt.Printf("Provider %q configured with model %q.\n", opts.Name, cfg.Providers[opts.Name].Model)
+		// Report the model that will actually be used. When --model is omitted
+		// the provider entry is left empty and the effective model comes from
+		// the agent defaults or the provider's registered default; printing the
+		// empty provider field made a working setup look broken.
+		effectiveModel := cfg.Providers[opts.Name].Model
+		if effectiveModel == "" {
+			effectiveModel = cfg.Agents.Defaults.Model
+		}
+		if effectiveModel == "" {
+			effectiveModel = providers.GetDefaultModel(opts.Name)
+		}
+		fmt.Printf("Provider %q configured with model %q.\n", opts.Name, effectiveModel)
 	}
 
 	if provider := c.String("set-default"); provider != "" {

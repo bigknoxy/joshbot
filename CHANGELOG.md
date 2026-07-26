@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-07-26
+
 ### Added
 - **Telegram command menu** — `/start`, `/help` and `/new` have always had handlers, but `setMyCommands` was never called, so none of them appeared behind Telegram's menu button or autocompleted. They are now registered on startup, scoped to private chats. Registration failure is logged and the bot starts regardless.
 - **Unknown Telegram commands get an answer** — any text starting with `/` that no handler claimed was dropped on the floor, so a typo like `/nwe` produced no reply at all. It now gets an "Unknown command" message listing the real ones. Users outside `allow_from` still get nothing.

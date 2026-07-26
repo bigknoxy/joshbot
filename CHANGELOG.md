@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Progress callback moved from `Agent` struct to per-request context** — `Agent.progress` was a plain struct field with no synchronisation, written by `SetProgressCallback` and read inside `reactLoop`. It was not a live bug today (only the serial CLI path sets it), but it was a trap: Telegram processes messages concurrently, so the moment a second channel attaches a sink, cross-talk between users' replies would occur. The callback now rides `context.Context` via `agent.WithSink`, scoped to one `Process` call. `WithProgressCallback` and `SetProgressCallback` are removed from `*agent.Agent`; `cmd/joshbot/main.go` attaches the sink to the context per message. The `mockProgressAgent` in `cmd/joshbot/main_test.go` still implements `SetProgressCallback` for backward compatibility with the existing test suite, which passes unmodified. A new `TestConcurrentProcessNoCrossDelivery` test spawns two concurrent `Process` calls with distinct sinks and asserts no cross-delivery — this test would fail against the old design.
+
 ### Removed
 - **`internal/channels/cli.go` deleted** — 497 lines implementing a CLI `Channel` that nothing ever constructed. `NewCLIChannel` had no caller in `cmd/` or `internal/`; the interactive CLI has always been `runAgentLoop` in `cmd/joshbot/main.go`. It was not merely unused but actively harmful: it carried its own copy of the input loop, and the first diagnosis of the unkillable-process bug (#104) was written against it before the live path was identified. The `Channel` interface it hosted moved to `internal/channels/channel.go`; the 22 tests that exercised only the dead code were removed with it, and `stripHTML`, its one general-purpose helper, had no non-test caller either. Coverage stays above the CI floor at 54.6%.
 

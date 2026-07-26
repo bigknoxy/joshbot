@@ -1,6 +1,6 @@
 # Design: response streaming
 
-Status: **draft, not implemented.** No code has been written against this.
+Status: **draft.** Stage 1 (per-request sink plumbing, issue #115) is implemented; stages 2–5 are not.
 
 ## Goal
 

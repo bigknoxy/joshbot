@@ -965,10 +965,12 @@ type agentProcessor interface {
 	Process(context.Context, bus.InboundMessage) (string, error)
 }
 
-// progressCapable is implemented by *agent.Agent. It is checked via a type
-// assertion rather than added to agentProcessor because most callers of
-// agentProcessor (tests, non-interactive single-message mode) have no use
-// for a progress callback; wiring it in is strictly opt-in.
+// progressCapable is implemented by test mocks (e.g. mockProgressAgent in
+// main_test.go) that still use the old SetProgressCallback wiring. The real
+// *agent.Agent no longer implements this — it receives its sink per-request
+// via the context (agent.WithSink), which is concurrency-safe. The type
+// assertion is checked so that mocks continue to work unmodified while the
+// real Agent gets its sink through the context path below.
 type progressCapable interface {
 	SetProgressCallback(agent.ProgressFunc)
 }
@@ -1173,7 +1175,15 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		if progress != nil {
 			progress.startSpinner()
 		}
-		response, procErr := agentInstance.Process(ctx, msg)
+		// Attach the per-request progress sink to the context so the real
+		// *agent.Agent receives it via progressFromContext (concurrency-safe,
+		// no shared mutable state on Agent). Mocks that still implement
+		// progressCapable receive it via SetProgressCallback above.
+		processCtx := ctx
+		if progress != nil {
+			processCtx = agent.WithSink(ctx, progress.onToolEvent)
+		}
+		response, procErr := agentInstance.Process(processCtx, msg)
 		if progress != nil {
 			progress.stopSpinner()
 		}

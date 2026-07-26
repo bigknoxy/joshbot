@@ -26,6 +26,11 @@ type Job struct {
 	Schedule string `json:"schedule"`
 	Channel  string `json:"channel"`
 	Content  string `json:"content"`
+	// DueAt is the absolute moment a one-shot ("delay:") job is due. It is set
+	// when the job is added and persisted, so a restart resumes the original
+	// countdown instead of starting a new one. Recurring ("every:") jobs leave
+	// it zero.
+	DueAt time.Time `json:"due_at,omitempty"`
 }
 
 // Service schedules jobs and publishes InboundMessage to the bus when triggered.
@@ -78,8 +83,22 @@ func (s *Service) loadLocked() error {
 	if err := json.Unmarshal(data, &jobs); err != nil {
 		return err
 	}
+	backfilled := false
 	for _, j := range jobs {
+		// Jobs written before due_at existed carry no due moment. Treat them as
+		// due one duration from load — the historical behaviour — rather than
+		// firing every one of them at once on the next start. Persist the
+		// backfill so the deadline does not slide forward on every reload.
+		if j.DueAt.IsZero() {
+			if kind, d, err := ParseSchedule(j.Schedule); err == nil && kind == KindDelay {
+				j.DueAt = time.Now().Add(d)
+				backfilled = true
+			}
+		}
 		s.jobs[j.ID] = j
+	}
+	if backfilled {
+		_ = s.saveLocked()
 	}
 	return nil
 }
@@ -111,8 +130,14 @@ func (s *Service) AddJob(j Job) error {
 	if j.ID == "" {
 		return fmt.Errorf("job ID must not be empty")
 	}
-	if _, _, err := ParseSchedule(j.Schedule); err != nil {
+	kind, d, err := ParseSchedule(j.Schedule)
+	if err != nil {
 		return err
+	}
+	// Record when a one-shot job is actually due, so a restart resumes the
+	// original countdown. A caller that supplied its own DueAt keeps it.
+	if kind == KindDelay && j.DueAt.IsZero() {
+		j.DueAt = time.Now().Add(d)
 	}
 
 	s.mu.Lock()
@@ -121,7 +146,7 @@ func (s *Service) AddJob(j Job) error {
 	// Replacing a job must not leave the previous timer running.
 	s.stopJobLocked(j.ID)
 	s.jobs[j.ID] = j
-	err := s.saveLocked()
+	err = s.saveLocked()
 	if s.running {
 		s.scheduleJobLocked(j)
 	}
@@ -224,6 +249,26 @@ func ParseDuration(spec string) (time.Duration, error) {
 	return time.ParseDuration(spec)
 }
 
+// overdueGrace is how long a one-shot job that came due while the process was
+// stopped waits before firing. It fires promptly, but not inside Start itself,
+// so the bus and channels are up before the message lands.
+const overdueGrace = 50 * time.Millisecond
+
+// delayUntilDue returns how long a one-shot job should wait before firing.
+// A job with a recorded due moment waits until that moment, however many
+// restarts happen in between; one already past waits only overdueGrace. A job
+// with no due moment (defensive: Load backfills these) falls back to its
+// duration, which is the pre-due_at behaviour.
+func delayUntilDue(j Job, d time.Duration, now time.Time) time.Duration {
+	if j.DueAt.IsZero() {
+		return d
+	}
+	if wait := j.DueAt.Sub(now); wait > 0 {
+		return wait
+	}
+	return overdueGrace
+}
+
 // stopJobLocked cancels a single job's timer. The caller must hold s.mu.
 func (s *Service) stopJobLocked(id string) {
 	if ch, ok := s.cancels[id]; ok {
@@ -249,7 +294,7 @@ func (s *Service) scheduleJobLocked(j Job) {
 		switch kind {
 		case KindDelay:
 			select {
-			case <-time.After(d):
+			case <-time.After(delayUntilDue(j, d, time.Now())):
 				s.publishJob(j)
 				// A one-shot job is spent once it fires; drop it so it is not
 				// replayed on the next start.

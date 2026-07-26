@@ -35,7 +35,7 @@ go vet ./... && gofmt -l .                   # CI gates on both
 ## Layout
 
 `cmd/joshbot` entrypoint. Under `internal/`: `agent` (ReAct loop), `bus` (message bus),
-`channels` (cli.go, telegram.go), `providers` (registry.go = provider routing keys),
+`channels` (channel.go = Channel interface, telegram.go), `providers` (registry.go = provider routing keys),
 `copilot` (github-copilot device-flow auth + provider), `tools`, `memory`, `skills`
 (+ `skills/trust.go` = workspace-skill approval store), `session`, `context`, `config`,
 `configure`, `cron`, `heartbeat`, `subagent`, `service` (build-tagged per-OS), `learning`,
@@ -51,7 +51,7 @@ experience, growth, Go systems) that debates and scores a change. Charters are i
 ## Important gotchas
 
 - `internal/` is the source of truth. `pkg/` is a stale incomplete refactor — do not edit.
-- `internal/channels/cli.go` is **dead code** — `NewCLIChannel` has no callers. The live interactive CLI is `runAgentLoop` in `cmd/joshbot/main.go`.
+- The interactive CLI is `runAgentLoop` in `cmd/joshbot/main.go`, not a `Channel` implementation. `internal/channels` holds only the `Channel` interface and Telegram; a dead `cli.go` that implemented it was deleted in v1.42.x after misleading a bug diagnosis.
 - `agent.Agent` has an optional progress callback (`agent.WithProgressCallback` / `Agent.SetProgressCallback`), nil by default — zero behavior change unless a caller opts in. `runAgentLoop` wires it up only when stdout is a real TTY, to drive the interactive CLI's tool-call lines (`⏺ tool(args)` / `⎿ ok (1.2s)`) and "thinking..." spinner. Non-TTY detection is the `isTTY` package var in `cmd/joshbot/main.go` (type-asserts to `*os.File` + `github.com/mattn/go-isatty`), overridable in tests instead of probing a real terminal.
 - A blocking read inside a `select` with `default:` makes shutdown unobservable; `signal.Notify` also disables default termination, so a one-shot signal handler leaves the process unkillable (issue #104).
 - All CLI commands work non-interactively (agent -m, onboard --force, configure --provider --api-key, uninstall --force, etc.)

@@ -47,3 +47,4 @@ htmlcov/
 
 # Playwright browser testing artifacts
 .playwright-mcp/
+*.env

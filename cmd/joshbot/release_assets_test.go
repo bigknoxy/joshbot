@@ -122,6 +122,31 @@ func TestNoDuplicateInstallScripts(t *testing.T) {
 	}
 }
 
+// TestGoreleaserGlobsExist catches release config that references files which
+// have since been moved or deleted. Nothing invokes goreleaser today, so a
+// broken glob would otherwise surface only on a future migration.
+func TestGoreleaserGlobsExist(t *testing.T) {
+	root := repoRoot(t)
+	cfg := readRepoFile(t, ".goreleaser.yaml")
+
+	re := regexp.MustCompile(`(?m)^\s*-\s*glob:\s*(\S+)\s*$`)
+	matches := re.FindAllStringSubmatch(cfg, -1)
+	if len(matches) == 0 {
+		t.Skip("no globs declared in .goreleaser.yaml")
+	}
+	for _, m := range matches {
+		pattern := m[1]
+		found, err := filepath.Glob(filepath.Join(root, pattern))
+		if err != nil {
+			t.Errorf("glob %q is malformed: %v", pattern, err)
+			continue
+		}
+		if len(found) == 0 {
+			t.Errorf(".goreleaser.yaml globs %q, which matches no file in the repo", pattern)
+		}
+	}
+}
+
 // TestDocsReferenceTheRootInstaller ensures the advertised curl URL resolves to
 // the maintained script.
 func TestDocsReferenceTheRootInstaller(t *testing.T) {

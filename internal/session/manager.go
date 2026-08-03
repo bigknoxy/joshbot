@@ -145,8 +145,8 @@ func (m *Manager) archiveFilePath(sessionID string) string {
 // asked for a smaller context window, not for their conversation to be deleted.
 // The archive is append-only and never read back by the agent.
 func (m *Manager) Archive(ctx context.Context, sessionID string, msgs []Message) error {
-	if sessionID == "" {
-		return ErrInvalidSessionID
+	if err := ValidateSessionID(sessionID); err != nil {
+		return err
 	}
 
 	select {
@@ -191,8 +191,8 @@ func (m *Manager) Archive(ctx context.Context, sessionID string, msgs []Message)
 
 // Load loads a session from disk.
 func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) {
-	if sessionID == "" {
-		return nil, ErrInvalidSessionID
+	if err := ValidateSessionID(sessionID); err != nil {
+		return nil, err
 	}
 
 	select {
@@ -297,6 +297,9 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 	if s == nil {
 		return errors.New("session is nil")
 	}
+	if err := ValidateSessionID(s.ID); err != nil {
+		return err
+	}
 
 	select {
 	case <-ctx.Done():
@@ -369,12 +372,11 @@ func (m *Manager) List(ctx context.Context) ([]string, error) {
 		if entry.IsDir() {
 			continue
 		}
-		name := entry.Name()
-		if strings.HasSuffix(name, ".jsonl") {
-			sessionID := strings.TrimSuffix(name, ".jsonl")
-			if sessionID != "" {
-				sessionIDs = append(sessionIDs, sessionID)
-			}
+		// isSessionFile excludes the sidecars that also end in ".jsonl" —
+		// notably the compaction archive, which was otherwise reported as a
+		// session named "<id>.history".
+		if sessionID, ok := isSessionFile(entry.Name()); ok {
+			sessionIDs = append(sessionIDs, sessionID)
 		}
 	}
 
@@ -383,8 +385,8 @@ func (m *Manager) List(ctx context.Context) ([]string, error) {
 
 // Delete removes a session from disk.
 func (m *Manager) Delete(ctx context.Context, sessionID string) error {
-	if sessionID == "" {
-		return ErrInvalidSessionID
+	if err := ValidateSessionID(sessionID); err != nil {
+		return err
 	}
 
 	select {

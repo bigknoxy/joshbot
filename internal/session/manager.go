@@ -121,6 +121,74 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// Archiver is implemented by session stores that can preserve messages which
+// are about to be removed from the live session.
+//
+// It is an optional interface, checked with a type assertion, so that
+// alternative SessionManager implementations (including test doubles) are not
+// forced to implement it. A store that does not implement it simply drops the
+// summarized messages when a compaction is applied.
+type Archiver interface {
+	Archive(ctx context.Context, sessionID string, msgs []Message) error
+}
+
+// archiveFilePath returns the append-only archive for a session's compacted
+// history.
+func (m *Manager) archiveFilePath(sessionID string) string {
+	return filepath.Join(m.sessionsDir, fmt.Sprintf("%s.history.jsonl", sessionID))
+}
+
+// Archive appends msgs to the session's history archive.
+//
+// Compaction replaces a run of messages with a summary, which shrinks the live
+// session file. Without this the original messages would be destroyed: the user
+// asked for a smaller context window, not for their conversation to be deleted.
+// The archive is append-only and never read back by the agent.
+func (m *Manager) Archive(ctx context.Context, sessionID string, msgs []Message) error {
+	if sessionID == "" {
+		return ErrInvalidSessionID
+	}
+
+	select {
+	case <-ctx.Done():
+		return ErrContextCancelled
+	default:
+	}
+
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	var buf strings.Builder
+	for _, msg := range msgs {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("failed to marshal archived message: %w", err)
+		}
+		buf.Write(data)
+		buf.WriteByte('\n')
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Append rather than rewrite: the archive is the only remaining copy, so a
+	// truncating write that failed part-way would lose it.
+	f, err := os.OpenFile(m.archiveFilePath(sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, sessionFileMode)
+	if err != nil {
+		return fmt.Errorf("failed to open archive file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(buf.String()); err != nil {
+		return fmt.Errorf("failed to append to archive file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("failed to sync archive file: %w", err)
+	}
+	return nil
+}
+
 // Load loads a session from disk.
 func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) {
 	if sessionID == "" {

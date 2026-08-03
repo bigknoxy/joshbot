@@ -33,6 +33,63 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Timestamp  time.Time  `json:"timestamp"`
+
+	// Compaction marks this message as a stored context-compaction record: an
+	// LLM-generated summary that stands in for the messages it replaced.
+	//
+	// It exists so the summary is computed once and then reused. Without it the
+	// agent recomputed a summary of the whole history on every turn past the
+	// compaction threshold, paying an extra provider round-trip forever while
+	// the session file kept growing (issue #125).
+	//
+	// A session holds at most one of these, always at index 0. A later
+	// compaction summarizes the existing record together with everything after
+	// it and replaces it, so the count never grows.
+	Compaction bool `json:"compaction,omitempty"`
+}
+
+// IsCompaction reports whether m is a stored compaction record.
+func (m Message) IsCompaction() bool { return m.Compaction }
+
+// CompactionRecord returns the session's compaction record and true when one is
+// present. It is always the first message, so a session that starts with
+// anything else has none.
+func (s *Session) CompactionRecord() (Message, bool) {
+	if len(s.Messages) > 0 && s.Messages[0].Compaction {
+		return s.Messages[0], true
+	}
+	return Message{}, false
+}
+
+// CountCompactionRecords returns how many compaction records the session holds.
+// The invariant is that this is never greater than 1; tests assert it.
+func (s *Session) CountCompactionRecords() int {
+	n := 0
+	for _, m := range s.Messages {
+		if m.Compaction {
+			n++
+		}
+	}
+	return n
+}
+
+// NewCompactionRecord builds a compaction record carrying the given summary.
+//
+// The role is deliberately RoleUser: an OpenAI-compatible provider treats a
+// second system message inconsistently, and the summary must survive the same
+// path as ordinary history. The envelope tags are what the model sees.
+func NewCompactionRecord(summary string) Message {
+	return Message{
+		Role:       RoleUser,
+		Content:    CompactionEnvelope(summary),
+		Timestamp:  time.Now().UTC(),
+		Compaction: true,
+	}
+}
+
+// CompactionEnvelope wraps a summary in the tags the model is shown.
+func CompactionEnvelope(summary string) string {
+	return "<ctx_compress>\n" + summary + "\n</ctx_compress>"
 }
 
 // Session represents a conversation session.

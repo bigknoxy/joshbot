@@ -36,6 +36,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/memory"
 	"github.com/bigknoxy/joshbot/internal/providers"
+	"github.com/bigknoxy/joshbot/internal/redact"
 	"github.com/bigknoxy/joshbot/internal/service"
 	"github.com/bigknoxy/joshbot/internal/session"
 	"github.com/bigknoxy/joshbot/internal/skills"
@@ -2728,6 +2729,12 @@ I can create new skills to extend my capabilities.
 
 // runStatus displays the current configuration and status.
 func runStatus(c *cli.Context) error {
+	// Status prints config paths and provider names. Route it through the
+	// redactor so a home directory (which carries the account name) and any
+	// credential-shaped value are stripped before the user copies this into
+	// an issue.
+	out := redact.Writer(os.Stdout)
+
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
 		return err
@@ -2757,30 +2764,30 @@ func runStatus(c *cli.Context) error {
 	}
 
 	// Print status
-	fmt.Println()
-	fmt.Println("╔═══════════════════════════════════════════╗")
-	fmt.Println("║            joshbot status                ║")
-	fmt.Println("╚═══════════════════════════════════════════╝")
-	fmt.Printf("Version:        %s\n", Version)
-	fmt.Printf("Config file:    %s %s\n", configPath, statusBool(configExists))
-	fmt.Printf("Workspace:      %s %s\n", cfg.WorkspaceDir(), statusBool(wsExists))
-	fmt.Printf("Sessions:       %s\n", cfg.SessionsDir())
-	fmt.Println()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "╔═══════════════════════════════════════════╗")
+	fmt.Fprintln(out, "║            joshbot status                ║")
+	fmt.Fprintln(out, "╚═══════════════════════════════════════════╝")
+	fmt.Fprintf(out, "Version:        %s\n", Version)
+	fmt.Fprintf(out, "Config file:    %s %s\n", configPath, statusBool(configExists))
+	fmt.Fprintf(out, "Workspace:      %s %s\n", cfg.WorkspaceDir(), statusBool(wsExists))
+	fmt.Fprintf(out, "Sessions:       %s\n", cfg.SessionsDir())
+	fmt.Fprintln(out)
 
 	// Display model info based on config format
 	if cfg.UseModelsConfig() {
-		fmt.Println("Config format:  model-centric")
-		fmt.Printf("Active model:   %s\n", cfg.ModelsConfig.Agent.Model)
+		fmt.Fprintln(out, "Config format:  model-centric")
+		fmt.Fprintf(out, "Active model:   %s\n", cfg.ModelsConfig.Agent.Model)
 		if len(cfg.ModelsConfig.Agent.Fallback) > 0 {
-			fmt.Printf("Fallback:       %s\n", strings.Join(cfg.ModelsConfig.Agent.Fallback, ", "))
+			fmt.Fprintf(out, "Fallback:       %s\n", strings.Join(cfg.ModelsConfig.Agent.Fallback, ", "))
 		}
 	} else {
-		fmt.Printf("Model:          %s\n", cfg.Agents.Defaults.Model)
+		fmt.Fprintf(out, "Model:          %s\n", cfg.Agents.Defaults.Model)
 	}
-	fmt.Printf("Max tokens:     %d\n", cfg.Agents.Defaults.MaxTokens)
-	fmt.Printf("Temperature:    %.1f\n", cfg.Agents.Defaults.Temperature)
-	fmt.Printf("Memory window:  %d\n", cfg.Agents.Defaults.MemoryWindow)
-	fmt.Println()
+	fmt.Fprintf(out, "Max tokens:     %d\n", cfg.Agents.Defaults.MaxTokens)
+	fmt.Fprintf(out, "Temperature:    %.1f\n", cfg.Agents.Defaults.Temperature)
+	fmt.Fprintf(out, "Memory window:  %d\n", cfg.Agents.Defaults.MemoryWindow)
+	fmt.Fprintln(out)
 
 	// Display providers/models
 	if cfg.UseModelsConfig() {
@@ -2793,26 +2800,26 @@ func runStatus(c *cli.Context) error {
 		if len(modelNames) == 0 {
 			modelNames = []string{"none"}
 		}
-		fmt.Printf("Models:         %s\n", strings.Join(modelNames, ", "))
+		fmt.Fprintf(out, "Models:         %s\n", strings.Join(modelNames, ", "))
 	} else {
-		fmt.Printf("Providers:      %s\n", formatProviderStatus(cfg.Providers))
+		fmt.Fprintf(out, "Providers:      %s\n", formatProviderStatus(cfg.Providers))
 	}
-	fmt.Printf("Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
-	fmt.Printf("Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
+	fmt.Fprintf(out, "Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
+	fmt.Fprintf(out, "Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
 
 	// Skills awaiting review belong here, not only in a startup log line. In
 	// gateway mode that log goes to the journal, where an operator would never
 	// see it — they would just get a quietly worse assistant. `status` is
 	// where someone looks when something seems off.
 	if pending := pendingSkillNames(cfg); len(pending) > 0 {
-		fmt.Printf("Skills:         %d awaiting review (%s)\n", len(pending), strings.Join(pending, ", "))
-		fmt.Println("                not in use — review then run: joshbot skills trust <name>")
+		fmt.Fprintf(out, "Skills:         %d awaiting review (%s)\n", len(pending), strings.Join(pending, ", "))
+		fmt.Fprintln(out, "                not in use — review then run: joshbot skills trust <name>")
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
 	if memorySize > 0 || historySize > 0 {
-		fmt.Printf("MEMORY.md:  %d bytes\n", memorySize)
-		fmt.Printf("HISTORY.md: %d bytes\n", historySize)
+		fmt.Fprintf(out, "MEMORY.md:  %d bytes\n", memorySize)
+		fmt.Fprintf(out, "HISTORY.md: %d bytes\n", historySize)
 	}
 
 	return nil

@@ -3,6 +3,8 @@ package tools
 import (
 	"os"
 	"strings"
+
+	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
 // Environment handling for spawned shell commands.
@@ -53,11 +55,10 @@ var shellEnvAllowPrefixes = []string{
 // secretNameFragments mark a variable as credential-shaped. Matched
 // case-insensitively as substrings. These are deliberately specific:
 // a bare "KEY" would reject KEYBOARD_LAYOUT and similar.
-var secretNameFragments = []string{
-	"API_KEY", "APIKEY", "ACCESS_KEY", "SECRET_KEY", "PRIVATE_KEY",
-	"SESSION_KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD",
-	"CREDENTIAL", "WEBHOOK", "AUTH", "BEARER", "PASSPHRASE",
-}
+//
+// The list lives in internal/redact so that the environment screen here and the
+// output redaction there cannot drift apart.
+var secretNameFragments = redact.SecretNameFragments
 
 // isSecretEnvName reports whether a variable name looks like it carries a
 // credential. Used as a second gate over the allowlist, not as the primary

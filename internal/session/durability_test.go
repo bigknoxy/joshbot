@@ -394,3 +394,41 @@ func TestOrdinaryMessageSerialisationUnchanged(t *testing.T) {
 		t.Errorf("non-compaction message serialised a compaction key: %s", data)
 	}
 }
+
+// Session files are deliberately NOT redacted.
+//
+// Redaction applies to outputs — logs, status, exports — not to what is stored.
+// Rewriting content on save would mangle legitimate text (a user discussing a
+// token format) and would add a second way for a session file to be corrupted,
+// which is a failure this package has already been bitten by. The protection
+// for data at rest is the 0600 mode asserted elsewhere in this file.
+//
+// This test pins that boundary so a later change cannot quietly move it.
+func TestSessionContentIsStoredVerbatim(t *testing.T) {
+	m := newTestManager(t)
+	id := "verbatim-session"
+
+	const credentialShaped = `my key is sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv and api_key=abc123def456`
+
+	sess := NewSession(id)
+	sess.AddMessage(Message{Role: RoleUser, Content: credentialShaped, Timestamp: time.Now().UTC()})
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(m.sessionFilePath(id))
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if strings.Contains(string(raw), "[REDACTED]") {
+		t.Fatal("session content was redacted on save; redaction is an output-side concern only")
+	}
+
+	loaded, err := m.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Messages) != 1 || loaded.Messages[0].Content != credentialShaped {
+		t.Errorf("session content did not round-trip verbatim: %+v", loaded.Messages)
+	}
+}

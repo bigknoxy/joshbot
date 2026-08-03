@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/bigknoxy/joshbot/internal/log"
 )
 
 var (
@@ -60,6 +62,56 @@ func (m *Manager) metadataFilePath(sessionID string) string {
 	return filepath.Join(m.sessionsDir, fmt.Sprintf("%s.meta.json", sessionID))
 }
 
+// quarantineFilePath returns the file path a corrupt session is preserved at.
+func (m *Manager) quarantineFilePath(sessionID string) string {
+	return filepath.Join(m.sessionsDir, fmt.Sprintf("%s.jsonl.corrupt", sessionID))
+}
+
+// sessionFileMode is deliberately owner-only: session files hold the full
+// conversation, which routinely contains credentials, personal data and tool
+// output. 0644 would expose every conversation to any local account.
+const sessionFileMode = 0o600
+
+// writeFileAtomic writes data to path via a uniquely named temp file in the
+// same directory, then renames it over the target.
+//
+// The temp file name must be unique per writer: `path + ".tmp"` is shared by
+// every process using the same sessions directory (the gateway and a
+// concurrent `agent -m` run), so two writers interleave into one temp file and
+// the surviving rename publishes a torn mix of both. os.CreateTemp gives each
+// writer its own file, which makes the rename genuinely atomic across
+// processes, not just within one.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	cleanup := func() { _ = os.Remove(tmpName) }
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to set temporary file mode: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to write temporary file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to close temporary file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to rename temporary file: %w", err)
+	}
+	return nil
+}
+
 // Load loads a session from disk.
 func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) {
 	if sessionID == "" {
@@ -84,20 +136,39 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 		return nil, fmt.Errorf("failed to read session file: %w", err)
 	}
 
-	// Parse the JSONL file - each line is a message
+	// Parse the JSONL file - each line is a message.
+	//
+	// A single unparseable line must not end the conversation. There is exactly
+	// one session per channel:senderID and no CLI to delete it, so failing the
+	// whole load means that user gets an error on every subsequent message with
+	// no recovery path. Instead, skip the damaged lines, preserve the original
+	// file for inspection, and carry on with everything that did parse.
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	messages := make([]Message, 0, len(lines))
+	corrupt := 0
 
-	for i, line := range lines {
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var msg Message
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			return nil, fmt.Errorf("failed to parse message at line %d: %w", i+1, err)
+			corrupt++
+			continue
 		}
 		messages = append(messages, msg)
+	}
+
+	if corrupt > 0 {
+		quarantine := m.quarantineFilePath(sessionID)
+		if err := writeFileAtomic(quarantine, data, sessionFileMode); err != nil {
+			log.Warnf("session %s: %d unreadable line(s) skipped; failed to quarantine original: %v",
+				sessionID, corrupt, err)
+		} else {
+			log.Warnf("session %s: %d unreadable line(s) skipped; original preserved at %s",
+				sessionID, corrupt, quarantine)
+		}
 	}
 
 	if len(messages) == 0 {
@@ -167,18 +238,9 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 		content += "\n"
 	}
 
-	// Atomic write: write to temp file, then rename
-	filePath := m.sessionFilePath(s.ID)
-	tmpFile := filePath + ".tmp"
-
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write temporary file: %w", err)
-	}
-
-	if err := os.Rename(tmpFile, filePath); err != nil {
-		// Clean up temp file on failure
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("failed to rename temporary file: %w", err)
+	// Atomic write: write to a unique temp file, then rename
+	if err := writeFileAtomic(m.sessionFilePath(s.ID), []byte(content), sessionFileMode); err != nil {
+		return err
 	}
 
 	// Save conversation metadata separately if present
@@ -194,14 +256,8 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal session metadata: %w", err)
 		}
-		metaPath := m.metadataFilePath(s.ID)
-		tmpMeta := metaPath + ".tmp"
-		if err := os.WriteFile(tmpMeta, metaData, 0644); err != nil {
-			return fmt.Errorf("failed to write metadata temp file: %w", err)
-		}
-		if err := os.Rename(tmpMeta, metaPath); err != nil {
-			_ = os.Remove(tmpMeta)
-			return fmt.Errorf("failed to rename metadata file: %w", err)
+		if err := writeFileAtomic(m.metadataFilePath(s.ID), metaData, sessionFileMode); err != nil {
+			return err
 		}
 	}
 

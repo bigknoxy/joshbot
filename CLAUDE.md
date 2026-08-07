@@ -65,7 +65,7 @@ experience, growth, Go systems) that debates and scores a change. Charters are i
 - Telegram hard-fails over 4096 chars; `Send` splits longer content via `splitMessage` (code-fence aware, byte-indexed).
 - Telegram clears a chat action after 5 seconds, so "typing…" needs a keep-alive: `startTyping`/`stopTyping` run one goroutine per chat re-sending every 4s, stopped by `Send` or by `stopCh`. The `botCommands` slice is the single source for both the `SetCommands` menu and the unknown-command fallback — a new `bot.Handle("/x", ...)` must be added there too.
 - Shell commands run with an allowlisted environment (`internal/tools/shell_env.go`), not the full parent env — no provider API keys, and anything credential-shaped by name (TOKEN, SECRET, API_KEY, etc.) is stripped even if otherwise allowlisted. A workflow relying on `GH_TOKEN`/`GITHUB_TOKEN` as an env var will not see it; use `gh auth login`'s on-disk config instead.
-- `tools.shell_sandbox` (`"off"` default, `"workspace"`) applies Landlock filesystem containment on Linux via a re-exec helper; `tools.shell_sandbox_allow_network` (off by default) gates outbound TCP when sandboxed.
+- `tools.shell_sandbox` (`"off"` default, `"workspace"`) applies OS-level containment per platform: **Linux** = Landlock via a re-exec helper (`__sandbox-exec`); **macOS** = Seatbelt via `/usr/bin/sandbox-exec` (deny-by-default SBPL profile, no re-exec helper); **other** = none, so enabling is a startup error. `tools.shell_sandbox_allow_network` (off by default) gates outbound TCP when sandboxed. On platforms with no sandbox available, the shell tool defaults to allowlist-only when `tools.shell_allow_list` is unset, since the deny list alone is bypassable. Each platform's implementation is in `internal/tools/sandbox_<os>.go`.
 - Workspace skills (anything under `workspace/skills/`, as opposed to the bundled `skills/` dir) are inert until an operator runs `joshbot skills trust <name>`; trust is bound to a SHA-256 of the **whole skill directory tree** (all files' relative paths + content, sorted) stored in `~/.joshbot/skills.trust`, so editing, adding, or removing any file in a trusted skill dir — including a sibling script — revokes it. A legacy SKILL.md-only digest from an older joshbot no longer matches and safely revokes rather than crashing. `Loader.Create` (used by the skill_registry tool) writes but never approves. A workspace skill that reuses a bundled skill's name replaces it in the registry and is withheld until trusted — it does not silently "take over" the bundled behavior.
 - The `cron` tool takes **durations** (`30m`, `2h`, `1d`, `1h30m`), never 5-field cron expressions — `internal/cron` only knows `delay:<d>` and `every:<d>`. It is registered only when a `cron.Service` is passed via `tools.WithCronService`, so the agent is never offered a scheduler that is not running.
 - A one-shot cron job's countdown **survives a restart**: `AddJob` stores an absolute `Job.DueAt` (`due_at` in `jobs.json`), so a persisted `delay:30m` fires at the moment it was originally due, and an already-overdue job fires shortly after start instead of being dropped. Legacy jobs with no `due_at` are backfilled as due one duration from load (the old behaviour). Recurring jobs run until deleted; one-shot jobs delete themselves once they fire.
@@ -119,7 +119,15 @@ go build ./cmd/joshbot
 go vet ./...        # CI gates on this
 gofmt -d .          # MUST be empty
 go test -race ./... # MUST pass
-# CI also fails if total coverage drops below 45%
+# CI also fails if total coverage drops below 45%, or if cmd/joshbot or
+# internal/service fall below their per-package floors (.github/workflows/ci.yml)
+
+# LIVE prompt-behaviour eval — opt-in, never in CI (cost + flakiness).
+# Run once pre-release against the configured provider; it exercises fact
+# recall, tool selection, cron duration formatting, denied-command refusal and
+# the workspace boundary against a real model (issue #156).
+go test -tags liveeval -run TestLiveEval ./cmd/joshbot/ -v
+# Reliability knobs: JOSHBOT_EVAL_K (runs per task, pass^k), JOSHBOT_EVAL_MIN_PASS.
 ```
 
 Then, before tagging — no code change ships without this:
@@ -132,6 +140,8 @@ Then, before tagging — no code change ships without this:
 - [ ] `skills/*/SKILL.md` — bundled skills do not instruct the agent to do something
       the tools no longer permit
 - [ ] `CHANGELOG.md` — an entry exists under `[Unreleased]`
+- [ ] `go test -tags liveeval -run TestLiveEval ./cmd/joshbot/` ran green against a
+      real provider (opt-in live prompt-behaviour eval; not run by CI)
 - [ ] Any count or size quoted anywhere was re-measured, not carried over
 
 ## PR & release

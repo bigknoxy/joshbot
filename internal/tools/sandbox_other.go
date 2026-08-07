@@ -1,8 +1,12 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package tools
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"os/exec"
+)
 
 // No OS-level containment is implemented for this platform.
 //
@@ -28,4 +32,12 @@ func ApplySandbox(p SandboxPolicy) error {
 		return nil
 	}
 	return fmt.Errorf("sandbox mode %q requested but no OS-level containment is implemented on this platform", p.Mode)
+}
+
+// newSandboxCommand cannot build a contained command on a platform with no
+// sandbox. It is never reached in practice — buildExecCmd runs sandboxPreflight
+// first, which fails when SandboxAvailable() is false — but it exists so the
+// package compiles and fails loudly if that ordering ever changes.
+func newSandboxCommand(_ context.Context, _ *ShellTool, _, _ string) (*exec.Cmd, error) {
+	return nil, fmt.Errorf("no OS-level containment is implemented on this platform")
 }

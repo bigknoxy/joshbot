@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -46,8 +45,34 @@ func NewShellTool(timeout time.Duration, workspace string, restrict bool, allowL
 	return NewShellToolWithMaxOutput(timeout, workspace, restrict, 4000, allowList...)
 }
 
+// defaultUnsandboxedAllowlist is the allowlist a shell tool falls back to when
+// the build target has no OS-level containment at all (see
+// NewShellToolWithMaxOutput). It is deliberately restricted to commands that
+// read or inspect state and cannot, by themselves, execute an arbitrary second
+// program — no shells, no general-purpose interpreters, no download tools.
+//
+// The deny list in shell_deny.go is provably incomplete (an interpreter can be
+// made to spawn a shell, a script can be written then run), so on a platform
+// where neither Landlock nor Seatbelt can back it up, an allowlist is the only
+// boundary that is not trivially bypassable. Operators who need more configure
+// tools.shell_allow_list explicitly, or run on a platform with a sandbox.
+var defaultUnsandboxedAllowlist = []string{
+	"ls", "cat", "pwd", "echo", "head", "tail", "wc", "grep", "rg", "find",
+	"sort", "uniq", "diff", "stat", "file", "date", "whoami", "uname",
+	"hostname", "which", "tree", "du", "df", "git", "go", "gofmt",
+}
+
 // NewShellToolWithMaxOutput creates a new ShellTool with custom max output chars.
 func NewShellToolWithMaxOutput(timeout time.Duration, workspace string, restrict bool, maxOutputChars int, allowList ...string) *ShellTool {
+	// On a platform with no OS-level containment available (anything that is
+	// not Linux/Landlock or macOS/Seatbelt), the deny list is the sole boundary
+	// and it is bypassable. When the operator has not supplied an explicit
+	// allowlist, fall back to allowlist-only rather than trusting the deny list
+	// alone. Platforms that do provide a sandbox (Linux, macOS) keep the
+	// unrestricted default; containment there is opt-in via the sandbox.
+	if len(allowList) == 0 && !SandboxAvailable() {
+		allowList = defaultUnsandboxedAllowlist
+	}
 	return &ShellTool{
 		timeout:        timeout,
 		workspace:      workspace,
@@ -174,7 +199,8 @@ func (t *ShellTool) isDenied(cmd string) string {
 }
 
 // buildExecCmd constructs the command to run, either directly or through the
-// sandbox helper.
+// platform's OS-level containment (Landlock re-exec helper on Linux, the
+// sandbox-exec Seatbelt wrapper on macOS).
 //
 // When containment is on it fails rather than falling back to an unconfined
 // run. An operator who switched the sandbox on and silently got no sandbox is
@@ -182,7 +208,7 @@ func (t *ShellTool) isDenied(cmd string) string {
 // thinking about it.
 func (t *ShellTool) buildExecCmd(ctx context.Context, cmd, workingDir string) (*exec.Cmd, error) {
 	// "" is the zero value and means off (see sandboxPreflight); only a mode
-	// that was explicitly set to something other than off takes the helper path.
+	// that was explicitly set to something other than off takes the sandbox path.
 	if t.sandbox == SandboxOff || t.sandbox == "" {
 		return exec.CommandContext(ctx, "sh", "-c", cmd), nil
 	}
@@ -191,22 +217,20 @@ func (t *ShellTool) buildExecCmd(ctx context.Context, cmd, workingDir string) (*
 		return nil, err
 	}
 
-	helper := t.helperPath
-	if helper == "" {
-		self, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("shell sandbox needs to re-exec this binary but its path could not be determined: %w", err)
-		}
-		helper = self
-	}
+	// newSandboxCommand is platform-specific: it wires up whatever containment
+	// this OS provides. It is only reached once preflight has confirmed a
+	// sandbox is available and supported here.
+	return newSandboxCommand(ctx, t, cmd, workingDir)
+}
 
-	ws := workingDir
-	if ws == "" {
-		ws = t.workspace
+// sandboxWorkspace resolves which directory the sandbox confines writes to for
+// a given invocation: an explicit working dir if one was passed, else the
+// tool's configured workspace.
+func (t *ShellTool) sandboxWorkspace(workingDir string) string {
+	if workingDir != "" {
+		return workingDir
 	}
-
-	return exec.CommandContext(ctx, helper, SandboxHelperArg,
-		ws, strconv.FormatBool(t.allowNetwork), cmd), nil
+	return t.workspace
 }
 
 // runCommand executes the command and returns the result.
@@ -220,7 +244,23 @@ func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) Tool
 	// process's, which includes every provider API key — readable with a bare
 	// `env`, without touching the filesystem and without tripping any deny-list
 	// rule. See shell_env.go.
-	execCmd.Env = sanitizedEnv()
+	//
+	// When the sandbox is active, point TMPDIR at the private scratch dir inside
+	// the workspace and create it up front. The sandbox denies the shared system
+	// temp (macOS /var/folders, /tmp), so a command that writes to $TMPDIR — go
+	// build, git, and many others do — would otherwise fail. This mirrors what
+	// the Linux re-exec helper does for itself. The scratch dir lives under the
+	// workspace, which the sandbox already grants, so no extra grant is needed.
+	if t.sandbox != SandboxOff && t.sandbox != "" {
+		if scratch := SandboxTempDir(t.sandboxWorkspace(workingDir)); scratch != "" {
+			_ = os.MkdirAll(scratch, 0o700)
+			execCmd.Env = sanitizedEnv("TMPDIR=" + scratch)
+		} else {
+			execCmd.Env = sanitizedEnv()
+		}
+	} else {
+		execCmd.Env = sanitizedEnv()
+	}
 
 	// Set working directory
 	if workingDir != "" {

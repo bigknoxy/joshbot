@@ -253,8 +253,10 @@ type ToolsConfig struct {
 	FilesystemAllowedPaths []string       `mapstructure:"filesystem_allowed_paths" json:"filesystem_allowed_paths" yaml:"filesystem_allowed_paths"`
 	ToolOutputMaxChars     int            `mapstructure:"tool_output_max_chars" json:"tool_output_max_chars" yaml:"tool_output_max_chars"`
 	// ShellSandbox selects OS-level containment for shell commands:
-	// "off" (default) or "workspace". Linux only; on other platforms a
-	// non-off value is reported as an error rather than silently ignored.
+	// "off" (default) or "workspace". Enforced on Linux (Landlock) and macOS
+	// (Seatbelt); on a platform with no sandbox a non-off value is reported as
+	// an error rather than silently ignored, and the shell tool there defaults
+	// to allowlist-only instead of trusting the bypassable deny list.
 	ShellSandbox string `mapstructure:"shell_sandbox" json:"shell_sandbox,omitempty" yaml:"shell_sandbox,omitempty"`
 	// ShellSandboxAllowNetwork permits outbound TCP from sandboxed commands.
 	// Off by default: exfiltrating what was read is the usual goal of an
@@ -282,6 +284,25 @@ type UserConfig struct {
 }
 
 // Config is the root configuration for joshbot.
+// MCPServerConfig configures a single stdio MCP (Model Context Protocol) server
+// that joshbot spawns and connects to over its stdin/stdout. Its discovered
+// tools are registered under a namespaced name (mcp__<server>__<tool>) so a
+// server can never shadow a built-in tool such as shell or filesystem.
+//
+// Enabled mirrors the provider convention: a server is inert until it is set,
+// so a half-configured entry never spawns a process.
+type MCPServerConfig struct {
+	Command string            `mapstructure:"command" json:"command,omitempty" yaml:"command,omitempty"`
+	Args    []string          `mapstructure:"args" json:"args,omitempty" yaml:"args,omitempty"`
+	Env     map[string]string `mapstructure:"env" json:"env,omitempty" yaml:"env,omitempty"`
+	Enabled bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
+}
+
+// MCPConfig holds the configured MCP servers keyed by operator-chosen name.
+type MCPConfig struct {
+	Servers map[string]MCPServerConfig `mapstructure:"servers" json:"servers,omitempty" yaml:"servers,omitempty"`
+}
+
 type Config struct {
 	SchemaVersion int `mapstructure:"schema_version" json:"schema_version" yaml:"schema_version"`
 
@@ -300,6 +321,13 @@ type Config struct {
 	Heartbeat HeartbeatConfig `mapstructure:"heartbeat" json:"heartbeat,omitempty" yaml:"heartbeat,omitempty"`
 	LogLevel  string          `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
 	User      UserConfig      `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+
+	// MCP configures Model Context Protocol servers whose tools are exposed to
+	// the agent. Declaring a server here is a privileged, operator-only act:
+	// config.json lives outside the workspace and cannot be written by a
+	// workspace-confined tool, so it is the trust boundary for MCP (see
+	// SECURITY.md). A server runs only when its Enabled flag is set.
+	MCP MCPConfig `mapstructure:"mcp" json:"mcp,omitempty" yaml:"mcp,omitempty"`
 }
 
 // HeartbeatInterval returns the configured heartbeat scan interval, falling back

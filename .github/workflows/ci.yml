@@ -53,6 +53,33 @@ jobs:
           fi
           echo "PASS: Total coverage ${TOTAL}% meets 45% threshold"
 
+      - name: Check per-package coverage floors
+        # The total floor alone lets a well-covered package launder a blind
+        # spot: cmd/joshbot (the interactive CLI + headless entrypoint) and
+        # internal/service (per-OS install) are the least-tested and most
+        # user-facing packages, so they get their own floors set just below
+        # their current levels. Raise a floor when its package rises; never
+        # lower one to make a red build green. (issue #154)
+        run: |
+          set -euo pipefail
+          # pkg import-path prefix -> minimum percent of covered statements.
+          check_pkg() {
+            local pkg="$1" floor="$2"
+            # Slice the combined profile down to one package and let the cover
+            # tool compute that subset's total.
+            { head -1 coverage.out; grep "^${pkg}/[^/]*\.go:" coverage.out || true; } > pkg.cov
+            local pct
+            pct=$(go tool cover -func=pkg.cov | grep 'total:' | awk '{print $3}' | sed 's/%//')
+            echo "Coverage ${pkg}: ${pct}% (floor ${floor}%)"
+            if [ "$(echo "${pct} < ${floor}" | bc -l)" = "1" ]; then
+              echo "FAIL: ${pkg} coverage ${pct}% is below its ${floor}% floor"
+              exit 1
+            fi
+          }
+          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 15
+          check_pkg "github.com/bigknoxy/joshbot/internal/service" 2
+          echo "PASS: all per-package coverage floors met"
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:

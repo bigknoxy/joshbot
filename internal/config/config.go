@@ -268,6 +268,14 @@ type GatewayConfig struct {
 	Port int    `mapstructure:"port" json:"port" yaml:"port"`
 }
 
+// HeartbeatConfig configures the HEARTBEAT.md proactive task scanner.
+type HeartbeatConfig struct {
+	// Interval is how often HEARTBEAT.md is scanned for unchecked tasks, as a Go
+	// duration string (e.g. "30m", "1h", "1h30m"). Empty or unparseable falls
+	// back to the 30m default. Overridable with JOSHBOT_HEARTBEAT__INTERVAL.
+	Interval string `mapstructure:"interval" json:"interval,omitempty" yaml:"interval,omitempty"`
+}
+
 // UserConfig holds user preferences for personalization.
 type UserConfig struct {
 	Name string `mapstructure:"name" json:"name,omitempty" yaml:"name,omitempty"`
@@ -286,11 +294,26 @@ type Config struct {
 	Agents           AgentsConfig              `mapstructure:"agents" json:"agents" yaml:"agents"`
 
 	// Other config sections
-	Channels ChannelsConfig `mapstructure:"channels" json:"channels" yaml:"channels"`
-	Tools    ToolsConfig    `mapstructure:"tools" json:"tools" yaml:"tools"`
-	Gateway  GatewayConfig  `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
-	LogLevel string         `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
-	User     UserConfig     `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+	Channels  ChannelsConfig  `mapstructure:"channels" json:"channels" yaml:"channels"`
+	Tools     ToolsConfig     `mapstructure:"tools" json:"tools" yaml:"tools"`
+	Gateway   GatewayConfig   `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
+	Heartbeat HeartbeatConfig `mapstructure:"heartbeat" json:"heartbeat,omitempty" yaml:"heartbeat,omitempty"`
+	LogLevel  string          `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User      UserConfig      `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+}
+
+// HeartbeatInterval returns the configured heartbeat scan interval, falling back
+// to 30m when it is unset, unparseable, or non-positive.
+func (c *Config) HeartbeatInterval() time.Duration {
+	const def = 30 * time.Minute
+	if c == nil || c.Heartbeat.Interval == "" {
+		return def
+	}
+	d, err := time.ParseDuration(c.Heartbeat.Interval)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 // parseConfigFromFile parses JSON config data into the Config struct.
@@ -313,6 +336,11 @@ func applyEnvOverrides(cfg *Config) {
 	// Schema version
 	if v := getEnv("SCHEMA_VERSION"); v != "" {
 		fmt.Sscanf(v, "%d", &cfg.SchemaVersion)
+	}
+
+	// Heartbeat interval, e.g. JOSHBOT_HEARTBEAT__INTERVAL=30m
+	if v := getEnv("HEARTBEAT__INTERVAL"); v != "" {
+		cfg.Heartbeat.Interval = v
 	}
 
 	// Model-centric config support

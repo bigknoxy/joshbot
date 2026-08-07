@@ -367,6 +367,13 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			return "", fmt.Errorf("LLM call failed: %w", err)
 		}
 
+		// Surface per-call token usage to any headless caller (e.g. the CLI
+		// JSON output modes) via the per-request usage sink. Concurrency-safe:
+		// the sink rides the context, never shared Agent state.
+		if usageSink := usageFromContext(ctx); usageSink != nil {
+			usageSink(resp.Usage)
+		}
+
 		// Check if we have a valid response
 		if len(resp.Choices) == 0 {
 			a.logger.Warn("Empty response from LLM")

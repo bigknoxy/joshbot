@@ -98,10 +98,18 @@ func (r *HandlerRegistry) GetHandlers(topic string) []MessageHandler {
 }
 
 // MessageBus handles async message routing between channels and the agent.
+//
+// The inbound/outbound channels are allocated once in the constructor and are
+// never closed or reassigned for the lifetime of the bus. This is deliberate:
+// unsynchronized senders (Send/Publish, and handler goroutines that call
+// Publish) hold a reference to these channels, so closing them on Stop would
+// open a "send on closed channel" panic window. Shutdown is cancel-only — see
+// Stop.
 type MessageBus struct {
 	inboundCh  chan InboundMessage
 	outboundCh chan OutboundMessage
 	registry   *HandlerRegistry
+	parentCtx  context.Context
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
@@ -113,25 +121,18 @@ type MessageBus struct {
 
 // NewMessageBus creates a new MessageBus with default buffer sizes.
 func NewMessageBus() *MessageBus {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &MessageBus{
-		inboundCh:        make(chan InboundMessage, MaxQueueSize),
-		outboundCh:       make(chan OutboundMessage, MaxQueueSize),
-		registry:         NewHandlerRegistry(),
-		ctx:              ctx,
-		cancel:           cancel,
-		handlerSemaphore: make(chan struct{}, MaxConcurrentHandlers),
-	}
+	return NewMessageBusWithContext(context.Background())
 }
 
 // NewMessageBusWithContext creates a new MessageBus with an external context.
 func NewMessageBusWithContext(ctx context.Context) *MessageBus {
-	ctx, cancel := context.WithCancel(ctx)
+	cctx, cancel := context.WithCancel(ctx)
 	return &MessageBus{
 		inboundCh:        make(chan InboundMessage, MaxQueueSize),
 		outboundCh:       make(chan OutboundMessage, MaxQueueSize),
 		registry:         NewHandlerRegistry(),
-		ctx:              ctx,
+		parentCtx:        ctx,
+		ctx:              cctx,
 		cancel:           cancel,
 		handlerSemaphore: make(chan struct{}, MaxConcurrentHandlers),
 	}
@@ -145,6 +146,10 @@ func (mb *MessageBus) Start() {
 		return
 	}
 	mb.started = true
+	// Derive a fresh cancellable context from the parent on every (re)start, so
+	// a bus that was previously Stopped starts clean instead of inheriting the
+	// already-cancelled context. The channels are intentionally left untouched.
+	mb.ctx, mb.cancel = context.WithCancel(mb.parentCtx)
 	mb.wg.Add(1)
 	go mb.processInbound(mb.ctx)
 	// Note: processOutbound is not started here because channel implementations
@@ -315,27 +320,30 @@ func (mb *MessageBus) processOutbound(ctx context.Context) {
 }
 
 // Stop gracefully shuts down the message bus.
-// It cancels the context and waits for all handlers to complete.
+//
+// Shutdown is cancel-only: it cancels the context and waits for the inbound
+// processor goroutine (the only goroutine tracked by wg) to drain and exit.
+// In-flight handler goroutines are not awaited here — they are bounded by
+// handlerSemaphore and observe the cancellation through the context they were
+// handed, unwinding on their own.
+//
+// The inbound/outbound channels are deliberately NOT closed or replaced.
+// Send/Publish and handler goroutines write to them without holding mb.mu, so
+// closing them would race those writers and could panic with "send on closed
+// channel" during shutdown. Leaving the channels open makes concurrent
+// Send/Publish safe at any point, including while Stop runs.
 func (mb *MessageBus) Stop() {
 	mb.mu.Lock()
 	if !mb.started {
 		mb.mu.Unlock()
 		return
 	}
+	mb.started = false
 	mb.cancel()
 	mb.mu.Unlock()
 
-	// Wait for all goroutines to finish
+	// Wait for the inbound processor to finish draining and exit.
 	mb.wg.Wait()
-
-	// Close channels (optional, depends on usage pattern)
-	mb.mu.Lock()
-	close(mb.inboundCh)
-	close(mb.outboundCh)
-	mb.inboundCh = make(chan InboundMessage, MaxQueueSize)
-	mb.outboundCh = make(chan OutboundMessage, MaxQueueSize)
-	mb.started = false
-	mb.mu.Unlock()
 }
 
 // IsRunning returns whether the bus is currently processing messages.

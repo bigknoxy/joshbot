@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -862,4 +863,48 @@ func TestBoundedConcurrencyStrict(t *testing.T) {
 	}
 
 	t.Logf("Max concurrent handlers: %d (limit: %d)", maxConcurrent, MaxConcurrentHandlers)
+}
+
+// TestSendPublishRaceWithStop hammers Send/Publish concurrently while Stop runs.
+//
+// Against the previous implementation (Stop closed and replaced inboundCh /
+// outboundCh under mb.mu while Send/Publish wrote to them without the lock),
+// this reproduced two failures: a "send on closed channel" panic when a writer
+// hit the channel between close and reassignment, and a data race that
+// `go test -race` flags on the channel fields (Stop reassigning them, Send/
+// Publish reading them). With cancel-only shutdown (channels never closed or
+// replaced) it passes cleanly.
+func TestSendPublishRaceWithStop(t *testing.T) {
+	for iter := 0; iter < 10; iter++ {
+		mb := NewMessageBus()
+		mb.Start()
+
+		var wg sync.WaitGroup
+
+		// Writers modeling unsynchronized senders (channels, handler
+		// goroutines). Each does a bounded number of writes, yielding between
+		// them so Stop is guaranteed to overlap them mid-flight rather than
+		// starving the scheduler with a tight spin.
+		for i := 0; i < 6; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 500; j++ {
+					mb.Send(InboundMessage{Channel: "test", Content: "in"})
+					mb.Publish(OutboundMessage{Channel: "test", Content: "out"})
+					runtime.Gosched()
+				}
+			}()
+		}
+
+		// Stop concurrently with the in-flight writers. Against the old code
+		// this was the window where a writer could hit a just-closed channel.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mb.Stop()
+		}()
+
+		wg.Wait()
+	}
 }

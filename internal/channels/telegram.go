@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -129,9 +128,12 @@ func normalizeUsername(username string) string {
 // Entries may be a numeric Telegram user ID, a @username, or a "First Last"
 // display name.
 func (t *TelegramChannel) IsAllowed(userID int64, username, firstName, lastName string) bool {
-	// If allowlist is empty, allow everyone
+	// An empty allowlist denies everyone. This bot hands whoever it talks to a
+	// direct line into an agent loop holding the shell tool, so an unset
+	// allowlist must fail closed, not open — see the startup warning in Start
+	// that names the exact config key an operator has to set.
 	if len(t.allowSet) == 0 {
-		return true
+		return false
 	}
 
 	// Check by numeric user ID. This is the form the README documents, and
@@ -178,6 +180,16 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 		t.running = false
 		t.mu.Unlock()
 		return fmt.Errorf("Telegram token is not configured")
+	}
+
+	// Fail closed on an unset allowlist, but loudly: the operator has a running
+	// bot that rejects every message until they name who may use it. Say
+	// exactly what to set so this is actionable, not a silent lockout.
+	if len(t.allowSet) == 0 {
+		log.Warn("Telegram allowlist is empty — every sender will be rejected. " +
+			"Set channels.telegram.allow_from in ~/.joshbot/config.json (or " +
+			"JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM) to your numeric Telegram " +
+			"user ID before this bot can be used.")
 	}
 
 	// Create bot with polling
@@ -557,9 +569,6 @@ func (t *TelegramChannel) handlePhoto(ctx telebot.Context) error {
 		},
 	}
 
-	// Download photo in background
-	go t.downloadFile(photo.File, "photo", msg.Chat.ID, msg.ID)
-
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send photo message to bus", "error", "queue full")
 	}
@@ -602,9 +611,6 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 			"caption":        voice.Caption,
 		},
 	}
-
-	// Download voice in background
-	go t.downloadFile(voice.File, "voice", msg.Chat.ID, msg.ID)
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send voice message to bus", "error", "queue full")
@@ -649,9 +655,6 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 			"caption":        doc.Caption,
 		},
 	}
-
-	// Download document in background
-	go t.downloadFile(doc.File, "document", msg.Chat.ID, msg.ID)
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send document message to bus", "error", "queue full")
@@ -699,9 +702,6 @@ func (t *TelegramChannel) handleAudio(ctx telebot.Context) error {
 		},
 	}
 
-	// Download audio in background
-	go t.downloadFile(audio.File, "audio", msg.Chat.ID, msg.ID)
-
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send audio message to bus", "error", "queue full")
 	}
@@ -747,9 +747,6 @@ func (t *TelegramChannel) handleVideo(ctx telebot.Context) error {
 			"caption":        video.Caption,
 		},
 	}
-
-	// Download video in background
-	go t.downloadFile(video.File, "video", msg.Chat.ID, msg.ID)
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send video message to bus", "error", "queue full")
@@ -898,34 +895,6 @@ func (t *TelegramChannel) convertToInboundMessage(msg *telebot.Message) bus.Inbo
 			"is_command": strings.HasPrefix(content, "/"),
 		},
 	}
-}
-
-// downloadFile downloads a file from Telegram and stores it locally.
-func (t *TelegramChannel) downloadFile(file telebot.File, mediaType string, chatID int64, messageID int) {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
-		return
-	}
-
-	// Check if file is on cloud
-	if !file.InCloud() {
-		log.Debug("file not in cloud, skipping download", "media_type", mediaType, "file_id", file.FileID)
-		return
-	}
-
-	// Create filename for local storage
-	filename := fmt.Sprintf("%s_%d_%d_%s", mediaType, chatID, messageID, file.UniqueID)
-
-	err := bot.Download(&file, filename)
-	if err != nil {
-		log.Error("failed to download file", "media_type", mediaType, "error", err, "file_id", file.FileID)
-		return
-	}
-
-	log.Info("downloaded file", "media_type", mediaType, "filename", filename, "chat_id", chatID, "message_id", messageID)
 }
 
 // startTyping shows "typing…" for a chat and keeps it alive until stopTyping
@@ -1376,31 +1345,33 @@ func isRetryable(err error) bool {
 		return true
 	}
 
-	// Telegram-specific errors
-	retryablePatterns := []string{
-		"too many requests",
-		"retry after",
-		"bot was blocked",
-		"user is deactivated",
+	// Transient Telegram rate limiting — retrying after a backoff is correct.
+	if strings.Contains(errStr, "too many requests") ||
+		strings.Contains(errStr, "retry after") {
+		return true
 	}
 
-	for _, pattern := range retryablePatterns {
+	// Permanent failures. "bot was blocked" and "user is deactivated" are 403s
+	// that will never succeed on retry — retrying them burns ~7.5s of backoff
+	// per outbound part inside the single consumeOutbound goroutine, delaying
+	// every other queued message behind a doomed send. A missing chat or reply
+	// target is equally permanent.
+	permanentPatterns := []string{
+		"bot was blocked",
+		"user is deactivated",
+		"message to reply",
+		"chat not found",
+	}
+	for _, pattern := range permanentPatterns {
 		if strings.Contains(errStr, pattern) {
-			return true
+			return false
 		}
 	}
 
-	// Message to chat not found - not retryable
-	if strings.Contains(errStr, "message to reply") {
-		return false
-	}
-
-	// Chat not found - not retryable
-	if strings.Contains(errStr, "chat not found") {
-		return false
-	}
-
-	// Default to retry for unknown errors
+	// Default to retry for unknown errors, but say so: an error we do not
+	// recognize being retried 3× is a signal that this classifier needs a new
+	// case, not something to swallow silently.
+	log.Debug("telegram: retrying unclassified send error", "error", errStr)
 	return true
 }
 
@@ -1513,98 +1484,6 @@ func (t *TelegramChannel) consumeOutbound(ctx context.Context) {
 	}
 }
 
-// SendPhoto sends a photo to a recipient.
-func (t *TelegramChannel) SendPhoto(recipient telebot.Recipient, photo *telebot.Photo, caption string, opts *telebot.SendOptions) error {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
-		return fmt.Errorf("bot not initialized")
-	}
-
-	if opts == nil {
-		opts = &telebot.SendOptions{}
-	}
-
-	_, err := bot.Send(recipient, photo, opts)
-	return err
-}
-
-// SendDocument sends a document to a recipient.
-func (t *TelegramChannel) SendDocument(recipient telebot.Recipient, doc *telebot.Document, caption string, opts *telebot.SendOptions) error {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
-		return fmt.Errorf("bot not initialized")
-	}
-
-	if opts == nil {
-		opts = &telebot.SendOptions{}
-	}
-
-	_, err := bot.Send(recipient, doc, opts)
-	return err
-}
-
-// EditMessage edits an existing message.
-func (t *TelegramChannel) EditMessage(recipient telebot.Recipient, messageID int, text string, opts *telebot.SendOptions) error {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
-		return fmt.Errorf("bot not initialized")
-	}
-
-	// Create an Editable wrapper for the message
-	editable := &editableMessage{
-		messageID: messageID,
-		chatID:    0, // Will be determined from context
-	}
-
-	_, err := bot.Edit(editable, text, opts)
-	return err
-}
-
-// editableMessage implements telebot.Editable for editing messages.
-type editableMessage struct {
-	messageID int
-	chatID    int64
-}
-
-func (e *editableMessage) MessageSig() (string, int64) {
-	return strconv.Itoa(e.messageID), e.chatID
-}
-
-// ParseMarkdown parses markdown text and returns HTML for Telegram.
-func (t *TelegramChannel) ParseMarkdown(text string) (string, error) {
-	// Simple markdown to Telegram HTML conversion
-	// Bold: **text** or *text* -> <b>text</b>
-	boldRegex := regexp.MustCompile(`\*\*(.+?)\*\*|\*(.+?)\*`)
-	text = boldRegex.ReplaceAllString(text, "<b>$1$2</b>")
-
-	// Italic: __text__ or _text_ -> <i>text</i>
-	italicRegex := regexp.MustCompile(`__(.+?)__|_(.+?)_`)
-	text = italicRegex.ReplaceAllString(text, "<i>$1$2</i>")
-
-	// Pre: ```code``` -> <pre>code</pre> (must run before inline code)
-	preRegex := regexp.MustCompile("```(.+?)```")
-	text = preRegex.ReplaceAllString(text, "<pre>$1</pre>")
-
-	// Code: `code` -> <code>code</code>
-	codeRegex := regexp.MustCompile("`(.+?)`")
-	text = codeRegex.ReplaceAllString(text, "<code>$1</code>")
-
-	// Links: [text](url) -> <a href="url">text</a>
-	linkRegex := regexp.MustCompile(`\[(.+?)\]\((.+?)\)`)
-	text = linkRegex.ReplaceAllString(text, `<a href="$2">$1</a>`)
-
-	return text, nil
-}
-
 // ValidateToken validates a Telegram bot token by making a getMe API call.
 // Returns nil if the token is valid, or an error describing the failure.
 func ValidateToken(token string) error {
@@ -1614,7 +1493,11 @@ func ValidateToken(token string) error {
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
 
-	resp, err := http.Get(url)
+	// A bounded timeout so a blackholed network cannot hang a non-interactive
+	// `configure`/`onboard` run forever — the exact scriptable use case this
+	// project targets. Without it, bare http.Get waits indefinitely.
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("failed to connect to Telegram API: %w", err)
 	}

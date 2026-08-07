@@ -175,38 +175,56 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 		return "", errors.New("path is required")
 	}
 
-	// If path is absolute, check restrictions
-	if filepath.IsAbs(path) {
-		cleaned := filepath.Clean(path)
-		// Check workspace restriction
-		if t.restrict && !isWithinBase(cleaned, workspace) {
-			// Check allowed paths if workspace restriction is enabled
-			if !t.isAllowedPath(cleaned) {
-				return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
-			}
-		}
-		return cleaned, nil
+	cleaned := filepath.Clean(path)
+	if !filepath.IsAbs(cleaned) {
+		cleaned = filepath.Clean(filepath.Join(workspace, path))
 	}
 
-	// Resolve relative path
-	resolved := filepath.Join(workspace, path)
-	cleaned := filepath.Clean(resolved)
+	// Resolve symlinks before the containment check so a lexically-inside path
+	// that actually points outside the workspace (ws/link -> /etc) is rejected.
+	// The resolved path is what we return and operate on, closing the TOCTOU
+	// gap between checking and using.
+	resolved, err := resolveSymlinks(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %s: %w", path, err)
+	}
 
-	// Check workspace restriction
-	if t.restrict && !isWithinBase(cleaned, workspace) {
-		// Check allowed paths
-		if !t.isAllowedPath(cleaned) {
+	if t.restrict {
+		// Compare against the symlink-resolved workspace too, so the workspace
+		// itself lying behind a symlink (e.g. macOS /tmp -> /private/tmp) does
+		// not spuriously fail the check.
+		base := workspace
+		if rb, berr := resolveSymlinks(filepath.Clean(workspace)); berr == nil {
+			base = rb
+		}
+		if !isWithinBase(resolved, base) && !t.isAllowedResolved(resolved) {
 			return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
 		}
 	}
 
-	return cleaned, nil
+	return resolved, nil
 }
 
 // isAllowedPath checks if the path is in the allowed paths list.
 func (t *FilesystemTool) isAllowedPath(path string) bool {
 	for _, allowed := range t.allowedPaths {
 		allowedClean := filepath.Clean(allowed)
+		if isWithinBase(path, allowedClean) || path == allowedClean {
+			return true
+		}
+	}
+	return false
+}
+
+// isAllowedResolved reports whether a symlink-resolved path is within an
+// allowed path, resolving each allowed base the same way so both sides are
+// comparable (macOS /var -> /private/var, etc.).
+func (t *FilesystemTool) isAllowedResolved(path string) bool {
+	for _, allowed := range t.allowedPaths {
+		allowedClean := filepath.Clean(allowed)
+		if r, err := resolveSymlinks(allowedClean); err == nil {
+			allowedClean = r
+		}
 		if isWithinBase(path, allowedClean) || path == allowedClean {
 			return true
 		}

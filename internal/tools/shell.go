@@ -34,6 +34,9 @@ type ShellTool struct {
 // permits outbound TCP, which is off by default because exfiltrating what was
 // read is the usual payoff for an attack that reaches this far.
 func (t *ShellTool) SetSandbox(mode SandboxMode, allowNetwork bool) {
+	if mode == "" {
+		mode = SandboxOff
+	}
 	t.sandbox = mode
 	t.allowNetwork = allowNetwork
 }
@@ -51,6 +54,10 @@ func NewShellToolWithMaxOutput(timeout time.Duration, workspace string, restrict
 		restrict:       restrict,
 		allowList:      allowList,
 		maxOutputChars: maxOutputChars,
+		// Explicitly off: the zero value of SandboxMode is "", and while "" is
+		// treated as off everywhere it is read, initializing it here keeps a
+		// bare-constructed tool off even if a future read forgets to normalize.
+		sandbox: SandboxOff,
 	}
 }
 
@@ -174,7 +181,9 @@ func (t *ShellTool) isDenied(cmd string) string {
 // worse off than one who never switched it on, because they would stop
 // thinking about it.
 func (t *ShellTool) buildExecCmd(ctx context.Context, cmd, workingDir string) (*exec.Cmd, error) {
-	if t.sandbox == SandboxOff {
+	// "" is the zero value and means off (see sandboxPreflight); only a mode
+	// that was explicitly set to something other than off takes the helper path.
+	if t.sandbox == SandboxOff || t.sandbox == "" {
 		return exec.CommandContext(ctx, "sh", "-c", cmd), nil
 	}
 

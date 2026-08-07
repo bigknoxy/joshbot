@@ -90,6 +90,30 @@ jobs:
             echo "Coverage badge is up to date"
           fi
 
+  test-macos:
+    # Releases are cut on macOS, and the Landlock sandbox is Linux-only, so the
+    # security/shell tests exercise different code paths here. This leg builds
+    # and tests on macOS without a coverage gate (the Linux leg owns coverage);
+    # it would have caught #138, where the zero-value SandboxMode refused on any
+    # host without Landlock.
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Build
+        run: go build ./cmd/joshbot
+
+      - name: Run tests
+        run: go test -race ./...
+
   deploy-pages:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest

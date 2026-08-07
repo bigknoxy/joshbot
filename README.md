@@ -588,3 +588,10 @@ If you see rate limit errors (HTTP 429), configure fallback providers in your co
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+<!-- agent-skills:doc-keeper:start -->
+## Reference (auto-tracked by doc-keeper)
+
+### Environment Variables
+- `JOSHBOT_WORKSPACE`: _(add description)_
+<!-- agent-skills:doc-keeper:end -->

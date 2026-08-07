@@ -71,13 +71,61 @@ func LoadTrustStore(path string) (*TrustStore, error) {
 }
 
 // HashSkillFile returns the digest a trust entry is bound to.
+//
+// It covers the ENTIRE skill directory tree, not just SKILL.md: a skill's
+// SKILL.md can tell the agent to run a sibling script, so binding trust to
+// SKILL.md alone would let an attacker rewrite that script after approval and
+// keep the skill trusted. The digest folds in every regular file's relative
+// path and content, walked in sorted order so the result is deterministic
+// regardless of filesystem iteration order. Editing, adding, or removing any
+// file in the directory changes the digest and so revokes trust.
+//
+// The hash format changed in a way that is intentionally incompatible with the
+// old SKILL.md-only digest: a store written by an older joshbot will simply
+// fail to match, which revokes affected skills (they must be re-inspected and
+// re-trusted) rather than crashing or silently staying approved.
 func HashSkillFile(skillDir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	h := sha256.New()
+
+	// Collect regular files with their directory-relative paths first, so the
+	// digest does not depend on WalkDir's traversal order.
+	var rels []string
+	err := filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		// Only hash regular files. A symlink's target content is not part of
+		// the skill, and following it could reach outside the directory.
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(skillDir, path)
+		if err != nil {
+			return err
+		}
+		rels = append(rels, rel)
+		return nil
+	})
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	sort.Strings(rels)
+
+	for _, rel := range rels {
+		data, err := os.ReadFile(filepath.Join(skillDir, rel))
+		if err != nil {
+			return "", err
+		}
+		// Length-prefix path and content so no two distinct trees collide by
+		// concatenation (e.g. "ab"+"c" vs "a"+"bc").
+		fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(rel), len(data))
+		h.Write(data)
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // IsTrusted reports whether the skill's current content has been approved.

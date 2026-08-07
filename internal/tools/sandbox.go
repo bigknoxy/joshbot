@@ -132,7 +132,12 @@ func DefaultSandboxPolicy(workspace string) SandboxPolicy {
 // testable on any machine — otherwise the refusal paths could only be
 // exercised on a kernel that happens to lack Landlock.
 func sandboxPreflight(mode SandboxMode, available, supported bool) error {
-	if mode == SandboxOff {
+	// The zero value of SandboxMode is "", not SandboxOff. A bare-constructed
+	// ShellTool (no SetSandbox / NewShellToolFromConfig) leaves the field empty,
+	// and empty must mean off — otherwise the tool takes the sandbox path and
+	// refuses on any platform without Landlock (e.g. macOS). Treat "" as off
+	// here to match ParseSandboxMode, which already normalizes "" to off.
+	if mode == SandboxOff || mode == "" {
 		return nil
 	}
 	if !available {

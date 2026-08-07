@@ -587,7 +587,8 @@ func TestTelegramChannel_RegisterCommandsFailureIsNotFatal(t *testing.T) {
 func TestTelegramChannel_UnknownCommandGetsReply(t *testing.T) {
 	srv := newFakeTelegramServer(t)
 	bot := srv.bot(t)
-	tg := newTestTelegramChannel()
+	// The unknown-command reply is only sent to an allowlisted sender.
+	tg := newTestTelegramChannel("josh")
 	tg.mu.Lock()
 	tg.bot = bot
 	tg.mu.Unlock()

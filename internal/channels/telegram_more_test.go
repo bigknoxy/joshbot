@@ -90,32 +90,10 @@ func TestTelegramChannel_SendPathsWithoutBot(t *testing.T) {
 		}
 	})
 
-	t.Run("SendPhoto", func(t *testing.T) {
-		if err := tg.SendPhoto(recipient, &telebot.Photo{}, "caption", nil); err == nil {
-			t.Error("expected an error when the bot is not initialized")
-		}
-	})
-
-	t.Run("SendDocument", func(t *testing.T) {
-		if err := tg.SendDocument(recipient, &telebot.Document{}, "caption", nil); err == nil {
-			t.Error("expected an error when the bot is not initialized")
-		}
-	})
-
-	t.Run("EditMessage", func(t *testing.T) {
-		if err := tg.EditMessage(recipient, 5, "new text", nil); err == nil {
-			t.Error("expected an error when the bot is not initialized")
-		}
-	})
-
 	// These return nothing; the assertion is that they do not panic.
 	t.Run("startTyping", func(t *testing.T) {
 		tg.startTyping(recipient)
 		tg.stopTyping(recipient)
-	})
-
-	t.Run("downloadFile", func(t *testing.T) {
-		tg.downloadFile(telebot.File{FileID: "abc", UniqueID: "u1"}, "photo", 1, 2)
 	})
 }
 
@@ -367,10 +345,12 @@ func TestTelegramChannel_BuildReplyMarkup_IgnoresWrongTypes(t *testing.T) {
 }
 
 func TestTelegramChannel_IsAllowedVariants(t *testing.T) {
-	t.Run("empty allowlist permits everyone", func(t *testing.T) {
+	// A shell-capable bot must fail closed: an unset allowlist denies everyone
+	// rather than exposing the agent loop to any sender who finds the handle.
+	t.Run("empty allowlist denies everyone", func(t *testing.T) {
 		tg := newTestTelegramChannel()
-		if !tg.IsAllowed(1, "anyone", "Any", "One") {
-			t.Error("expected an empty allowlist to permit everyone")
+		if tg.IsAllowed(1, "anyone", "Any", "One") {
+			t.Error("expected an empty allowlist to deny everyone")
 		}
 	})
 

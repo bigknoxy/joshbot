@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Granting the shared temp directory hands a command every other process's
@@ -75,6 +77,11 @@ func TestSandboxPreflight(t *testing.T) {
 		supported bool
 		wantErr   bool
 	}{
+		// The zero value of SandboxMode is "", not SandboxOff. It must behave
+		// as off, or a bare-constructed ShellTool refuses on any host without
+		// Landlock (e.g. macOS). Regression guard for #138.
+		{"zero value means off", SandboxMode(""), false, false, false},
+		{"zero value off on a capable host", SandboxMode(""), true, true, false},
 		{"off needs nothing", SandboxOff, false, false, false},
 		{"off on a capable host", SandboxOff, true, true, false},
 		{"on and fully capable", SandboxWorkspace, true, true, false},
@@ -96,6 +103,22 @@ func TestSandboxPreflight(t *testing.T) {
 				t.Fatalf("unexpected refusal: %v", err)
 			}
 		})
+	}
+}
+
+// A bare-constructed ShellTool leaves sandbox at its zero value (""). It must
+// take the plain "sh -c" path, not the sandbox helper — otherwise it refuses on
+// any host without Landlock. Regression guard for #138; runs on every platform.
+func TestShellTool_ZeroValueSandbox_TakesPlainPath(t *testing.T) {
+	tool := NewShellTool(time.Second, t.TempDir(), false)
+	cmd, err := tool.buildExecCmd(context.Background(), "echo hi", "")
+	if err != nil {
+		t.Fatalf("bare-constructed tool refused to build a command: %v", err)
+	}
+	for _, arg := range cmd.Args {
+		if arg == SandboxHelperArg {
+			t.Fatalf("zero-value sandbox took the helper path: args=%v", cmd.Args)
+		}
 	}
 }
 

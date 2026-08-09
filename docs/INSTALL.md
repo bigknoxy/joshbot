@@ -308,7 +308,10 @@ joshbot stores all configuration and data in `~/.joshbot/`:
 ~/.joshbot/
 ├── config.json          # Main configuration file (0600)
 ├── skills.trust         # Approved workspace skills (0600)
-├── sessions/            # Conversation history (JSONL)
+├── sessions/            # Conversation history, one JSONL file per
+│                        #   channel:senderID (0600). A load that hits an
+│                        #   unreadable line skips it and preserves the
+│                        #   original bytes at <session-id>.jsonl.corrupt
 ├── media/               # Downloaded media files
 ├── cron/                # Created but unused; jobs live in workspace/cron/jobs.json
 └── workspace/           # Memory, skills, and context files
@@ -805,8 +808,13 @@ export PATH=$PATH:$(go env GOPATH)/bin
 
 **Solution:**
 ```bash
-# Fix permissions
-chmod -R 755 ~/.joshbot
+# Take ownership and restore owner-only access.
+# Do NOT use `chmod -R 755` here: config.json holds live provider API keys,
+# and the session and log files hold full conversation content.
+chown -R "$USER" ~/.joshbot
+chmod 700 ~/.joshbot
+find ~/.joshbot -type d -exec chmod 700 {} +
+find ~/.joshbot -type f -exec chmod 600 {} +
 
 # Or recreate
 rm -rf ~/.joshbot

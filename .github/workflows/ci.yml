@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Every pull request, not only those targeting main. A stacked PR based on
+  # another branch got no CI at all, so the whole middle of a stack merged on
+  # local verification alone.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 

@@ -66,14 +66,24 @@ curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | 
 ```
 
 This script will:
-1. Download the latest pre-built binary for your platform
-2. Verify the checksum
+1. Download the pre-built binary for your platform
+2. Verify it against the release checksums — and **refuse to install** if they
+   do not match, or cannot be fetched at all
 3. Install the binary to `~/.local/bin` (preferred) or `/usr/local/bin`
 
-For a specific version:
+For a specific version, or a different directory:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- -v v1.0.0
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- --version v1.45.2
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- --bin-dir ~/bin
 ```
+
+`--bin-dir` creates the directory if it does not exist. Re-running the script
+upgrades an existing installation in place; installing over an unrelated binary
+at the same path requires `--force`.
+
+Checksum verification fails closed: if the release checksums cannot be
+retrieved, the script installs nothing rather than continuing unverified. Set
+`JOSHBOT_SKIP_CHECKSUM=1` to override that, at your own risk.
 
 After installation, verify it works:
 

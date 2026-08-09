@@ -13,8 +13,54 @@
 #   -f, --force            Overwrite existing installation
 #   -h, --help            Show this help message
 #
+# Environment:
+#   JOSHBOT_SKIP_CHECKSUM=1  Install even if the release checksums cannot be
+#                            fetched. Off by default: verification being
+#                            unavailable must not quietly become no verification.
+#
 
 set -e
+
+# Any unexpected failure must say something. Without this, `set -e` aborts the
+# script silently: `--bin-dir` with no value died on `shift 2` and printed
+# nothing at all, and a failed `mv` left only the raw mv error with no context.
+# TEMP_DIR is cleaned up by the single EXIT trap below. There must be exactly
+# one: a second `trap ... EXIT` silently replaces the first, and download_binary
+# used to install its own cleanup trap that removed this error reporting.
+TEMP_DIR=""
+HANDLED=false
+
+# die reports a diagnosed failure and stops. Every line is printed to stderr so
+# a caller piping stdout still sees why it failed.
+die() {
+    HANDLED=true
+    local line
+    for line in "$@"; do
+        echo "$line" >&2
+    done
+    exit 1
+}
+
+on_exit() {
+    local status=$?
+    [ -n "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+    # Only for failures we did not diagnose ourselves. A `die` message is
+    # already actionable; appending "Installation failed" to it is noise.
+    if [ "$status" -ne 0 ] && [ "$HANDLED" != "true" ]; then
+        echo "" >&2
+        echo "Installation failed (exit $status)." >&2
+        echo "Report this at https://github.com/bigknoxy/joshbot/issues" >&2
+    fi
+    exit $status
+}
+trap on_exit EXIT
+
+# require_value exits with a usable message when a flag is missing its argument.
+require_value() {
+    if [ -z "${2:-}" ]; then
+        die "Error: $1 needs a value (e.g. $1 $3)"
+    fi
+}
 
 # Configuration
 REPO="bigknoxy/joshbot"
@@ -29,10 +75,12 @@ FORCE=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -b|--bin-dir)
+            require_value "--bin-dir" "${2:-}" "~/.local/bin"
             INSTALL_DIR="$2"
             shift 2
             ;;
         -v|--version)
+            require_value "--version" "${2:-}" "v1.45.2"
             VERSION="$2"
             shift 2
             ;;
@@ -54,12 +102,15 @@ Options:
     -f, --force            Overwrite existing installation
     -h, --help            Show this help message
 
+Environment:
+    JOSHBOT_SKIP_CHECKSUM=1  Install even if the release checksums cannot be
+                             fetched (not recommended)
+
 EOF
             exit 0
             ;;
         *)
-            echo "Unknown option: $1"
-            exit 1
+            die "Unknown option: $1" "Run with --help to see the available options."
             ;;
     esac
 done
@@ -112,8 +163,9 @@ get_latest_version() {
     version=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" | grep -o '"tag_name": "[^"]*' | cut -d'"' -f4)
     
     if [ -z "$version" ]; then
-        echo "Error: Could not determine latest version" >&2
-        exit 1
+        die "Error: could not determine the latest joshbot version." \
+            "GitHub may be unreachable, or rate-limiting this address." \
+            "Retry, or pin a version with --version (e.g. --version v1.45.2)."
     fi
     
     echo "$version"
@@ -122,6 +174,14 @@ get_latest_version() {
 # Determine install directory
 get_install_dir() {
     if [ -n "$INSTALL_DIR" ]; then
+        # Create it. An explicit --bin-dir that does not exist yet is a normal
+        # request, not an error — and leaving it missing meant the install died
+        # on a raw "mv: No such file or directory" after already reporting a
+        # successful download and checksum.
+        if [ ! -d "$INSTALL_DIR" ] && ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+            die "Error: could not create install directory: ${INSTALL_DIR}" \
+                "Choose a writable location with --bin-dir, or create it first."
+        fi
         echo "$INSTALL_DIR"
         return
     fi
@@ -188,10 +248,11 @@ download_binary() {
     
     echo "Downloading joshbot ${version} for ${os}/${arch}..."
     
-    # Create temp directory
+    # Create temp directory. Cleanup is handled by the single EXIT trap; adding
+    # one here would replace it and lose the failure message.
     local temp_dir
     temp_dir=$(mktemp -d)
-    trap "rm -rf $temp_dir" EXIT
+    TEMP_DIR="$temp_dir"
     
     # Try to download archive first, fall back to raw binary
     local use_archive=false
@@ -224,12 +285,17 @@ download_binary() {
                     downloaded_file="$dest2"
                     echo "  ✓ Binary downloaded: $(basename "$dest2")"
                 else
-                    echo "Error: Failed to download joshbot ${version} for ${os}/${arch}" >&2
-                    echo "Tried:" >&2
+                    echo "Error: no joshbot ${version} build for ${os}/${arch}." >&2
+                    echo "" >&2
+                    echo "Check that the release exists and publishes this platform:" >&2
+                    echo "  https://github.com/${REPO}/releases/tag/${version}" >&2
+                    echo "" >&2
+                    echo "URLs tried:" >&2
                     echo "  - ${binary_url_v}" >&2
                     echo "  - ${archive_url}" >&2
                     echo "  - ${binary_url}" >&2
                     echo "  - ${binary_url_alt}" >&2
+                    HANDLED=true
                     exit 1
                 fi
             fi
@@ -265,16 +331,28 @@ download_binary() {
             if [ "$checksum" = "$actual_checksum" ]; then
                 echo "  ✓ Checksum verified"
             else
-                echo "Error: Checksum mismatch — download may be corrupted or tampered with" >&2
-                echo "Expected: $checksum" >&2
-                echo "Actual:   $actual_checksum" >&2
-                exit 1
+                die "Error: checksum mismatch — the download is corrupted or tampered with." \
+                    "Expected: $checksum" \
+                    "Actual:   $actual_checksum" \
+                    "Nothing was installed."
             fi
         else
-            echo "  Checksum not found in release"
+            die "Error: ${downloaded_basename} is not listed in the release checksums." \
+                "Refusing to install a binary that cannot be verified." \
+                "Set JOSHBOT_SKIP_CHECKSUM=1 to override, at your own risk."
         fi
     else
-        echo "  No checksums available"
+        # Fail closed. Every joshbot release publishes checksums.txt, so its
+        # absence means the download path is not what it should be — and
+        # "verification unavailable" must never quietly become "not verified".
+        if [ "${JOSHBOT_SKIP_CHECKSUM:-}" = "1" ]; then
+            echo "  ! Checksums unavailable — continuing because JOSHBOT_SKIP_CHECKSUM=1"
+        else
+            die "Error: could not fetch the release checksums from:" \
+                "  ${checksum_url}" \
+                "Refusing to install an unverified binary." \
+                "Set JOSHBOT_SKIP_CHECKSUM=1 to override, at your own risk."
+        fi
     fi
     
     # Extract or prepare binary
@@ -297,8 +375,8 @@ download_binary() {
     
     # Check if binary exists
     if [ ! -f "$binary" ]; then
-        echo "Error: Failed to locate binary after download" >&2
-        exit 1
+        die "Error: could not find the joshbot binary after download." \
+            "The release layout may have changed; please report this."
     fi
     
     # Make executable
@@ -311,8 +389,8 @@ download_binary() {
     fi
     
     if [ -f "$target" ] && [ "$FORCE" = "false" ] && [ -z "$current_version" ]; then
-        echo "Error: Binary already exists at ${target}. Use --force to overwrite." >&2
-        exit 1
+        die "Error: joshbot is already installed at ${target}." \
+            "Re-run with --force to overwrite it."
     fi
     
     # Force overwrite during upgrade
@@ -321,12 +399,27 @@ download_binary() {
     fi
     
     if [ -f "$target" ] && [ "$FORCE" = "false" ]; then
-        echo "Error: Binary already exists at ${target}. Use --force to overwrite." >&2
-        exit 1
+        die "Error: joshbot is already installed at ${target}." \
+            "Re-run with --force to overwrite it."
     fi
     
-    # Move binary to install directory
-    mv -f "$binary" "$target"
+    # Stage inside the install directory, then rename over the target.
+    #
+    # A direct mv from the temp dir is a cross-filesystem copy, which is not
+    # atomic: an interrupted install would leave a truncated binary at the very
+    # path the user runs. A rename within one directory is atomic, so the target
+    # is either the old binary or the complete new one.
+    local staged="${target}.new-$$"
+    if ! cp -f "$binary" "$staged"; then
+        die "Error: could not write to ${install_dir}." \
+            "The existing joshbot, if any, was left untouched."
+    fi
+    chmod +x "$staged"
+    if ! mv -f "$staged" "$target"; then
+        rm -f "$staged"
+        die "Error: could not install to ${target}." \
+            "The existing joshbot, if any, was left untouched."
+    fi
     
     echo ""
     if [ -n "$current_version" ]; then
@@ -369,11 +462,15 @@ main() {
         echo "Installing to: ${install_dir} (upgrading)"
     fi
     
-    # Check write permission to install directory
-    if [ ! -w "$install_dir" ] && [ ! -w "$(dirname "$install_dir")" ]; then
-        echo "Error: No write permission to install directory: ${install_dir}" >&2
-        echo "Try running with sudo or use --bin-dir to specify a writable location" >&2
-        exit 1
+    # Check write permission on the directory we will actually write into.
+    #
+    # This used to also accept a writable *parent*, which is not the same thing:
+    # a read-only install dir inside a writable parent passed the check and then
+    # failed at the mv with a bare "Permission denied".
+    if [ ! -w "$install_dir" ]; then
+        die "Error: no write permission for install directory: ${install_dir}" \
+            "Re-run with --bin-dir pointing somewhere writable (e.g. ~/.local/bin)," \
+            "or with sudo if you meant to install system-wide."
     fi
     
     download_binary "$version" "$os" "$arch" "$install_dir" "$current_version"

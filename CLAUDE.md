@@ -136,6 +136,7 @@ Then, before tagging — no code change ships without this:
 - [ ] `CLAUDE.md` / `AGENTS.md` — gotchas cover anything that would surprise an agent
 - [ ] `internal/skills/bundled/*/SKILL.md` — bundled skills do not instruct the agent to do something
       the tools no longer permit
+- [ ] `./scripts/test-install.sh` passes — not in CI (it downloads real artifacts), so it only runs if you run it
 - [ ] `CHANGELOG.md` — an entry exists under `[Unreleased]`
 - [ ] Any count or size quoted anywhere was re-measured, not carried over
 

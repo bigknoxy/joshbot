@@ -3,9 +3,11 @@ package agent
 import "context"
 
 // StreamEvent is emitted during streaming to deliver incremental assistant
-// text to a per-request sink. (Stage 3 of the streaming work; not yet wired
-// into the ReAct loop — this type exists so stage 3 can reuse the same
-// context-carried mechanism built here in stage 1.)
+// text to a per-request sink.
+//
+// The sink rides the context rather than the Agent struct, for the same reason
+// the tool-progress callback does: Telegram processes messages concurrently,
+// and a struct field would cross-deliver one conversation's text to another.
 type StreamEvent struct {
 	// Delta is the incremental assistant text for this chunk.
 	Delta string
@@ -14,7 +16,7 @@ type StreamEvent struct {
 }
 
 // StreamSink receives StreamEvents from the ReAct loop when streaming is
-// enabled. (Stage 3; not yet used.)
+// enabled.
 type StreamSink func(StreamEvent)
 
 // requestSink carries per-request presentation callbacks from the caller
@@ -58,7 +60,7 @@ func WithSink(ctx context.Context, progress ProgressFunc) context.Context {
 // the existing one. Passing nil clears the stream sink while preserving
 // any progress callback.
 //
-// (Stage 3; not yet wired into the ReAct loop.)
+
 func WithStreamSink(ctx context.Context, sink StreamSink) context.Context {
 	existing := sinkFromContext(ctx)
 	if existing != nil {
@@ -89,7 +91,7 @@ func progressFromContext(ctx context.Context) ProgressFunc {
 // streamSinkFromContext returns the per-request stream sink from the
 // context, or nil if none is attached.
 //
-// (Stage 3; not yet used.)
+
 func streamSinkFromContext(ctx context.Context) StreamSink {
 	if s := sinkFromContext(ctx); s != nil {
 		return s.stream

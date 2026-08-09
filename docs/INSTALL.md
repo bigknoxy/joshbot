@@ -427,7 +427,8 @@ The old format is still supported for backward compatibility:
       "max_tokens": 8192,
       "temperature": 0.7,
       "max_tool_iterations": 20,
-      "memory_window": 50
+      "memory_window": 50,
+      "streaming": false
     }
   },
   "channels": {
@@ -675,6 +676,15 @@ workspace/
 | `MEMORY.md` | Important facts the bot remembers across conversations |
 | `HISTORY.md` | Timestamped log of past conversations (grep-searchable) |
 | `HEARTBEAT.md` | Tasks for autonomous processing (checked every 5 min) |
+
+### Streaming Responses
+
+`agents.defaults.streaming` (default `false`) prints the reply as it arrives
+rather than after the turn completes. It applies only to the interactive CLI on
+a real terminal — `joshbot agent -m` and piped output are unchanged — and it
+trades away the non-streaming path's transparent provider fallback: once text
+has been printed it cannot be retried against another provider, so a mid-stream
+failure appends a visible `[stream error: ...]` marker instead.
 
 ### Skill Approval
 

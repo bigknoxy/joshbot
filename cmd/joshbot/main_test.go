@@ -35,7 +35,7 @@ func TestRunAgentLoopProcessesInput(t *testing.T) {
 
 	mock := &mockAgent{}
 	// messageSender is nil in tests - chat ID won't be set but that's fine for unit tests
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -62,7 +62,7 @@ func TestRunAgentLoopExitsOnEOF(t *testing.T) {
 
 	mock := &mockAgent{}
 	// messageSender is nil in tests - chat ID won't be set but that's fine for unit tests
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -84,7 +84,7 @@ func TestRunAgentLoopSetsChatID(t *testing.T) {
 	input := bytes.NewBufferString("hello\nexit\n")
 
 	mock := &mockAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, sender); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, sender, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestRunAgentLoop_NonTTY_NoProgressCallbackWired(t *testing.T) {
 	input := bytes.NewBufferString("hello\nexit\n")
 
 	mock := &mockProgressAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -167,7 +167,7 @@ func TestRunAgentLoop_TTY_PrintsToolProgressLines(t *testing.T) {
 	input := bytes.NewBufferString("hello\nexit\n")
 
 	mock := &mockProgressAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop error = %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestRunAgentLoop_TTY_ExitsCleanlyOnDoneWhileSpinnerRunning(t *testing.T) {
 
 	returned := make(chan error, 1)
 	go func() {
-		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil)
+		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil, false)
 	}()
 
 	close(done)
@@ -247,7 +247,7 @@ func TestRunAgentLoop_TTY_SpinnerRunsWhileWaiting(t *testing.T) {
 	mock := &slowAgent{release: make(chan struct{})}
 	returned := make(chan error, 1)
 	go func() {
-		returned <- runAgentLoop(ctx, cancel, done, input, &output, mock, nil)
+		returned <- runAgentLoop(ctx, cancel, done, input, &output, mock, nil, false)
 	}()
 
 	// Give the spinner goroutine a couple of tick intervals to draw at
@@ -491,5 +491,57 @@ func TestIsTTY_PipeIsNotATerminal(t *testing.T) {
 	// `joshbot agent -m ... | something`.
 	if isTTY(w) {
 		t.Error("isTTY(pipe) = true; piped output would be polluted with ANSI and \\r")
+	}
+}
+
+// The spinner takes p.mu to draw a frame, so waiting for it to exit while
+// holding that lock deadlocks the moment a tick lands in the window: the
+// spinner blocks in Lock and never returns to its select to see the cancel.
+// The first streamed delta did exactly that.
+func TestCLIProgressStreamEventDoesNotDeadlockWithSpinner(t *testing.T) {
+	p := newCLIProgress(io.Discard)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			p.beginTurn()
+			p.startSpinner()
+			// Land inside the spinner's tick window.
+			time.Sleep(time.Millisecond)
+			p.onStreamEvent(agent.StreamEvent{Delta: "x"})
+			p.stopSpinner()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("onStreamEvent deadlocked against the spinner goroutine")
+	}
+
+	if !p.didStream() {
+		t.Error("didStream() is false after a delta was written")
+	}
+}
+
+// A turn that never streams must still have its response printed.
+//
+// Several Process paths return without streaming anything — a slash command,
+// a session-load failure, a stream that fails to open — and keying the
+// decision off the config flag instead of what was actually streamed printed
+// two blank lines and swallowed the answer.
+func TestStreamedFlagIsPerTurnNotPerConfig(t *testing.T) {
+	p := newCLIProgress(io.Discard)
+
+	p.beginTurn()
+	p.onStreamEvent(agent.StreamEvent{Delta: "hello"})
+	if !p.didStream() {
+		t.Fatal("didStream() should be true on a turn that streamed")
+	}
+
+	p.beginTurn()
+	if p.didStream() {
+		t.Error("didStream() carried over from the previous turn; this turn's answer would be swallowed")
 	}
 }

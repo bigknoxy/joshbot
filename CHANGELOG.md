@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.45.1] - 2026-08-09
+
 ### Fixed
 - **`joshbot status` redacted its own numeric settings** — `Max tokens: 8192` printed as `Max tokens: [REDACTED]`. The assignment rule matched the label `tokens:` (the `TOKEN` fragment plus the plural `s`), so an operator could not read their own configuration. All-numeric values are now exempt: no key class this package detects is bare digits, while numeric settings collide constantly. The trade is stated in `internal/redact`'s doc comment — `password: 12345678` now stays in the clear, consistent with the existing exemption for bare high-entropy strings. Found by dogfooding the v1.45.0 release binary.
 - **`joshbot update` refused to run for any install path containing `/tmp/`** — the guard meant to catch `go run` also matched a normal installation under `/tmp`, and reported the reason as "Cannot update when running from source with 'go run'", which was untrue and unactionable. It now matches only the `go-build` cache, which is what `go run` actually uses, and exits non-zero instead of `0` so a script does not read the refusal as a completed update.

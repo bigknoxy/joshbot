@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
 // Logger is a simple logger interface for the config package.
@@ -20,8 +22,16 @@ type Logger interface {
 // defaultLogger is the default logger used when none is provided.
 type defaultLogger struct{}
 
-func (d *defaultLogger) Warn(msg string, args ...interface{}) {
-	out := "WARN: " + msg
+// format renders a message and its arguments, redacted.
+//
+// This logger writes straight to the standard library's log package, so it
+// never passed through the redacting writer that internal/log installs — and
+// it is the logger in force before joshbot has configured its own. That is why
+// `joshbot configure` printed the operator's full home directory path while
+// every other command printed "~". Credentials are stripped here too: this
+// package handles config values, which is exactly where they live.
+func (d *defaultLogger) format(level, msg string, args ...interface{}) string {
+	out := level + ": " + msg
 	for _, a := range args {
 		if s, ok := a.(string); ok {
 			out += " " + s
@@ -29,19 +39,15 @@ func (d *defaultLogger) Warn(msg string, args ...interface{}) {
 			out += " " + fmt.Sprint(a)
 		}
 	}
-	log.Print(out)
+	return redact.String(out)
+}
+
+func (d *defaultLogger) Warn(msg string, args ...interface{}) {
+	log.Print(d.format("WARN", msg, args...))
 }
 
 func (d *defaultLogger) Info(msg string, args ...interface{}) {
-	out := "INFO: " + msg
-	for _, a := range args {
-		if s, ok := a.(string); ok {
-			out += " " + s
-		} else {
-			out += " " + fmt.Sprint(a)
-		}
-	}
-	log.Print(out)
+	log.Print(d.format("INFO", msg, args...))
 }
 
 // logger is the package-level logger.
@@ -747,8 +753,20 @@ func (c *Config) EnsureDirs() error {
 		filepath.Join(c.WorkspaceDir(), "skills"),
 	}
 
+	// Owner-only, and re-applied to directories that already exist.
+	//
+	// MkdirAll leaves an existing directory's mode alone, so an install
+	// created before this was tightened keeps whatever it had. It also means
+	// these 0755 directories used to win over the 0750 that
+	// session.NewManager asks for, since onboarding creates the tree first:
+	// session *files* were 0600 while the directory holding them stayed
+	// world-listable, and a session filename is "telegram:<senderID>" — the
+	// identity of everyone who talks to this bot.
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, dirMode); err != nil {
+			return err
+		}
+		if err := os.Chmod(dir, dirMode); err != nil {
 			return err
 		}
 	}
@@ -1085,10 +1103,17 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// dirMode is the mode for every directory joshbot creates under ~/.joshbot.
+//
+// Owner-only: the tree holds conversations, memory, downloaded media and the
+// config file with live provider keys. Even where the files themselves are
+// 0600, a world-listable directory discloses the file names.
+const dirMode = 0o700
+
 // Save saves the configuration to the config file.
 func Save(cfg *Config) error {
 	// Ensure config directory exists
-	if err := os.MkdirAll(filepath.Dir(ConfigPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(ConfigPath()), dirMode); err != nil {
 		return err
 	}
 

@@ -399,6 +399,27 @@ For backward compatibility, the old format still works:
 
 Implemented via [Landlock](https://landlock.io/) and **Linux-only**. It fails closed: an unrecognized value, running on a non-Linux OS, or a kernel without Landlock support is a startup error rather than a silent no-op — set it back to `"off"` if you need to run without containment.
 
+### Streaming Responses
+
+`agents.defaults.streaming` prints the assistant's reply as it arrives instead of
+after the whole turn completes. It is **off by default** and applies to both
+config formats.
+
+```json
+"agents": { "defaults": { "streaming": true } }
+```
+
+Two limits are worth knowing before turning it on:
+
+- It only takes effect in the **interactive CLI on a real terminal**. `joshbot
+  agent -m`, piped output and the Telegram channel are unaffected, so scripted
+  output stays byte-identical.
+- Streaming gives up the non-streaming path's **transparent provider fallback**.
+  Once the first token has been printed it cannot be unprinted, so a failure
+  part-way through appends a visible `[stream error: ...]` marker to the reply
+  rather than silently retrying against the next provider in the chain. If you
+  value the retry more than the latency, leave it off.
+
 ### Environment Variables
 
 All config values can be set via environment variables with `JOSHBOT_` prefix:

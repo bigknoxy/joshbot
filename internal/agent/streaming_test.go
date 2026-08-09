@@ -108,9 +108,11 @@ func TestStreaming_FlagOffIdenticalToNonStreaming(t *testing.T) {
 		Timestamp: time.Now(),
 	}
 
-	// No stream sink attached — streaming should not activate even if config
-	// has it enabled.
-	response, err := agent.Process(context.Background(), msg)
+	// A sink IS attached. The config flag is what must keep streaming off:
+	// without the sink this test is identical in setup to the flag-on test and
+	// proves nothing about the flag.
+	ctx := WithStreamSink(context.Background(), func(StreamEvent) {})
+	response, err := agent.Process(ctx, msg)
 	if err != nil {
 		t.Fatalf("process failed: %v", err)
 	}
@@ -119,7 +121,7 @@ func TestStreaming_FlagOffIdenticalToNonStreaming(t *testing.T) {
 		t.Error("expected Chat to be called")
 	}
 	if streamCalled {
-		t.Error("expected ChatStream to NOT be called when no sink is attached")
+		t.Error("expected ChatStream to NOT be called when the streaming config flag is off")
 	}
 	if response != "Hello from non-streaming" {
 		t.Errorf("response = %q, want %q", response, "Hello from non-streaming")
@@ -264,7 +266,7 @@ func TestStreaming_FlagOnPipedOutputIdentical(t *testing.T) {
 		t.Error("expected Chat to be called (no sink = non-streaming)")
 	}
 	if streamCalled {
-		t.Error("expected ChatStream to NOT be called when no sink is attached")
+		t.Error("expected ChatStream to NOT be called when the streaming config flag is off")
 	}
 	if response != "Hello from non-streaming" {
 		t.Errorf("response = %q, want %q", response, "Hello from non-streaming")
@@ -566,5 +568,44 @@ func TestStreaming_StreamFailsToOpen(t *testing.T) {
 	}
 	if !strings.Contains(response, "Error") {
 		t.Errorf("expected error message in response, got %q", response)
+	}
+}
+
+// A stream that dies before producing any text must still say so.
+//
+// Suppressing the marker when nothing had been streamed yet left an empty
+// response, which reactLoop replaced with "I've processed your request." — a
+// confident non-answer standing in for a failure, and the failure mode is
+// most likely precisely when no text has arrived.
+func TestStreaming_ErrorBeforeAnyTextIsStillReported(t *testing.T) {
+	cfg := newStreamingConfig()
+
+	provider := &mockProvider{
+		streamFn: func(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 1)
+			// No content and no finish reason: the accumulator rejects this
+			// as a truncated stream.
+			ch <- providers.StreamChunk{Choices: []providers.StreamChoice{{}}}
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	var got strings.Builder
+	agent := NewAgent(cfg, provider, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+	ctx := WithStreamSink(context.Background(), func(e StreamEvent) { got.WriteString(e.Delta) })
+
+	response, err := agent.Process(ctx, bus.InboundMessage{
+		SenderID: "user123", Content: "Hello", Channel: "cli", Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	if !strings.Contains(got.String(), "stream error") {
+		t.Errorf("nothing was sent to the sink about the failure, got %q", got.String())
+	}
+	if strings.Contains(response, "I've processed your request") {
+		t.Errorf("a failed stream was reported as a completed answer: %q", response)
 	}
 }

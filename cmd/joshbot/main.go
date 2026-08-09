@@ -1007,6 +1007,8 @@ type cliProgress struct {
 	out        io.Writer
 	spinCancel chan struct{}
 	spinDone   chan struct{}
+	// streamed reports whether the stream sink delivered any text this turn.
+	streamed bool
 }
 
 func newCLIProgress(out io.Writer) *cliProgress {
@@ -1042,17 +1044,47 @@ func (p *cliProgress) onToolEvent(e agent.ToolProgressEvent) {
 // stopping the spinner on the first delta so the spinner's \r does not fight
 // the streamed text.
 func (p *cliProgress) onStreamEvent(e agent.StreamEvent) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	// Stop the spinner on the first delta — once text starts flowing, the
 	// spinner is wrong (it implies "still thinking" over partial output).
-	if p.spinCancel != nil {
-		close(p.spinCancel)
-		<-p.spinDone
-		p.spinCancel = nil
-		fmt.Fprint(p.out, clearLine)
-	}
+	//
+	// Waiting for the goroutine must happen outside p.mu. The spinner takes
+	// that same lock to draw a frame, so holding it across `<-spinDone`
+	// deadlocked whenever a tick landed in the window: the spinner blocked in
+	// Lock and so never returned to its select to see spinCancel. That is why
+	// stopSpinner does the close-and-wait outside the lock too.
+	p.stopSpinner()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.streamed = true
 	fmt.Fprint(p.out, e.Delta)
+}
+
+// takeSpinner detaches the running spinner's channels under the lock, so that
+// exactly one caller ever closes spinCancel.
+func (p *cliProgress) takeSpinner() (chan struct{}, chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cancel, done := p.spinCancel, p.spinDone
+	p.spinCancel, p.spinDone = nil, nil
+	return cancel, done
+}
+
+// beginTurn resets the per-turn state. `streamed` decides whether the caller
+// still has to print the response, so a stale value from the previous turn
+// would swallow this turn's answer.
+func (p *cliProgress) beginTurn() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.streamed = false
+}
+
+// didStream reports whether any text reached the terminal through the stream
+// sink during this turn.
+func (p *cliProgress) didStream() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.streamed
 }
 
 var spinnerFrames = [...]string{"|", "/", "-", "\\"}
@@ -1062,17 +1094,20 @@ var spinnerFrames = [...]string{"|", "/", "-", "\\"}
 // followed by exactly one stopSpinner call; the spinner goroutine exits as
 // soon as stopSpinner signals it, so it never leaks or blocks shutdown.
 func (p *cliProgress) startSpinner() {
+	p.mu.Lock()
 	p.spinCancel = make(chan struct{})
 	p.spinDone = make(chan struct{})
+	cancel, done := p.spinCancel, p.spinDone
+	p.mu.Unlock()
 	go func() {
-		defer close(p.spinDone)
+		defer close(done)
 		ticker := time.NewTicker(150 * time.Millisecond)
 		defer ticker.Stop()
 		start := time.Now()
 		i := 0
 		for {
 			select {
-			case <-p.spinCancel:
+			case <-cancel:
 				return
 			case <-ticker.C:
 				p.mu.Lock()
@@ -1087,12 +1122,12 @@ func (p *cliProgress) startSpinner() {
 // stopSpinner cancels the spinner goroutine, waits for it to exit, and
 // clears the spinner line so subsequent output starts on a clean line.
 func (p *cliProgress) stopSpinner() {
-	if p.spinCancel == nil {
+	cancel, done := p.takeSpinner()
+	if cancel == nil {
 		return
 	}
-	close(p.spinCancel)
-	<-p.spinDone
-	p.spinCancel = nil
+	close(cancel)
+	<-done
 	p.mu.Lock()
 	fmt.Fprint(p.out, clearLine)
 	p.mu.Unlock()
@@ -1193,6 +1228,7 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		}
 
 		if progress != nil {
+			progress.beginTurn()
 			progress.startSpinner()
 		}
 		// Attach the per-request progress sink to the context so the real
@@ -1220,10 +1256,14 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 			continue
 		}
 
-		// When streaming, the response was already written incrementally by
-		// the stream sink — don't print it again. When not streaming, print
-		// the full response as before.
-		if streaming && progress != nil {
+		// Print the response unless the stream sink already delivered it.
+		//
+		// The condition is "text was actually streamed this turn", not
+		// "streaming is configured": several Process paths return without
+		// streaming anything — a slash command, a session-load failure, the
+		// timeout message, a stream that failed to open — and testing the
+		// config instead printed two blank lines and nothing else.
+		if progress != nil && progress.didStream() {
 			fmt.Fprint(output, "\n\n")
 		} else {
 			fmt.Fprintf(output, "\n%s\n\n", strings.TrimSpace(response))

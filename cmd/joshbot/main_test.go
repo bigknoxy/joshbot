@@ -493,3 +493,55 @@ func TestIsTTY_PipeIsNotATerminal(t *testing.T) {
 		t.Error("isTTY(pipe) = true; piped output would be polluted with ANSI and \\r")
 	}
 }
+
+// The spinner takes p.mu to draw a frame, so waiting for it to exit while
+// holding that lock deadlocks the moment a tick lands in the window: the
+// spinner blocks in Lock and never returns to its select to see the cancel.
+// The first streamed delta did exactly that.
+func TestCLIProgressStreamEventDoesNotDeadlockWithSpinner(t *testing.T) {
+	p := newCLIProgress(io.Discard)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			p.beginTurn()
+			p.startSpinner()
+			// Land inside the spinner's tick window.
+			time.Sleep(time.Millisecond)
+			p.onStreamEvent(agent.StreamEvent{Delta: "x"})
+			p.stopSpinner()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("onStreamEvent deadlocked against the spinner goroutine")
+	}
+
+	if !p.didStream() {
+		t.Error("didStream() is false after a delta was written")
+	}
+}
+
+// A turn that never streams must still have its response printed.
+//
+// Several Process paths return without streaming anything — a slash command,
+// a session-load failure, a stream that fails to open — and keying the
+// decision off the config flag instead of what was actually streamed printed
+// two blank lines and swallowed the answer.
+func TestStreamedFlagIsPerTurnNotPerConfig(t *testing.T) {
+	p := newCLIProgress(io.Discard)
+
+	p.beginTurn()
+	p.onStreamEvent(agent.StreamEvent{Delta: "hello"})
+	if !p.didStream() {
+		t.Fatal("didStream() should be true on a turn that streamed")
+	}
+
+	p.beginTurn()
+	if p.didStream() {
+		t.Error("didStream() carried over from the previous turn; this turn's answer would be swallowed")
+	}
+}

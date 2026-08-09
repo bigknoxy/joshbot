@@ -572,6 +572,25 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	return "I've been working on this for a while. Here's what I found so far - let me know if you'd like me to continue.", nil
 }
 
+// streamErrorMarker renders a mid-stream failure as text the user can see.
+//
+// A leading newline only when text preceded it, so a stream that failed before
+// producing anything does not start the reply with a blank line.
+func streamErrorMarker(err error, hadText bool) string {
+	if hadText {
+		return "\n[stream error: " + err.Error() + "]"
+	}
+	return "[stream error: " + err.Error() + "]"
+}
+
+// drainStream consumes the remainder of a provider stream that is being
+// abandoned, so the goroutine feeding it can finish and release its
+// connection.
+func drainStream(stream <-chan providers.StreamChunk) {
+	for range stream {
+	}
+}
+
 // streamChat sends a streaming chat request, forwards text deltas to the
 // sink as they arrive, and accumulates the full response using the stage-2
 // ChunkAccumulator. On mid-stream failure, a visible error marker is
@@ -593,11 +612,28 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 			// Stream error mid-flight — append a visible marker to what
 			// was already shown. Return partial content, not an error,
 			// so the caller sees the text that was already delivered.
-			if accumulatedContent != "" {
-				marker := "\n[stream error: " + err.Error() + "]"
-				sink(StreamEvent{Delta: marker, Done: true})
-				accumulatedContent += marker
-			}
+			//
+			// The marker is emitted even when nothing arrived first. A stream
+			// that dies before any text is the common case, and suppressing
+			// the marker there left an empty response that reactLoop replaced
+			// with "I've processed your request." — a confident non-answer
+			// standing in for a failure.
+			marker := streamErrorMarker(err, accumulatedContent != "")
+			sink(StreamEvent{Delta: marker, Done: true})
+			accumulatedContent += marker
+
+			// Drain the rest of the stream. The provider goroutine blocks
+			// sending into this channel and does not close the response body
+			// until it can, so abandoning it would hold the goroutine and its
+			// connection until the request context expires.
+			//
+			// No test reaches this: ChunkAccumulator.Accumulate has no failing
+			// path today, and every truncation is reported by Result() below,
+			// after the range has drained the channel itself. It guards the
+			// contract, not a live bug — the moment Accumulate can fail, an
+			// early return here becomes a leak.
+			drainStream(stream)
+
 			return &providers.ChatResponse{
 				ID:    "stream-error",
 				Model: req.Model,
@@ -624,11 +660,9 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 	resp, err := acc.Result()
 	if err != nil {
 		// Stream ended with a truncation error — append a visible marker.
-		marker := "\n[stream error: " + err.Error() + "]"
-		if accumulatedContent != "" {
-			sink(StreamEvent{Delta: marker, Done: true})
-			accumulatedContent += marker
-		}
+		marker := streamErrorMarker(err, accumulatedContent != "")
+		sink(StreamEvent{Delta: marker, Done: true})
+		accumulatedContent += marker
 		return &providers.ChatResponse{
 			ID:    "stream-error",
 			Model: req.Model,

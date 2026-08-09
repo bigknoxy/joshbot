@@ -677,6 +677,15 @@ workspace/
 | `HISTORY.md` | Timestamped log of past conversations (grep-searchable) |
 | `HEARTBEAT.md` | Tasks for autonomous processing (checked every 5 min) |
 
+### Streaming Responses
+
+`agents.defaults.streaming` (default `false`) prints the reply as it arrives
+rather than after the turn completes. It applies only to the interactive CLI on
+a real terminal — `joshbot agent -m` and piped output are unchanged — and it
+trades away the non-streaming path's transparent provider fallback: once text
+has been printed it cannot be retried against another provider, so a mid-stream
+failure appends a visible `[stream error: ...]` marker instead.
+
 ### Skill Approval
 
 A `SKILL.md` placed in `workspace/skills/` — whether you write it or the agent creates it for itself — becomes part of the agent's standing instructions, so it is **inert until you approve it**:

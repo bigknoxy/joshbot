@@ -289,6 +289,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot status` | Show configuration and status |
 | `joshbot skills list` \| `trust <name>` \| `untrust <name>` | Review and approve workspace skills |
 | `joshbot configure` | Configure LLM providers and settings |
+| `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` | Inspect and manage stored conversations |
 | `joshbot auth github-copilot` \| `status` | Manage OAuth authentication |
 | `joshbot service install` \| `uninstall` \| `status` | Manage joshbot as a system service |
 | `joshbot update` | Update to the latest release |

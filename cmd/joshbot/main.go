@@ -231,6 +231,7 @@ func runApp() error {
 					},
 				},
 			},
+			sessionsCommand(),
 			{
 				Name:    "configure",
 				Aliases: []string{"config"},

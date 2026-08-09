@@ -189,6 +189,30 @@ joshbot skills untrust <name> # Revoke approval
 
 `joshbot status` also flags any skills awaiting review.
 
+### Managing sessions
+
+A session is one conversation, keyed `channel:senderID` and stored as JSONL under
+`~/.joshbot/sessions`. There is exactly one per user per channel and it is loaded
+automatically on every message, so there is nothing to "resume" — what these
+commands give you is a way to see what exists, read one back, and clear one.
+
+```bash
+joshbot sessions list                    # ID, message count, size, age, notes
+joshbot sessions show <id>               # print the conversation (redacted)
+joshbot sessions show <id> --last 20     # just the tail
+joshbot sessions prune <id>              # delete one conversation
+joshbot sessions prune --older-than 30d  # delete everything untouched for 30 days
+joshbot sessions new <id>                # archive it and start empty
+```
+
+`show` output is redacted: credentials and your home directory are stripped
+before display, though the files on disk are left verbatim. Destructive
+commands prompt for confirmation and take `--force` to run unattended; without a
+terminal they decline rather than hang, and exit non-zero so a script does not
+read a refusal as success. A damaged session is flagged in the `NOTES` column,
+so it is visible without reading the directory; its `.jsonl.corrupt` quarantine
+copy survives being loaded, but `prune` removes it along with the conversation.
+
 Skills use **progressive loading**:
 - **Level 1:** Name + description always in context (~100 tokens)
 - **Level 2:** Full content loaded on demand

@@ -174,7 +174,7 @@ Return a helpful error message explaining alternatives when systemctl is not fou
 **Decision**:
 - Cache static prompt content in memory
 - Use mtime-based invalidation to detect file changes
-- Track all source files: AGENTS.md, SOUL.md, USER.md, TOOLS.md, IDENTITY.md, MEMORY.md, skills/*/SKILL.md
+- Track all source files: AGENTS.md, SOUL.md, USER.md, TOOLS.md, IDENTITY.md, MEMORY.md, internal/skills/bundled/*/SKILL.md
 - Double-checked locking pattern for thread-safe cache access
 
 **Implementation**:

@@ -1994,7 +1994,7 @@ func runOnboard(c *cli.Context) error {
 			if err != nil {
 				return fmt.Errorf("failed to backup existing installation: %w", err)
 			}
-			fmt.Printf("Backed up to: %s\n", backupPath)
+			fmt.Printf("Backed up to: %s\n", redact.HomePath(backupPath))
 			fmt.Println()
 		} else if keepData {
 			// --keep-data: skip file creation, just run prompts
@@ -2009,11 +2009,11 @@ func runOnboard(c *cli.Context) error {
 			fmt.Println()
 
 			// Display existing files with status
-			fmt.Printf("  Config:     %s %s\n", filepath.Join(homeDir, "config.json"), statusBool(configExists))
-			fmt.Printf("  Workspace:  %s %s\n", filepath.Join(homeDir, "workspace/"), statusBool(workspaceExists))
+			fmt.Printf("  Config:     %s %s\n", redact.HomePath(filepath.Join(homeDir, "config.json")), statusBool(configExists))
+			fmt.Printf("  Workspace:  %s %s\n", redact.HomePath(filepath.Join(homeDir, "workspace/")), statusBool(workspaceExists))
 			memoryPath := filepath.Join(homeDir, "workspace", "memory")
 			if _, err := os.Stat(memoryPath); err == nil {
-				fmt.Printf("  Memory:     %s %s\n", memoryPath, statusBool(true))
+				fmt.Printf("  Memory:     %s %s\n", redact.HomePath(memoryPath), statusBool(true))
 			}
 			fmt.Println()
 
@@ -2041,7 +2041,7 @@ func runOnboard(c *cli.Context) error {
 				if err != nil {
 					return fmt.Errorf("failed to backup existing installation: %w", err)
 				}
-				fmt.Printf("Backed up to: %s\n", backupPath)
+				fmt.Printf("Backed up to: %s\n", redact.HomePath(backupPath))
 				fmt.Println()
 			}
 		}
@@ -2170,8 +2170,11 @@ func runOnboard(c *cli.Context) error {
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Println("  Config:")
-	fmt.Printf("    %s\n", configPath)
-	fmt.Printf("    %s\n", wsDir)
+	// Same treatment as `joshbot status`: the home directory carries the
+	// account name, and the setup summary is the first output a new user
+	// pastes into an issue when something did not work.
+	fmt.Printf("    %s\n", redact.HomePath(configPath))
+	fmt.Printf("    %s\n", redact.HomePath(wsDir))
 	fmt.Println()
 	fmt.Println("  What's next?")
 	fmt.Println()

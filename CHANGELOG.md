@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Bundled skills never shipped with the release** — a fresh install reported `No skills found`, and the agent ran without the `cron`, `github`, `memory` and `skill-creator` skills entirely. `NewLoader` looked for the bundled set at the *relative* path `filepath.Join("skills")`, which resolves against the process working directory, so they loaded only when joshbot was run from a checkout of its own source tree. The release artifact is a bare binary with no files beside it, so no installed copy ever found them — while `internal/skills/trust.go` exempted them from the approval gate on the grounds that they "arrive with the binary", which was not true. The tree moved to `internal/skills/bundled/` and is now pulled in with `//go:embed`, so it genuinely arrives with the binary and loads from any working directory. A bundled skill's content is cached at discovery (there is no file to re-read), and `Loader.Delete` now refuses one rather than handing an embed path to `os.RemoveAll`. Found by dogfooding a release install.
+- **`joshbot onboard` printed the full home directory path** — the setup summary and the existing-install detection showed `/home/<account>/.joshbot/...`, which carries the account name and is the first output a new user pastes into an issue when setup goes wrong. Those paths now go through `redact.HomePath` and print as `~/.joshbot/...`, matching `joshbot status`.
+
 ## [1.45.1] - 2026-08-09
 
 ### Fixed

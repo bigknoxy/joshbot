@@ -31,7 +31,9 @@ func bundledSkillsDir(t *testing.T) string {
 		t.Fatalf("getwd: %v", err)
 	}
 	for {
-		candidate := filepath.Join(dir, "skills")
+		// The bundled set lives inside internal/skills so it can be embedded
+		// in the binary; a release ships no files beside the executable.
+		candidate := filepath.Join(dir, "internal", "skills", "bundled")
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 				return candidate
@@ -126,7 +128,7 @@ func TestBundledSkillsOnlyReferenceRegisteredTools(t *testing.T) {
 				continue
 			}
 			if !registered[name] {
-				t.Errorf("skills/%s/SKILL.md tells the agent to use the %q tool, "+
+				t.Errorf("internal/skills/bundled/%s/SKILL.md tells the agent to use the %q tool, "+
 					"which does not exist as a joshbot tool.",
 					e.Name(), name)
 			}

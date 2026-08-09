@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The installer failed silently when `--bin-dir` named a directory that did not exist** — it reported a successful download and checksum, then died on a bare `mv: No such file or directory` with nothing else printed. `--bin-dir` now creates the directory, including nested paths. Several other failure modes were mute or misleading for the same underlying reason: `--bin-dir` with no value exited on `shift 2` printing nothing at all, a read-only install directory passed the pre-flight check (which accepted a writable *parent*) and failed later at the `mv`, and a version with no matching build printed four raw URLs. Each now names what went wrong and what to do about it, and a single `EXIT` trap reports anything undiagnosed — previously `download_binary` installed its own cleanup trap, which silently replaced the error handler.
+
+### Changed
+- **The installer refuses to install an unverified binary** — a checksum *mismatch* already aborted, but missing or unfetchable checksums printed "No checksums available" and carried on installing. Verification being unavailable now fails closed, since every joshbot release publishes `checksums.txt` and its absence means the download path is not what it should be. `JOSHBOT_SKIP_CHECKSUM=1` overrides it deliberately. `scripts/test-install.sh` now exercises all of this against the real release — 16 checks covering directory creation, argument handling, overwrite protection, permissions and both checksum failure modes. It is not wired into CI, because it downloads published artifacts and would fail on a release that does not exist yet; run it by hand before tagging and after any change to `install.sh`.
+- **The installer writes the binary atomically** — it staged the download in `/tmp` and moved it across filesystems onto the target path, which is a copy rather than a rename, so an interruption could leave a truncated binary at the exact path the user runs. It now stages inside the install directory and renames, and reports that the existing installation was left untouched when a write fails.
+
 ## [1.45.2] - 2026-08-09
 
 ### Fixed

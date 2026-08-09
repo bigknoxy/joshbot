@@ -495,6 +495,7 @@ Documentation gate — a release does not go out with any of these unchecked:
 - [ ] `SECURITY.md` — matches what is actually enforced
 - [ ] `CLAUDE.md`, `AGENTS.md` — gotchas cover anything that would surprise an agent
 - [ ] `internal/skills/bundled/*/SKILL.md` — no instruction the tools no longer permit
+- [ ] `./scripts/test-install.sh` passes — not in CI (it downloads real artifacts), so it only runs if you run it
 - [ ] `CHANGELOG.md` — entry under `[Unreleased]`
 - [ ] Every quoted count or size re-measured, not carried over
 

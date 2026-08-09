@@ -1350,13 +1350,17 @@ func runUpdate(c *cli.Context) error {
 		return fmt.Errorf("could not determine executable path: %w", err)
 	}
 
-	// Check if running from source
-	if strings.Contains(exePath, "go-build") || strings.Contains(exePath, "/tmp/") {
-		fmt.Println()
-		fmt.Println("Error: Cannot update when running from source with 'go run'.")
-		fmt.Println("To update, install joshbot first (e.g., 'go install' or build a binary),")
-		fmt.Println("then run 'joshbot update' from the installed binary.")
-		return nil
+	// Check if running from source.
+	//
+	// Match only the go-build cache, which is where `go run` puts its
+	// throwaway binary. An earlier version also rejected any path containing
+	// "/tmp/", which is not a property of `go run` at all: it made a joshbot
+	// installed anywhere under /tmp permanently unable to update, and told the
+	// user the reason was `go run`.
+	if strings.Contains(exePath, "go-build") {
+		return cli.Exit("Cannot update when running from source with 'go run'.\n"+
+			"Install joshbot first (e.g. 'go install', or the one-line installer),\n"+
+			"then run 'joshbot update' from the installed binary.", 1)
 	}
 
 	// Download to a temp file

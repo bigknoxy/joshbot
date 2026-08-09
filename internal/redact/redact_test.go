@@ -265,3 +265,40 @@ func TestTelegramBotTokenIsRemoved(t *testing.T) {
 		t.Errorf("bot token survived redaction: %q", got)
 	}
 }
+
+// A numeric setting is not a credential.
+//
+// `joshbot status` prints "Max tokens:     8192". TOKEN plus the plural "s"
+// makes that label look like a credential-shaped assignment, so the value was
+// replaced with [REDACTED] and the operator could not read their own config.
+func TestNumericSettingsAreNotRedacted(t *testing.T) {
+	pinHome(t, "/home/nobody-unlikely-path")
+
+	for _, s := range []string{
+		"Max tokens:     8192",
+		"max_tokens: 8192",
+		"session_key_rotation_secs = 3600",
+		"tokens: 1_000",
+		"secret_count: -1",
+	} {
+		if got := String(s); got != s {
+			t.Errorf("numeric setting was redacted:\n in:  %q\n out: %q", s, got)
+		}
+	}
+}
+
+// The numeric exemption must not become a way to smuggle a real credential.
+func TestNonNumericValuesAreStillRedacted(t *testing.T) {
+	pinHome(t, "/home/nobody-unlikely-path")
+
+	for _, s := range []string{
+		"api_key: sk-or-v1-abcdefghijklmnopqrst",
+		"password: hunter2secret",
+		"token: 8192abc",
+		"secret: 123-abc",
+	} {
+		if got := String(s); got == s {
+			t.Errorf("credential survived redaction: %q", got)
+		}
+	}
+}

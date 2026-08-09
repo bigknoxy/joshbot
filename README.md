@@ -514,6 +514,7 @@ until the reply is sent, so it stays visible for the whole turn.
 - `restrict_to_workspace` limits file and shell operations to the workspace unless explicitly allowed.
 - Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
 - `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock, Linux only) — see [Shell Sandbox](#shell-sandbox) below.
+- Everything joshbot logs or prints is redacted first: API keys, `Authorization` headers, credential-shaped assignments and your home directory path are replaced with `[REDACTED]` and `~`, so a log or `joshbot status` dump can be pasted into a bug report. Session files on disk are deliberately exempt and stay verbatim at `0600` — rewriting conversation content on save would mangle legitimate text.
 
 ## Chat Commands
 

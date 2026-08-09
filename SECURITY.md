@@ -54,13 +54,60 @@ When running joshbot:
 
 ### Security Architecture
 
-- **No secret logging**: API keys and tokens are never written to logs
+- **Output redaction**: everything joshbot logs or prints goes through `internal/redact` first — see the Redaction section below for exactly what is and is not covered. joshbot never logs its own configured credentials directly, but a tool result can carry one it was never meant to see (the model runs `cat config.yml` and the output is a debug log line), so the log writer redacts rather than relying on that.
 - **File permissions**: Config (`config.json`), auth tokens, the skills trust store, session files (`~/.joshbot/sessions/*.jsonl`, their `.meta.json` sidecars, the `.history.jsonl` compaction archive and any `.jsonl.corrupt` quarantine) and the log file are all written `0600`, with their directories `0750`. Session and log files hold full conversation content and tool output, so they are treated as sensitive as the credential store.
 - **Input validation**: All tool inputs are validated before execution
 - **Command screening is defence in depth, not a boundary**: the shell tool's deny list closes known-dangerous command shapes, but no deny list can be sound against an adversarial model or a prompt-injected instruction. The only hard boundary is the OS-level sandbox below.
 - **Shell sandbox (opt-in, Linux only)**: setting `tools.shell_sandbox: "workspace"` confines shell commands via Landlock — filesystem access limited to the workspace and toolchain caches, outbound TCP denied unless `tools.shell_sandbox_allow_network` is `true`. It's off by default (existing behavior is unchanged unless you opt in), and it fails closed: an unrecognized value, a non-Linux host, or a kernel without Landlock support is a startup error rather than a silent no-op.
 - **Environment isolation**: shell commands no longer inherit joshbot's own process environment. They receive an allowlisted subset (PATH, common toolchain variables) with anything credential-shaped — API keys, tokens, secrets — stripped, so a spawned command cannot read joshbot's own provider credentials via `env`.
 - **Skill approval**: a `SKILL.md` found in the workspace — including one the agent creates for itself via `skill_registry` — is inert until approved via `joshbot skills trust`. Approval is bound to the file's SHA-256, so editing an approved skill revokes it. Skills bundled with the release are exempt.
+
+### Redaction
+
+`internal/redact` strips credentials and host-identifying paths from text joshbot
+displays, logs or exports. The threat is not an attacker reading files — file
+permissions cover that — it is the ordinary act of pasting a log or a status
+dump into a bug report.
+
+**Where it is applied**
+
+| Surface | Redacted |
+|---|---|
+| Log output (stdout and the log file, every level) | Yes |
+| `joshbot status` | Yes |
+| Session files on disk (`*.jsonl`, `.meta.json`, `.history.jsonl`) | **No — deliberately** |
+| Requests sent to the model provider | **No — the model needs the conversation** |
+
+Session content is stored verbatim. Rewriting it on save would mangle
+legitimate text (a user discussing a token format) and would add a second way
+for a session file to be corrupted. The protection for data at rest is the
+`0600` file mode above, not redaction.
+
+**What is detected**
+
+- Vendor key shapes: Anthropic (`sk-ant-`), OpenAI and compatible (`sk-`),
+  OpenRouter (`sk-or-`), GitHub (`ghp_`/`gho_`/`ghu_`/`ghs_`/`github_pat_`),
+  Slack (`xox*-`), Google (`AIza`), NVIDIA (`nvapi-`), Groq (`gsk_`) and AWS
+  access key IDs (`AKIA`/`ASIA`).
+- `Authorization: Bearer` and `Authorization: Basic` header values.
+- Any value assigned to a credential-shaped name in JSON, YAML or an
+  environment assignment — `api_key`, `api-key`, `token`, `secret`, `password`,
+  `credential`, `private_key` and the rest of `redact.SecretNameFragments`.
+  That list is shared with the shell-environment screen, so the two cannot
+  drift apart.
+- The host home directory, replaced with `~`.
+
+Values are replaced with a fixed `[REDACTED]`, never a length-preserving mask —
+a mask leaks the length of the secret.
+
+**What is deliberately not detected**
+
+Bare high-entropy strings. Hashes, base64 payloads, UUIDs and git SHAs are
+indistinguishable from secrets by entropy alone, and redacting them would make
+ordinary output unreadable — which is how redaction ends up being switched off.
+Redaction is a safety net over the file-permission and environment-isolation
+controls above, not a substitute for them: treat it as reducing accidental
+disclosure, not as a guarantee that any given output is secret-free.
 
 ### Tool-Specific Security Notes
 

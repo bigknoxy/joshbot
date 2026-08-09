@@ -11,6 +11,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
+
+	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
 // Level represents the logging level.
@@ -135,8 +137,14 @@ func NewLogger(cfg Config) (*Logger, error) {
 		writers = append(writers, file)
 	}
 
-	// Create multi-writer
-	multiWriter := io.MultiWriter(writers...)
+	// Create multi-writer.
+	//
+	// Everything the logger emits is redacted first. Debug logging includes tool
+	// results and message previews, and a tool result routinely carries a
+	// credential the user never meant to expose — `cat` of a config file is
+	// enough. The log is also the artefact people paste into bug reports, so
+	// this is the boundary that matters, not the file mode.
+	multiWriter := redact.Writer(io.MultiWriter(writers...))
 
 	// Build options
 	opts := log.Options{

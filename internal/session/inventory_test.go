@@ -245,7 +245,7 @@ func TestPruneOlderThanDeletesOnlyTheOldOnes(t *testing.T) {
 }
 
 // A quarantine file is evidence. Deleting the session must not destroy it.
-func TestDeleteRemovesMetadataButKeepsQuarantine(t *testing.T) {
+func TestDeleteRemovesEverySidecar(t *testing.T) {
 	m := newTestManager(t)
 	id := "with-sidecars"
 
@@ -258,6 +258,9 @@ func TestDeleteRemovesMetadataButKeepsQuarantine(t *testing.T) {
 	if err := os.WriteFile(m.quarantineFilePath(id), []byte("damaged\n"), sessionFileMode); err != nil {
 		t.Fatalf("seed quarantine: %v", err)
 	}
+	if err := m.Archive(context.Background(), id, sess.Messages); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
 
 	if err := m.Delete(context.Background(), id); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -265,8 +268,15 @@ func TestDeleteRemovesMetadataButKeepsQuarantine(t *testing.T) {
 	if _, err := os.Stat(m.metadataFilePath(id)); !os.IsNotExist(err) {
 		t.Error("metadata sidecar survived Delete")
 	}
-	if _, err := os.Stat(m.quarantineFilePath(id)); err != nil {
-		t.Error("quarantine file was deleted; it is preserved by design")
+	// Every sidecar holds a copy of the same conversation, so an explicit
+	// delete must take them all. Quarantine survives an unreadable *load*, not
+	// a delete; and an orphaned compaction archive would be inherited by the
+	// next conversation under this channel:senderID.
+	if _, err := os.Stat(m.quarantineFilePath(id)); !os.IsNotExist(err) {
+		t.Errorf("quarantine copy survived Delete (err=%v)", err)
+	}
+	if _, err := os.Stat(m.archiveFilePath(id)); !os.IsNotExist(err) {
+		t.Errorf("compaction archive survived Delete (err=%v)", err)
 	}
 }
 
@@ -344,5 +354,37 @@ func mustChtime(t *testing.T, path string, when time.Time) {
 	t.Helper()
 	if err := os.Chtimes(path, when, when); err != nil {
 		t.Fatalf("Chtimes(%s): %v", path, err)
+	}
+}
+
+// Reset puts the whole conversation away, sidecars included.
+//
+// The compaction archive belongs to the conversation being archived. Left in
+// place, the next conversation under the same channel:senderID inherits it and
+// `sessions list` reports an archive of history that is not its own.
+func TestResetMovesTheCompactionArchiveAside(t *testing.T) {
+	m := newTestManager(t)
+	id := "resettable"
+
+	sess := NewSession(id)
+	sess.AddMessage(Message{Role: RoleUser, Content: "earlier", Timestamp: time.Now().UTC()})
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := m.Archive(context.Background(), id, sess.Messages); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	archived, err := m.Reset(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	if _, err := os.Stat(m.archiveFilePath(id)); !os.IsNotExist(err) {
+		t.Errorf("the new empty session inherited the old compaction archive (err=%v)", err)
+	}
+	moved := filepath.Join(m.sessionsDir, archived+".history")
+	if _, err := os.Stat(moved); err != nil {
+		t.Errorf("the compaction archive was destroyed rather than moved aside: %v", err)
 	}
 }

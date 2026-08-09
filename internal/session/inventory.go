@@ -48,6 +48,11 @@ type Info struct {
 	Compacted bool
 	// ArchiveBytes is the size of the compaction archive, if any.
 	ArchiveBytes int64
+	// Unreadable reports that the session could not be scanned at all, so
+	// every count in this struct is unknown rather than zero. It is distinct
+	// from Corrupt, which means the file was read and some lines did not
+	// parse.
+	Unreadable bool
 }
 
 // ValidateSessionID rejects identifiers that could escape the sessions
@@ -216,7 +221,17 @@ func (m *Manager) ListInfo(ctx context.Context) ([]Info, error) {
 		}
 		info, err := m.statLocked(id)
 		if err != nil {
-			out = append(out, Info{ID: id, Corrupt: true})
+			// A session that would not scan still gets its real mtime where
+			// one is available. Leaving UpdatedAt at the zero time made it
+			// look infinitely old, so `prune --older-than` deleted a session
+			// that had merely failed to read — a transient EACCES or an
+			// oversized line was enough — no matter how recent it was.
+			info = Info{ID: id, Corrupt: true, Unreadable: true}
+			if st, statErr := os.Stat(m.sessionFilePath(id)); statErr == nil {
+				info.UpdatedAt = st.ModTime().UTC()
+				info.Bytes = st.Size()
+			}
+			out = append(out, info)
 			continue
 		}
 		out = append(out, info)
@@ -244,6 +259,11 @@ func (m *Manager) PruneOlderThan(ctx context.Context, cutoff time.Time) ([]strin
 
 	var removed []string
 	for _, info := range infos {
+		if info.UpdatedAt.IsZero() {
+			// No usable timestamp at all: age is unknown, and "unknown" must
+			// not be treated as "old enough to delete".
+			continue
+		}
 		if !info.UpdatedAt.Before(cutoff) {
 			continue
 		}
@@ -291,6 +311,16 @@ func (m *Manager) Reset(ctx context.Context, sessionID string) (string, error) {
 	// Conversation metadata describes the archived conversation, not the new
 	// empty one.
 	_ = os.Remove(m.metadataFilePath(sessionID))
+
+	// The compaction archive belongs to the conversation being put away. Left
+	// in place it would be inherited by the next conversation under the same
+	// channel:senderID, so `sessions list` would report an archive of history
+	// that has nothing to do with the session it is attached to. Move it
+	// alongside the transcript rather than deleting it — "start fresh" should
+	// not mean "destroy the conversation".
+	if _, err := os.Stat(m.archiveFilePath(sessionID)); err == nil {
+		_ = os.Rename(m.archiveFilePath(sessionID), archived+".history")
+	}
 
 	return filepath.Base(archived), nil
 }

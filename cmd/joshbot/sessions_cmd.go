@@ -128,7 +128,7 @@ func runSessionsList(c *cli.Context) error {
 }
 
 func runSessionsShow(c *cli.Context) error {
-	parsed, err := parseSessionArgs(c.Args().Slice(), true)
+	parsed, err := parseSessionArgs(c.Args().Slice(), true, false)
 	if err != nil {
 		return usageError("%v", err)
 	}
@@ -166,13 +166,16 @@ func runSessionsShow(c *cli.Context) error {
 }
 
 func runSessionsPrune(c *cli.Context) error {
-	parsed, err := parseSessionArgs(c.Args().Slice(), false)
+	parsed, err := parseSessionArgs(c.Args().Slice(), false, true)
 	if err != nil {
 		return usageError("%v", err)
 	}
 	id := strings.TrimSpace(parsed.id)
 	force := c.Bool("force") || parsed.force
 	olderThan := strings.TrimSpace(c.String("older-than"))
+	if parsed.olderThanSet {
+		olderThan = strings.TrimSpace(parsed.olderThan)
+	}
 
 	if id == "" && olderThan == "" {
 		return usageError("sessions prune needs a session id or --older-than")
@@ -238,18 +241,19 @@ func runSessionsPrune(c *cli.Context) error {
 		return sessionError(id, err)
 	}
 	if !force && !confirmDestructive(out, fmt.Sprintf("Delete session %q", id)) {
+		// Non-zero: a script must not read a refusal as a completed delete.
 		fmt.Fprintln(out, "Aborted. Nothing was deleted.")
-		return nil
+		return cli.Exit("", 1)
 	}
 	if err := mgr.Delete(c.Context, id); err != nil {
 		return sessionError(id, err)
 	}
-	fmt.Fprintf(out, "Deleted session %q. Any quarantined copy is preserved.\n", id)
+	fmt.Fprintf(out, "Deleted session %q.\n", id)
 	return nil
 }
 
 func runSessionsNew(c *cli.Context) error {
-	parsed, err := parseSessionArgs(c.Args().Slice(), false)
+	parsed, err := parseSessionArgs(c.Args().Slice(), false, false)
 	if err != nil {
 		return usageError("%v", err)
 	}
@@ -268,7 +272,7 @@ func runSessionsNew(c *cli.Context) error {
 	if !force && !confirmDestructive(out,
 		fmt.Sprintf("Archive session %q and start it empty", id)) {
 		fmt.Fprintln(out, "Aborted. Nothing was changed.")
-		return nil
+		return cli.Exit("", 1)
 	}
 
 	archived, err := mgr.Reset(c.Context, id)
@@ -311,10 +315,12 @@ var confirmDestructive = func(out io.Writer, action string) bool {
 
 // sessionArgs is the parsed form of a subcommand's arguments.
 type sessionArgs struct {
-	id      string
-	last    int
-	lastSet bool
-	force   bool
+	id           string
+	last         int
+	lastSet      bool
+	force        bool
+	olderThan    string
+	olderThanSet bool
 }
 
 // parseSessionArgs reads the positional id and any flags that trail it.
@@ -328,7 +334,7 @@ type sessionArgs struct {
 //
 // Unknown flags are an error rather than being ignored, so a typo cannot look
 // like it worked.
-func parseSessionArgs(args []string, allowLast bool) (sessionArgs, error) {
+func parseSessionArgs(args []string, allowLast, allowOlderThan bool) (sessionArgs, error) {
 	var out sessionArgs
 
 	for i := 0; i < len(args); i++ {
@@ -357,6 +363,22 @@ func parseSessionArgs(args []string, allowLast bool) (sessionArgs, error) {
 				return out, fmt.Errorf("--last needs a number, got %q", raw)
 			}
 			out.last, out.lastSet = n, true
+
+		case arg == "--older-than" || strings.HasPrefix(arg, "--older-than="):
+			if !allowOlderThan {
+				return out, fmt.Errorf("unknown flag %q", "--older-than")
+			}
+			var raw string
+			if v, ok := strings.CutPrefix(arg, "--older-than="); ok {
+				raw = v
+			} else {
+				if i+1 >= len(args) {
+					return out, fmt.Errorf("--older-than needs a value")
+				}
+				i++
+				raw = args[i]
+			}
+			out.olderThan, out.olderThanSet = raw, true
 
 		case strings.HasPrefix(arg, "-"):
 			return out, fmt.Errorf("unknown flag %q", arg)

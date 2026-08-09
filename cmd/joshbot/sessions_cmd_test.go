@@ -325,8 +325,14 @@ func TestSessionsPruneRequiresAnArgument(t *testing.T) {
 	}
 }
 
-// Quarantined evidence outlives the session it came from.
-func TestSessionsPruneKeepsQuarantineFile(t *testing.T) {
+// Pruning a session removes its quarantine copy too.
+//
+// The quarantine exists so an unreadable load does not silently destroy a
+// conversation — it survives loads, not an explicit delete. Leaving it behind
+// would mean `sessions prune` reported a session gone while a verbatim
+// transcript of it stayed on disk, which is the opposite of what an operator
+// running prune is asking for.
+func TestSessionsPruneRemovesQuarantineFile(t *testing.T) {
 	cfg, dir := sessionsEnv(t)
 	seedCLISession(t, dir, "damaged", "x")
 	quarantine := filepath.Join(dir, "damaged.jsonl.corrupt")
@@ -337,8 +343,8 @@ func TestSessionsPruneKeepsQuarantineFile(t *testing.T) {
 	if _, code := runSessionsCmd(t, cfg, "prune", "damaged", "--force"); code != 0 {
 		t.Fatal("prune failed")
 	}
-	if _, err := os.Stat(quarantine); err != nil {
-		t.Error("the quarantine file was deleted; it is preserved by design")
+	if _, err := os.Stat(quarantine); !os.IsNotExist(err) {
+		t.Errorf("prune left the quarantined transcript on disk (err=%v)", err)
 	}
 }
 
@@ -382,9 +388,11 @@ func TestDestructiveCommandsDeclineWithoutTTYOrForce(t *testing.T) {
 	cfg, dir := sessionsEnv(t)
 	seedCLISession(t, dir, "survivor", "x")
 
+	// Non-zero on refusal: an unattended run that gets no confirmation did not
+	// do the work, and exit 0 would tell a script that it did.
 	out, code := runSessionsCmd(t, cfg, "prune", "survivor")
-	if code != 0 {
-		t.Fatalf("expected a clean refusal, got exit %d:\n%s", code, out)
+	if code == 0 {
+		t.Fatalf("a refusal exited 0, which a script reads as success:\n%s", out)
 	}
 	if !strings.Contains(out, "--force") {
 		t.Errorf("expected the refusal to mention --force:\n%s", out)
@@ -407,30 +415,40 @@ func chtime(t *testing.T, path string, when time.Time) {
 // silently printing the whole transcript is a privacy one.
 func TestParseSessionArgs(t *testing.T) {
 	cases := []struct {
-		name      string
-		args      []string
-		allowLast bool
-		want      sessionArgs
-		wantErr   bool
+		name           string
+		args           []string
+		allowLast      bool
+		allowOlderThan bool
+		want           sessionArgs
+		wantErr        bool
 	}{
-		{"id only", []string{"my-id"}, false, sessionArgs{id: "my-id"}, false},
-		{"id then force", []string{"my-id", "--force"}, false, sessionArgs{id: "my-id", force: true}, false},
-		{"force then id", []string{"--force", "my-id"}, false, sessionArgs{id: "my-id", force: true}, false},
-		{"last spaced", []string{"my-id", "--last", "5"}, true, sessionArgs{id: "my-id", last: 5, lastSet: true}, false},
-		{"last equals", []string{"my-id", "--last=5"}, true, sessionArgs{id: "my-id", last: 5, lastSet: true}, false},
-		{"last negative parses", []string{"my-id", "--last", "-3"}, true, sessionArgs{id: "my-id", last: -3, lastSet: true}, false},
-		{"empty", nil, false, sessionArgs{}, false},
+		{"id only", []string{"my-id"}, false, false, sessionArgs{id: "my-id"}, false},
+		{"id then force", []string{"my-id", "--force"}, false, false, sessionArgs{id: "my-id", force: true}, false},
+		{"force then id", []string{"--force", "my-id"}, false, false, sessionArgs{id: "my-id", force: true}, false},
+		{"last spaced", []string{"my-id", "--last", "5"}, true, false, sessionArgs{id: "my-id", last: 5, lastSet: true}, false},
+		{"last equals", []string{"my-id", "--last=5"}, true, false, sessionArgs{id: "my-id", last: 5, lastSet: true}, false},
+		{"last negative parses", []string{"my-id", "--last", "-3"}, true, false, sessionArgs{id: "my-id", last: -3, lastSet: true}, false},
+		{"empty", nil, false, false, sessionArgs{}, false},
 
-		{"last when not allowed", []string{"my-id", "--last", "5"}, false, sessionArgs{}, true},
-		{"last without value", []string{"my-id", "--last"}, true, sessionArgs{}, true},
-		{"last non-numeric", []string{"my-id", "--last", "five"}, true, sessionArgs{}, true},
-		{"unknown flag", []string{"my-id", "--forse"}, false, sessionArgs{}, true},
-		{"two positionals", []string{"a", "b"}, false, sessionArgs{}, true},
+		{"last when not allowed", []string{"my-id", "--last", "5"}, false, false, sessionArgs{}, true},
+		{"last without value", []string{"my-id", "--last"}, true, false, sessionArgs{}, true},
+		{"last non-numeric", []string{"my-id", "--last", "five"}, true, false, sessionArgs{}, true},
+		{"unknown flag", []string{"my-id", "--forse"}, false, false, sessionArgs{}, true},
+		{"two positionals", []string{"a", "b"}, false, false, sessionArgs{}, true},
+
+		// The flag that the original parser did not know about: prune takes
+		// three flags, and --older-than after an id was reported as unknown.
+		{"older-than spaced", []string{"an-id", "--older-than", "30d"}, false, true,
+			sessionArgs{id: "an-id", olderThan: "30d", olderThanSet: true}, false},
+		{"older-than equals", []string{"an-id", "--older-than=30d"}, false, true,
+			sessionArgs{id: "an-id", olderThan: "30d", olderThanSet: true}, false},
+		{"older-than when not allowed", []string{"an-id", "--older-than", "30d"}, false, false, sessionArgs{}, true},
+		{"older-than without value", []string{"an-id", "--older-than"}, false, true, sessionArgs{}, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseSessionArgs(tc.args, tc.allowLast)
+			got, err := parseSessionArgs(tc.args, tc.allowLast, tc.allowOlderThan)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %+v", got)
@@ -475,6 +493,29 @@ func TestSessionsFlagOrderIndependence(t *testing.T) {
 		}
 		if strings.Contains(out, "first") {
 			t.Errorf("%v: --last was ignored, whole transcript printed:\n%s", args, out)
+		}
+	}
+}
+
+// `prune <id> --older-than 30d` must reach the mutual-exclusion check.
+//
+// urfave/cli v2 drops flags after a positional, and parseSessionArgs originally
+// knew only --force and --last, so this reported `unknown flag "--older-than"`
+// — wrong twice: the flag exists, and the real complaint is that the two ways
+// of choosing what to delete cannot be combined.
+func TestPruneRejectsIdAndOlderThanInEitherOrder(t *testing.T) {
+	cfg, _ := sessionsEnv(t)
+
+	for _, args := range [][]string{
+		{"prune", "an-id", "--older-than", "30d"},
+		{"prune", "--older-than", "30d", "an-id"},
+	} {
+		out, code := runSessionsCmd(t, cfg, args...)
+		if code != 2 {
+			t.Errorf("%v: exit = %d, want 2\n%s", args, code, out)
+		}
+		if strings.Contains(out, "unknown flag") {
+			t.Errorf("%v: reported an unknown flag for a flag that exists:\n%s", args, out)
 		}
 	}
 }

@@ -37,7 +37,11 @@ func FormatInfoTable(w io.Writer, infos []Info, now time.Time) {
 // notes surfaces the states an operator needs to see without reading the files.
 func notes(info Info) []string {
 	var out []string
-	if info.Corrupt {
+	if info.Unreadable {
+		// Say what is actually known. Reporting "quarantine file present" for a
+		// session that merely failed to open told the operator something untrue.
+		out = append(out, "unreadable (could not be scanned)")
+	} else if info.Corrupt {
 		if info.CorruptLines > 0 {
 			out = append(out, fmt.Sprintf("corrupt (%d unreadable line(s))", info.CorruptLines))
 		} else {

@@ -185,6 +185,9 @@ joshbot skills list          # See what's pending
 joshbot skills trust <name>  # Approve after reviewing the file
 joshbot skills trust --all   # Approve every pending skill
 joshbot skills untrust <name> # Revoke approval
+```
+
+`joshbot status` also flags any skills awaiting review.
 
 ### Managing sessions
 
@@ -205,12 +208,10 @@ joshbot sessions new <id>                # archive it and start empty
 `show` output is redacted: credentials and your home directory are stripped
 before display, though the files on disk are left verbatim. Destructive
 commands prompt for confirmation and take `--force` to run unattended; without a
-terminal they decline rather than hang. A `.jsonl.corrupt` quarantine file is
-never deleted by `prune` — it is evidence, and it is listed in the `NOTES`
-column so a damaged session is visible without reading the directory.
-```
-
-`joshbot status` also flags any skills awaiting review.
+terminal they decline rather than hang, and exit non-zero so a script does not
+read a refusal as success. A damaged session is flagged in the `NOTES` column,
+so it is visible without reading the directory; its `.jsonl.corrupt` quarantine
+copy survives being loaded, but `prune` removes it along with the conversation.
 
 Skills use **progressive loading**:
 - **Level 1:** Name + description always in context (~100 tokens)

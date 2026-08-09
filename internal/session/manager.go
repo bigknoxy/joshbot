@@ -412,6 +412,11 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 		_ = os.Remove(metaPath)
 	}
 
+	// The compaction archive holds the earlier part of this same conversation,
+	// so an explicit delete must take it too. Leaving it behind also meant the
+	// next conversation under this channel:senderID inherited it.
+	_ = os.Remove(m.archiveFilePath(sessionID))
+
 	// The quarantine copy holds the same conversation as the file just
 	// deleted. Leaving it behind would mean "delete this session" silently
 	// kept a verbatim transcript on disk. Quarantine survives an unreadable

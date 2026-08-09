@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.45.3] - 2026-08-09
+
 ### Fixed
 - **The installer failed silently when `--bin-dir` named a directory that did not exist** — it reported a successful download and checksum, then died on a bare `mv: No such file or directory` with nothing else printed. `--bin-dir` now creates the directory, including nested paths. Several other failure modes were mute or misleading for the same underlying reason: `--bin-dir` with no value exited on `shift 2` printing nothing at all, a read-only install directory passed the pre-flight check (which accepted a writable *parent*) and failed later at the `mv`, and a version with no matching build printed four raw URLs. Each now names what went wrong and what to do about it, and a single `EXIT` trap reports anything undiagnosed — previously `download_binary` installed its own cleanup trap, which silently replaced the error handler.
 

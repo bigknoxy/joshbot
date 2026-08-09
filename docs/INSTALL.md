@@ -880,4 +880,4 @@ rm -rf ~/.joshbot  # Also removes config, memory, sessions
 - **Set up Telegram:** Chat with your bot from your phone
 - **Configure heartbeat:** Set up proactive tasks for autonomous processing
 
-For more details, see the [README.md](../README.md) or explore the `skills/` directory for examples.
+For more details, see the [README.md](../README.md) or explore the `internal/skills/bundled/` directory for examples.

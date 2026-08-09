@@ -22,6 +22,12 @@
 // indistinguishable from secrets by entropy alone, and redacting them would
 // make ordinary output unreadable. Only recognisable key shapes, credential
 // -shaped assignments and Authorization headers are matched.
+//
+// All-numeric values, even under a credential-shaped name. No key class here
+// is bare digits, and numeric settings collide constantly — `Max tokens: 8192`
+// in `joshbot status` matches TOKEN plus a plural "s". The cost is that
+// `password: 12345678` stays in the clear, which is consistent with the
+// entropy exemption above.
 package redact
 
 import (
@@ -211,6 +217,15 @@ func String(s string) string {
 			if isPlaceholder(groups[3]) {
 				return m // already redacted; keep idempotent
 			}
+			// A bare number is not a credential in any class this package
+			// detects — every vendor key carries an alphanumeric prefix, and
+			// the Telegram bot token is matched by keyShape instead. Numeric
+			// settings are the realistic collision: `Max tokens: 8192` in
+			// `joshbot status` was reported as [REDACTED], because TOKEN plus
+			// the plural "s" makes the label look like an assignment.
+			if isBareNumber(groups[3]) {
+				return m
+			}
 			// groups[2] is an optional scheme word. Capturing it as part of the
 			// match rather than stopping at it is what keeps `AUTH_TOKEN=Bearer
 			// <secret>` safe: treating "Bearer" as the value would redact the
@@ -305,6 +320,27 @@ func isAlnum(c byte) bool {
 
 func isSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
+}
+
+// isBareNumber reports whether v is only digits and numeric punctuation.
+//
+// This deliberately widens what escapes redaction: `password: 12345678` is
+// left in the clear. That is consistent with the package's stated scope —
+// bare high-entropy strings are already not detected, and an all-digit value
+// carries less entropy than the hashes and UUIDs that exemption covers.
+func isBareNumber(v string) bool {
+	digits := false
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digits = true
+		case c == '.' || c == '_' || c == '-' || c == '+':
+		default:
+			return false
+		}
+	}
+	return digits
 }
 
 // containsAnyFold reports whether lowered contains any of the (already

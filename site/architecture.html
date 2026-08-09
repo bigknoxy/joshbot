@@ -329,7 +329,7 @@ footer a:hover { text-decoration: underline; }
 <div class="container">
   <div class="page-hero">
     <h1>Architecture</h1>
-    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~22,076 LOC &middot; 985+ tests</div>
+    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~24,800 LOC &middot; 1,135 tests</div>
   </div>
 
   <section>
@@ -358,7 +358,7 @@ footer a:hover { text-decoration: underline; }
         <div class="arrow-label">routed to agent goroutine</div>
         <div class="box amber full"><span class="name">Agent (ReAct Loop)</span><div class="desc">max 20 iterations: think → act → observe</div></div>
         <div class="diagram-row wrap" style="margin-top: 8px;">
-          <div class="box purple"><span class="name">Tools Registry</span><div class="desc">23 built-in tools</div></div>
+          <div class="box purple"><span class="name">Tools Registry</span><div class="desc">22 built-in tools</div></div>
           <div class="box green"><span class="name">Memory System</span><div class="desc">MEMORY.md + HISTORY.md</div></div>
           <div class="box green"><span class="name">Skills System</span><div class="desc">SKILL.md auto-discovery</div></div>
           <div class="box cyan"><span class="name">LLM Providers</span><div class="desc">OpenRouter, Anthropic, etc.</div></div>
@@ -441,7 +441,7 @@ footer a:hover { text-decoration: underline; }
 │   ├── <span class="dir">agent/</span>              ReAct loop, context assembly, prompt caching
 │   ├── <span class="dir">memory/</span>             structured fact store (fact.go, search.go)
 │   ├── <span class="dir">skills/</span>             discovery, detection, extraction, validation, trust
-│   ├── <span class="dir">tools/</span>              23 built-in tools + registry, shell sandbox, shell env allowlist
+│   ├── <span class="dir">tools/</span>              22 built-in tools + registry, shell sandbox, shell env allowlist
 │   ├── <span class="dir">channels/</span>           CLI + Telegram channel implementations
 │   ├── <span class="dir">bus/</span>                goroutine message bus
 │   ├── <span class="dir">providers/</span>          LLM provider layer (OpenRouter, Anthropic, etc.)

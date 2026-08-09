@@ -123,6 +123,14 @@ func NewLogger(cfg Config) (*Logger, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open log file: %w", err)
 		}
+		// The 0600 above only applies to a file this call creates. An install
+		// that predates owner-only logging already has a 0644 log holding tool
+		// results and message content, and it would stay world-readable
+		// forever, so narrow it on every open.
+		if err := file.Chmod(0600); err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("failed to set log file mode: %w", err)
+		}
 		handlers = append(handlers, file)
 		writers = append(writers, file)
 	}

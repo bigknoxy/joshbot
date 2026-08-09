@@ -235,3 +235,64 @@ func TestConcurrentWritersNeverPublishATornFile(t *testing.T) {
 func m0Quarantine(dir, id string) string {
 	return filepath.Join(dir, id+".jsonl.corrupt")
 }
+
+// The first quarantine copy is the one that matters: it holds the conversation
+// as it stood before any lines were dropped. A later load reads the repaired
+// file, so overwriting the quarantine would replace the evidence with a
+// strictly poorer copy of it.
+func TestQuarantineIsNotOverwrittenByALaterCorruption(t *testing.T) {
+	m := newTestManager(t)
+	id := "twice-torn"
+
+	original := `{"role":"user","content":"first","timestamp":"2026-01-01T00:00:00Z"}` + "\n" +
+		`{"role":"assistant","content":"half-writ` + "\n"
+	if err := os.WriteFile(m.sessionFilePath(id), []byte(original), sessionFileMode); err != nil {
+		t.Fatalf("seed session file: %v", err)
+	}
+	if _, err := m.Load(context.Background(), id); err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+
+	// A second, different corruption event.
+	second := `{"role":"user","content":"later","timestamp":"2026-01-02T00:00:00Z"}` + "\n" +
+		`not json at all` + "\n"
+	if err := os.WriteFile(m.sessionFilePath(id), []byte(second), sessionFileMode); err != nil {
+		t.Fatalf("reseed session file: %v", err)
+	}
+	if _, err := m.Load(context.Background(), id); err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+
+	got, err := os.ReadFile(m.quarantineFilePath(id))
+	if err != nil {
+		t.Fatalf("read quarantine: %v", err)
+	}
+	if string(got) != original {
+		t.Errorf("quarantine was overwritten by the later corruption:\ngot  %q\nwant %q", got, original)
+	}
+}
+
+// Quarantine survives an unreadable load, not an explicit delete: leaving it
+// behind would mean "delete this session" kept a verbatim transcript on disk.
+func TestDeleteRemovesTheQuarantineCopy(t *testing.T) {
+	m := newTestManager(t)
+	id := "delete-me"
+
+	raw := `{"role":"user","content":"secret","timestamp":"2026-01-01T00:00:00Z"}` + "\n" + `torn` + "\n"
+	if err := os.WriteFile(m.sessionFilePath(id), []byte(raw), sessionFileMode); err != nil {
+		t.Fatalf("seed session file: %v", err)
+	}
+	if _, err := m.Load(context.Background(), id); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, err := os.Stat(m.quarantineFilePath(id)); err != nil {
+		t.Fatalf("expected a quarantine file to exist before Delete: %v", err)
+	}
+
+	if err := m.Delete(context.Background(), id); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(m.quarantineFilePath(id)); !os.IsNotExist(err) {
+		t.Errorf("Delete left the quarantined transcript on disk (err=%v)", err)
+	}
+}

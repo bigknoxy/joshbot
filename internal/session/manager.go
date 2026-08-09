@@ -101,6 +101,15 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		cleanup()
 		return fmt.Errorf("failed to write temporary file: %w", err)
 	}
+	// Flush to disk before the rename. Without this the rename can become
+	// visible while the data behind it has not landed, which on power loss
+	// publishes an empty or truncated file over a good one — the exact
+	// outcome the atomic write exists to prevent.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to sync temporary file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		cleanup()
 		return fmt.Errorf("failed to close temporary file: %w", err)
@@ -162,7 +171,14 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 
 	if corrupt > 0 {
 		quarantine := m.quarantineFilePath(sessionID)
-		if err := writeFileAtomic(quarantine, data, sessionFileMode); err != nil {
+		// The first quarantine copy is the valuable one: it holds the
+		// conversation as it stood before any lines were dropped. Later loads
+		// read the already-repaired file, so overwriting would replace the
+		// original evidence with a strictly poorer copy of it.
+		if _, statErr := os.Stat(quarantine); statErr == nil {
+			log.Warnf("session %s: %d unreadable line(s) skipped; earlier quarantine at %s kept",
+				sessionID, corrupt, quarantine)
+		} else if err := writeFileAtomic(quarantine, data, sessionFileMode); err != nil {
 			log.Warnf("session %s: %d unreadable line(s) skipped; failed to quarantine original: %v",
 				sessionID, corrupt, err)
 		} else {
@@ -325,6 +341,12 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 	if metaPath := m.metadataFilePath(sessionID); metaPath != "" {
 		_ = os.Remove(metaPath)
 	}
+
+	// The quarantine copy holds the same conversation as the file just
+	// deleted. Leaving it behind would mean "delete this session" silently
+	// kept a verbatim transcript on disk. Quarantine survives an unreadable
+	// load, not an explicit delete.
+	_ = os.Remove(m.quarantineFilePath(sessionID))
 
 	return nil
 }

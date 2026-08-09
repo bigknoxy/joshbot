@@ -39,6 +39,15 @@ type SessionManager interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// ContextCompressor summarizes a run of messages into a bounded string.
+//
+// The agent depends on the behaviour, not on *ctxpkg.Compressor, so a test can
+// substitute a double and count how often compression actually runs — which is
+// the property issue #125 is about.
+type ContextCompressor interface {
+	CompressMessages(ctx context.Context, model string, messages []providers.Message, budget int) (string, error)
+}
+
 // MemoryLoader is an interface for loading memory content.
 type MemoryLoader interface {
 	LoadMemory(ctx context.Context) (string, error)
@@ -66,7 +75,7 @@ type Agent struct {
 	skills        SkillsLoader
 	logger        *log.Logger
 	budget        *ctxpkg.BudgetManager
-	compressor    *ctxpkg.Compressor
+	compressor    ContextCompressor
 	maxIterations int
 	timeout       time.Duration
 	skillDetector *skills.SkillDetector
@@ -196,6 +205,17 @@ func WithBudgetManager(budget *ctxpkg.BudgetManager) Option {
 // WithCompressor injects a Compressor used to compact messages when needed.
 func WithCompressor(c *ctxpkg.Compressor) Option {
 	return func(a *Agent) {
+		// Guard against a typed nil: assigning one would leave a.compressor
+		// non-nil while every call panics.
+		if c != nil {
+			a.compressor = c
+		}
+	}
+}
+
+// WithContextCompressor injects any ContextCompressor implementation.
+func WithContextCompressor(c ContextCompressor) Option {
+	return func(a *Agent) {
 		if c != nil {
 			a.compressor = c
 		}
@@ -291,7 +311,8 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 
 	// Run ReAct loop with channel info for async callbacks
 	channelID := msg.SenderID // Use SenderID as the channel identifier
-	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content)
+	var compaction compactionState
+	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &compaction)
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
 		// Check for timeout
@@ -310,6 +331,11 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 			}
 		}
 	}
+
+	// Fold in any compaction produced during the turn. This runs after the
+	// history append above, which slices sess.Messages from startSessionLen —
+	// shrinking the session before that point would slice out of range.
+	a.applyCompaction(ctx, sess, compaction)
 
 	// Save session
 	if err := a.sessions.Save(ctx, sess); err != nil {
@@ -342,7 +368,7 @@ func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
 }
 
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.
-func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string) (string, error) {
+func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string, st *compactionState) (string, error) {
 	var toolRecords []skills.ToolCallRecord
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
@@ -526,7 +552,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		}
 
 		// Proactive context compaction: check if we need to compact after tool execution
-		messages = a.checkAndCompactContext(ctx, messages, sess)
+		messages = a.checkAndCompactContext(ctx, messages, sess, st)
 	}
 
 	// Hit max iterations
@@ -586,9 +612,81 @@ func (a *Agent) afterReActDetection(finalOutput string, toolRecords []skills.Too
 	a.logger.Info("Skill created successfully", "name", candidate.Name)
 }
 
+// compactionState carries a compaction produced during a turn so it can be
+// applied to the session exactly once, after the turn finishes.
+//
+// It is a local of Process, never a field on Agent: two Telegram messages are
+// processed concurrently, and a shared field would let one conversation's
+// summary overwrite another's. This is the same reasoning that moved the
+// progress callback onto the context.
+//
+// Applying at the end rather than in the loop also keeps `startSessionLen` in
+// Process valid. That index slices sess.Messages to find the turn's new
+// messages for the history log; shrinking the session underneath it would slice
+// out of range.
+type compactionState struct {
+	// summary is the compressed text produced by the compressor.
+	summary string
+	// prefixLen is len(sess.Messages) at the moment the summary was taken, so
+	// the summary stands in for exactly sess.Messages[:prefixLen].
+	prefixLen int
+	// active reports whether a compaction happened at all this turn.
+	active bool
+}
+
+// applyCompaction folds a turn's compaction into the session, replacing the
+// summarized prefix with a single compaction record.
+//
+// This is what makes compaction stick. Before it existed the summary lived only
+// in the provider-facing slice and was discarded when Process returned, so
+// buildMessages rebuilt the full history from sess.Messages on the next turn
+// and the compressor ran again — an extra provider round-trip on every turn
+// past the threshold, forever, while the session file kept growing (#125).
+func (a *Agent) applyCompaction(ctx context.Context, sess *session.Session, st compactionState) {
+	if !st.active || st.summary == "" {
+		return
+	}
+	if st.prefixLen <= 0 || st.prefixLen > len(sess.Messages) {
+		// The session changed shape in a way we did not predict. Dropping the
+		// compaction costs a recomputation next turn; applying it against a
+		// stale index could discard live messages.
+		a.logger.Warn("Skipping compaction write-back: prefix out of range",
+			"prefix_len", st.prefixLen, "session_len", len(sess.Messages))
+		return
+	}
+
+	summarized := sess.Messages[:st.prefixLen]
+
+	// Preserve the messages the summary replaces. The user asked for a smaller
+	// context window, not for their conversation to be deleted. If the store
+	// cannot archive them, keep the full session: recomputing a summary is
+	// cheap compared with destroying history.
+	if archiver, ok := a.sessions.(session.Archiver); ok {
+		archived := make([]session.Message, len(summarized))
+		copy(archived, summarized)
+		if err := archiver.Archive(ctx, sess.ID, archived); err != nil {
+			a.logger.Warn("Skipping compaction write-back: archive failed", "error", err)
+			return
+		}
+	}
+
+	tail := make([]session.Message, 0, len(sess.Messages)-st.prefixLen+1)
+	tail = append(tail, session.NewCompactionRecord(st.summary))
+	tail = append(tail, sess.Messages[st.prefixLen:]...)
+	sess.Messages = tail
+
+	a.logger.Info("Context compaction persisted",
+		"summarized_messages", len(summarized),
+		"session_messages", len(sess.Messages),
+	)
+}
+
 // checkAndCompactContext estimates current message tokens and compacts context if threshold is exceeded.
 // It returns the original messages if under threshold, or compacted messages otherwise.
-func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers.Message, sess *session.Session) []providers.Message {
+//
+// On success it also records the summary in st so Process can persist it once
+// the turn completes; without that the work is repeated on every later turn.
+func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers.Message, sess *session.Session, st *compactionState) []providers.Message {
 	// Only proceed if we have budget manager and compressor
 	if a.budget == nil || a.compressor == nil {
 		return messages
@@ -625,8 +723,20 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	// Threshold exceeded - compact messages
 	a.logger.Info("Compacting context", "total_tokens", totalTokens, "threshold_budget", thresholdBudget)
 
-	// Get session messages for compression (excluding system prompt)
+	// Compress the stored session, not the provider slice.
+	//
+	// `messages` has already been through the memory-window truncation in
+	// buildMessages, so it is only the tail of the conversation. The write-back
+	// discards sess.Messages[:prefixLen] and puts the summary in its place, so
+	// summarizing the tail while claiming the whole prefix would destroy every
+	// message the window had already slid past. The two must describe the same
+	// set of messages.
 	sessionMsgs := messages[1:] // Skip system message
+	prefixLen := 0
+	if sess != nil && len(sess.Messages) > 0 {
+		sessionMsgs = sessionToProviderMessages(sess)
+		prefixLen = len(sess.Messages)
+	}
 	compressed, err := a.compressor.CompressMessages(ctx, model, sessionMsgs, thresholdBudget)
 	if err != nil {
 		a.logger.Warn("Context compaction failed", "error", err)
@@ -638,24 +748,27 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 		messages[0], // Keep system message
 		{
 			Role:    providers.RoleUser,
-			Content: "<ctx_compress>\n" + compressed + "\n</ctx_compress>",
+			Content: session.CompactionEnvelope(compressed),
 		},
+	}
+
+	// Record it for the write-back at the end of the turn. A later compaction in
+	// the same turn overwrites this: its summary already subsumes the earlier
+	// one (the compressed text is carried forward in `messages`), and its
+	// prefixLen covers strictly more of the session.
+	if st != nil && prefixLen > 0 {
+		st.summary = compressed
+		st.prefixLen = prefixLen
+		st.active = true
 	}
 
 	a.logger.Debug("Context compacted", "original_messages", len(sessionMsgs), "new_content_len", len(compressed))
 	return newMessages
 }
 
-// buildMessages builds the message list for LLM from session and system prompt.
-func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []providers.Message {
-	msgs := []providers.Message{
-		{
-			Role:    providers.RoleSystem,
-			Content: systemPrompt,
-		},
-	}
-
-	// Convert session messages to provider messages
+// sessionToProviderMessages converts a session's stored messages to the
+// provider wire shape, in order and without truncation.
+func sessionToProviderMessages(sess *session.Session) []providers.Message {
 	providerMsgs := make([]providers.Message, 0, len(sess.Messages))
 	for _, msg := range sess.Messages {
 		providerMsg := providers.Message{
@@ -664,7 +777,6 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 			ToolCallID: msg.ToolCallID,
 		}
 
-		// Convert tool calls
 		if len(msg.ToolCalls) > 0 {
 			providerToolCalls := make([]providers.ToolCall, len(msg.ToolCalls))
 			for i, tc := range msg.ToolCalls {
@@ -682,11 +794,41 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 
 		providerMsgs = append(providerMsgs, providerMsg)
 	}
+	return providerMsgs
+}
+
+// buildMessages builds the message list for LLM from session and system prompt.
+func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []providers.Message {
+	msgs := []providers.Message{
+		{
+			Role:    providers.RoleSystem,
+			Content: systemPrompt,
+		},
+	}
+
+	providerMsgs := sessionToProviderMessages(sess)
+
+	// A stored compaction record stands in for everything that came before it,
+	// so it is held out of the memory-window truncation below. Sliding the
+	// window over it would drop the summary and silently lose the whole earlier
+	// conversation — the opposite of what compaction is for.
+	var compactionMsg []providers.Message
+	if _, ok := sess.CompactionRecord(); ok && len(providerMsgs) > 0 {
+		compactionMsg = providerMsgs[:1]
+		providerMsgs = providerMsgs[1:]
+	}
 
 	window := a.cfg.Agents.Defaults.MemoryWindow
 	if window > 0 && len(providerMsgs) > window {
 		providerMsgs = providerMsgs[len(providerMsgs)-window:]
 		providerMsgs = dropOrphanedToolResults(providerMsgs)
+	}
+
+	if len(compactionMsg) > 0 {
+		// The record replaced a run of messages, so whatever now leads the tail
+		// may be a tool result whose announcing assistant message is gone. An
+		// OpenAI-compatible provider rejects that with a 400.
+		providerMsgs = append(compactionMsg, dropOrphanedToolResults(providerMsgs)...)
 	}
 
 	// If we have a budget manager and compressor, consider compressing older messages

@@ -296,3 +296,101 @@ func TestDeleteRemovesTheQuarantineCopy(t *testing.T) {
 		t.Errorf("Delete left the quarantined transcript on disk (err=%v)", err)
 	}
 }
+
+// Archive preserves the messages a compaction removes from the live session.
+// It is append-only because it becomes the only remaining copy.
+func TestArchiveAppendsAndIsOwnerOnly(t *testing.T) {
+	m := newTestManager(t)
+	id := "arch-session"
+
+	first := []Message{
+		{Role: RoleUser, Content: "one", Timestamp: time.Now().UTC()},
+		{Role: RoleAssistant, Content: "two", Timestamp: time.Now().UTC()},
+	}
+	second := []Message{{Role: RoleUser, Content: "three", Timestamp: time.Now().UTC()}}
+
+	if err := m.Archive(context.Background(), id, first); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if err := m.Archive(context.Background(), id, second); err != nil {
+		t.Fatalf("Archive (second): %v", err)
+	}
+
+	data, err := os.ReadFile(m.archiveFilePath(id))
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 archived messages, got %d: %q", len(lines), string(data))
+	}
+	// The second call must append, not truncate.
+	if !strings.Contains(lines[0], "one") || !strings.Contains(lines[2], "three") {
+		t.Errorf("archive is not append-only: %q", string(data))
+	}
+
+	info, err := os.Stat(m.archiveFilePath(id))
+	if err != nil {
+		t.Fatalf("stat archive: %v", err)
+	}
+	if got := info.Mode().Perm(); got != sessionFileMode {
+		t.Errorf("archive has mode %04o, want %04o", got, sessionFileMode)
+	}
+}
+
+func TestArchiveEmptyIsNoOp(t *testing.T) {
+	m := newTestManager(t)
+	if err := m.Archive(context.Background(), "empty-session", nil); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if _, err := os.Stat(m.archiveFilePath("empty-session")); !os.IsNotExist(err) {
+		t.Error("archiving nothing must not create a file")
+	}
+}
+
+func TestArchiveRejectsEmptyID(t *testing.T) {
+	m := newTestManager(t)
+	err := m.Archive(context.Background(), "", []Message{{Role: RoleUser, Content: "x"}})
+	if err != ErrInvalidSessionID {
+		t.Errorf("expected ErrInvalidSessionID, got %v", err)
+	}
+}
+
+// Archived messages must round-trip, including the compaction flag.
+func TestArchivedMessagesRoundTrip(t *testing.T) {
+	m := newTestManager(t)
+	id := "roundtrip-session"
+
+	rec := NewCompactionRecord("a summary")
+	if err := m.Archive(context.Background(), id, []Message{rec}); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	data, err := os.ReadFile(m.archiveFilePath(id))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	got, err := MessageFromJSONL([]byte(strings.TrimSpace(string(data))))
+	if err != nil {
+		t.Fatalf("parse archived message: %v", err)
+	}
+	if !got.Compaction {
+		t.Error("compaction flag lost in the archive")
+	}
+	if got.Content != rec.Content {
+		t.Errorf("content changed: %q vs %q", got.Content, rec.Content)
+	}
+}
+
+// An ordinary message must not gain a `compaction` key — the field is
+// omitempty, so existing session files stay byte-identical.
+func TestOrdinaryMessageSerialisationUnchanged(t *testing.T) {
+	msg := Message{Role: RoleUser, Content: "hello", Timestamp: time.Unix(0, 0).UTC()}
+	data, err := MessageToJSONL(msg)
+	if err != nil {
+		t.Fatalf("MessageToJSONL: %v", err)
+	}
+	if strings.Contains(string(data), "compaction") {
+		t.Errorf("non-compaction message serialised a compaction key: %s", data)
+	}
+}

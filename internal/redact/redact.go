@@ -58,24 +58,56 @@ var SecretNameFragments = []string{
 // It is one expression rather than a slice of them so the input is scanned
 // once. Ten separate passes over a megabyte of log output measured 5x slower.
 var keyShape = regexp.MustCompile(strings.Join([]string{
-	`sk-ant-[A-Za-z0-9_-]{16,}`,     // Anthropic
-	`sk-or-[A-Za-z0-9_-]{16,}`,      // OpenRouter
-	`sk-[A-Za-z0-9_-]{20,}`,         // OpenAI and compatible
-	`github_pat_[A-Za-z0-9_]{20,}`,  // GitHub fine-grained PAT
-	`gh[pousr]_[A-Za-z0-9]{20,}`,    // GitHub classic/OAuth/app
-	`xox[baprs]-[A-Za-z0-9-]{10,}`,  // Slack
-	`AIza[0-9A-Za-z_-]{30,}`,        // Google
-	`nvapi-[A-Za-z0-9_-]{20,}`,      // NVIDIA
-	`gsk_[A-Za-z0-9]{20,}`,          // Groq
-	`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`, // AWS access key IDs
+	`sk-ant-[A-Za-z0-9_-]{16,}`,       // Anthropic
+	`sk-or-[A-Za-z0-9_-]{16,}`,        // OpenRouter
+	`sk-[A-Za-z0-9_-]{20,}`,           // OpenAI and compatible
+	`github_pat_[A-Za-z0-9_]{20,}`,    // GitHub fine-grained PAT
+	`gh[pousr]_[A-Za-z0-9]{20,}`,      // GitHub classic/OAuth/app
+	`xox[baprs]-[A-Za-z0-9-]{10,}`,    // Slack
+	`AIza[0-9A-Za-z_-]{30,}`,          // Google
+	`nvapi-[A-Za-z0-9_-]{20,}`,        // NVIDIA
+	`gsk_[A-Za-z0-9]{20,}`,            // Groq
+	`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`,   // AWS access key IDs
+	`bot[0-9]{6,}:[A-Za-z0-9_-]{30,}`, // Telegram bot token, as it appears in an api.telegram.org URL
 }, "|"))
 
 // keyShapeHints are the cheap substrings that gate the expensive scan. If none
 // of them appear, no alternative above can match, so the regex is skipped.
-var keyShapeHints = []string{"sk-", "github_pat_", "gh", "xox", "aiza", "nvapi-", "gsk_", "akia", "asia"}
+//
+// They must be as narrow as the alternatives they gate. A bare "gh" occurs in
+// ordinary English ("through", "right", "highlight"), so it fired the full scan
+// on most prose; the five real GitHub prefixes cost nothing extra to list.
+var keyShapeHints = []string{
+	"sk-", "github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+	"xox", "aiza", "nvapi-", "gsk_", "akia", "asia", "bot",
+}
 
-// authHeader matches an Authorization header value of either common scheme.
-var authHeader = regexp.MustCompile(`(?i)(authorization\s*:\s*)(bearer|basic)(\s+)(\S+)`)
+// authScheme optionally precedes the credential in an Authorization header or a
+// credential-shaped assignment. It is preserved rather than redacted: the scheme
+// is not a secret and keeping it makes the redacted line readable.
+//
+// It is deliberately any bare word, not an allowlist of `bearer|basic`. GitHub's
+// own scheme is `Token`, Azure's is `SharedKey`, and an allowlist meant those
+// fell through to the assignment rule, which blanked the *scheme* and published
+// the credential after it — exactly the failure the ordering is meant to prevent.
+const authScheme = `(?:[A-Za-z][A-Za-z0-9_.-]*[ \t]+)?`
+
+// credValue is the value class shared by the rules below.
+//
+// It stops at whitespace, structural punctuation and both bracket kinds, so a
+// JSON or YAML document keeps its shape: without `[` and `{` excluded,
+// `tokens=[1,2,3]` was rewritten to `tokens=[REDACTED],2,3]`.
+var credValue = `(?:` + regexp.QuoteMeta(Placeholder) + `|[^\s,;"'` + "`" + `{}\[\]]+)`
+
+// The already-redacted placeholder is an explicit alternative so that a second
+// pass matches it and can bail out. Without it the value class stops at the
+// leading bracket, the rules re-match what is left, and String stops being
+// idempotent: "[REDACTED]" became "[[REDACTED]]".
+
+// authHeader matches an Authorization header in either `:` or `=` form, with or
+// without a scheme, and whether or not Go's `%v` of an http.Header has wrapped
+// the value in brackets.
+var authHeader = regexp.MustCompile(`(?i)(authorization"?\s*[:=]\s*"?\[?)(` + authScheme + `)(` + credValue + `)`)
 
 // assignment matches `name = value`, `name: value` and `"name": "value"` where
 // the name is credential-shaped.
@@ -86,18 +118,54 @@ var authHeader = regexp.MustCompile(`(?i)(authorization\s*:\s*)(bearer|basic)(\s
 // `"api_key": "[REDACTED]"` and stays valid JSON.
 var assignment = buildAssignmentRe()
 
-func buildAssignmentRe() *regexp.Regexp {
-	frags := make([]string, 0, len(SecretNameFragments))
+// assignmentFragments are the name fragments the assignment rule uses.
+//
+// It is SecretNameFragments minus AUTH. AUTH is a real signal for screening a
+// spawned process's environment, where names are whole identifiers, but as a
+// substring in free text it is destructive: it rewrote `Author: Josh Knox`,
+// `{"author": "josh"}` and `unauthorized: request failed`, all of which are
+// routine tool output. Authorization headers are covered by authHeader above,
+// and `auth_token=` / `auth_key=` still match through TOKEN and SECRET_KEY.
+func assignmentFragments() []string {
+	out := make([]string, 0, len(SecretNameFragments))
 	for _, f := range SecretNameFragments {
+		if strings.EqualFold(f, "AUTH") {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func buildAssignmentRe() *regexp.Regexp {
+	src := assignmentFragments()
+	frags := make([]string, 0, len(src))
+	for _, f := range src {
 		// Field names use either underscores or none; accept both spellings
 		// and an optional hyphen form.
 		frags = append(frags, strings.ReplaceAll(regexp.QuoteMeta(f), "_", `[_-]?`))
 	}
 	// (?i)  case-insensitive
 	// group 1: everything up to and including the separator and opening quote
-	// group 2: the value
+	// group 2: an optional auth scheme, preserved
+	// group 3: the value
+	// There is no leading identifier class. Anything before the fragment stays
+	// in the text untouched either way, since only the matched region is
+	// rewritten, and an unanchored leading `[A-Za-z0-9_.-]*` made the scan
+	// roughly 4x slower on log-shaped prose for no behavioural gain.
+	//
+	// The fragment must end the identifier, apart from a plural "s" and further
+	// separator-led segments (SECRET_KEY_ID). Allowing arbitrary trailing
+	// letters made the rule fire on any word merely containing a fragment:
+	// "secretariat: horse" was rewritten to "secretariat: [REDACTED]".
+	//
+	// No optional "[" is consumed here, unlike authHeader. Swallowing it made
+	// the rule reach inside a list and corrupt it — "tokens=[1,2,3]" became
+	// "tokens=[[REDACTED],2,3]" — and a bracketed value is a list, not a
+	// credential.
 	return regexp.MustCompile(
-		`(?i)([A-Za-z0-9_.-]*(?:` + strings.Join(frags, "|") + `)[A-Za-z0-9_.-]*"?\s*[:=]\s*"?)([^\s,;"'` + "`" + `}\]]+)`)
+		`(?i)((?:` + strings.Join(frags, "|") + `)s?(?:[_.-][A-Za-z0-9]+)*"?\s*[:=]\s*"?)(` +
+			authScheme + `)(` + credValue + `)`)
 }
 
 // String returns s with credentials and the host home directory removed.
@@ -118,13 +186,14 @@ func String(s string) string {
 	if strings.Contains(lower, "authorization") {
 		s = authHeader.ReplaceAllStringFunc(s, func(m string) string {
 			groups := authHeader.FindStringSubmatch(m)
-			if len(groups) != 5 {
+			if len(groups) != 4 {
 				return m
 			}
-			if isPlaceholder(groups[4]) {
+			if isPlaceholder(groups[3]) {
 				return m
 			}
-			return groups[1] + groups[2] + groups[3] + Placeholder
+			// groups[2] is the scheme, kept; groups[3] is the credential.
+			return groups[1] + groups[2] + Placeholder
 		})
 		lower = strings.ToLower(s)
 	}
@@ -133,24 +202,20 @@ func String(s string) string {
 	// the shape rules: `api_key=sk-...` becomes one replacement, not two
 	// overlapping ones. The scan is skipped entirely when no credential-shaped
 	// name appears, which is the common case for log output.
-	if containsAnyFold(lower, fragmentHints) {
+	if hasAssignmentCandidate(lower) {
 		s = assignment.ReplaceAllStringFunc(s, func(m string) string {
 			groups := assignment.FindStringSubmatch(m)
-			if len(groups) != 3 {
+			if len(groups) != 4 {
 				return m
 			}
-			if isPlaceholder(groups[2]) {
+			if isPlaceholder(groups[3]) {
 				return m // already redacted; keep idempotent
 			}
-			// "Authorization" is credential-shaped by name, so this rule also
-			// matches an auth header — with the scheme as the "value". The
-			// header rule above has already redacted the token that follows;
-			// blanking the scheme as well would destroy readable structure
-			// while protecting nothing.
-			if isAuthScheme(groups[2]) {
-				return m
-			}
-			return groups[1] + Placeholder
+			// groups[2] is an optional scheme word. Capturing it as part of the
+			// match rather than stopping at it is what keeps `AUTH_TOKEN=Bearer
+			// <secret>` safe: treating "Bearer" as the value would redact the
+			// scheme and leave the credential in the clear.
+			return groups[1] + groups[2] + Placeholder
 		})
 		lower = strings.ToLower(s)
 	}
@@ -169,9 +234,77 @@ func String(s string) string {
 // gating on the underscored spelling would skip the hyphenated one and silently
 // let `api-key: <secret>` through. Every entry of SecretNameFragments contains
 // at least one of these stems, so the gate can never be narrower than the regex.
+// "auth" is deliberately absent: AUTH is not an assignment fragment (see
+// assignmentFragments), and it is the single most common English stem in this
+// list, so gating on it ran the assignment scan over almost every line of prose.
 var fragmentHints = []string{
 	"key", "token", "secret", "password", "passwd",
-	"credential", "webhook", "auth", "bearer", "passphrase",
+	"credential", "webhook", "bearer", "passphrase",
+}
+
+// hasAssignmentCandidate reports whether the assignment rule could possibly
+// match, using a cheap forward walk instead of the regex.
+//
+// A bare substring gate was not enough. Go's regexp is slow on a
+// case-insensitive alternation of literals — the name part alone measured
+// ~650ms per megabyte — and "token", "key" and "secret" appear constantly in
+// ordinary log prose without being assignments, so the full scan ran on
+// almost every large write.
+//
+// This walk mirrors the name part of the regex exactly: fragment, optional
+// plural, separator-led segments, optional quote, whitespace, then ':' or '='.
+// It must never be narrower than the regex, so every relaxation the regex
+// allows is allowed here too.
+func hasAssignmentCandidate(lower string) bool {
+	for _, hint := range fragmentHints {
+		from := 0
+		for {
+			i := strings.Index(lower[from:], hint)
+			if i < 0 {
+				break
+			}
+			j := from + i + len(hint)
+			from = from + i + 1
+			if assignmentFollows(lower, j) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// assignmentFollows reports whether an assignment separator follows the
+// identifier that ends at j.
+func assignmentFollows(lower string, j int) bool {
+	n := len(lower)
+	if j < n && lower[j] == 's' { // plural: api_keys=
+		j++
+	}
+	for j < n && (lower[j] == '_' || lower[j] == '-' || lower[j] == '.') {
+		k := j + 1
+		for k < n && isAlnum(lower[k]) {
+			k++
+		}
+		if k == j+1 {
+			break // a lone separator is not a segment
+		}
+		j = k
+	}
+	if j < n && lower[j] == '"' {
+		j++
+	}
+	for j < n && isSpace(lower[j]) {
+		j++
+	}
+	return j < n && (lower[j] == ':' || lower[j] == '=')
+}
+
+func isAlnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
+func isSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
 }
 
 // containsAnyFold reports whether lowered contains any of the (already
@@ -185,18 +318,14 @@ func containsAnyFold(lowered string, needles []string) bool {
 	return false
 }
 
-// isAuthScheme reports whether a captured value is an HTTP auth scheme rather
-// than a credential.
-func isAuthScheme(v string) bool {
-	return strings.EqualFold(v, "bearer") || strings.EqualFold(v, "basic")
-}
-
 // isPlaceholder reports whether a captured value is already redacted.
 //
-// The comparison is a prefix test because the value class stops at `]`, so a
-// previously redacted value is captured as "[REDACTED" without its bracket.
+// Brackets are trimmed first: depending on which rule matched, a previously
+// redacted value arrives as "[REDACTED]", "[REDACTED" or bare "REDACTED",
+// because the optional opening bracket in the name group may have consumed it.
 func isPlaceholder(v string) bool {
-	return strings.HasPrefix(v, strings.TrimSuffix(Placeholder, "]"))
+	v = strings.TrimLeft(v, "[")
+	return strings.HasPrefix(v, strings.Trim(Placeholder, "[]"))
 }
 
 // Bytes is String for byte slices.

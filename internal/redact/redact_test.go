@@ -116,6 +116,17 @@ func TestOrdinaryTextUnchanged(t *testing.T) {
 		"error: connection refused (dial tcp 127.0.0.1:8099)",
 		"| column | value |\n|---|---|\n| a | 1 |",
 		"session key is channel:senderID",
+		// Words that merely contain a credential fragment are not assignments.
+		// Each of these was rewritten before the name and value classes were
+		// tightened, and all are routine tool output.
+		"Author: Josh Knox <j@example.com>",
+		`{"author": "josh", "version": "1.0"}`,
+		"unauthorized: request failed",
+		"authenticated=true",
+		"secretariat: horse",
+		"tokens=[1,2,3]",
+		"authors = [alice, bob]",
+		"we walked through the bright highlights of the night",
 	}
 	for _, s := range corpus {
 		if got := String(s); got != s {
@@ -181,7 +192,13 @@ func TestPerformanceOnLargeInput(t *testing.T) {
 	pinHome(t, "/home/nobody-unlikely-path")
 
 	// 1 MB of realistic mixed content.
-	block := "2026-08-03 12:00:00 INFO tool result: the quick brown fox jumps over the lazy dog\n"
+	//
+	// The corpus must contain the words that fire the cheap gates, or the
+	// benchmark measures the one input that skips every regex. An earlier
+	// version used prose with no "auth" and no GitHub prefix in it and so
+	// asserted the budget against the fastest possible case.
+	block := "2026-08-03 12:00:00 INFO tool result: the author walked through the " +
+		"bright highlights; unauthorized request to github failed, token missing\n"
 	var sb strings.Builder
 	for sb.Len() < 1<<20 {
 		sb.WriteString(block)
@@ -205,5 +222,46 @@ func TestSecretNameFragmentsNonEmpty(t *testing.T) {
 		if f != strings.ToUpper(f) {
 			t.Errorf("fragment %q must be upper-case; matching upper-cases the input", f)
 		}
+	}
+}
+
+// Every credential must be removed regardless of the auth scheme, the
+// separator, or how Go rendered the surrounding structure.
+//
+// The rule these pin down is that the scheme is preserved and the token is not.
+// An allowlist of bearer|basic sent every other scheme to the assignment rule,
+// which blanked the scheme and published the token after it.
+func TestCredentialIsRemovedNotTheSchemeInFrontOfIt(t *testing.T) {
+	pinHome(t, "/home/nobody-unlikely-path")
+
+	const secret = "abc123secretvalue"
+	inputs := []string{
+		"Authorization: Bearer " + secret,
+		"Authorization: Token " + secret,                          // GitHub's scheme
+		"Authorization: ApiKey " + secret,                         // Azure-style
+		"Authorization=Bearer " + secret,                          // = rather than :
+		"authorization: " + secret,                                // no scheme at all
+		"map[Authorization:[Bearer " + secret + "] Accept:[*/*]]", // %v of an http.Header
+		"AUTH_TOKEN=Bearer " + secret,
+		"api-key: " + secret,
+		`{"api_key": "` + secret + `"}`,
+	}
+	for _, in := range inputs {
+		got := String(in)
+		if strings.Contains(got, secret) {
+			t.Errorf("credential survived redaction:\n in:  %q\n out: %q", in, got)
+		}
+	}
+}
+
+// joshbot's own Telegram bot token appears in transport error lines as part of
+// the api.telegram.org URL, and it is the credential most likely to be logged.
+func TestTelegramBotTokenIsRemoved(t *testing.T) {
+	pinHome(t, "/home/nobody-unlikely-path")
+
+	in := "post https://api.telegram.org/bot123456789:AAEhBOweik6ad9r_QwertyuiopASDFGHJKLzx/sendMessage: timeout"
+	got := String(in)
+	if strings.Contains(got, "AAEhBOweik6ad9r_QwertyuiopASDFGHJKLzx") {
+		t.Errorf("bot token survived redaction: %q", got)
 	}
 }

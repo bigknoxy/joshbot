@@ -459,3 +459,64 @@ func sessionFileSize(t *testing.T, dir, id string) int64 {
 	}
 	return info.Size()
 }
+
+// recordingCompressor captures the message set the compressor was actually
+// given, so a test can compare it against the prefix the write-back discards.
+type recordingCompressor struct {
+	mu   sync.Mutex
+	seen []providers.Message
+}
+
+func (c *recordingCompressor) CompressMessages(_ context.Context, _ string, msgs []providers.Message, _ int) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seen = append([]providers.Message(nil), msgs...)
+	return "SUMMARY of " + strings.Repeat("z", 20), nil
+}
+
+func (c *recordingCompressor) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seen == nil {
+		return 0
+	}
+	return 1
+}
+
+// The summary replaces sess.Messages[:prefixLen], so it must have been built
+// from those same messages. buildMessages truncates to MemoryWindow before the
+// compaction check runs, so compressing the provider slice would summarize only
+// the tail while discarding the entire earlier conversation.
+func TestCompactionSummarizesEverythingItReplaces(t *testing.T) {
+	rec := &recordingCompressor{}
+	sessions := newMockSessionManager()
+	f := newCompactionFixture(t, sessions, &countingCompressor{}, toolTurns(1))
+	f.agent.compressor = rec
+	// A window far smaller than the history: this is the default shape, since
+	// MemoryWindow defaults to 50 and a compacting session is longer than that.
+	f.agent.cfg.Agents.Defaults.MemoryWindow = 4
+
+	seedHistory(t, sessions, f.sessionKey, 15)
+	before := len(f.session(t).Messages)
+
+	f.turn(t, "next")
+
+	rec.mu.Lock()
+	seen := len(rec.seen)
+	rec.mu.Unlock()
+	if seen == 0 {
+		t.Fatal("compressor never ran; the fixture did not reach compaction")
+	}
+
+	sess := f.session(t)
+	if _, ok := sess.CompactionRecord(); !ok {
+		t.Fatal("no compaction record was stored")
+	}
+
+	// Everything the session held before the turn was replaced by the record,
+	// so the compressor must have seen at least that many messages.
+	if seen < before {
+		t.Errorf("compressor saw %d messages but the write-back replaced %d; "+
+			"the summary does not cover what it stands in for", seen, before)
+	}
+}

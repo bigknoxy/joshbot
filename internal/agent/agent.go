@@ -723,8 +723,20 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	// Threshold exceeded - compact messages
 	a.logger.Info("Compacting context", "total_tokens", totalTokens, "threshold_budget", thresholdBudget)
 
-	// Get session messages for compression (excluding system prompt)
+	// Compress the stored session, not the provider slice.
+	//
+	// `messages` has already been through the memory-window truncation in
+	// buildMessages, so it is only the tail of the conversation. The write-back
+	// discards sess.Messages[:prefixLen] and puts the summary in its place, so
+	// summarizing the tail while claiming the whole prefix would destroy every
+	// message the window had already slid past. The two must describe the same
+	// set of messages.
 	sessionMsgs := messages[1:] // Skip system message
+	prefixLen := 0
+	if sess != nil && len(sess.Messages) > 0 {
+		sessionMsgs = sessionToProviderMessages(sess)
+		prefixLen = len(sess.Messages)
+	}
 	compressed, err := a.compressor.CompressMessages(ctx, model, sessionMsgs, thresholdBudget)
 	if err != nil {
 		a.logger.Warn("Context compaction failed", "error", err)
@@ -744,9 +756,9 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	// the same turn overwrites this: its summary already subsumes the earlier
 	// one (the compressed text is carried forward in `messages`), and its
 	// prefixLen covers strictly more of the session.
-	if st != nil {
+	if st != nil && prefixLen > 0 {
 		st.summary = compressed
-		st.prefixLen = len(sess.Messages)
+		st.prefixLen = prefixLen
 		st.active = true
 	}
 
@@ -754,16 +766,9 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	return newMessages
 }
 
-// buildMessages builds the message list for LLM from session and system prompt.
-func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []providers.Message {
-	msgs := []providers.Message{
-		{
-			Role:    providers.RoleSystem,
-			Content: systemPrompt,
-		},
-	}
-
-	// Convert session messages to provider messages
+// sessionToProviderMessages converts a session's stored messages to the
+// provider wire shape, in order and without truncation.
+func sessionToProviderMessages(sess *session.Session) []providers.Message {
 	providerMsgs := make([]providers.Message, 0, len(sess.Messages))
 	for _, msg := range sess.Messages {
 		providerMsg := providers.Message{
@@ -772,7 +777,6 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 			ToolCallID: msg.ToolCallID,
 		}
 
-		// Convert tool calls
 		if len(msg.ToolCalls) > 0 {
 			providerToolCalls := make([]providers.ToolCall, len(msg.ToolCalls))
 			for i, tc := range msg.ToolCalls {
@@ -790,6 +794,19 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 
 		providerMsgs = append(providerMsgs, providerMsg)
 	}
+	return providerMsgs
+}
+
+// buildMessages builds the message list for LLM from session and system prompt.
+func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []providers.Message {
+	msgs := []providers.Message{
+		{
+			Role:    providers.RoleSystem,
+			Content: systemPrompt,
+		},
+	}
+
+	providerMsgs := sessionToProviderMessages(sess)
 
 	// A stored compaction record stands in for everything that came before it,
 	// so it is held out of the memory-window truncation below. Sliding the

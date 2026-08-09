@@ -311,7 +311,11 @@ joshbot stores all configuration and data in `~/.joshbot/`:
 ├── sessions/            # Conversation history, one JSONL file per
 │                        #   channel:senderID (0600). A load that hits an
 │                        #   unreadable line skips it and preserves the
-│                        #   original bytes at <session-id>.jsonl.corrupt
+│                        #   original bytes at <session-id>.jsonl.corrupt.
+│                        #   Compaction moves the summarized messages to an
+│                        #   append-only <session-id>.history.jsonl archive,
+│                        #   which the agent never reads back and which grows
+│                        #   for the life of the session
 ├── media/               # Downloaded media files
 ├── cron/                # Created but unused; jobs live in workspace/cron/jobs.json
 └── workspace/           # Memory, skills, and context files

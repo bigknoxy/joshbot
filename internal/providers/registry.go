@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,33 @@ func AvailableProviders() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// AdvertisedProviders returns the full list of LLM providers that joshbot
+// supports and advertises to users, including model-path providers that
+// route through the LiteLLM provider but are still configured as top-level
+// entries in the guided setup and the README.
+func AdvertisedProviders() []string {
+	base := AvailableProviders()
+	// model-path providers not registered via RegisterProvider but still
+	// advertised (they route through litellm/openrouter with a model prefix).
+	extras := []string{"deepseek", "gemini"}
+	seen := make(map[string]bool, len(base)+len(extras))
+	out := make([]string, 0, len(base)+len(extras))
+	for _, n := range base {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	for _, n := range extras {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // IsProviderRegistered returns true if a provider with the given name is registered.

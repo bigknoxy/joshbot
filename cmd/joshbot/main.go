@@ -1594,6 +1594,19 @@ func runOnboard(c *cli.Context) error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
+	// Validate provider credentials so a bad key is caught at onboard time
+	// rather than on the first real chat. We skip this for providers that
+	// are known-local or require custom endpoints (ollama, github-copilot,
+	// azure); for everything else we attempt a ListModels call and warn
+	// (without blocking onboarding) on failure.
+	if apiKey != "" && provider != "ollama" && provider != "github-copilot" && provider != "azure" {
+		vc := configure.New(cfg)
+		if err := vc.ValidateProviderCredentials(provider); err != nil {
+			fmt.Printf("\n⚠  Could not validate %s API key: %v\n", provider, err)
+			fmt.Println("   Onboarding saved your config, but check the key and run 'joshbot status'.")
+		}
+	}
+
 	// Only create workspace files if NOT keeping existing data
 	if !skipFileCreation {
 		if err := createWorkspaceFiles(cfg, soulContent); err != nil {
@@ -1640,8 +1653,9 @@ func selectProvider(existingCfg *config.Config) string {
 	fmt.Println("\n[Step 1] LLM Provider")
 	fmt.Println("Choose your LLM provider:")
 
-	// Use provider registry for display names and descriptions
-	providerList := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
+	// Derive the provider list from the registry so the setup menu never
+	// drifts from what the runtime actually supports.
+	providerList := providers.AdvertisedProviders()
 	for i, p := range providerList {
 		displayName := providers.GetProviderDisplayName(p)
 		desc := providers.GetProviderDescription(p)
@@ -1664,20 +1678,11 @@ func selectProvider(existingCfg *config.Config) string {
 		choice = "1"
 	}
 
-	switch choice {
-	case "1":
-		return "nvidia"
-	case "2":
-		return "openrouter"
-	case "3":
-		return "groq"
-	case "4":
-		return "ollama"
-	case "5":
-		return "github-copilot"
-	default:
-		return "nvidia"
+	idx, err := strconv.Atoi(choice)
+	if err != nil || idx < 1 || idx > len(providerList) {
+		idx = 1
 	}
+	return providerList[idx-1]
 }
 
 // promptProviderAPIKey prompts for the API key based on the selected provider.

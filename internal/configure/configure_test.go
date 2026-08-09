@@ -301,6 +301,47 @@ func TestListProviders_ShowsCorrectStatus(t *testing.T) {
 	}
 }
 
+// Regression test for issue #160: ListProviders must include every provider
+// that AdvertisedProviders returns, not just the 5 that were hardcoded.
+func TestListProviders_CoversAllAdvertised(t *testing.T) {
+	cfg := newTestConfig(t)
+	c := New(cfg)
+
+	advertised := providers.AdvertisedProviders()
+	items := c.ListProviders()
+
+	itemsByName := make(map[string]bool, len(items))
+	for _, item := range items {
+		itemsByName[item.Name] = true
+	}
+
+	for _, name := range advertised {
+		if !itemsByName[name] {
+			t.Errorf("ListProviders is missing advertised provider %q", name)
+		}
+	}
+}
+
+// Regression test for issue #160: getDefaultAPIBase must return a usable
+// URL for providers that have a known endpoint (openai, anthropic, deepseek,
+// etc.) so new users get the right base URL without typing it.
+func TestGetDefaultAPIBase_KnownProviders(t *testing.T) {
+	known := map[string]string{
+		"openai":  "https://api.openai.com/v1",
+		"groq":    "https://api.groq.com/openai/v1",
+		"anthropic": "https://api.anthropic.com/v1",
+		"deepseek": "https://api.deepseek.com/v1",
+		"nvidia": "https://integrate.api.nvidia.com/v1",
+		"ollama": "http://localhost:11434/v1",
+	}
+	for name, expected := range known {
+		got := getDefaultAPIBase(name)
+		if got != expected {
+			t.Errorf("getDefaultAPIBase(%q) = %q, want %q", name, got, expected)
+		}
+	}
+}
+
 func TestConfigureProvider_CLIFlags_EquivalentToInteractive(t *testing.T) {
 	cfgCLI := newTestConfig(t)
 	cCLI := New(cfgCLI)

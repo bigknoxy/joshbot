@@ -122,7 +122,10 @@ func (c *Configurator) RemoveProvider(name string) error {
 }
 
 func (c *Configurator) ListProviders() []ProviderListItem {
-	providerNames := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot"}
+	// Derive from the provider registry so we never drift, plus the
+	// model-path providers (deepseek) that route through LiteLLM but
+	// still need a base URL. See registry.go RegisterProvider* calls.
+	providerNames := providers.AdvertisedProviders()
 	defaultName := c.cfg.ProviderDefaults.Default
 	var items []ProviderListItem
 
@@ -175,11 +178,19 @@ func (c *Configurator) ValidateProviderCredentials(name string) error {
 }
 
 func getDefaultAPIBase(name string) string {
+	// Registry-registered providers own their base URL in their Factory;
+	// this map covers the model-path providers that route through LiteLLM
+	// but need a base URL when the user does not supply one.
 	bases := map[string]string{
+		"openai":     "https://api.openai.com/v1",
 		"nvidia":     "https://integrate.api.nvidia.com/v1",
-		"openrouter": "https://openrouter.ai/api/v1",
 		"groq":       "https://api.groq.com/openai/v1",
-		"ollama":     "http://localhost:11434",
+		"ollama":     "http://localhost:11434/v1",
+		"anthropic":  "https://api.anthropic.com/v1",
+		"deepseek":   "https://api.deepseek.com/v1",
+		"azure":      "", // requires user-supplied endpoint; no sane default
+		"litellm":    "", // generic proxy; no default
+		"github-copilot": "", // OAuth flow, no API base
 	}
 	if base, ok := bases[name]; ok {
 		return base

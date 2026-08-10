@@ -72,7 +72,9 @@ func (s *launchdManager) Install() (Result, error) {
 	}
 
 	logDir := filepath.Dir(s.logPath)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	// The service log holds conversation content; ~/Library/LaunchAgents
+	// above is a shared OS location and keeps its conventional mode.
+	if err := os.MkdirAll(logDir, 0700); err != nil {
 		return Result{}, fmt.Errorf("failed to create logs directory: %w", err)
 	}
 

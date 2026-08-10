@@ -115,13 +115,25 @@ type runningContext struct {
 	IsGoRun   bool
 }
 
+// runningFromGoRun reports whether exePath is the throwaway binary `go run`
+// builds, rather than an installed joshbot.
+//
+// It matches the go-build cache and nothing else. Three call sites used to
+// also reject any path containing "/tmp/", which is not a property of `go run`:
+// it made a joshbot installed anywhere under /tmp permanently unable to update
+// or uninstall itself, and reported the cause as `go run`, which was neither
+// true nor actionable.
+func runningFromGoRun(exePath string) bool {
+	return strings.Contains(exePath, "go-build")
+}
+
 // detectRunningContext determines how joshbot is currently running.
 func detectRunningContext() runningContext {
 	ctx := runningContext{}
 
 	// Check for go run
 	exePath, _ := os.Executable()
-	if strings.Contains(exePath, "go-build") || strings.Contains(exePath, "/tmp/") {
+	if runningFromGoRun(exePath) {
 		ctx.IsGoRun = true
 		return ctx
 	}
@@ -1855,7 +1867,7 @@ func runUpdate(c *cli.Context) error {
 	// "/tmp/", which is not a property of `go run` at all: it made a joshbot
 	// installed anywhere under /tmp permanently unable to update, and told the
 	// user the reason was `go run`.
-	if strings.Contains(exePath, "go-build") {
+	if runningFromGoRun(exePath) {
 		return cli.Exit("Cannot update when running from source with 'go run'.\n"+
 			"Install joshbot first (e.g. 'go install', or the one-line installer),\n"+
 			"then run 'joshbot update' from the installed binary.", 1)
@@ -2138,14 +2150,17 @@ func runUninstall(c *cli.Context) error {
 		return fmt.Errorf("could not determine executable path: %w", err)
 	}
 
-	// Check if running from source (go run)
-	// If the executable is in a temp directory or has "go-build" in path, it's likely from go run
-	if strings.Contains(exePath, "go-build") || strings.Contains(exePath, "/tmp/") {
-		fmt.Println()
-		fmt.Println("Error: Cannot uninstall when running from source with 'go run'.")
-		fmt.Println("To uninstall, install joshbot first (e.g., 'go install' or build a binary),")
-		fmt.Println("then run 'joshbot uninstall' from the installed binary.")
-		return nil
+	// Check if running from source.
+	//
+	// Match only the go-build cache, which is where `go run` puts its
+	// throwaway binary — the same fix `joshbot update` needed. Also rejecting
+	// any path containing "/tmp/" is not a property of `go run`: it made a
+	// joshbot installed anywhere under /tmp permanently unable to uninstall,
+	// and told the user the reason was `go run`.
+	if runningFromGoRun(exePath) {
+		return cli.Exit("Cannot uninstall when running from source with 'go run'.\n"+
+			"Install joshbot first (e.g. 'go install', or the one-line installer),\n"+
+			"then run 'joshbot uninstall' from the installed binary.", 1)
 	}
 
 	// Resolve symlinks to get the real path
@@ -2171,7 +2186,7 @@ func runUninstall(c *cli.Context) error {
 	fmt.Println("║           Uninstall joshbot               ║")
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
-	fmt.Printf("Binary to remove: %s\n", absPath)
+	fmt.Printf("Binary to remove: %s\n", redact.HomePath(absPath))
 
 	// Determine config directory
 	configDir := config.DefaultHome
@@ -2181,9 +2196,9 @@ func runUninstall(c *cli.Context) error {
 	}
 
 	if configExists && !c.Bool("keep-config") {
-		fmt.Printf("Config to remove: %s\n", configDir)
+		fmt.Printf("Config to remove: %s\n", redact.HomePath(configDir))
 	} else if configExists && c.Bool("keep-config") {
-		fmt.Printf("Config (kept):    %s\n", configDir)
+		fmt.Printf("Config (kept):    %s\n", redact.HomePath(configDir))
 	} else {
 		fmt.Println("Config:           (not found)")
 	}
@@ -2250,7 +2265,7 @@ func runUninstall(c *cli.Context) error {
 	}
 
 	// Remove the binary
-	fmt.Printf("Removing binary: %s\n", absPath)
+	fmt.Printf("Removing binary: %s\n", redact.HomePath(absPath))
 	if err := os.Remove(absPath); err != nil {
 		return fmt.Errorf("failed to remove binary: %w", err)
 	}
@@ -2268,7 +2283,7 @@ func runUninstall(c *cli.Context) error {
 		}
 
 		if removeConfig {
-			fmt.Printf("Removing config: %s\n", configDir)
+			fmt.Printf("Removing config: %s\n", redact.HomePath(configDir))
 			if err := os.RemoveAll(configDir); err != nil {
 				fmt.Printf("Warning: Failed to remove config directory: %v\n", err)
 				fmt.Println("You may need to remove it manually.")
@@ -2283,9 +2298,9 @@ func runUninstall(c *cli.Context) error {
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Println("Removed:")
-	fmt.Printf("  - Binary: %s\n", absPath)
+	fmt.Printf("  - Binary: %s\n", redact.HomePath(absPath))
 	if removeConfig {
-		fmt.Printf("  - Config: %s\n", configDir)
+		fmt.Printf("  - Config: %s\n", redact.HomePath(configDir))
 	}
 	if serviceUninstalled {
 		fmt.Println("  - Service: joshbot")
@@ -3397,7 +3412,9 @@ func installCronStartupEntry() error {
 	}
 
 	logPath := filepath.Join(home, ".joshbot", "logs", "gateway.log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+	// 0700, like every other directory under ~/.joshbot: the gateway log
+	// carries conversation content and tool output.
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
 
@@ -3534,7 +3551,7 @@ I can create new skills to extend my capabilities.
 
 	// Initialize memory files
 	memDir := filepath.Join(wsDir, "memory")
-	if err := os.MkdirAll(memDir, 0755); err != nil {
+	if err := os.MkdirAll(memDir, 0700); err != nil {
 		return fmt.Errorf("failed to create memory directory: %w", err)
 	}
 
@@ -4549,7 +4566,17 @@ func runServiceStatus(c *cli.Context) error {
 		return nil
 	}
 
-	fmt.Printf("Status: %s\n", status.Status)
+	// A service that was never installed reports an empty Status string, which
+	// printed a bare "Status: " and told the operator nothing.
+	statusText := status.Status
+	if strings.TrimSpace(statusText) == "" {
+		if status.Running {
+			statusText = "running"
+		} else {
+			statusText = "not installed"
+		}
+	}
+	fmt.Printf("Status: %s\n", statusText)
 	if status.Running {
 		fmt.Println("The service is currently running.")
 	} else {

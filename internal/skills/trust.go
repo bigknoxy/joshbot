@@ -80,6 +80,11 @@ func LoadTrustStore(path string) (*TrustStore, error) {
 // regardless of filesystem iteration order. Editing, adding, or removing any
 // file in the directory changes the digest and so revokes trust.
 //
+// Symlinks are folded in by name and raw target, never dereferenced: reading
+// through one could reach outside the directory, but ignoring them entirely
+// would leave the digest unchanged when an attacker drops a link to /bin/sh
+// (or repoints an existing one) into an approved skill.
+//
 // The hash format changed in a way that is intentionally incompatible with the
 // old SKILL.md-only digest: a store written by an older joshbot will simply
 // fail to match, which revokes affected skills (they must be re-inspected and
@@ -87,9 +92,13 @@ func LoadTrustStore(path string) (*TrustStore, error) {
 func HashSkillFile(skillDir string) (string, error) {
 	h := sha256.New()
 
-	// Collect regular files with their directory-relative paths first, so the
-	// digest does not depend on WalkDir's traversal order.
-	var rels []string
+	// Collect entries with their directory-relative paths first, so the digest
+	// does not depend on WalkDir's traversal order.
+	type entry struct {
+		rel     string
+		symlink bool
+	}
+	var entries []entry
 	err := filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -97,31 +106,41 @@ func HashSkillFile(skillDir string) (string, error) {
 		if d.IsDir() {
 			return nil
 		}
-		// Only hash regular files. A symlink's target content is not part of
-		// the skill, and following it could reach outside the directory.
-		if !d.Type().IsRegular() {
+		// Sockets, devices and the like carry no skill content.
+		isLink := d.Type()&os.ModeSymlink != 0
+		if !d.Type().IsRegular() && !isLink {
 			return nil
 		}
 		rel, err := filepath.Rel(skillDir, path)
 		if err != nil {
 			return err
 		}
-		rels = append(rels, rel)
+		entries = append(entries, entry{rel: rel, symlink: isLink})
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	sort.Strings(rels)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
 
-	for _, rel := range rels {
-		data, err := os.ReadFile(filepath.Join(skillDir, rel))
+	for _, e := range entries {
+		full := filepath.Join(skillDir, e.rel)
+		// Length-prefix path and payload so no two distinct trees collide by
+		// concatenation (e.g. "ab"+"c" vs "a"+"bc"). The "L" marker keeps a
+		// symlink distinct from a regular file holding its target as text.
+		if e.symlink {
+			target, err := os.Readlink(full)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintf(h, "%s\x00L%d\x00%s", filepath.ToSlash(e.rel), len(target), target)
+			continue
+		}
+		data, err := os.ReadFile(full)
 		if err != nil {
 			return "", err
 		}
-		// Length-prefix path and content so no two distinct trees collide by
-		// concatenation (e.g. "ab"+"c" vs "a"+"bc").
-		fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(rel), len(data))
+		fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(e.rel), len(data))
 		h.Write(data)
 	}
 

@@ -7,15 +7,15 @@
 [![GitHub release](https://img.shields.io/github/v/release/bigknoxy/joshbot?include_prereleases)](https://github.com/bigknoxy/joshbot/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A nanobot-class personal AI agent as a **single ~18MB Go binary** — no Python, no venv, no runtime dependencies, ~30ms cold start. Self-hosted, curl to running in under a minute, and scriptable enough to test in CI. Self-learning memory, skill self-creation, subagent delegation, multi-provider LLM routing, and Telegram/Discord chat all ship in the one static binary.
+A nanobot-class personal AI agent as a **single ~19MB Go binary** — no Python, no venv, no runtime dependencies. Self-hosted, curl to running in under a minute, and scriptable enough to test in CI. Self-learning memory, skill self-creation, subagent delegation, multi-provider LLM routing, and Telegram/Discord chat all ship in the one static binary.
 
 ### Why joshbot instead of a Python agent stack?
 
 | | joshbot | Typical Python agent (e.g. nanobot) |
 |---|---|---|
 | **Install** | `curl … \| bash` → one binary | `pip`/`venv`, interpreter + wheels to keep in sync |
-| **Runtime deps** | Zero — static Go binary (~18MB) | CPython + a dependency tree |
-| **Cold start** | ~30ms | Interpreter + import cost |
+| **Runtime deps** | Zero — static Go binary (~19MB) | CPython + a dependency tree |
+| **Startup** | No interpreter, no imports — the binary is the runtime | Interpreter + import cost |
 | **Shell safety** | Deny-listed **and** env-stripped (no API keys inherited), optional OS sandbox | Varies |
 | **Untrusted skills** | Inert until `joshbot skills trust`, bound to a directory-tree hash | Varies |
 | **Scriptability** | Every command non-interactive; `--output-format json`, exit-code contract | Varies |
@@ -148,6 +148,13 @@ joshbot returns a stable exit code so scripts can branch on the failure class:
 
 In JSON modes a failure is emitted as a well-formed `{"type":"error","code":…,"remediation":…}` object on stderr.
 
+A turn that fails **inside** the agent counts as a failure too: the agent reports
+LLM errors in band as reply text (`Error processing request: ...`) so a chat
+channel can show them, but `agent -m` translates that back into exit code `1`. In
+JSON mode the result document carries `"is_error": true` with the failure text in
+`result`, alongside the `{"type":"error",…}` document on stderr. The success path
+is unchanged.
+
 ### Interactive CLI progress indicators
 
 When `joshbot agent` runs interactively in a real terminal, it now shows
@@ -207,8 +214,18 @@ joshbot onboard --force \
 `JOSHBOT_PROVIDERS__<PROVIDER>__API_KEY`. If `--force` is given with no way to
 wire a real credential — no flag, no env key, no existing provider — onboarding
 now **fails with a non-zero exit and an actionable message** instead of writing
-a stub config and reporting success. After saving, onboard validates the
-credential (non-fatal) and prints the provider's key URL if it looks wrong.
+a stub config and reporting success. `--provider` must name one of the supported
+providers (`openrouter`, `openai`, `nvidia`, `groq`, `ollama`, `anthropic`,
+`poolside`, `azure`, `custom`, `litellm`, `github-copilot`); anything else is
+rejected and nothing is written. With `--force --provider <name>` the default
+model comes from that provider (e.g. `llama3.1:8b` for `ollama`), not from
+OpenRouter. Interactive `onboard` follows the same rule: if no provider ended up
+configured — running with stdin closed, say — it exits non-zero with the same
+message the `--force` path uses, though the config and workspace scaffold are
+still written. After saving, onboard validates the credential (non-fatal) and
+prints the provider's key URL if it looks wrong. Providers with no fixed
+endpoint (`azure`, `custom`, `litellm`) report "could not verify ... no API base
+URL configured" rather than being validated against someone else's API.
 
 The interactive onboard flow will:
 - Ask for your LLM API key (defaults to NVIDIA NIM; OpenRouter free tier also supported at [openrouter.ai/keys](https://openrouter.ai/keys))
@@ -545,6 +562,7 @@ export JOSHBOT_MODELS_CONFIG__AGENT__FALLBACK="fast"
 ```bash
 export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-..."
 export JOSHBOT_CHANNELS__TELEGRAM__ENABLED="true"
+export JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM="123456789,987654321"   # comma-separated
 ```
 
 ### Changing the LLM Model
@@ -663,7 +681,7 @@ joshbot also speaks Discord (gateway websocket + REST via the pure-Go
 
 - `allow_from` entries are numeric Discord user IDs (snowflakes), usernames, or
   global names. Like Telegram, **an empty allowlist rejects everyone.**
-- Env overrides: `JOSHBOT_CHANNELS__DISCORD__ENABLED`, `JOSHBOT_CHANNELS__DISCORD__TOKEN`.
+- Env overrides: `JOSHBOT_CHANNELS__DISCORD__ENABLED`, `JOSHBOT_CHANNELS__DISCORD__TOKEN`, `JOSHBOT_CHANNELS__DISCORD__ALLOW_FROM` (comma-separated).
 - Messages over 2000 chars are split (code-fence aware); the bot ignores its own
   and other bots' messages; `/help` and `/new` work as text commands.
 

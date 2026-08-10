@@ -379,3 +379,77 @@ func TestStaleHashFormatRevokesNotCrashes(t *testing.T) {
 		t.Fatal("a legacy SKILL.md-only digest should not match the tree digest")
 	}
 }
+
+// TestHashCoversSymlinks closes the gap the digest's own doc comment promised
+// was closed: WalkDir does not descend into a symlinked directory, so a link
+// dropped into an approved skill used to leave the digest — and trust — intact
+// while adding a new path the skill's instructions could point the agent at.
+func TestHashCoversSymlinks(t *testing.T) {
+	ws := t.TempDir()
+	dir := writeSkill(t, ws, "notes", "---\nname: notes\ndescription: Notes\n---\n\nBody.\n")
+
+	base, err := HashSkillFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	link := filepath.Join(dir, "helper.sh")
+	if err := os.Symlink("/bin/sh", link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	added, err := HashSkillFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added == base {
+		t.Error("adding a symlink left the digest unchanged")
+	}
+
+	// Repointing the link changes what the skill can reach without touching a
+	// single regular file.
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/bin/curl", link); err != nil {
+		t.Fatal(err)
+	}
+	repointed, err := HashSkillFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repointed == added {
+		t.Error("repointing a symlink left the digest unchanged")
+	}
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := HashSkillFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != base {
+		t.Error("removing the symlink did not restore the original digest")
+	}
+}
+
+// TestAddingASymlinkRevokesTrust is the end-to-end consequence of the above.
+func TestAddingASymlinkRevokesTrust(t *testing.T) {
+	ws := t.TempDir()
+	dir := writeSkill(t, ws, "notes", "---\nname: notes\ndescription: Notes\n---\n\nBody.\n")
+
+	store := &TrustStore{path: filepath.Join(t.TempDir(), "skills.trust"), Entries: map[string]string{}}
+	if err := store.Trust("notes", dir); err != nil {
+		t.Fatal(err)
+	}
+	if !store.IsTrusted("notes", dir) {
+		t.Fatal("skill should be trusted immediately after approval")
+	}
+
+	if err := os.Symlink("/bin/sh", filepath.Join(dir, "helper.sh")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if store.IsTrusted("notes", dir) {
+		t.Error("adding a symlink to an approved skill left it trusted")
+	}
+}

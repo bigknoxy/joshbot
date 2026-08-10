@@ -195,7 +195,25 @@ joshbot onboard --force
 
 # Reconfigure while keeping existing data
 joshbot onboard --keep-data
+
+# Fully non-interactive
+joshbot onboard --force --provider ollama
+joshbot onboard --force --provider openrouter --api-key "$OPENROUTER_API_KEY"
 ```
+
+`--provider` must name a supported provider (`openrouter`, `openai`, `nvidia`,
+`groq`, `ollama`, `anthropic`, `poolside`, `azure`, `custom`, `litellm`,
+`github-copilot`); any other name is rejected and nothing is written. The default
+model comes from the provider you selected (e.g. `llama3.1:8b` for `ollama`).
+`--api-key` falls back to `JOSHBOT_PROVIDERS__<PROVIDER>__API_KEY`, and
+`azure`/`custom` also need `--api-base`.
+
+Onboarding **exits non-zero when no provider ended up configured** — including
+interactive runs with stdin closed. The config and workspace scaffold are still
+written; only the exit status reports the failure. Credential validation after
+save is non-fatal, and providers with no fixed endpoint (`azure`, `custom`,
+`litellm`) report "could not verify ... no API base URL configured" instead of
+being validated against an unrelated API.
 
 After onboarding completes, you'll see:
 
@@ -295,7 +313,7 @@ If a provider is present but not registered, `status` says why — for example `
 |---------|-------------|
 | `joshbot onboard` | First-time setup wizard |
 | `joshbot agent` | Interactive CLI chat mode |
-| `joshbot gateway` | Start all channels (Telegram, etc.) |
+| `joshbot gateway` | Start all channels (Telegram, Discord) |
 | `joshbot status` | Show configuration and status |
 | `joshbot skills list` \| `trust <name>` \| `untrust <name>` | Review and approve workspace skills |
 | `joshbot configure` | Configure LLM providers and settings |
@@ -306,6 +324,15 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot uninstall` | Remove the binary and optionally its config |
 | `joshbot version` / `joshbot --version` | Show version |
 | `joshbot --help` | Show help |
+
+Every command runs non-interactively. `joshbot agent -m "..."` answers a single
+message and exits; `--output-format json|stream-json` (which require `-m`) put
+only the result document on stdout and route logs to stderr. Exit codes are
+stable: `0` success, `1` general error, `2` auth / no provider, `3` validation,
+`4` confirmation required. A turn that fails inside the agent exits `1` as well —
+the agent reports LLM errors in band as reply text so chat channels can show
+them, and the CLI translates that back into a non-zero exit, with `"is_error":
+true` in the JSON result document and a `{"type":"error",…}` document on stderr.
 
 ---
 
@@ -447,6 +474,11 @@ The old format is still supported for backward compatibility:
       "token": "",
       "allow_from": [],
       "proxy": ""
+    },
+    "discord": {
+      "enabled": false,
+      "token": "",
+      "allow_from": []
     }
   },
   "tools": {
@@ -506,6 +538,12 @@ export JOSHBOT_AGENTS__DEFAULTS__TEMPERATURE="0.5"
 # Telegram configuration
 export JOSHBOT_CHANNELS__TELEGRAM__ENABLED="true"
 export JOSHBOT_CHANNELS__TELEGRAM__TOKEN="123456:ABC..."
+export JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM="123456789,987654321"  # comma-separated; empty denies everyone
+
+# Discord configuration
+export JOSHBOT_CHANNELS__DISCORD__ENABLED="true"
+export JOSHBOT_CHANNELS__DISCORD__TOKEN="MTIz..."
+export JOSHBOT_CHANNELS__DISCORD__ALLOW_FROM="123456789012345678"
 
 # Tool settings
 export JOSHBOT_TOOLS__RESTRICT_TO_WORKSPACE="true"
@@ -652,7 +690,7 @@ Separately, spawned shell commands no longer inherit joshbot's own environment �
 }
 ```
 
-> **Security Note:** `allow_from: []` (empty list) allows **anyone** to message your bot. Add your Telegram user ID (as a string) to restrict access.
+> **Security Note:** `allow_from` is enforced deny-by-default: an empty or unset list rejects **every** sender and the channel logs a startup warning naming the key to set. Add your numeric Telegram user ID (as a string) before the bot will answer you.
 
 ---
 
@@ -773,7 +811,7 @@ joshbot status
 **Solutions:**
 1. Verify `channels.telegram.enabled` is `true`
 2. Check your bot token is correct
-3. Ensure your user ID is in `allow_from` (or the list is empty)
+3. Ensure your user ID is in `allow_from` — an empty list rejects everyone
 4. If behind a firewall, configure the `proxy` field
 
 ```json

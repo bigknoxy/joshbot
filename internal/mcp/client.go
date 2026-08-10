@@ -11,11 +11,21 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bigknoxy/joshbot/internal/childenv"
 )
 
 // shutdownGrace is how long Close waits for a server to exit after its stdin is
 // closed before it is killed. Kept short so shutdown never blocks the process.
 const shutdownGrace = 3 * time.Second
+
+// maxMessageBytes bounds a single message read from a server's stdout. Generous
+// enough for any real tool result, small enough that a hostile or broken server
+// cannot exhaust memory.
+const maxMessageBytes = 4 << 20
+
+// errMessageTooLarge stops the read loop when a server exceeds maxMessageBytes.
+var errMessageTooLarge = errors.New("mcp: server message exceeds size limit")
 
 // Server describes a stdio MCP server to spawn. It is transport/config agnostic
 // so callers can build it from joshbot config, a test, or anywhere else.
@@ -28,7 +38,9 @@ type Server struct {
 	// Args are the command-line arguments.
 	Args []string
 	// Env are extra environment variables (KEY=VALUE) for the child process.
-	// They are appended to the current environment.
+	// They are appended to a sanitized base environment — the child does not
+	// inherit joshbot's own environment, so this is the only way to hand a
+	// server a credential.
 	Env []string
 }
 
@@ -94,9 +106,11 @@ func (c *Client) Connect(ctx context.Context) error {
 	// Client, not to the ctx of whichever call happened to start it. Cancelling
 	// a single tool call must not kill a shared server.
 	cmd := exec.Command(c.server.Command, c.server.Args...)
-	if len(c.server.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), c.server.Env...)
-	}
+	// Never inherit the parent environment: joshbot's own provider API keys are
+	// in it, and an MCP server is third-party code. Server.Env is the operator's
+	// explicit channel for a secret a server genuinely needs, so it is appended
+	// verbatim on top of the sanitized base.
+	cmd.Env = childenv.Sanitized(c.server.Env...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -261,7 +275,7 @@ func (c *Client) readLoop(stdout io.Reader) {
 	reader := bufio.NewReader(stdout)
 	var loopErr error
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, err := readLine(reader)
 		if len(line) > 0 {
 			c.dispatch(line)
 		}
@@ -280,6 +294,26 @@ func (c *Client) readLoop(stdout io.Reader) {
 	// Wake every pending caller; doneCh close below is the broadcast.
 	c.pendMu.Unlock()
 	close(c.doneCh)
+}
+
+// readLine reads one newline-delimited message, refusing anything larger than
+// maxMessageBytes. bufio.Reader.ReadBytes grows without limit, so a server that
+// never emits a newline — or emits a gigabyte-long "result" — would be answered
+// by exhausting joshbot's heap. Exceeding the cap kills the connection rather
+// than skipping the message: a server this far outside the protocol cannot be
+// trusted to resynchronise on the next line.
+func readLine(r *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(line)+len(chunk) > maxMessageBytes {
+			return nil, errMessageTooLarge
+		}
+		line = append(line, chunk...)
+		if err == nil || !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err
+		}
+	}
 }
 
 // dispatch routes one raw message line to its pending caller. Notifications

@@ -1,6 +1,7 @@
 package configure
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -443,5 +444,25 @@ func TestGetDefaultAPIBase_AllSupported(t *testing.T) {
 		if got := getDefaultAPIBase(name); got != "" {
 			t.Errorf("getDefaultAPIBase(%q) = %q, want \"\"", name, got)
 		}
+	}
+}
+
+// A provider with no resolvable endpoint must be reported as unverifiable, not
+// silently checked against some other provider's API (which is what the old
+// ListModels fallback to openrouter.ai did — every key came back "validated").
+func TestValidateProviderCredentials_NoAPIBase(t *testing.T) {
+	for _, name := range []string{"custom", "litellm", "azure"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := newTestConfig(t)
+			cfg.Providers[name] = config.ProviderConfig{APIKey: "sk-x", Enabled: true}
+
+			err := New(cfg).ValidateProviderCredentials(name)
+			if err == nil {
+				t.Fatal("expected an error, got nil (a check that never happened was reported as success)")
+			}
+			if !strings.Contains(err.Error(), "could not verify") {
+				t.Errorf("error = %v, want it to say the credential could not be verified", err)
+			}
+		})
 	}
 }

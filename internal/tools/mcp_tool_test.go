@@ -2,6 +2,8 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -93,5 +95,27 @@ func TestRegisterMCPToolsNoServersReturnsNil(t *testing.T) {
 	}
 	if reg.Count() != 0 {
 		t.Fatal("no tools should be registered")
+	}
+}
+
+// TestTruncateMCPOutputCapsServerText pins the context bound on MCP results: an
+// MCP server is third-party code writing straight into the prompt, so it gets
+// the same truncation the built-in tools apply.
+func TestTruncateMCPOutputCapsServerText(t *testing.T) {
+	short := "small result"
+	if got := truncateMCPOutput(short, 100); got != short {
+		t.Errorf("short output was altered: %q", got)
+	}
+
+	huge := strings.Repeat("x", mcpMaxOutputChars*3)
+	got := truncateMCPOutput(huge, 0)
+	if len(got) >= len(huge) {
+		t.Fatalf("output not truncated: len = %d", len(got))
+	}
+	if !strings.HasPrefix(got, strings.Repeat("x", mcpMaxOutputChars)) {
+		t.Error("truncated output does not start with the first maxChars chars")
+	}
+	if !strings.Contains(got, fmt.Sprintf("(truncated, %d chars total)", len(huge))) {
+		t.Errorf("missing truncation notice: %q", got[len(got)-60:])
 	}
 }

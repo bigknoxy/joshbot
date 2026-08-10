@@ -1671,6 +1671,12 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 		return err
 	}
 
+	// A turn the agent could not complete comes back as reply text with a nil
+	// error (it answers a chat channel). The result document must report that
+	// as is_error, and the process must exit non-zero — a consumer that only
+	// reads stdout would otherwise treat the failure as an answer.
+	replyErr := agentReplyError(response)
+
 	mu.Lock()
 	defer mu.Unlock()
 	if toolCalls == nil {
@@ -1680,13 +1686,18 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 		Type:      "result",
 		SessionID: sessionID,
 		Result:    strings.TrimSpace(response),
-		IsError:   false,
+		IsError:   replyErr != nil,
 		Usage:     usage,
 		CostUSD:   nil,
 		ToolCalls: toolCalls,
 	}
 	if err := enc.Encode(res); err != nil {
 		return exitErrorf(exitGeneral, "failed to encode result: %w", err)
+	}
+	if replyErr != nil {
+		err := exitErrorf(exitGeneral, "failed to process message: %w", replyErr)
+		emitJSONError(stderr, sessionID, err)
+		return err
 	}
 	return nil
 }
@@ -1712,12 +1723,32 @@ func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, me
 	}
 
 	response, err := agentInstance.Process(ctx, msg)
+	if err == nil {
+		err = agentReplyError(response)
+	}
 	if err != nil {
-		return fmt.Errorf("failed to process message: %w", err)
+		return exitErrorf(exitGeneral, "failed to process message: %w", err)
 	}
 
 	fmt.Fprintln(output, strings.TrimSpace(response))
 	return nil
+}
+
+// agentReplyPrefix is the in-band failure report the ReAct loop returns when a
+// turn could not be completed (see internal/agent).
+const agentReplyPrefix = "Error processing request: "
+
+// agentReplyError turns that in-band report back into an error. The agent
+// answers a chat channel, so it reports provider failures as reply text with a
+// nil error; a non-interactive CLI must not exit 0 over one — a script piping
+// `joshbot agent -m` cannot otherwise tell a real answer from an unreachable
+// provider.
+func agentReplyError(response string) error {
+	trimmed := strings.TrimSpace(response)
+	if !strings.HasPrefix(trimmed, agentReplyPrefix) {
+		return nil
+	}
+	return errors.New(strings.TrimSpace(strings.TrimPrefix(trimmed, agentReplyPrefix)))
 }
 
 func runVersion(c *cli.Context) error {
@@ -2410,6 +2441,13 @@ func runOnboard(c *cli.Context) error {
 	apiBaseFlag := c.String("api-base")
 	homeDir := config.DefaultHome
 
+	// An unknown --provider used to be accepted, "validated" and written out as
+	// a config nothing can dial. Reject it before anything is touched.
+	if providerFlag != "" && !isSupportedProvider(providerFlag) {
+		return fmt.Errorf("unknown provider %q (supported: %s)",
+			providerFlag, strings.Join(configure.SupportedProviders(), ", "))
+	}
+
 	// Welcome banner
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════╗")
@@ -2507,11 +2545,6 @@ func runOnboard(c *cli.Context) error {
 		// Use defaults for non-interactive setup
 		personalityChoice = "2" // Friendly
 		soulContent = getPersonalitySoul(personalityChoice)
-		if modelFlag != "" {
-			model = modelFlag
-		} else {
-			model = config.DefaultModel
-		}
 		// Provider precedence: --provider flag, then existing config, then default.
 		if providerFlag != "" {
 			provider = providerFlag
@@ -2523,6 +2556,17 @@ func runOnboard(c *cli.Context) error {
 		}
 		if provider == "" {
 			provider = "openrouter"
+		}
+		// The model must follow the chosen provider: config.DefaultModel is an
+		// OpenRouter id, so `--force --provider ollama` used to write a model
+		// the selected provider cannot serve.
+		switch {
+		case modelFlag != "":
+			model = modelFlag
+		case providers.GetDefaultModel(provider) != "":
+			model = providers.GetDefaultModel(provider)
+		default:
+			model = config.DefaultModel
 		}
 		// API key precedence: --api-key flag, then env, then existing config.
 		// --force must never block on stdin, so promptProviderAPIKey is not used:
@@ -2661,12 +2705,21 @@ func runOnboard(c *cli.Context) error {
 
 	// The config and workspace scaffold above are written unconditionally so a
 	// caller that intends to supply a credential separately still gets a usable
-	// tree. But a --force run with no usable provider must not print "Setup
+	// tree. But a run with no usable provider must not print "Setup
 	// complete!" and exit 0 — that is the loop reported in issue #142, where the
 	// next `joshbot agent` just tells the user to onboard again.
-	if force && !providerConfigured {
-		return fmt.Errorf("onboard --force did not configure any provider: pass --provider <name> --api-key <key>, "+
+	//
+	// The interactive path gets the same treatment: with stdin closed every
+	// prompt reads EOF and takes its default, which produced a config with an
+	// empty provider entry, "Setup complete!" and exit 0.
+	if !providerConfigured {
+		cmd := "onboard"
+		if force {
+			cmd = "onboard --force"
+		}
+		return fmt.Errorf("%s did not configure any provider: pass --provider <name> --api-key <key>, "+
 			"or set JOSHBOT_PROVIDERS__%s__API_KEY (supported: %s)",
+			cmd,
 			strings.ToUpper(strings.ReplaceAll(provider, "-", "_")),
 			strings.Join(configure.SupportedProviders(), ", "))
 	}
@@ -3711,12 +3764,15 @@ func runConfigureWizard(cfg *config.Config) error {
 		fmt.Println("  5. Configure GitHub Copilot")
 		fmt.Println("  6. Configure Poolside")
 		fmt.Println("  7. Set default provider")
-		fmt.Println("  7. Configure fallback order")
-		fmt.Println("  8. Done")
+		fmt.Println("  8. Configure fallback order")
+		fmt.Println("  9. Done")
 		fmt.Println()
 
 		fmt.Print("Choice [9]: ")
 
+		// On EOF (closed stdin) Scanln leaves choice empty, which takes the
+		// default and saves-and-exits — the wizard must never spin on
+		// "Invalid choice" against a stdin that will never produce one.
 		var choice string
 		fmt.Scanln(&choice)
 		if choice == "" {
@@ -4554,6 +4610,17 @@ func runAuthStatus(c *cli.Context) error {
 // with the gating conditions there: openrouter/nvidia/groq/poolside/custom
 // all require p.APIKey != "", while ollama (local server) and github-copilot
 // (OAuth token file, not api_key) do not.
+// isSupportedProvider reports whether name is one of the providers the guided
+// paths know how to configure, i.e. one the runtime can actually dial.
+func isSupportedProvider(name string) bool {
+	for _, p := range configure.SupportedProviders() {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 func providerRequiresAPIKey(name string) bool {
 	switch name {
 	case "ollama", "github-copilot":
@@ -4610,15 +4677,34 @@ func noProvidersRegisteredError(providersCfg map[string]config.ProviderConfig) e
 	}
 
 	names := make([]string, 0, len(providersCfg))
-	var keyless []string
+	var keyless, unknown []string
 	for name, p := range providersCfg {
 		names = append(names, name)
-		if p.Enabled && providerRequiresAPIKey(name) && p.APIKey == "" {
+		if !p.Enabled {
+			continue
+		}
+		if !isSupportedProvider(name) {
+			unknown = append(unknown, name)
+			continue
+		}
+		if providerRequiresAPIKey(name) && p.APIKey == "" {
 			keyless = append(keyless, name)
 		}
 	}
 	sort.Strings(names)
 	sort.Strings(keyless)
+	sort.Strings(unknown)
+
+	// Enabled but not a provider that exists: telling this user to add
+	// "enabled": true is doubly wrong — it is already set, and the name is the
+	// actual fault.
+	if len(unknown) > 0 {
+		return newExitError(exitAuth, "fix the provider name in config.json, or run 'joshbot configure'",
+			fmt.Errorf(
+				"no providers usable: %s enabled but not a known provider — supported providers are: %s",
+				strings.Join(unknown, ", "), strings.Join(configure.SupportedProviders(), ", "),
+			))
+	}
 
 	// Enabled but unusable: the enabled flag is not the problem.
 	if len(keyless) > 0 {

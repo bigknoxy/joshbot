@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -108,6 +109,10 @@ func runEchoServer() {
 				result = map[string]any{
 					"content": []map[string]any{{"type": "text", "text": "kaboom"}},
 					"isError": true,
+				}
+			} else if p.Name == "env" {
+				result = map[string]any{
+					"content": []map[string]any{{"type": "text", "text": strings.Join(os.Environ(), "\n")}},
 				}
 			} else {
 				text, _ := p.Arguments["text"].(string)
@@ -274,4 +279,63 @@ func TestManagerClose(t *testing.T) {
 	}
 	mgr.Close() // must not panic or hang
 	_ = exec.Command
+}
+
+// TestChildDoesNotInheritParentSecrets pins the credential boundary around a
+// spawned MCP server: it is third-party code, so joshbot's own provider keys
+// must not be in its environment. Only what the operator listed in Server.Env
+// gets through.
+func TestChildDoesNotInheritParentSecrets(t *testing.T) {
+	t.Setenv("JOSHBOT_PROVIDERS__OPENROUTER__API_KEY", "sk-must-not-leak")
+	t.Setenv("OPENAI_API_KEY", "sk-also-must-not-leak")
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	c := NewClient(Server{
+		Name:    "test",
+		Command: exe,
+		Args:    []string{"-test.run=TestMain"},
+		Env:     []string{"GO_MCP_HELPER=echo", "MY_SERVER_TOKEN=explicitly-granted"},
+	})
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	env, err := c.CallTool(ctx, "env", nil)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	for _, leaked := range []string{"sk-must-not-leak", "sk-also-must-not-leak", "OPENAI_API_KEY"} {
+		if strings.Contains(env, leaked) {
+			t.Errorf("child environment leaked %q:\n%s", leaked, env)
+		}
+	}
+	if !strings.Contains(env, "MY_SERVER_TOKEN=explicitly-granted") {
+		t.Errorf("explicit Server.Env entry did not reach the child:\n%s", env)
+	}
+	if !strings.Contains(env, "PATH=") {
+		t.Errorf("sanitized base environment is missing PATH:\n%s", env)
+	}
+}
+
+// TestReadLineRejectsOversizedMessage covers the heap bound: a server that
+// never emits a newline must fail the connection, not grow a buffer forever.
+func TestReadLineRejectsOversizedMessage(t *testing.T) {
+	flood := strings.NewReader(strings.Repeat("x", maxMessageBytes+1024))
+	if _, err := readLine(bufio.NewReader(flood)); !errors.Is(err, errMessageTooLarge) {
+		t.Fatalf("readLine err = %v, want errMessageTooLarge", err)
+	}
+
+	ok := strings.NewReader("hello\nworld\n")
+	r := bufio.NewReader(ok)
+	line, err := readLine(r)
+	if err != nil || string(line) != "hello\n" {
+		t.Fatalf("readLine = %q, %v; want \"hello\\n\", nil", line, err)
+	}
 }

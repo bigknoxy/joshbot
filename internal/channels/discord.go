@@ -56,8 +56,10 @@ type DiscordChannel struct {
 	session   *discordgo.Session
 	removeHnd func()
 
-	// allowSet is the deny-by-default allowlist. An empty set rejects everyone.
-	allowSet map[string]struct{}
+	// allowIDs and allowNames are the deny-by-default allowlist, partitioned by
+	// entry shape. Both empty rejects everyone.
+	allowIDs   map[string]struct{}
+	allowNames map[string]struct{}
 
 	// selfID is this bot's own user ID, used to ignore its own messages.
 	selfID string
@@ -81,11 +83,20 @@ type DiscordChannel struct {
 
 // NewDiscordChannel creates a new Discord channel instance.
 func NewDiscordChannel(b *bus.MessageBus, cfg *config.DiscordConfig) *DiscordChannel {
-	allowSet := make(map[string]struct{})
+	allowIDs := make(map[string]struct{})
+	allowNames := make(map[string]struct{})
 	for _, a := range cfg.AllowFrom {
 		s := normalizeUsername(a)
-		if s != "" {
-			allowSet[s] = struct{}{}
+		if s == "" {
+			continue
+		}
+		// An all-digits entry is a snowflake and may only ever match the user
+		// ID — see IsAllowed for why matching it against a name is an auth
+		// bypass.
+		if isSnowflake(s) {
+			allowIDs[s] = struct{}{}
+		} else {
+			allowNames[s] = struct{}{}
 		}
 	}
 
@@ -94,7 +105,8 @@ func NewDiscordChannel(b *bus.MessageBus, cfg *config.DiscordConfig) *DiscordCha
 		bus:           b,
 		cfg:           cfg,
 		stopCh:        make(chan struct{}),
-		allowSet:      allowSet,
+		allowIDs:      allowIDs,
+		allowNames:    allowNames,
 		maxRetries:    3,
 		retryDelay:    500 * time.Millisecond,
 		maxRetryDelay: 5 * time.Second,
@@ -119,26 +131,43 @@ func (d *DiscordChannel) Name() string {
 // Entries may be a numeric Discord user ID (the stable identifier, and what the
 // docs recommend) or a username / global display name. A user can change their
 // username at any time, so ID is the reliable form.
+//
+// The allowlist is partitioned by entry shape and each half is matched against
+// only the field it can legitimately name. Matching every entry against every
+// field let a stranger set their free-form global display name to the
+// operator's snowflake and authenticate as them — global names are not unique
+// and are not validated, so an ID-shaped allowlist entry must never be
+// satisfied by a name.
 func (d *DiscordChannel) IsAllowed(userID, username, globalName string) bool {
-	if len(d.allowSet) == 0 {
+	if len(d.allowIDs) == 0 && len(d.allowNames) == 0 {
 		return false
 	}
 	if userID != "" {
-		if _, ok := d.allowSet[normalizeUsername(userID)]; ok {
+		if _, ok := d.allowIDs[normalizeUsername(userID)]; ok {
 			return true
 		}
 	}
-	if username != "" {
-		if _, ok := d.allowSet[normalizeUsername(username)]; ok {
-			return true
+	for _, name := range []string{username, globalName} {
+		if name == "" {
+			continue
 		}
-	}
-	if globalName != "" {
-		if _, ok := d.allowSet[normalizeUsername(globalName)]; ok {
+		if _, ok := d.allowNames[normalizeUsername(name)]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+// isSnowflake reports whether an allowlist entry is a Discord user ID. Discord
+// snowflakes are decimal digits only, and usernames may not be all digits, so
+// the two shapes never overlap.
+func isSnowflake(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // Start opens the Discord gateway connection and begins consuming messages.
@@ -161,7 +190,7 @@ func (d *DiscordChannel) Start(ctx context.Context) error {
 	// Fail closed on an unset allowlist, but loudly: the operator has a running
 	// bot that rejects every message until they name who may use it. Say
 	// exactly what to set so this is actionable, not a silent lockout.
-	if len(d.allowSet) == 0 {
+	if len(d.allowIDs) == 0 && len(d.allowNames) == 0 {
 		log.Warn("Discord allowlist is empty — every sender will be rejected. " +
 			"Set channels.discord.allow_from in ~/.joshbot/config.json (or " +
 			"JOSHBOT_CHANNELS__DISCORD__ALLOW_FROM) to your numeric Discord " +

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1121,5 +1122,32 @@ func TestHeartbeatIntervalEnvOverride(t *testing.T) {
 	applyEnvOverrides(cfg)
 	if got := cfg.HeartbeatInterval(); got != 12*time.Minute {
 		t.Errorf("env-overridden HeartbeatInterval() = %v, want 12m", got)
+	}
+}
+
+// TestAllowFromEnvOverrides pins the remediation both channels print at startup:
+// the warning names JOSHBOT_CHANNELS__<CHANNEL>__ALLOW_FROM, and for a while no
+// such override existed, so an operator following the instructions still had a
+// bot that rejected every message.
+func TestAllowFromEnvOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+	defer func() { DefaultHome = oldHome }()
+
+	t.Setenv("JOSHBOT_CHANNELS__DISCORD__ALLOW_FROM", "123456, alice ,")
+	t.Setenv("JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM", "@bob")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	want := []string{"123456", "alice"}
+	if !reflect.DeepEqual(cfg.Channels.Discord.AllowFrom, want) {
+		t.Errorf("discord allow_from = %#v, want %#v", cfg.Channels.Discord.AllowFrom, want)
+	}
+	if !reflect.DeepEqual(cfg.Channels.Telegram.AllowFrom, []string{"@bob"}) {
+		t.Errorf("telegram allow_from = %#v, want [@bob]", cfg.Channels.Telegram.AllowFrom)
 	}
 }

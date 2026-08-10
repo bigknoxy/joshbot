@@ -167,6 +167,12 @@ func (c *Configurator) ValidateProviderCredentials(name string) error {
 	if baseURL == "" {
 		baseURL = getDefaultAPIBase(name)
 	}
+	// Azure, custom and litellm have no fixed endpoint, and an unrecognised
+	// provider name has none at all. Say so rather than dialling some other
+	// provider's endpoint and reporting the result as a validated credential.
+	if baseURL == "" {
+		return fmt.Errorf("could not verify %q credentials: no API base URL configured (set api_base)", name)
+	}
 	_, err := providers.ListModels(providers.Config{
 		APIKey:  p.APIKey,
 		APIBase: baseURL,

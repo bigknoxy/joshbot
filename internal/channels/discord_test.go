@@ -62,8 +62,8 @@ func TestDiscordChannel_New(t *testing.T) {
 	if d.Name() != "discord" {
 		t.Fatalf("expected name discord, got %s", d.Name())
 	}
-	if len(d.allowSet) != 2 {
-		t.Fatalf("expected 2 allowlist entries, got %d", len(d.allowSet))
+	if len(d.allowIDs) != 1 || len(d.allowNames) != 1 {
+		t.Fatalf("expected 1 ID and 1 name entry, got %d and %d", len(d.allowIDs), len(d.allowNames))
 	}
 }
 
@@ -231,3 +231,35 @@ func TestDiscordChannel_SendUsesMetadataChatID(t *testing.T) {
 type net503 struct{}
 
 func (net503) Error() string { return "connection reset by peer" }
+
+// TestDiscordChannel_IsAllowed_NameCannotSpoofID pins the partitioned
+// allowlist. A Discord global display name is free-form and unvalidated, so a
+// stranger can set theirs to the operator's snowflake; when every entry was
+// matched against every field that was a full authentication bypass into an
+// agent loop holding the shell tool.
+func TestDiscordChannel_IsAllowed_NameCannotSpoofID(t *testing.T) {
+	d, _ := newTestDiscordChannel(t, []string{"123456"})
+
+	if d.IsAllowed("999", "attacker", "123456") {
+		t.Error("global name matching an ID-shaped allowlist entry must not authenticate")
+	}
+	if d.IsAllowed("999", "123456", "Attacker") {
+		t.Error("username matching an ID-shaped allowlist entry must not authenticate")
+	}
+	if !d.IsAllowed("123456", "attacker", "Attacker") {
+		t.Error("the real user ID must still match")
+	}
+}
+
+// TestDiscordChannel_IsAllowed_NameEntryDoesNotMatchID is the mirror case: a
+// name entry may only ever satisfy a name field.
+func TestDiscordChannel_IsAllowed_NameEntryDoesNotMatchID(t *testing.T) {
+	d, _ := newTestDiscordChannel(t, []string{"alice"})
+
+	if d.IsAllowed("alice", "bob", "Bob") {
+		t.Error("a name entry must not be matched against the user ID field")
+	}
+	if !d.IsAllowed("999", "Alice", "Someone") {
+		t.Error("expected case-insensitive username match")
+	}
+}

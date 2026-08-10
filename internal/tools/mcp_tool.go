@@ -28,6 +28,12 @@ const mcpCallTimeout = 60 * time.Second
 // registration, so one slow server cannot stall startup indefinitely.
 const mcpConnectTimeout = 15 * time.Second
 
+// mcpMaxOutputChars caps what an MCP tool result contributes to the agent's
+// context, matching the shell and filesystem tools' default. An MCP server is
+// third-party code returning text straight into the prompt, so an uncapped
+// result is both a context blow-up and a cost blow-up.
+const mcpMaxOutputChars = 4000
+
 // rawSchemaProvider lets a tool supply a JSON Schema for its parameters
 // directly, bypassing GenerateSchema. MCP tools carry a full inputSchema from
 // the server that would lose fidelity if flattened into []Parameter.
@@ -44,6 +50,7 @@ type mcpTool struct {
 	desc     string
 	schema   json.RawMessage // server-provided JSON Schema (may be nil)
 	timeout  time.Duration
+	maxChars int // cap on returned output; 0 means mcpMaxOutputChars
 }
 
 // Name returns the namespaced tool name.
@@ -73,7 +80,19 @@ func (t *mcpTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	if err != nil {
 		return ToolResult{Error: err}
 	}
-	return ToolResult{Output: out}
+	return ToolResult{Output: truncateMCPOutput(out, t.maxChars)}
+}
+
+// truncateMCPOutput applies the same truncation convention the built-in tools
+// use, so a verbose server reads the same way as a verbose command.
+func truncateMCPOutput(out string, maxChars int) string {
+	if maxChars <= 0 {
+		maxChars = mcpMaxOutputChars
+	}
+	if len(out) <= maxChars {
+		return out
+	}
+	return out[:maxChars] + fmt.Sprintf("\n... (truncated, %d chars total)", len(out))
 }
 
 // mcpServersFromConfig converts enabled MCP server config into mcp.Server specs.
@@ -150,6 +169,7 @@ func registerOneMCPServer(ctx context.Context, reg *Registry, client *mcp.Client
 			desc:     info.Description,
 			schema:   info.InputSchema,
 			timeout:  mcpCallTimeout,
+			maxChars: mcpMaxOutputChars,
 		}
 		if err := reg.Register(tool); err != nil {
 			// A namespaced MCP name cannot collide with a built-in; a collision

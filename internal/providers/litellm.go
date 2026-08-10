@@ -430,9 +430,13 @@ func (p *LiteLLMProvider) parseError(body []byte, statusCode int) error {
 
 // ListModels fetches available models from an OpenAI-compatible API.
 func ListModels(cfg Config) ([]string, error) {
+	// No silent default: an empty base used to fall back to OpenRouter, so a
+	// credential for some other (or unknown) provider was "checked" against
+	// openrouter.ai and reported as validated. Refusing here is what lets
+	// callers say "could not verify" instead of claiming a check they never ran.
 	apiBase := cfg.APIBase
 	if apiBase == "" {
-		apiBase = "https://openrouter.ai/api/v1"
+		return nil, fmt.Errorf("no API base URL configured")
 	}
 	url := strings.TrimRight(apiBase, "/") + "/models"
 

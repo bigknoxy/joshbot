@@ -367,6 +367,19 @@ func serializeConfig(cfg *Config) ([]byte, error) {
 	return json.MarshalIndent(cfg, "", "  ")
 }
 
+// splitEnvList parses a comma-separated env var into a trimmed list, dropping
+// empty entries so a stray comma cannot add a blank allowlist member.
+func splitEnvList(v string) []string {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // applyEnvOverrides applies environment variable overrides to the config.
 func applyEnvOverrides(cfg *Config) {
 	// Helper to get env var with prefix
@@ -513,6 +526,12 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Channels.Telegram.Proxy = v
 	}
 
+	// Telegram allowlist (comma-separated). Both channels warn at startup that
+	// this env var is the way to set the allowlist, so it has to exist.
+	if v := getEnv("CHANNELS__TELEGRAM__ALLOW_FROM"); v != "" {
+		cfg.Channels.Telegram.AllowFrom = splitEnvList(v)
+	}
+
 	// Discord enabled
 	if v := getEnv("CHANNELS__DISCORD__ENABLED"); v != "" {
 		cfg.Channels.Discord.Enabled = v == "true" || v == "1"
@@ -521,6 +540,11 @@ func applyEnvOverrides(cfg *Config) {
 	// Discord token
 	if v := getEnv("CHANNELS__DISCORD__TOKEN"); v != "" {
 		cfg.Channels.Discord.Token = v
+	}
+
+	// Discord allowlist (comma-separated)
+	if v := getEnv("CHANNELS__DISCORD__ALLOW_FROM"); v != "" {
+		cfg.Channels.Discord.AllowFrom = splitEnvList(v)
 	}
 
 	// Web search API key

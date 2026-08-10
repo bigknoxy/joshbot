@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
 
 	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/output"
 	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/urfave/cli/v2"
 )
@@ -47,32 +47,33 @@ func runSkillsList(c *cli.Context) error {
 		return err
 	}
 
-	all := loader.List()
-	if len(all) == 0 {
-		fmt.Println("No skills found.")
-		return nil
+	format, err := outputFormat(c)
+	if err != nil {
+		return err
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
 
-	var pending int
-	fmt.Println("Skills:")
-	for _, sk := range all {
+	entries := make([]output.Skill, 0, len(loader.List()))
+	for _, sk := range loader.List() {
 		switch {
 		case sk.Bundled:
-			fmt.Printf("  %-28s bundled\n", sk.Name)
+			entries = append(entries, output.Skill{Name: sk.Name, State: output.SkillBundled})
 		case sk.Trusted:
-			fmt.Printf("  %-28s approved\n", sk.Name)
+			entries = append(entries, output.Skill{Name: sk.Name, State: output.SkillApproved})
 		default:
-			pending++
-			fmt.Printf("  %-28s AWAITING REVIEW  %s\n", sk.Name, filepath.Join(sk.Path, "SKILL.md"))
+			entries = append(entries, output.Skill{
+				Name:  sk.Name,
+				State: output.SkillPending,
+				Path:  filepath.Join(sk.Path, "SKILL.md"),
+			})
 		}
 	}
+	doc := output.NewSkills(entries)
 
-	if pending > 0 {
-		fmt.Printf("\n%d skill(s) are not being used until you approve them.\n", pending)
-		fmt.Println("Read the file, then run: joshbot skills trust <name>")
-		fmt.Println("A skill's text becomes part of the agent's instructions, so review it as you would a script you are about to run.")
+	out := reportWriter()
+	if format == output.JSON {
+		return output.WriteJSON(out, doc)
 	}
+	output.RenderSkillsText(out, doc)
 	return nil
 }
 

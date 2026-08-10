@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/output"
 	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
@@ -153,7 +155,12 @@ func TestPreflightEntryLines_SurviveRedaction(t *testing.T) {
 			Problem:          problem,
 			Detail:           `model "openrouter/x" (provider "openrouter") has no credential; set api_key`,
 		}
-		for _, line := range preflightEntryLines(e) {
+		var buf bytes.Buffer
+		output.RenderPreflightText(&buf, output.Preflight{
+			SchemaVersion:   output.SchemaVersion,
+			PreflightReport: config.PreflightReport{Entries: []config.PreflightEntry{e}},
+		})
+		for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
 			if got := redact.String(line); got != line {
 				t.Errorf("redaction rewrote the %s line:\n got  %s\n want %s", problem, got, line)
 			}

@@ -508,6 +508,39 @@ Unlike every other command, `preflight` does not fall back to defaults when the 
 file is unusable: a report about a default config you never wrote is the opposite of a
 diagnosis.
 
+### Machine-readable output
+
+The read-only reporting commands take a global `--output` flag with values `text`
+(the default, byte-for-byte what they have always printed) and `json`:
+
+```
+joshbot --output json preflight
+joshbot --output json status
+joshbot --output json skills list
+joshbot --output json auth status
+joshbot --output json configure --list
+```
+
+The JSON document goes to stdout on its own, carries a `schema_version` field, and is
+byte-stable across runs so two invocations can be diffed. Exit codes are unchanged —
+`--output json preflight` still exits non-zero on a config that would not work. When a
+command fails in JSON mode the failure is reported as a document on stdout too, so a
+caller does not need a second reader on stderr:
+
+```json
+{
+  "schema_version": 1,
+  "error": { "code": 2, "message": "not authenticated" }
+}
+```
+
+`error.code` is the process exit code. An unknown `--output` value is a usage error and
+exits 3, which is how a script tells a typo apart from a command that ran and reported a
+problem. No credential or home directory appears in either format.
+
+Note this is separate from `joshbot agent --output-format text|json|stream-json`, which
+shapes an agent *turn* rather than a report.
+
 ### Legacy Provider Configuration (Still Supported)
 
 For backward compatibility, the old format still works:

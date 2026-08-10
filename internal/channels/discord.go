@@ -2,8 +2,10 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -51,7 +53,12 @@ type DiscordChannel struct {
 	cfg     *config.DiscordConfig
 	mu      sync.RWMutex
 	running bool
-	stopCh  chan struct{}
+	// stopCh belongs to one Start/Stop cycle, not to the channel: Stop closes
+	// it and Start allocates a fresh one, so a restarted channel is not left
+	// with a permanently-closed stop signal (which made consumeOutbound return
+	// at once and every Send abort its retries). Read it via stopChan.
+	stopCh     chan struct{}
+	stopClosed bool
 
 	session   *discordgo.Session
 	removeHnd func()
@@ -123,6 +130,15 @@ func (d *DiscordChannel) Name() string {
 	return d.name
 }
 
+// stopChan returns the current run's stop signal. Start replaces the field, so
+// every reader outside the mutex must go through this rather than touching
+// d.stopCh directly.
+func (d *DiscordChannel) stopChan() chan struct{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.stopCh
+}
+
 // IsAllowed reports whether a sender may use the bot. An empty allowlist denies
 // everyone: this bot hands whoever it talks to a direct line into an agent loop
 // holding the shell tool, so an unset allowlist must fail closed, not open —
@@ -178,6 +194,9 @@ func (d *DiscordChannel) Start(ctx context.Context) error {
 		return fmt.Errorf("Discord channel is already running")
 	}
 	d.running = true
+	// Fresh stop signal for this run; the previous cycle's channel is closed.
+	d.stopCh = make(chan struct{})
+	d.stopClosed = false
 	d.mu.Unlock()
 
 	if d.cfg.Token == "" {
@@ -432,6 +451,8 @@ func (d *DiscordChannel) Send(msg bus.OutboundMessage) error {
 	// done its job.
 	d.stopTyping(channelID)
 
+	stopCh := d.stopChan()
+
 	// Parts after the first carry a "— Part N of M —" header. Re-split with
 	// that reserved so header+part still fits.
 	const partHeaderOverhead = 35
@@ -460,13 +481,13 @@ func (d *DiscordChannel) Send(msg bus.OutboundMessage) error {
 				"part", i+1, "total_parts", len(parts),
 				"error", err, "channel_id", channelID,
 			)
-			if !isRetryable(err) {
+			if !isDiscordRetryable(err) {
 				break
 			}
 			select {
 			case <-time.After(delay):
 				delay = time.Duration(math.Min(float64(delay*2), float64(d.maxRetryDelay)))
-			case <-d.stopCh:
+			case <-stopCh:
 				return fmt.Errorf("stopped while retrying: %w", lastErr)
 			}
 		}
@@ -478,13 +499,71 @@ func (d *DiscordChannel) Send(msg bus.OutboundMessage) error {
 		if i < len(parts)-1 {
 			select {
 			case <-time.After(250 * time.Millisecond):
-			case <-d.stopCh:
+			case <-stopCh:
 				return nil
 			}
 		}
 	}
 
 	return nil
+}
+
+// discordPermanentCodes are discordgo REST error codes that will never succeed
+// on retry. Retrying one burns the full backoff (~7.5s per part) inside the
+// single consumeOutbound goroutine, delaying every message queued behind it.
+var discordPermanentCodes = map[int]struct{}{
+	10003: {}, // Unknown Channel
+	10013: {}, // Unknown User
+	50001: {}, // Missing Access
+	50007: {}, // Cannot send messages to this user
+	50013: {}, // Missing Permissions
+}
+
+// isDiscordRetryable reports whether an outbound send failure is worth
+// retrying. Discord has its own error vocabulary, so it does not share
+// Telegram's classifier: the Telegram permanent list is string matching on
+// Bot API descriptions that never appear here, and its unclassified-error log
+// line names the wrong channel.
+func isDiscordRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var restErr *discordgo.RESTError
+	if errors.As(err, &restErr) {
+		if restErr.Message != nil {
+			if _, permanent := discordPermanentCodes[restErr.Message.Code]; permanent {
+				return false
+			}
+		}
+		// 429 is Discord's rate limit: back off and retry. Any other 4xx is a
+		// request the server has already rejected on its merits.
+		if restErr.Response != nil {
+			status := restErr.Response.StatusCode
+			if status == http.StatusTooManyRequests {
+				return true
+			}
+			if status >= 400 && status < 500 {
+				return false
+			}
+		}
+	}
+
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "network") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "eof") {
+		return true
+	}
+	if strings.Contains(errStr, "rate limit") || strings.Contains(errStr, "too many requests") {
+		return true
+	}
+
+	// Default to retry for unknown errors, but say so: an unrecognised error
+	// retried 3× is a signal this classifier needs a new case.
+	log.Debug("discord: retrying unclassified send error", "error", errStr)
+	return true
 }
 
 // startTyping shows "typing…" for a channel and keeps it alive until stopTyping
@@ -605,11 +684,12 @@ func (d *DiscordChannel) consumeOutbound(ctx context.Context) {
 	}()
 
 	ch := d.bus.OutboundChannel()
+	stopCh := d.stopChan()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-d.stopCh:
+		case <-stopCh:
 			return
 		case msg := <-ch:
 			if msg.Channel == d.name || msg.Channel == "all" {
@@ -631,7 +711,12 @@ func (d *DiscordChannel) Stop() error {
 		return nil
 	}
 	d.running = false
-	close(d.stopCh)
+	// Guarded rather than a bare close: running is the primary latch, but a
+	// double close panics the process, so never rely on a single flag for it.
+	if !d.stopClosed && d.stopCh != nil {
+		d.stopClosed = true
+		close(d.stopCh)
+	}
 
 	// The keep-alive goroutines also select on stopCh, so closing it stops
 	// them; dropping the entries just releases the map.

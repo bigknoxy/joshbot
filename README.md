@@ -515,6 +515,15 @@ For backward compatibility, the old format still works:
 | macOS | Seatbelt (`sandbox-exec` profile) | Deny-list only |
 | Other (no sandbox available) | n/a | **Allowlist-only** — the shell tool falls back to a small set of non-escaping read/inspect commands unless the operator sets an explicit `shell_allow_list` |
 
+While an allowlist is in force — whether set explicitly or defaulted on a
+platform with no sandbox — a command containing a shell construct that can
+introduce a second command word (`;`, `&`, `|`, a newline, a backtick, `$(`,
+`<(`, `>(`) is refused: the command is passed to `sh -c` unchanged, so matching
+only the first word admitted `echo hi; id`. Run one command per call. The
+default list deliberately omits `find`, `go` and `git`, each of which launches a
+program of the caller's choosing; name them in `shell_allow_list` if you need
+them.
+
 It fails closed: an unrecognized value, or `"workspace"` on a host whose kernel lacks the needed support, is a startup error rather than a silent no-op — set it back to `"off"` to run without containment. The runtime default is intentionally **not** the sandbox: network-denied-by-default breaks common workflows, so macOS/Linux still rely on the deny list by default and you opt in with `tools.shell_sandbox: "workspace"`.
 
 ### Streaming Responses
@@ -685,6 +694,14 @@ joshbot also speaks Discord (gateway websocket + REST via the pure-Go
 - Messages over 2000 chars are split (code-fence aware); the bot ignores its own
   and other bots' messages; `/help` and `/new` work as text commands.
 
+> **⚠️ Enable one chat channel at a time.** The message bus exposes a *single*
+> outbound channel that channel implementations read competitively, so running
+> Discord and Telegram simultaneously has them steal each other's replies —
+> roughly half of each conversation's answers are delivered to the other
+> service's chat, with no error anywhere. Until the bus fans out per channel,
+> enable **either** `channels.telegram` **or** `channels.discord`, not both.
+> (`internal/channels/discord.go`, `consumeOutbound`.)
+
 ## MCP Servers (experimental)
 
 joshbot ships a stdio [MCP](https://modelcontextprotocol.io/) client. Declaring a
@@ -708,10 +725,12 @@ so a server can never shadow a built-in tool like `shell`.
 }
 ```
 
-> **Note:** the MCP client, config schema, and tests are in place, but the
-> client is **not yet wired into the running gateway/agent** — declaring a server
-> does not spawn a process today. MCP child processes, once wired, run with
-> joshbot's full permissions and are **not** sandboxed. See `SECURITY.md`.
+> **Note:** declared servers are now started during component setup and their
+> tools registered; startup is fail-soft, so a server that will not start is
+> logged and skipped rather than aborting joshbot, and the processes are reaped
+> on exit. MCP child processes get the same allowlisted, credential-screened
+> environment as shell children (no provider API keys), but their **filesystem
+> access is not sandboxed**. See `SECURITY.md`.
 
 ## Built-in Tools
 

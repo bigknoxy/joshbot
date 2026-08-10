@@ -59,9 +59,25 @@ jobs:
         # The total floor alone lets a well-covered package launder a blind
         # spot: cmd/joshbot (the interactive CLI + headless entrypoint) and
         # internal/service (per-OS install) are the least-tested and most
-        # user-facing packages, so they get their own floors set just below
-        # their current levels. Raise a floor when its package rises; never
-        # lower one to make a red build green. (issue #154)
+        # user-facing packages, so they get their own floors. (issue #154)
+        #
+        # THESE FLOORS RATCHET UPWARD. Each is set just below the package's
+        # measured coverage at the time it was last touched, so the floor is
+        # only ever a few tenths of slack — deleting a suite has to turn the
+        # build red to be worth anything. When you add coverage to one of these
+        # packages, re-measure and raise its floor in the same PR:
+        #
+        #   go test -coverprofile=p.cov ./cmd/joshbot/ && go tool cover -func=p.cov | tail -1
+        #
+        # Never lower a floor to make a red build green. The floor left at 15%
+        # while cmd/joshbot measured 40% meant ~890 lines of new tests could
+        # have been deleted with CI still passing, which is the failure mode
+        # this check exists to prevent.
+        #
+        # Last measured 2026-08-10 on darwin/arm64: cmd/joshbot 39.8%,
+        # internal/service 2.7%. internal/service is build-tagged per OS, so
+        # its number can differ on the linux runner; its floor keeps a wider
+        # margin for that reason.
         run: |
           set -euo pipefail
           # pkg import-path prefix -> minimum percent of covered statements.
@@ -78,8 +94,8 @@ jobs:
               exit 1
             fi
           }
-          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 15
-          check_pkg "github.com/bigknoxy/joshbot/internal/service" 2
+          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 39
+          check_pkg "github.com/bigknoxy/joshbot/internal/service" 2.5
           echo "PASS: all per-package coverage floors met"
 
       - name: Upload coverage to Codecov

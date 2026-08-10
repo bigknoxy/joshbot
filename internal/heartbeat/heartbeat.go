@@ -1,7 +1,7 @@
 package heartbeat
 
 import (
-	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/log"
 )
 
 // Contract is appended to every published heartbeat task. It tells the agent
@@ -96,21 +97,35 @@ func (s *Service) Stop() {
 	s.wg.Wait()
 }
 
-// checkboxRE matches an unchecked task line, capturing the task text.
-var checkboxRE = regexp.MustCompile(`(?m)^(?:\s*[-*]\s*)\[ \]\s*(.+)$`)
+// uncheckedRE matches a single unchecked task line. It is deliberately the ONLY
+// pattern in this file: publishing and checking off must agree exactly, or a
+// line that can be published but not checked off re-fires on every tick,
+// forever. Two separate patterns used to disagree here — "-[ ] task" and
+// "* [ ]task" published but never got checked off.
+//
+// Group 1 is the indent + bullet prefix, group 2 the whitespace between the box
+// and the task text, group 3 the task text. Keeping 1 and 2 verbatim lets the
+// box be flipped to [x] in place, preserving indent, bullet style and spacing.
+var uncheckedRE = regexp.MustCompile(`^([ \t]*[-*+][ \t]*)\[ \]([ \t]*)(\S.*?)[ \t]*$`)
 
-// uncheckedRE matches an unchecked task line, capturing the bullet prefix and
-// the remainder so the box can be flipped to [x] in place, preserving indent,
-// bullet style and task text.
-var uncheckedRE = regexp.MustCompile(`(?m)^(\s*[-*]\s+)\[ \](\s+\S.*)$`)
+// parseTask reports whether line is an unchecked task, returning the task text
+// and the line with its box flipped to [x].
+func parseTask(line string) (task, checked string, ok bool) {
+	// Preserve a trailing CR so CRLF files survive the rewrite unchanged.
+	body, cr := line, ""
+	if strings.HasSuffix(body, "\r") {
+		body, cr = body[:len(body)-1], "\r"
+	}
+	m := uncheckedRE.FindStringSubmatch(body)
+	if m == nil {
+		return "", "", false
+	}
+	return m[3], m[1] + "[x]" + m[2] + m[3] + cr, true
+}
 
 func (s *Service) scanAndPublish() {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
-		return
-	}
-	matches := checkboxRE.FindAllStringSubmatch(string(data), -1)
-	if len(matches) == 0 {
 		return
 	}
 
@@ -131,11 +146,13 @@ func (s *Service) scanAndPublish() {
 		chatID = id
 	}
 
-	for _, m := range matches {
-		if len(m) < 2 {
+	lines := strings.Split(string(data), "\n")
+	changed := false
+	for i, line := range lines {
+		task, checked, ok := parseTask(line)
+		if !ok {
 			continue
 		}
-		task := strings.TrimSpace(m[1])
 		meta := map[string]any{"source": "heartbeat"}
 		if chatID != "" {
 			meta["chat_id"] = chatID
@@ -147,14 +164,72 @@ func (s *Service) scanAndPublish() {
 			Timestamp: time.Now(),
 			Metadata:  meta,
 		}
-		_ = s.bus.Send(inbound)
+		// Only check a task off once it is actually queued. A dropped Send with
+		// the box flipped anyway loses the task silently and forever.
+		if !s.bus.Send(inbound) {
+			log.Warnf("heartbeat: bus queue full, task left unchecked: %s", task)
+			continue
+		}
+		// One-shot per task: check off every task just published so it does not
+		// re-fire on the next tick. This is what makes the heartbeat stop
+		// burning tokens on the same tasks forever.
+		lines[i] = checked
+		changed = true
 	}
+	if !changed {
+		return
+	}
+	if err := writeFileAtomic(s.path, []byte(strings.Join(lines, "\n"))); err != nil {
+		log.Warnf("heartbeat: failed to update %s: %v", s.path, err)
+	}
+}
 
-	// One-shot per task: check off every task just published so it does not
-	// re-fire on the next tick. This is what makes the heartbeat stop burning
-	// tokens on the same tasks forever.
-	newData := uncheckedRE.ReplaceAll(data, []byte("${1}[x]${2}"))
-	if !bytes.Equal(newData, data) {
-		_ = os.WriteFile(s.path, newData, 0o644)
+// writeFileAtomic rewrites path via a uniquely named temp file in the same
+// directory plus a rename, preserving the existing file's mode.
+//
+// The read-modify-write in scanAndPublish spans a tick, so a user editing
+// HEARTBEAT.md in that window would otherwise see their edit half-clobbered by
+// a partial write. The temp name must be unique per writer (os.CreateTemp), not
+// a fixed "<path>.tmp": two writers sharing one temp file interleave and the
+// surviving rename publishes a torn mix. This mirrors the identical helper in
+// internal/session/manager.go; the two are kept separate rather than shared
+// because session's is unexported and hoisting it into a common package for two
+// call sites is not yet worth the dependency.
+func writeFileAtomic(path string, data []byte) error {
+	perm := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		perm = fi.Mode().Perm()
 	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to set temporary file mode: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to write temporary file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to sync temporary file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to close temporary file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to rename temporary file: %w", err)
+	}
+	return nil
 }

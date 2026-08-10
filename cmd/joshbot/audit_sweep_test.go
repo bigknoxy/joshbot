@@ -1,8 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"flag"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,42 +15,129 @@ import (
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/config"
-	joshlog "github.com/bigknoxy/joshbot/internal/log"
 	"github.com/urfave/cli/v2"
 )
 
-// --- #139: gateway handler must not write to stderr at the default log level ---
+// --- #139: the gateway bus handler must not write to stdout/stderr directly ---
 
-// TestGatewayHandlerDebugSuppressedAtDefaultLevel guards against reintroducing
-// the raw fmt.Fprintf(os.Stderr, ...) debug print that leaked every inbound
-// message. The handler now logs via log.Debug, which the default (info) level
-// suppresses. This asserts the underlying logging discipline the handler relies
-// on: a Debug line produces no output until the level is lowered.
-func TestGatewayHandlerDebugSuppressedAtDefaultLevel(t *testing.T) {
-	var buf bytes.Buffer
-	lg := joshlog.Get().Logger
-	origOut := os.Stderr // charmbracelet default writer; restore via SetOutput below
-	_ = origOut
-	lg.SetOutput(&buf)
-	origLevel := lg.GetLevel()
-	defer func() {
-		lg.SetOutput(os.Stderr)
-		lg.SetLevel(origLevel)
-	}()
-
-	lg.SetLevel(joshlog.InfoLevel)
-	// This is the exact call the gateway handler makes per inbound message.
-	joshlog.Debug("bus handler invoked", "channel", "telegram", "sender", "12345")
-	if buf.Len() != 0 {
-		t.Fatalf("Debug log leaked at info level: %q", buf.String())
+// TestGatewayHandlerHasNoDirectConsoleWrites guards against reintroducing the
+// raw fmt.Fprintf(os.Stderr, ...) debug print that leaked the full text of every
+// inbound message. The handler now goes through the redacting logger
+// (internal/log wraps its writer with internal/redact), so a direct write is
+// both a leak of unredacted content and an unfilterable one — it ignores the
+// configured log level.
+//
+// This is deliberately a SOURCE-LEVEL assertion. A behavioural test cannot
+// catch the regression: runGateway's handler is an anonymous closure registered
+// on the bus, reachable only by standing up a full gateway (config, providers,
+// live channels), and the previous version of this test settled for calling
+// log.Debug directly — which asserts the logging library's level filtering, not
+// the handler's discipline, and would stay green with a bare
+// fmt.Fprintf(os.Stderr, ...) put right back into the handler. Parsing the
+// function body is the only assertion that actually fails when the write
+// returns.
+func TestGatewayHandlerHasNoDirectConsoleWrites(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
 	}
 
-	// Sanity: at debug level it is emitted (proves the message wasn't dropped
-	// for some unrelated reason).
-	lg.SetLevel(joshlog.DebugLevel)
-	joshlog.Debug("bus handler invoked", "channel", "telegram", "sender", "12345")
-	if !strings.Contains(buf.String(), "bus handler invoked") {
-		t.Fatalf("Debug log missing at debug level: %q", buf.String())
+	var fn *ast.FuncDecl
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Recv == nil && f.Name.Name == "runGateway" {
+			fn = f
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("runGateway not found in main.go; this guard needs updating")
+	}
+
+	// isConsole reports whether an expression names os.Stdout or os.Stderr.
+	isConsole := func(e ast.Expr) bool {
+		sel, ok := e.(*ast.SelectorExpr)
+		if !ok {
+			return false
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && pkg.Name == "os" && (sel.Sel.Name == "Stdout" || sel.Sel.Name == "Stderr")
+	}
+
+	var offenders []string
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch {
+		// fmt.Fprint*/os.Stderr, io.Copy(os.Stdout, ...), etc: any call whose
+		// first argument is the console handle.
+		case len(call.Args) > 0 && isConsole(call.Args[0]):
+		// os.Stderr.Write(...) / os.Stdout.WriteString(...).
+		case isConsole(sel.X):
+		default:
+			return true
+		}
+		offenders = append(offenders, fmt.Sprintf("%s: %s", fset.Position(call.Pos()), types.ExprString(call)))
+		return true
+	})
+
+	if len(offenders) > 0 {
+		t.Fatalf("runGateway writes directly to the console, bypassing the redacting logger and the log level:\n  %s\n"+
+			"Use log.Debug/log.Info from internal/log instead.", strings.Join(offenders, "\n  "))
+	}
+}
+
+// The guard above is only meaningful if its detector actually fires, so prove
+// it against a fixture containing exactly the regression it screens for.
+func TestGatewayConsoleWriteDetectorFires(t *testing.T) {
+	const src = `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func runGateway() {
+	fmt.Fprintf(os.Stderr, "DEBUG: %s\n", "leaked")
+	os.Stdout.WriteString("also bad")
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "fixture.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	var found int
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		isConsole := func(e ast.Expr) bool {
+			s, ok := e.(*ast.SelectorExpr)
+			if !ok {
+				return false
+			}
+			pkg, ok := s.X.(*ast.Ident)
+			return ok && pkg.Name == "os" && (s.Sel.Name == "Stdout" || s.Sel.Name == "Stderr")
+		}
+		if (len(call.Args) > 0 && isConsole(call.Args[0])) || isConsole(sel.X) {
+			found++
+		}
+		return true
+	})
+	if found != 2 {
+		t.Fatalf("detector found %d console writes in the fixture, want 2", found)
 	}
 }
 

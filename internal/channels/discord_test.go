@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -261,5 +262,181 @@ func TestDiscordChannel_IsAllowed_NameEntryDoesNotMatchID(t *testing.T) {
 	}
 	if !d.IsAllowed("999", "Alice", "Someone") {
 		t.Error("expected case-insensitive username match")
+	}
+}
+
+// discordRESTError builds a discordgo REST error with the given API code and
+// HTTP status, matching the shape ChannelMessageSend returns.
+func discordRESTError(code, status int) error {
+	return &discordgo.RESTError{
+		Response: &http.Response{StatusCode: status},
+		Message:  &discordgo.APIErrorMessage{Code: code, Message: "denied"},
+	}
+}
+
+// TestDiscordChannel_SendDoesNotRetryPermanent pins the Discord-specific
+// classifier. Discord's permanent failures are REST error codes, which
+// Telegram's string-matching classifier treats as retryable — burning the full
+// backoff inside the single consumeOutbound goroutine for a send that can never
+// succeed.
+func TestDiscordChannel_SendDoesNotRetryPermanent(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+	}{
+		{"cannot send to user", 50007},
+		{"missing access", 50001},
+		{"unknown channel", 10003},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, fake := newTestDiscordChannel(t, nil)
+			d.retryDelay = time.Hour // any retry would hang the test
+			fake.failFirst = 10
+			fake.failErr = discordRESTError(tc.code, 403)
+
+			done := make(chan error, 1)
+			go func() {
+				done <- d.Send(bus.OutboundMessage{Channel: "discord", ChannelID: "c1", Content: "hi"})
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("expected send to fail")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Send retried a permanent Discord failure")
+			}
+		})
+	}
+}
+
+func TestIsDiscordRetryable(t *testing.T) {
+	if isDiscordRetryable(discordRESTError(50007, 403)) {
+		t.Error("50007 must be permanent")
+	}
+	if !isDiscordRetryable(discordRESTError(0, 429)) {
+		t.Error("429 rate limit must be retryable")
+	}
+	if !isDiscordRetryable(discordRESTError(0, 500)) {
+		t.Error("5xx must be retryable")
+	}
+	if !isDiscordRetryable(net503{}) {
+		t.Error("connection errors must be retryable")
+	}
+	if isDiscordRetryable(nil) {
+		t.Error("nil error is not retryable")
+	}
+}
+
+// TestDiscordChannel_RestartReallocatesStopChannel is the regression test for a
+// channel that could not be restarted: Stop closed stopCh and Start never
+// replaced it, so the second run's consumeOutbound returned immediately and
+// every Send aborted its retries — and the next Stop panicked on a double
+// close. Start is not called here (it needs a live gateway); the Start/Stop
+// stop-channel lifecycle is exercised directly.
+func TestDiscordChannel_RestartReallocatesStopChannel(t *testing.T) {
+	d, _ := newTestDiscordChannel(t, nil)
+
+	d.mu.Lock()
+	d.running = true
+	first := d.stopCh
+	d.mu.Unlock()
+
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-first:
+	default:
+		t.Fatal("Stop did not close the stop channel")
+	}
+
+	// Simulate the second Start: it must hand out a fresh, open channel.
+	d.mu.Lock()
+	d.running = true
+	d.stopCh = make(chan struct{})
+	d.stopClosed = false
+	second := d.stopCh
+	d.mu.Unlock()
+
+	if second == first {
+		t.Fatal("restart reused the closed stop channel")
+	}
+	select {
+	case <-d.stopChan():
+		t.Fatal("restarted channel started already stopped")
+	default:
+	}
+
+	if err := d.Stop(); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+	// A third Stop must be a no-op, not a close-of-closed-channel panic.
+	if err := d.Stop(); err != nil {
+		t.Fatalf("third Stop: %v", err)
+	}
+}
+
+// TestDiscordChannel_StopIsIdempotent pins that a double Stop after a real
+// close cannot panic even if running were somehow still set.
+func TestDiscordChannel_StopIsIdempotent(t *testing.T) {
+	d, _ := newTestDiscordChannel(t, nil)
+	d.mu.Lock()
+	d.running = true
+	d.mu.Unlock()
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	d.mu.Lock()
+	d.running = true // force the second Stop past the running latch
+	d.mu.Unlock()
+	if err := d.Stop(); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+}
+
+// TestDiscordChannel_HandleMessageCreate covers the self/bot reply-loop guard,
+// which is the only thing standing between joshbot and an infinite
+// conversation with itself.
+func TestDiscordChannel_HandleMessageCreate(t *testing.T) {
+	cases := []struct {
+		name      string
+		author    *discordgo.User
+		wantOnBus bool
+	}{
+		{name: "nil author", author: nil},
+		{name: "bot author", author: &discordgo.User{ID: "999", Username: "someBot", Bot: true}},
+		{name: "self author", author: &discordgo.User{ID: "self-id", Username: "joshbot"}},
+		{name: "allowed human", author: &discordgo.User{ID: "111", Username: "alice"}, wantOnBus: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _ := newTestDiscordChannel(t, []string{"111", "999", "self-id"})
+			d.mu.Lock()
+			d.selfID = "self-id"
+			d.mu.Unlock()
+
+			m := &discordgo.MessageCreate{Message: &discordgo.Message{
+				ChannelID: "c1",
+				Content:   "hello",
+				Author:    tc.author,
+			}}
+			d.handleMessageCreate(nil, m)
+
+			select {
+			case msg := <-d.bus.InboundChannel():
+				if !tc.wantOnBus {
+					t.Fatalf("message reached the bus but should have been ignored: %+v", msg)
+				}
+				if !strings.Contains(msg.SenderID, "111") {
+					t.Errorf("SenderID = %q, want it to identify user 111", msg.SenderID)
+				}
+			case <-time.After(150 * time.Millisecond):
+				if tc.wantOnBus {
+					t.Fatal("expected message on the bus")
+				}
+			}
+		})
 	}
 }

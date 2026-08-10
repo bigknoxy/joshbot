@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -89,7 +90,7 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 	mb.Subscribe("test", handler)
 
 	// Manually dispatch a message to test handler
-	mb.dispatchInbound(InboundMessage{
+	mb.dispatchInbound(context.Background(), InboundMessage{
 		SenderID: "user1",
 		Channel:  "test",
 		Content:  "hello",
@@ -104,7 +105,7 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 
 	// Test unsubscribe
 	mb.Unsubscribe("test", handler)
-	mb.dispatchInbound(InboundMessage{
+	mb.dispatchInbound(context.Background(), InboundMessage{
 		SenderID: "user1",
 		Channel:  "test",
 		Content:  "hello",
@@ -907,4 +908,58 @@ func TestSendPublishRaceWithStop(t *testing.T) {
 
 		wg.Wait()
 	}
+}
+
+// TestRestartUnderLoadIsRaceFree pins the data race that Start/Stop/Start used
+// to trigger: Start reassigned mb.ctx under mb.mu while handler goroutines from
+// the previous run — which Stop deliberately does not wait for — still read the
+// field unlocked. The context is now threaded through processInbound →
+// dispatchInbound → dispatchToHandlers, so nothing reads mb.ctx off-goroutine.
+// Meaningful only under -race.
+func TestRestartUnderLoadIsRaceFree(t *testing.T) {
+	mb := NewMessageBus()
+
+	var handled atomic.Int64
+	mb.Subscribe("all", func(ctx context.Context, msg InboundMessage) {
+		// Touch the context the way a real handler would.
+		select {
+		case <-ctx.Done():
+		default:
+		}
+		handled.Add(1)
+	})
+
+	stop := make(chan struct{})
+	var senders sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		senders.Add(1)
+		go func() {
+			defer senders.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					mb.Send(InboundMessage{Channel: "load", Content: "x"})
+					// Yield between sends: an unthrottled sender can keep the
+					// drain loop in processInbound permanently non-empty.
+					time.Sleep(time.Millisecond)
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 20; i++ {
+		mb.Start()
+		time.Sleep(time.Millisecond)
+		mb.Stop()
+	}
+
+	close(stop)
+	senders.Wait()
+
+	if mb.IsRunning() {
+		t.Error("bus should be stopped")
+	}
+	_ = handled.Load()
 }

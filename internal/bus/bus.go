@@ -149,9 +149,12 @@ func (mb *MessageBus) Start() {
 	// Derive a fresh cancellable context from the parent on every (re)start, so
 	// a bus that was previously Stopped starts clean instead of inheriting the
 	// already-cancelled context. The channels are intentionally left untouched.
-	mb.ctx, mb.cancel = context.WithCancel(mb.parentCtx)
+	ctx, cancel := context.WithCancel(mb.parentCtx)
+	mb.ctx, mb.cancel = ctx, cancel
 	mb.wg.Add(1)
-	go mb.processInbound(mb.ctx)
+	// Hand the goroutine the context captured here, not mb.ctx: a later Start
+	// reassigns the field, and nothing joins the goroutines of the previous run.
+	go mb.processInbound(ctx)
 	// Note: processOutbound is not started here because channel implementations
 	// (e.g., Telegram, CLI) consume outbound messages directly via OutboundChannel().
 	// The bus acts as a pub/sub broker - publishers send to outboundCh, and
@@ -245,24 +248,30 @@ func (mb *MessageBus) processInbound(ctx context.Context) {
 			for {
 				select {
 				case msg := <-mb.inboundCh:
-					mb.dispatchInbound(msg)
+					mb.dispatchInbound(ctx, msg)
 				default:
 					return
 				}
 			}
 		case msg := <-mb.inboundCh:
-			mb.dispatchInbound(msg)
+			mb.dispatchInbound(ctx, msg)
 		}
 	}
 }
 
 // dispatchToHandlers sends a message to all registered handlers for a topic.
 // Uses a semaphore to bound the number of concurrent handler executions.
-func (mb *MessageBus) dispatchToHandlers(topic string, msg InboundMessage) {
+//
+// ctx is passed explicitly rather than read from mb.ctx: Stop deliberately does
+// not wait for handler goroutines, so a subsequent Start — which reassigns
+// mb.ctx under mb.mu — would race the unlocked reads still happening in the
+// previous run's goroutines. Threading the context that this run started with
+// keeps every read of it on the goroutine's own stack.
+func (mb *MessageBus) dispatchToHandlers(ctx context.Context, topic string, msg InboundMessage) {
 	handlers := mb.registry.GetHandlers(topic)
 	for _, handler := range handlers {
 		select {
-		case <-mb.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 			// Acquire semaphore to bound concurrent handler executions
@@ -279,19 +288,19 @@ func (mb *MessageBus) dispatchToHandlers(topic string, msg InboundMessage) {
 						)
 					}
 				}()
-				h(mb.ctx, msg)
+				h(ctx, msg)
 			}(handler)
 		}
 	}
 }
 
 // dispatchInbound sends a message to all registered handlers for the channel.
-func (mb *MessageBus) dispatchInbound(msg InboundMessage) {
+func (mb *MessageBus) dispatchInbound(ctx context.Context, msg InboundMessage) {
 	// Dispatch to channel-specific handlers
-	mb.dispatchToHandlers(msg.Channel, msg)
+	mb.dispatchToHandlers(ctx, msg.Channel, msg)
 	// Also dispatch to "all" topic if different from channel
 	if msg.Channel != "all" {
-		mb.dispatchToHandlers("all", msg)
+		mb.dispatchToHandlers(ctx, "all", msg)
 	}
 }
 

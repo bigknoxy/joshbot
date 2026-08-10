@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -27,6 +29,18 @@ func TestMain(m *testing.M) {
 	case "nohandshake":
 		// Exit immediately without responding to initialize.
 		os.Exit(0)
+	case "flaky":
+		// Fail the first process (no handshake), serve normally after that.
+		// The marker file is what distinguishes the runs, since a Client's
+		// command and env are fixed at construction.
+		marker := os.Getenv("GO_MCP_MARKER")
+		if _, err := os.Stat(marker); err != nil {
+			_ = os.WriteFile(marker, []byte("x"), 0o600)
+			os.Exit(0)
+		}
+		runEchoServer()
+	case "dupe":
+		runDuplicateResponseServer()
 	}
 	os.Exit(0)
 }
@@ -149,6 +163,43 @@ func runHangServer() {
 				os.Stdout.WriteString(resp)
 			}
 			// any other request: hang (no reply)
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// runDuplicateResponseServer answers initialize normally, then answers every
+// tools/list twice with the same id — the hostile-server shape that used to
+// wedge the read loop on a blocking send into a full cap-1 channel.
+func runDuplicateResponseServer() {
+	in := bufio.NewReader(os.Stdin)
+	for {
+		line, err := in.ReadBytes('\n')
+		trimmed := strings.TrimSpace(string(line))
+		if trimmed != "" {
+			var req struct {
+				ID     *int64 `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal([]byte(trimmed), &req) == nil && req.ID != nil {
+				var result string
+				switch req.Method {
+				case "tools/list":
+					result = `{"tools":[{"name":"echo","description":"d"}]}`
+				case "tools/call":
+					result = `{"content":[{"type":"text","text":"ok"}]}`
+				default:
+					result = `{}`
+				}
+				resp := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":%s}`+"\n", *req.ID, result)
+				os.Stdout.WriteString(resp)
+				if req.Method == "tools/list" {
+					// The duplicate: same id, again.
+					os.Stdout.WriteString(resp)
+				}
+			}
 		}
 		if err != nil {
 			return
@@ -337,5 +388,143 @@ func TestReadLineRejectsOversizedMessage(t *testing.T) {
 	line, err := readLine(r)
 	if err != nil || string(line) != "hello\n" {
 		t.Fatalf("readLine = %q, %v; want \"hello\\n\", nil", line, err)
+	}
+}
+
+// helperClientWithEnv is helperClient with extra environment for the child.
+func helperClientWithEnv(t *testing.T, mode string, extra ...string) *Client {
+	t.Helper()
+	c := helperClient(t, mode)
+	c.server.Env = append(c.server.Env, extra...)
+	return c
+}
+
+// TestConnectFailsWhenServerExitsBeforeHandshake pins that a server dying
+// before it answers initialize surfaces promptly as a Connect error, and that a
+// later call errors rather than blocking until its own deadline.
+func TestConnectFailsWhenServerExitsBeforeHandshake(t *testing.T) {
+	c := helperClient(t, "nohandshake")
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	if err := c.Connect(ctx); err == nil {
+		t.Fatal("expected Connect to fail when the server exits before handshake")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Connect took %v; it should fail as soon as the process exits", elapsed)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.ListTools(ctx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected ListTools to fail on a client that never connected")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ListTools blocked instead of failing fast")
+	}
+}
+
+// TestReconnectAfterFailedHandshake is the regression test for a client wedged
+// by its own failed start. doneCh used to be a per-Client field: the failed
+// process's readLoop closed it, nothing reallocated it, and every call on the
+// next — successful — process took the "server stopped" branch forever, so the
+// client reported healthy and answered nothing.
+func TestReconnectAfterFailedHandshake(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started-once")
+	c := helperClientWithEnv(t, "flaky", "GO_MCP_MARKER="+marker)
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if err := c.Connect(ctx); err == nil {
+		t.Fatal("expected the first Connect to fail (server exits before handshake)")
+	}
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("second Connect: %v", err)
+	}
+
+	out, err := c.CallTool(ctx, "echo", map[string]any{"text": "alive"})
+	if err != nil {
+		t.Fatalf("CallTool after reconnect: %v", err)
+	}
+	if out != "alive" {
+		t.Fatalf("CallTool after reconnect returned %q, want %q", out, "alive")
+	}
+}
+
+// TestDuplicateResponseDoesNotWedgeClient is the regression test for a hostile
+// server answering the same JSON-RPC id twice. The second response used to
+// block readLoop on a full cap-1 channel, so every later call hung to its ctx
+// deadline. MCP servers are third-party code, so this must be survivable.
+func TestDuplicateResponseDoesNotWedgeClient(t *testing.T) {
+	c := helperClient(t, "dupe")
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if _, err := c.ListTools(ctx); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	// The read loop must still be alive for this second call. A short deadline
+	// makes a wedged loop a fast failure rather than a 20s hang.
+	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer callCancel()
+	out, err := c.CallTool(callCtx, "echo", map[string]any{"text": "x"})
+	if err != nil {
+		t.Fatalf("call after duplicate response: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output %q", out)
+	}
+}
+
+// TestConcurrentCallsGetOwnResults pins response routing under concurrency: a
+// caller must never receive another caller's result. Run with -race.
+func TestConcurrentCallsGetOwnResults(t *testing.T) {
+	c := helperClient(t, "echo")
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	const n = 25
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			want := fmt.Sprintf("call-%d", i)
+			out, err := c.CallTool(ctx, "echo", map[string]any{"text": want})
+			if err != nil {
+				errs <- fmt.Errorf("call %d: %w", i, err)
+				return
+			}
+			if out != want {
+				errs <- fmt.Errorf("call %d got %q, want %q", i, out, want)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }

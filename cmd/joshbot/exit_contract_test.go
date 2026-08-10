@@ -71,6 +71,13 @@ func TestRunAgentJSON_ExitCodeContract(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// runAgentJSON sets the package global jsonErrorEmitted on the
+			// failure path. Leaving it set leaks into every later test in this
+			// package (and into the "answer" case below), so each subtest owns
+			// a known value and restores it.
+			jsonErrorEmitted = false
+			t.Cleanup(func() { jsonErrorEmitted = false })
+
 			var stdout, stderr bytes.Buffer
 			err := runAgentJSON(context.Background(), &replyAgent{reply: tt.reply}, "hi", "json", "", &stdout, &stderr, nil)
 			if got := codeForError(err); got != tt.wantCode {
@@ -91,6 +98,11 @@ func TestRunAgentJSON_ExitCodeContract(t *testing.T) {
 			}
 			if tt.wantIsError && !strings.Contains(stderr.String(), `"type":"error"`) {
 				t.Errorf("stderr should carry the JSON error doc, got %q", stderr.String())
+			}
+			// main() uses this to decide whether to also print a plain-text
+			// error; it must track whether the JSON doc was actually written.
+			if jsonErrorEmitted != tt.wantIsError {
+				t.Errorf("jsonErrorEmitted = %v, want %v", jsonErrorEmitted, tt.wantIsError)
 			}
 		})
 	}

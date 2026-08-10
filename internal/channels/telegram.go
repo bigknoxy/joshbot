@@ -38,8 +38,11 @@ type TelegramChannel struct {
 	// Bot instance
 	bot *telebot.Bot
 
-	// Allowlist set for fast lookup
-	allowSet map[string]struct{}
+	// allowIDs and allowNames are the deny-by-default allowlist, partitioned by
+	// entry shape. Both empty rejects everyone. See IsAllowed for why a single
+	// set matched against every field is an authentication bypass.
+	allowIDs   map[string]struct{}
+	allowNames map[string]struct{}
 
 	// Retry configuration
 	maxRetries    int
@@ -102,13 +105,21 @@ var forwardedCommands = []string{"/status", "/model", "/personality", "/compact"
 
 // NewTelegramChannel creates a new Telegram channel instance.
 func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *TelegramChannel {
-	// Build allowlist set for fast lookup
-	allowSet := make(map[string]struct{})
+	// Build the allowlist, partitioned by entry shape for fast lookup. An
+	// all-digits entry is a user ID and may only ever match the numeric ID —
+	// see IsAllowed.
+	allowIDs := make(map[string]struct{})
+	allowNames := make(map[string]struct{})
 	for _, a := range cfg.AllowFrom {
 		// Normalize: strip leading '@' and lowercase
 		s := normalizeUsername(a)
-		if s != "" {
-			allowSet[s] = struct{}{}
+		if s == "" {
+			continue
+		}
+		if isSnowflake(s) {
+			allowIDs[s] = struct{}{}
+		} else {
+			allowNames[s] = struct{}{}
 		}
 	}
 
@@ -117,7 +128,8 @@ func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *Telegr
 		bus:           bus,
 		cfg:           cfg,
 		stopCh:        make(chan struct{}),
-		allowSet:      allowSet,
+		allowIDs:      allowIDs,
+		allowNames:    allowNames,
 		maxRetries:    3,
 		retryDelay:    500 * time.Millisecond,
 		maxRetryDelay: 5 * time.Second,
@@ -143,25 +155,34 @@ func normalizeUsername(username string) string {
 // IsAllowed checks if a user is in the allowlist.
 // Entries may be a numeric Telegram user ID, a @username, or a "First Last"
 // display name.
+//
+// An empty allowlist denies everyone. This bot hands whoever it talks to a
+// direct line into an agent loop holding the shell tool, so an unset allowlist
+// must fail closed, not open — see the startup warning in Start that names the
+// exact config key an operator has to set.
+//
+// The allowlist is partitioned by entry shape and each half is matched against
+// only the field it can legitimately name — the same rule internal/channels
+// applies on Discord, and for the same reason. Matching every entry against
+// every field let a stranger set their free-form Telegram first name to the
+// operator's numeric user ID and authenticate as them: display names are not
+// unique and are not validated, so an ID-shaped allowlist entry must never be
+// satisfied by a name.
 func (t *TelegramChannel) IsAllowed(userID int64, username, firstName, lastName string) bool {
-	// An empty allowlist denies everyone. This bot hands whoever it talks to a
-	// direct line into an agent loop holding the shell tool, so an unset
-	// allowlist must fail closed, not open — see the startup warning in Start
-	// that names the exact config key an operator has to set.
-	if len(t.allowSet) == 0 {
+	if len(t.allowIDs) == 0 && len(t.allowNames) == 0 {
 		return false
 	}
 
 	// Check by numeric user ID. This is the form the README documents, and
 	// it is the only stable identifier — a user can change their username
 	// and display name at any time.
-	if _, ok := t.allowSet[strconv.FormatInt(userID, 10)]; ok {
+	if _, ok := t.allowIDs[strconv.FormatInt(userID, 10)]; ok {
 		return true
 	}
 
 	// Check by username
 	if username != "" {
-		if _, ok := t.allowSet[normalizeUsername(username)]; ok {
+		if _, ok := t.allowNames[normalizeUsername(username)]; ok {
 			return true
 		}
 	}
@@ -172,7 +193,7 @@ func (t *TelegramChannel) IsAllowed(userID int64, username, firstName, lastName 
 		if lastName != "" {
 			fullName += " " + normalizeUsername(lastName)
 		}
-		if _, ok := t.allowSet[fullName]; ok {
+		if _, ok := t.allowNames[fullName]; ok {
 			return true
 		}
 	}
@@ -201,7 +222,7 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 	// Fail closed on an unset allowlist, but loudly: the operator has a running
 	// bot that rejects every message until they name who may use it. Say
 	// exactly what to set so this is actionable, not a silent lockout.
-	if len(t.allowSet) == 0 {
+	if len(t.allowIDs) == 0 && len(t.allowNames) == 0 {
 		log.Warn("Telegram allowlist is empty — every sender will be rejected. " +
 			"Set channels.telegram.allow_from in ~/.joshbot/config.json (or " +
 			"JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM) to your numeric Telegram " +

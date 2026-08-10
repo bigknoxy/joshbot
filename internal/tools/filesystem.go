@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // ContextKey is a type for context keys.
@@ -181,9 +182,11 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 	}
 
 	// Resolve symlinks before the containment check so a lexically-inside path
-	// that actually points outside the workspace (ws/link -> /etc) is rejected.
-	// The resolved path is what we return and operate on, closing the TOCTOU
-	// gap between checking and using.
+	// that actually points outside the workspace (ws/link -> /etc) is rejected,
+	// including a link whose target does not exist yet. The resolved path is
+	// what we return and operate on, which narrows — but does not close — the
+	// TOCTOU window: the final component can still be swapped for a symlink
+	// between here and the open, which is why writes go through writeNoFollow.
 	resolved, err := resolveSymlinks(cleaned)
 	if err != nil {
 		return "", fmt.Errorf("resolve path %s: %w", path, err)
@@ -287,7 +290,7 @@ func (t *FilesystemTool) writeFile(path string, args map[string]any) ToolResult 
 		return ToolResult{Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := writeNoFollow(path, []byte(content)); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to write file: %w", err)}
 	}
 
@@ -315,11 +318,30 @@ func (t *FilesystemTool) editFile(path string, args map[string]any) ToolResult {
 		return ToolResult{Error: errors.New("search pattern not found in file")}
 	}
 
-	if err := os.WriteFile(path, []byte(modified), 0o644); err != nil {
+	if err := writeNoFollow(path, []byte(modified)); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to write file: %w", err)}
 	}
 
 	return ToolResult{Output: fmt.Sprintf("Successfully edited %s", path)}
+}
+
+// writeNoFollow writes data to path, refusing to follow a symlink at the final
+// component. resolvePath has already checked containment, but the check and the
+// open are two separate syscalls: an attacker who can create files in the
+// workspace (the shell tool can) may replace the checked name with a symlink in
+// between and redirect the write anywhere. O_NOFOLLOW makes the kernel reject
+// that atomically — the escape now costs an ELOOP error instead of a file
+// outside the workspace.
+func writeNoFollow(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, werr := f.Write(data); werr != nil {
+		f.Close()
+		return werr
+	}
+	return f.Close()
 }
 
 // listDir lists directory contents.

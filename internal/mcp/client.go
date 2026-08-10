@@ -65,8 +65,11 @@ type Client struct {
 	nextID  int64
 	pending map[int64]chan *rpcResponse
 
-	// readErr records why the reader goroutine stopped; readers see it once
-	// doneCh is closed.
+	// doneCh belongs to the currently running process, not to the Client: it is
+	// replaced by every successful Connect and closed by the readLoop that was
+	// handed it. A single per-Client channel would stay closed after a failed
+	// handshake, so a later successful Connect would report "server stopped" on
+	// every call forever. Both fields are guarded by pendMu.
 	doneCh  chan struct{}
 	readErr error
 }
@@ -132,7 +135,15 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.stdin = stdin
 	c.started = true
 
-	go c.readLoop(stdout)
+	// A fresh done channel per process: the previous one may already be closed
+	// by an earlier process's readLoop.
+	done := make(chan struct{})
+	c.pendMu.Lock()
+	c.doneCh = done
+	c.readErr = nil
+	c.pendMu.Unlock()
+
+	go c.readLoop(stdout, done)
 
 	if err := c.handshake(ctx); err != nil {
 		// Roll back a failed start so we do not leak the process.
@@ -222,6 +233,13 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 		c.pendMu.Unlock()
 	}
 
+	// Snapshot the current process's done channel: Connect may replace the
+	// field while this call is in flight, and waiting on the successor would
+	// miss this process stopping.
+	c.pendMu.Lock()
+	done := c.doneCh
+	c.pendMu.Unlock()
+
 	req := rpcRequest{JSONRPC: jsonrpcVersion, ID: &id, Method: method, Params: params}
 	if err := c.writeMessage(req); err != nil {
 		cleanup()
@@ -232,9 +250,12 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	case <-ctx.Done():
 		cleanup()
 		return nil, fmt.Errorf("mcp: %s on %q: %w", method, c.server.Name, ctx.Err())
-	case <-c.doneCh:
+	case <-done:
 		cleanup()
-		return nil, fmt.Errorf("mcp: %s on %q: server stopped: %w", method, c.server.Name, c.readErr)
+		c.pendMu.Lock()
+		readErr := c.readErr
+		c.pendMu.Unlock()
+		return nil, fmt.Errorf("mcp: %s on %q: server stopped: %w", method, c.server.Name, readErr)
 	case resp := <-ch:
 		cleanup()
 		if resp.Error != nil {
@@ -269,9 +290,11 @@ func (c *Client) writeMessage(msg rpcRequest) error {
 }
 
 // readLoop reads newline-delimited JSON from the server until EOF or error,
-// dispatching each response to its waiting caller. It closes doneCh on exit so
-// pending and future calls fail fast instead of blocking forever.
-func (c *Client) readLoop(stdout io.Reader) {
+// dispatching each response to its waiting caller. It closes the done channel
+// it was given — never the c.doneCh field, which a later Connect may already
+// have replaced — so pending and future calls on this process fail fast
+// instead of blocking forever.
+func (c *Client) readLoop(stdout io.Reader, done chan struct{}) {
 	reader := bufio.NewReader(stdout)
 	var loopErr error
 	for {
@@ -290,10 +313,14 @@ func (c *Client) readLoop(stdout io.Reader) {
 	}
 
 	c.pendMu.Lock()
-	c.readErr = loopErr
-	// Wake every pending caller; doneCh close below is the broadcast.
+	// Only record the error if this is still the live process; a later Connect
+	// has already reset it for its own readLoop.
+	if c.doneCh == done {
+		c.readErr = loopErr
+	}
+	// Wake every pending caller; the close below is the broadcast.
 	c.pendMu.Unlock()
-	close(c.doneCh)
+	close(done)
 }
 
 // readLine reads one newline-delimited message, refusing anything larger than
@@ -330,11 +357,22 @@ func (c *Client) dispatch(line []byte) {
 	if resp.ID == nil {
 		return // notification
 	}
+	// Claim the pending entry: a hostile or broken server answering the same id
+	// twice must not find the channel a second time. The send is non-blocking
+	// as well, because the waiting caller may already have given up on its ctx
+	// and stopped reading — a blocking send here wedges readLoop forever, and
+	// with it every other in-flight and future call on this client.
 	c.pendMu.Lock()
 	ch, ok := c.pending[*resp.ID]
+	if ok {
+		delete(c.pending, *resp.ID)
+	}
 	c.pendMu.Unlock()
 	if ok {
-		ch <- &resp
+		select {
+		case ch <- &resp:
+		default:
+		}
 	}
 }
 

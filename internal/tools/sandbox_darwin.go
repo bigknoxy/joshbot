@@ -5,9 +5,11 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // macOS OS-level containment, via Seatbelt (sandbox-exec).
@@ -61,15 +63,113 @@ func ApplySandbox(p SandboxPolicy) error {
 // The profile is passed on the command line with -p (no temp file), and the
 // command runs through `sh -c` exactly as the unsandboxed path does. runCommand
 // sets the working directory and points TMPDIR at the workspace scratch dir.
+//
+// Note that -p puts the whole policy — including the absolute workspace path —
+// in the process argv, so any local user can read it with `ps`. The policy is
+// not a secret (it grants nothing to whoever reads it) but the workspace path
+// it discloses is; see SECURITY.md.
 func newSandboxCommand(ctx context.Context, t *ShellTool, cmd, workingDir string) (*exec.Cmd, error) {
 	ws := t.sandboxWorkspace(workingDir)
+
+	// A path that does not exist yet is silently dropped from the profile (see
+	// existingPaths), so a workspace created after startup — or never created
+	// at all — would produce a profile with no write grant and every command
+	// would fail with an obscure "Operation not permitted". Create it instead,
+	// and report the real reason if that is impossible.
+	if ws != "" {
+		if err := os.MkdirAll(ws, 0o700); err != nil {
+			return nil, fmt.Errorf("sandbox workspace %q cannot be created, so no write access could be granted: %w", ws, err)
+		}
+		if tmp := SandboxTempDir(ws); tmp != "" {
+			if err := os.MkdirAll(tmp, 0o700); err != nil {
+				return nil, fmt.Errorf("sandbox scratch dir %q cannot be created: %w", tmp, err)
+			}
+		}
+	}
+
 	policy := DefaultSandboxPolicy(ws)
 	policy.AllowNetwork = t.allowNetwork
+	if cache := goBuildCache(); cache != "" {
+		policy.ReadWritePaths = append(policy.ReadWritePaths, cache)
+	}
 
 	profile := seatbeltProfile(policy)
 
 	return exec.CommandContext(ctx, sandboxExecBinary,
 		"-p", profile, "/bin/sh", "-c", cmd), nil
+}
+
+// goBuildCache returns the Go build cache directory to grant write access to.
+//
+// DefaultSandboxPolicy grants $GOCACHE, but on macOS that variable is almost
+// never exported: the toolchain defaults it to ~/Library/Caches/go-build, which
+// is *not* under ~/.cache and so was granted by nothing. The result was that
+// `go build` under the sandbox failed on a stock machine. Ask the toolchain
+// first and fall back to the documented default; the answer is resolved once
+// per process because it costs a subprocess.
+var goBuildCacheOnce struct {
+	sync.Once
+	path string
+}
+
+func goBuildCache() string {
+	goBuildCacheOnce.Do(func() {
+		if v := os.Getenv("GOCACHE"); v != "" {
+			goBuildCacheOnce.path = v
+			return
+		}
+		if gobin, err := exec.LookPath("go"); err == nil {
+			out, err := exec.Command(gobin, "env", "GOCACHE").Output()
+			if p := strings.TrimSpace(string(out)); err == nil && p != "" {
+				goBuildCacheOnce.path = p
+				return
+			}
+		}
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			goBuildCacheOnce.path = filepath.Join(home, "Library", "Caches", "go-build")
+		}
+	})
+	return goBuildCacheOnce.path
+}
+
+// macMachServices is the allowlist backing `(allow mach-lookup ...)`.
+//
+// Each entry is a bootstrap service name a plain shell/build/test command
+// needs. Every one of these is a read-only or advisory service: none of them
+// will open, write or fetch a resource on the caller's behalf, which is the
+// property that makes allowlisting them safe while a blanket mach-lookup is
+// not. Adding an entry is a security decision — justify it here.
+var macMachServices = []string{
+	// libinfo/Open Directory: getpwuid, getgrgid, user and group lookups. dyld
+	// and the C library call these during process start; without them a
+	// surprising number of tools abort before main().
+	"com.apple.system.opendirectoryd.libinfo",
+	"com.apple.system.opendirectoryd.membership",
+	"com.apple.system.DirectoryService.libinfo_v1",
+	"com.apple.system.DirectoryService.membership_v1",
+	// Unified logging. Many system libraries log unconditionally on startup and
+	// treat a failed lookup as fatal. Write-only sink; nothing is read back.
+	"com.apple.system.logger",
+	"com.apple.logd",
+	"com.apple.diagnosticd",
+	// Notification broadcast (notify(3)). Advisory only.
+	"com.apple.system.notification_center",
+	// Code-signature and trust evaluation, used when the loader validates a
+	// binary and when TLS verifies a certificate chain. These only *evaluate*
+	// material handed to them; they do not fetch files for the caller.
+	"com.apple.trustd",
+	"com.apple.trustd.agent",
+	"com.apple.SecurityServer",
+	"com.apple.SystemConfiguration.configd",
+}
+
+// machLookupRules renders macMachServices as SBPL (global-name "...") clauses.
+func machLookupRules() string {
+	parts := make([]string, 0, len(macMachServices))
+	for _, s := range macMachServices {
+		parts = append(parts, fmt.Sprintf("(global-name \"%s\")", sbplEscape(s)))
+	}
+	return strings.Join(parts, " ")
 }
 
 // macBaseReadPaths are the system directories a shell needs to read to run
@@ -94,13 +194,29 @@ func seatbeltProfile(p SandboxPolicy) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
 	b.WriteString("(deny default)\n")
-	// Non-file operations a normal build/test/git command needs. These do not
-	// touch the filesystem or network, which are the boundaries that matter
-	// here, so granting them broadly keeps the sandbox usable without widening
-	// what a command can read, write or reach.
-	b.WriteString("(allow process*)\n")
+	// Non-file operations a normal build/test/git command needs.
+	//
+	// process-exec and process-fork are what let a shell run programs at all;
+	// process-info* lets a command see its own and its children's state (ps,
+	// wait, getrusage). The broader `(allow process*)` also covered
+	// process-exec-interpreter and codesigning-status changes, which are not
+	// needed here.
+	b.WriteString("(allow process-exec)\n")
+	b.WriteString("(allow process-fork)\n")
+	b.WriteString("(allow process-info*)\n")
 	b.WriteString("(allow sysctl-read)\n")
-	b.WriteString("(allow mach-lookup)\n")
+	// mach-lookup is an ALLOWLIST, deliberately.
+	//
+	// An unrestricted `(allow mach-lookup)` is a known way to hollow out a
+	// Seatbelt profile: XPC services reachable over the bootstrap namespace run
+	// outside this profile and will act on the sandboxed process's behalf, so a
+	// command that cannot open a file directly can often ask a daemon to do it.
+	// That would undercut the deny-by-default file and network claims above.
+	// Only the services a plain build/test/git command genuinely needs are
+	// named here; anything else is refused by `(deny default)`.
+	b.WriteString("(allow mach-lookup " + machLookupRules() + ")\n")
+	// POSIX shared memory / semaphores. Unlike mach-lookup this does not reach
+	// a service that runs outside the profile.
 	b.WriteString("(allow ipc*)\n")
 	b.WriteString("(allow signal)\n")
 	b.WriteString("(allow file-read-metadata)\n")

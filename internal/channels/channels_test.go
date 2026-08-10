@@ -23,8 +23,8 @@ func TestTelegramChannel_NewChannel(t *testing.T) {
 	}
 
 	// Verify allowlist was populated
-	if len(tg.allowSet) != 2 {
-		t.Errorf("expected 2 allowlist entries, got %d", len(tg.allowSet))
+	if got := len(tg.allowIDs) + len(tg.allowNames); got != 2 {
+		t.Errorf("expected 2 allowlist entries, got %d", got)
 	}
 }
 

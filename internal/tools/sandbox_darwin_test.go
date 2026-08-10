@@ -3,6 +3,8 @@
 package tools
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,5 +144,120 @@ func TestSeatbeltProfile_ResolvesSymlinks(t *testing.T) {
 	prof := seatbeltProfile(p)
 	if !strings.Contains(prof, "/private/tmp") {
 		t.Fatalf("expected symlink-resolved /private/tmp in profile, got:\n%s", prof)
+	}
+}
+
+// --- runtime network containment ---
+//
+// TestSeatbeltProfile_DenyNetworkByDefault only proves the rendered SBPL text
+// contains "(deny network*)". A profile Seatbelt rejects, or one where a later
+// clause overrides it, would still contain that substring — so the boundary was
+// asserted against a string and not against the kernel. These tests fetch from
+// a real local HTTP server under a real sandbox-exec, the way every other
+// boundary in this file is proved.
+
+// networkSentinelServer starts a loopback HTTP server serving a unique body.
+func networkSentinelServer(t *testing.T) (url, sentinel string) {
+	t.Helper()
+	sentinel = "NETWORK-SENTINEL-9f3a"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(sentinel))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, sentinel
+}
+
+func requireCurl(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/usr/bin/curl"); err != nil {
+		t.Skip("/usr/bin/curl not present")
+	}
+}
+
+func TestSeatbelt_NetworkDeniedAtRuntime(t *testing.T) {
+	if !SandboxSupported() {
+		t.Skip("sandbox-exec not present")
+	}
+	requireCurl(t)
+	url, sentinel := networkSentinelServer(t)
+
+	tool := newSandboxedShell(t, t.TempDir(), false)
+	out := runShell(t, tool, "/usr/bin/curl -s -m 5 "+url+" || echo FETCH_FAILED")
+	if strings.Contains(out, sentinel) {
+		t.Fatalf("sandbox with AllowNetwork=false fetched a URL; body leaked:\n%s", out)
+	}
+	if !strings.Contains(out, "FETCH_FAILED") && !strings.Contains(out, "ERROR:") {
+		t.Fatalf("expected the fetch to fail, got:\n%s", out)
+	}
+}
+
+func TestSeatbelt_NetworkAllowedAtRuntime(t *testing.T) {
+	if !SandboxSupported() {
+		t.Skip("sandbox-exec not present")
+	}
+	requireCurl(t)
+	url, sentinel := networkSentinelServer(t)
+
+	// The positive control: the same fetch, same command, same sandbox, network
+	// granted. Without this the denial test above would also pass if curl were
+	// broken, the server unreachable, or the profile rejected outright.
+	tool := newSandboxedShell(t, t.TempDir(), true)
+	out := runShell(t, tool, "/usr/bin/curl -s -m 5 "+url)
+	if !strings.Contains(out, sentinel) {
+		t.Fatalf("sandbox with AllowNetwork=true failed to fetch %s, got:\n%s", url, out)
+	}
+}
+
+// $HOME is granted by nothing in the profile (only two bounded cache dirs
+// beneath it), so a file sitting in the home directory must be unreadable even
+// though the command knows exactly where it is.
+func TestSeatbelt_HomeUnreadableAtRuntime(t *testing.T) {
+	if !SandboxSupported() {
+		t.Skip("sandbox-exec not present")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sentinel := filepath.Join(home, ".ssh_config_sentinel")
+	if err := os.WriteFile(sentinel, []byte("HOME-SENTINEL-4c1b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := newSandboxedShell(t, t.TempDir(), false)
+	out := runShell(t, tool, "cat "+sentinel)
+	if strings.Contains(out, "HOME-SENTINEL-4c1b") {
+		t.Fatalf("sandbox read a file in $HOME:\n%s", out)
+	}
+	if !strings.Contains(out, "Operation not permitted") {
+		t.Fatalf("expected the kernel to refuse the read, got:\n%s", out)
+	}
+}
+
+// A workspace that does not exist yet must not silently produce a profile with
+// no write grant; newSandboxCommand creates it (see the pathRules note there).
+func TestSeatbelt_MissingWorkspaceIsCreatedNotDropped(t *testing.T) {
+	if !SandboxSupported() {
+		t.Skip("sandbox-exec not present")
+	}
+	ws := filepath.Join(t.TempDir(), "created", "later")
+	tool := newSandboxedShell(t, ws, false)
+
+	out := runShell(t, tool, "echo ok > w.txt && cat w.txt")
+	if !strings.Contains(out, "ok") {
+		t.Fatalf("a workspace created at command time must be writable, got:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "w.txt")); err != nil {
+		t.Fatalf("write did not land in the workspace: %v", err)
+	}
+}
+
+// The mach-lookup allowlist must stay an allowlist: a blanket grant reaches XPC
+// services that act outside the profile.
+func TestSeatbeltProfile_MachLookupIsAllowlisted(t *testing.T) {
+	prof := seatbeltProfile(DefaultSandboxPolicy(t.TempDir()))
+	if strings.Contains(prof, "(allow mach-lookup)\n") {
+		t.Fatal("profile grants unrestricted mach-lookup")
+	}
+	if !strings.Contains(prof, `(global-name "com.apple.system.opendirectoryd.libinfo")`) {
+		t.Fatalf("expected an allowlisted mach service, got:\n%s", prof)
 	}
 }

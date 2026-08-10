@@ -56,10 +56,64 @@ func NewShellTool(timeout time.Duration, workspace string, restrict bool, allowL
 // where neither Landlock nor Seatbelt can back it up, an allowlist is the only
 // boundary that is not trivially bypassable. Operators who need more configure
 // tools.shell_allow_list explicitly, or run on a platform with a sandbox.
+// Commands deliberately absent, each of which was on this list until it was
+// noticed that it launches a program of the caller's choosing: `find` (-exec sh
+// -c), `go` (go run, and go test's build directives), and `git` (git -c
+// core.pager='sh -c …', git -c alias.x='!sh …'). An operator who needs them can
+// still name them in tools.shell_allow_list, having chosen to.
 var defaultUnsandboxedAllowlist = []string{
-	"ls", "cat", "pwd", "echo", "head", "tail", "wc", "grep", "rg", "find",
+	"ls", "cat", "pwd", "echo", "head", "tail", "wc", "grep", "rg",
 	"sort", "uniq", "diff", "stat", "file", "date", "whoami", "uname",
-	"hostname", "which", "tree", "du", "df", "git", "go", "gofmt",
+	"hostname", "which", "tree", "du", "df", "gofmt",
+}
+
+// checkAllowList screens a command against the allowlist, returning an error
+// when it may not run. An empty allowlist means no allowlist and permits
+// everything (the deny list and, where available, the sandbox still apply).
+//
+// Two rules, in order. The command is passed to `sh -c` unchanged, so matching
+// only the first word is not enough: `git --version; sh -c 'echo pwned'` and
+// `echo hi; id` both begin with an allowed word and both run a second program
+// the operator never allowed. Any construct that can introduce a new command
+// word is therefore refused outright while an allowlist is in force. That is
+// blunt — `ls | wc -l` is refused too — but this list is the sole boundary on
+// platforms with no Landlock or Seatbelt, and a boundary that has to parse
+// shell grammar correctly to hold is not a boundary.
+func (t *ShellTool) checkAllowList(cmd string) error {
+	if len(t.allowList) == 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(cmd)
+
+	if construct := commandSeparator(trimmed); construct != "" {
+		return fmt.Errorf("command not allowed: %q chains a second command, "+
+			"which is refused while an allowlist is in force; run one command per call", construct)
+	}
+
+	for _, allowed := range t.allowList {
+		if trimmed == allowed || strings.HasPrefix(trimmed, allowed+" ") {
+			return nil
+		}
+	}
+	return fmt.Errorf("command not in allowlist: %s", trimmed)
+}
+
+// commandSeparators are the shell constructs that start a new command word.
+// `$(`, backtick and the process-substitution forms are included because the
+// shell runs their bodies too.
+var commandSeparators = []string{"$(", "<(", ">(", ";", "&", "|", "\n", "`"}
+
+// commandSeparator returns the first such construct found in cmd, or "" if
+// there is none. It does not attempt to exempt quoted occurrences: `echo ";"`
+// is refused, which costs a caller nothing and keeps the check from depending
+// on a quoting parser matching the shell's exactly.
+func commandSeparator(cmd string) string {
+	for _, sep := range commandSeparators {
+		if strings.Contains(cmd, sep) {
+			return sep
+		}
+	}
+	return ""
 }
 
 // NewShellToolWithMaxOutput creates a new ShellTool with custom max output chars.
@@ -142,18 +196,8 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	}
 
 	// Check allowlist first - if allowlist is set, only allow listed commands
-	if len(t.allowList) > 0 {
-		allowed := false
-		cmdTrimmed := strings.TrimSpace(cmd)
-		for _, allowedCmd := range t.allowList {
-			if cmdTrimmed == allowedCmd || strings.HasPrefix(cmdTrimmed, allowedCmd+" ") {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return ToolResult{Error: fmt.Errorf("command not in allowlist: %s", cmdTrimmed)}
-		}
+	if err := t.checkAllowList(cmd); err != nil {
+		return ToolResult{Error: err}
 	}
 
 	// Check for dangerous patterns
@@ -417,21 +461,10 @@ func (t *ShellTool) ExecuteAsync(ctx context.Context, args map[string]any, callb
 		return ToolResult{Error: err}
 	}
 
-	// Check allowlist
-	if len(t.allowList) > 0 {
-		allowed := false
-		cmdTrimmed := strings.TrimSpace(cmd)
-		for _, allowedCmd := range t.allowList {
-			if cmdTrimmed == allowedCmd || strings.HasPrefix(cmdTrimmed, allowedCmd+" ") {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			err := fmt.Errorf("command not in allowlist: %s", cmdTrimmed)
-			callback(AsyncResult{Error: err})
-			return ToolResult{Error: err}
-		}
+	// Check allowlist — identical screening to Execute, via the same helper.
+	if err := t.checkAllowList(cmd); err != nil {
+		callback(AsyncResult{Error: err})
+		return ToolResult{Error: err}
 	}
 
 	// Check deny list

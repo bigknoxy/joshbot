@@ -37,6 +37,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/heartbeat"
 	"github.com/bigknoxy/joshbot/internal/learning"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/mcp"
 	"github.com/bigknoxy/joshbot/internal/memory"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/redact"
@@ -801,6 +802,13 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
 	)
 
+	// Connect any configured MCP servers and register their tools. Fail-soft by
+	// design: a server that will not start is logged and skipped, never a
+	// startup abort — MCP is additive and must not be able to break the agent.
+	// The spawned processes are owned by a package-level manager reaped by
+	// closeMCPServers, which every long-lived entry point defers.
+	registerMCPServers(context.Background(), toolsRegistry, cfg.MCP)
+
 	// Create function to reload providers from config (for config tool hot-reload)
 	reloadProviders := func() error {
 		multiProvider.Clear()
@@ -939,6 +947,46 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	return msgBus, multiProvider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
 }
 
+// mcpMu guards mcpManager, which holds the MCP server processes spawned during
+// setup. It is a package var rather than a seventh return value from
+// setupComponents because the manager is process-scoped: exactly one setup runs
+// per invocation, and the only thing a caller ever does with it is reap it on
+// the way out.
+var (
+	mcpMu      sync.Mutex
+	mcpManager *mcp.Manager
+)
+
+// registerMCPServers connects the enabled MCP servers and registers their tools
+// on reg. It never returns an error: MCP is additive, so a server that fails to
+// start is logged and skipped inside RegisterMCPTools rather than aborting
+// startup. The resulting manager is stashed for closeMCPServers.
+func registerMCPServers(ctx context.Context, reg *tools.Registry, cfg config.MCPConfig) {
+	mgr := tools.RegisterMCPTools(ctx, reg, cfg)
+	if mgr == nil {
+		return
+	}
+	mcpMu.Lock()
+	prev := mcpManager
+	mcpManager = mgr
+	mcpMu.Unlock()
+	if prev != nil {
+		prev.Close()
+	}
+}
+
+// closeMCPServers reaps every spawned MCP server process. Safe to call when no
+// servers were configured, and safe to call twice.
+func closeMCPServers() {
+	mcpMu.Lock()
+	mgr := mcpManager
+	mcpManager = nil
+	mcpMu.Unlock()
+	if mgr != nil {
+		mgr.Close()
+	}
+}
+
 // defaultReminderChannel picks where a scheduled reminder goes when the agent
 // does not name a channel. A reminder delivered to a CLI session nobody is
 // sitting at is lost, so a configured Telegram channel wins.
@@ -1064,6 +1112,7 @@ func runAgent(c *cli.Context) error {
 
 	// Setup components
 	_, _, _, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
+	defer closeMCPServers()
 	if err != nil {
 		// HARD RULE: in JSON modes a setup failure must still be well-formed —
 		// a machine-readable error on stderr, not a plain-text line.
@@ -2273,6 +2322,7 @@ func runGateway(c *cli.Context) error {
 
 	// Setup components
 	msgBus, _, _, agentInstance, _, sender, err := setupComponents(cfg)
+	defer closeMCPServers()
 	if err != nil {
 		return err
 	}

@@ -114,9 +114,10 @@ func TestOnboardForceNoProviderFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "did not configure any provider") {
 		t.Fatalf("error missing actionable guidance: %v", err)
 	}
-	// Config must not have been written.
-	if _, statErr := os.Stat(filepath.Join(config.DefaultHome, "config.json")); statErr == nil {
-		t.Error("config.json was written despite no provider configured")
+	// The scaffold is still written so a caller that supplies a credential
+	// separately gets a usable tree; only the exit status reports the failure.
+	if _, statErr := os.Stat(filepath.Join(config.DefaultHome, "config.json")); statErr != nil {
+		t.Errorf("config.json should still be written: %v", statErr)
 	}
 }
 

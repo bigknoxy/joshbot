@@ -24,6 +24,7 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"github.com/muesli/termenv"
+	"golang.org/x/term"
 
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
@@ -38,6 +39,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/memory"
 	"github.com/bigknoxy/joshbot/internal/providers"
+	"github.com/bigknoxy/joshbot/internal/redact"
 	"github.com/bigknoxy/joshbot/internal/service"
 	"github.com/bigknoxy/joshbot/internal/session"
 	"github.com/bigknoxy/joshbot/internal/skills"
@@ -330,6 +332,7 @@ func runApp() error {
 					},
 				},
 			},
+			sessionsCommand(),
 			{
 				Name:    "configure",
 				Aliases: []string{"config"},
@@ -1119,7 +1122,7 @@ func runAgent(c *cli.Context) error {
 	done := make(chan struct{})
 	setupGracefulShutdown(ctx, cancel, done)
 
-	if err := runAgentLoop(ctx, cancel, done, os.Stdin, os.Stdout, agentInstance, messageSender); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, os.Stdin, os.Stdout, agentInstance, messageSender, cfg.Agents.Defaults.Streaming); err != nil {
 		return err
 	}
 	return nil
@@ -1138,6 +1141,18 @@ type agentProcessor interface {
 type progressCapable interface {
 	SetProgressCallback(agent.ProgressFunc)
 }
+
+// modelReporter is implemented by the real *agent.Agent so the TUI line editor
+// can show the session's current model in the prompt. It is checked as an
+// optional capability, so mocks without CurrentModel still work.
+type modelReporter interface {
+	CurrentModel() string
+}
+
+// cliCommandNames are the slash commands offered by the TUI editor's Tab
+// completion. They mirror what the agent's /help lists for CLI sessions plus
+// the CLI-only commands the buffered prompt still supports (/clear, /history).
+var cliCommandNames = []string{"start", "new", "status", "model", "personality", "compact", "help", "clear", "history", "exit"}
 
 // isTTY reports whether w is connected to an interactive terminal. It is a
 // variable (not a plain function) so tests can inject deterministic
@@ -1169,6 +1184,8 @@ type cliProgress struct {
 	out        io.Writer
 	spinCancel chan struct{}
 	spinDone   chan struct{}
+	// streamed reports whether the stream sink delivered any text this turn.
+	streamed bool
 }
 
 func newCLIProgress(out io.Writer) *cliProgress {
@@ -1199,6 +1216,54 @@ func (p *cliProgress) onToolEvent(e agent.ToolProgressEvent) {
 	}
 }
 
+// onStreamEvent is the agent.StreamSink wired into the Agent when streaming
+// is enabled. It writes incremental text deltas directly to the output,
+// stopping the spinner on the first delta so the spinner's \r does not fight
+// the streamed text.
+func (p *cliProgress) onStreamEvent(e agent.StreamEvent) {
+	// Stop the spinner on the first delta — once text starts flowing, the
+	// spinner is wrong (it implies "still thinking" over partial output).
+	//
+	// Waiting for the goroutine must happen outside p.mu. The spinner takes
+	// that same lock to draw a frame, so holding it across `<-spinDone`
+	// deadlocked whenever a tick landed in the window: the spinner blocked in
+	// Lock and so never returned to its select to see spinCancel. That is why
+	// stopSpinner does the close-and-wait outside the lock too.
+	p.stopSpinner()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.streamed = true
+	fmt.Fprint(p.out, e.Delta)
+}
+
+// takeSpinner detaches the running spinner's channels under the lock, so that
+// exactly one caller ever closes spinCancel.
+func (p *cliProgress) takeSpinner() (chan struct{}, chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cancel, done := p.spinCancel, p.spinDone
+	p.spinCancel, p.spinDone = nil, nil
+	return cancel, done
+}
+
+// beginTurn resets the per-turn state. `streamed` decides whether the caller
+// still has to print the response, so a stale value from the previous turn
+// would swallow this turn's answer.
+func (p *cliProgress) beginTurn() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.streamed = false
+}
+
+// didStream reports whether any text reached the terminal through the stream
+// sink during this turn.
+func (p *cliProgress) didStream() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.streamed
+}
+
 var spinnerFrames = [...]string{"|", "/", "-", "\\"}
 
 // startSpinner begins printing an elapsed-time spinner on a single line,
@@ -1206,17 +1271,20 @@ var spinnerFrames = [...]string{"|", "/", "-", "\\"}
 // followed by exactly one stopSpinner call; the spinner goroutine exits as
 // soon as stopSpinner signals it, so it never leaks or blocks shutdown.
 func (p *cliProgress) startSpinner() {
+	p.mu.Lock()
 	p.spinCancel = make(chan struct{})
 	p.spinDone = make(chan struct{})
+	cancel, done := p.spinCancel, p.spinDone
+	p.mu.Unlock()
 	go func() {
-		defer close(p.spinDone)
+		defer close(done)
 		ticker := time.NewTicker(150 * time.Millisecond)
 		defer ticker.Stop()
 		start := time.Now()
 		i := 0
 		for {
 			select {
-			case <-p.spinCancel:
+			case <-cancel:
 				return
 			case <-ticker.C:
 				p.mu.Lock()
@@ -1231,18 +1299,18 @@ func (p *cliProgress) startSpinner() {
 // stopSpinner cancels the spinner goroutine, waits for it to exit, and
 // clears the spinner line so subsequent output starts on a clean line.
 func (p *cliProgress) stopSpinner() {
-	if p.spinCancel == nil {
+	cancel, done := p.takeSpinner()
+	if cancel == nil {
 		return
 	}
-	close(p.spinCancel)
-	<-p.spinDone
-	p.spinCancel = nil
+	close(cancel)
+	<-done
 	p.mu.Lock()
 	fmt.Fprint(p.out, clearLine)
 	p.mu.Unlock()
 }
 
-func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor, messageSender *tools.BusMessageSender) error {
+func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor, messageSender *tools.BusMessageSender, streaming bool) error {
 	// Set chat ID for CLI mode so message tools can send messages proactively
 	if messageSender != nil {
 		messageSender.SetChatID("cli", "cli_user")
@@ -1261,57 +1329,111 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		}
 	}
 
-	reader := bufio.NewReader(input)
 	fmt.Fprintln(output, "joshbot agent mode. Type 'exit' to quit.")
+
+	// The line editor replaces the plain "> " prompt only when input is a real
+	// terminal. Tests inject isTTY but pass bytes.Buffer / blockingReader as
+	// input, which never satisfy the *os.File assertion, so this branch is not
+	// taken in unit tests and the buffered path below is exercised instead.
+	var editor *lineEditor
+	var oldTermState *term.State
+	if f, ok := input.(*os.File); ok && isTTY(output) && isatty.IsTerminal(f.Fd()) {
+		editor = newLineEditor(output, nil, cliCommandNames)
+		editor.reader = newOSKeyReader(int(f.Fd()))
+		w, h := terminalSize(int(f.Fd()))
+		editor.width, editor.height = w, h
+		if mr, ok := agentInstance.(modelReporter); ok {
+			editor.setPromptFn(func() string {
+				return buildEditorPrompt(mr.CurrentModel())
+			})
+		}
+		var err error
+		oldTermState, err = makeRaw(int(f.Fd()))
+		if err != nil {
+			return fmt.Errorf("failed to enter terminal raw mode: %w", err)
+		}
+		defer restoreTerminal(int(f.Fd()), oldTermState)
+		defer editor.close()
+	}
 
 	// Reading happens on its own goroutine so a blocked read cannot make the
 	// loop deaf to shutdown. Checking `done` only between reads meant a signal
 	// arriving while sitting at the prompt was never observed, and the process
-	// could only be killed with SIGKILL (issue #104).
+	// could only be killed with SIGKILL (issue #104). The editor path reads
+	// through ReadLine, which selects on ctx.Done() the same way, and must NOT
+	// share the descriptor with this bufio goroutine — two readers on the same
+	// terminal would steal each other's keystrokes — so it is only created in
+	// the buffered (non-editor) path.
 	type readResult struct {
 		line string
 		err  error
 	}
-	lines := make(chan readResult)
-	go func() {
-		defer close(lines)
-		for {
-			line, err := reader.ReadString('\n')
-			select {
-			case lines <- readResult{line: line, err: err}:
-			case <-ctx.Done():
-				return
+	var lines <-chan readResult
+	if editor == nil {
+		reader := bufio.NewReader(input)
+		ch := make(chan readResult)
+		lines = ch
+		go func() {
+			defer close(ch)
+			for {
+				line, err := reader.ReadString('\n')
+				select {
+				case ch <- readResult{line: line, err: err}:
+				case <-ctx.Done():
+					return
+				}
+				if err != nil {
+					return
+				}
 			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+		}()
+	}
 
 	for {
-		fmt.Fprint(output, "> ")
-
 		var line string
 		var readErr error
-		select {
-		case <-done:
-			log.Info("Agent shutdown complete")
-			return nil
-		case <-ctx.Done():
-			log.Info("Agent shutdown complete")
-			return nil
-		case res, ok := <-lines:
-			if !ok {
-				// The reader goroutine is finished; nothing more can arrive.
+
+		if editor != nil {
+			line, readErr = editor.ReadLine(ctx)
+			if readErr == io.EOF {
 				cancel()
 				return nil
 			}
-			line, readErr = res.line, res.err
+			if readErr != nil {
+				if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+					log.Info("Agent shutdown complete")
+					return nil
+				}
+				return fmt.Errorf("failed to read input: %w", readErr)
+			}
+		} else {
+			fmt.Fprint(output, "> ")
+
+			select {
+			case <-done:
+				log.Info("Agent shutdown complete")
+				return nil
+			case <-ctx.Done():
+				log.Info("Agent shutdown complete")
+				return nil
+			case res, ok := <-lines:
+				if !ok {
+					// The reader goroutine is finished; nothing more can arrive.
+					cancel()
+					return nil
+				}
+				line, readErr = res.line, res.err
+			}
+
+			if readErr != nil && readErr != io.EOF {
+				return fmt.Errorf("failed to read input: %w", readErr)
+			}
+			if readErr == io.EOF && strings.TrimSpace(line) == "" {
+				cancel()
+				return nil
+			}
 		}
 
-		if readErr != nil && readErr != io.EOF {
-			return fmt.Errorf("failed to read input: %w", readErr)
-		}
 		inputLine := strings.TrimSpace(line)
 		if inputLine == "" {
 			if readErr == io.EOF {
@@ -1337,15 +1459,23 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		}
 
 		if progress != nil {
+			progress.beginTurn()
 			progress.startSpinner()
 		}
 		// Attach the per-request progress sink to the context so the real
 		// *agent.Agent receives it via progressFromContext (concurrency-safe,
 		// no shared mutable state on Agent). Mocks that still implement
 		// progressCapable receive it via SetProgressCallback above.
+		//
+		// When streaming is enabled and output is a TTY, also attach a
+		// stream sink so text deltas are written incrementally. The spinner
+		// is stopped on the first delta by onStreamEvent.
 		processCtx := ctx
 		if progress != nil {
 			processCtx = agent.WithSink(ctx, progress.onToolEvent)
+		}
+		if streaming && progress != nil {
+			processCtx = agent.WithStreamSink(processCtx, progress.onStreamEvent)
 		}
 		response, procErr := agentInstance.Process(processCtx, msg)
 		if progress != nil {
@@ -1357,7 +1487,18 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 			continue
 		}
 
-		fmt.Fprintf(output, "\n%s\n\n", strings.TrimSpace(response))
+		// Print the response unless the stream sink already delivered it.
+		//
+		// The condition is "text was actually streamed this turn", not
+		// "streaming is configured": several Process paths return without
+		// streaming anything — a slash command, a session-load failure, the
+		// timeout message, a stream that failed to open — and testing the
+		// config instead printed two blank lines and nothing else.
+		if progress != nil && progress.didStream() {
+			fmt.Fprint(output, "\n\n")
+		} else {
+			fmt.Fprintf(output, "\n%s\n\n", strings.TrimSpace(response))
+		}
 
 		if readErr == io.EOF {
 			cancel()
@@ -1627,13 +1768,17 @@ func runUpdate(c *cli.Context) error {
 		return fmt.Errorf("could not determine executable path: %w", err)
 	}
 
-	// Check if running from source
-	if strings.Contains(exePath, "go-build") || strings.Contains(exePath, "/tmp/") {
-		fmt.Println()
-		fmt.Println("Error: Cannot update when running from source with 'go run'.")
-		fmt.Println("To update, install joshbot first (e.g., 'go install' or build a binary),")
-		fmt.Println("then run 'joshbot update' from the installed binary.")
-		return nil
+	// Check if running from source.
+	//
+	// Match only the go-build cache, which is where `go run` puts its
+	// throwaway binary. An earlier version also rejected any path containing
+	// "/tmp/", which is not a property of `go run` at all: it made a joshbot
+	// installed anywhere under /tmp permanently unable to update, and told the
+	// user the reason was `go run`.
+	if strings.Contains(exePath, "go-build") {
+		return cli.Exit("Cannot update when running from source with 'go run'.\n"+
+			"Install joshbot first (e.g. 'go install', or the one-line installer),\n"+
+			"then run 'joshbot update' from the installed binary.", 1)
 	}
 
 	// Download to a temp file
@@ -2299,7 +2444,7 @@ func runOnboard(c *cli.Context) error {
 			if err != nil {
 				return fmt.Errorf("failed to backup existing installation: %w", err)
 			}
-			fmt.Printf("Backed up to: %s\n", backupPath)
+			fmt.Printf("Backed up to: %s\n", redact.HomePath(backupPath))
 			fmt.Println()
 		} else if keepData {
 			// --keep-data: skip file creation, just run prompts
@@ -2314,11 +2459,11 @@ func runOnboard(c *cli.Context) error {
 			fmt.Println()
 
 			// Display existing files with status
-			fmt.Printf("  Config:     %s %s\n", filepath.Join(homeDir, "config.json"), statusBool(configExists))
-			fmt.Printf("  Workspace:  %s %s\n", filepath.Join(homeDir, "workspace/"), statusBool(workspaceExists))
+			fmt.Printf("  Config:     %s %s\n", redact.HomePath(filepath.Join(homeDir, "config.json")), statusBool(configExists))
+			fmt.Printf("  Workspace:  %s %s\n", redact.HomePath(filepath.Join(homeDir, "workspace/")), statusBool(workspaceExists))
 			memoryPath := filepath.Join(homeDir, "workspace", "memory")
 			if _, err := os.Stat(memoryPath); err == nil {
-				fmt.Printf("  Memory:     %s %s\n", memoryPath, statusBool(true))
+				fmt.Printf("  Memory:     %s %s\n", redact.HomePath(memoryPath), statusBool(true))
 			}
 			fmt.Println()
 
@@ -2346,7 +2491,7 @@ func runOnboard(c *cli.Context) error {
 				if err != nil {
 					return fmt.Errorf("failed to backup existing installation: %w", err)
 				}
-				fmt.Printf("Backed up to: %s\n", backupPath)
+				fmt.Printf("Backed up to: %s\n", redact.HomePath(backupPath))
 				fmt.Println()
 			}
 		}
@@ -2380,13 +2525,15 @@ func runOnboard(c *cli.Context) error {
 			provider = "openrouter"
 		}
 		// API key precedence: --api-key flag, then env, then existing config.
-		// --force must never block on stdin, so promptProviderAPIKey is not used.
+		// --force must never block on stdin, so promptProviderAPIKey is not used:
+		// it reads stdin, so with a terminal attached it hung forever, and with
+		// stdin closed it silently saved a config with no provider configured.
 		apiKey = strings.TrimSpace(apiKeyFlag)
 		if apiKey == "" {
 			apiKey = providerAPIKeyFromEnv(provider)
 		}
 		if apiKey == "" && existingCfg != nil {
-			if p, ok := existingCfg.Providers[provider]; ok {
+			if p, ok := existingCfg.Providers[provider]; ok && p.APIKey != "" {
 				apiKey = p.APIKey
 			}
 		}
@@ -2452,13 +2599,6 @@ func runOnboard(c *cli.Context) error {
 	// "openrouter" entry with no key, so length alone is not a usable signal;
 	// providerConfigured tracks whether a real credential (or a keyless local
 	// provider like ollama) was actually wired up.
-	if force && !providerConfigured {
-		return fmt.Errorf("onboard --force did not configure any provider: pass --provider <name> --api-key <key>, "+
-			"or set JOSHBOT_PROVIDERS__%s__API_KEY (supported: %s)",
-			strings.ToUpper(strings.ReplaceAll(provider, "-", "_")),
-			strings.Join(configure.SupportedProviders(), ", "))
-	}
-
 	cfg.Agents.Defaults.Model = model
 	if userName != "" {
 		cfg.User.Name = userName
@@ -2516,9 +2656,22 @@ func runOnboard(c *cli.Context) error {
 		}
 	}
 
-	// Print completion banner
 	configPath := filepath.Join(homeDir, "config.json")
 	wsDir := cfg.WorkspaceDir()
+
+	// The config and workspace scaffold above are written unconditionally so a
+	// caller that intends to supply a credential separately still gets a usable
+	// tree. But a --force run with no usable provider must not print "Setup
+	// complete!" and exit 0 — that is the loop reported in issue #142, where the
+	// next `joshbot agent` just tells the user to onboard again.
+	if force && !providerConfigured {
+		return fmt.Errorf("onboard --force did not configure any provider: pass --provider <name> --api-key <key>, "+
+			"or set JOSHBOT_PROVIDERS__%s__API_KEY (supported: %s)",
+			strings.ToUpper(strings.ReplaceAll(provider, "-", "_")),
+			strings.Join(configure.SupportedProviders(), ", "))
+	}
+
+	// Print completion banner
 
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════╗")
@@ -2526,8 +2679,11 @@ func runOnboard(c *cli.Context) error {
 	fmt.Println("╚═══════════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Println("  Config:")
-	fmt.Printf("    %s\n", configPath)
-	fmt.Printf("    %s\n", wsDir)
+	// Same treatment as `joshbot status`: the home directory carries the
+	// account name, and the setup summary is the first output a new user
+	// pastes into an issue when something did not work.
+	fmt.Printf("    %s\n", redact.HomePath(configPath))
+	fmt.Printf("    %s\n", redact.HomePath(wsDir))
 	fmt.Println()
 	fmt.Println("  What's next?")
 	fmt.Println()
@@ -2691,8 +2847,10 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, 
 	}
 
 	// Show existing key if available
+	var currentKey string
 	if existingCfg != nil {
 		if p, ok := existingCfg.Providers[provider]; ok && p.APIKey != "" {
+			currentKey = p.APIKey
 			fmt.Printf("Current API key: %s\n", configure.MaskAPIKey(p.APIKey))
 			fmt.Print("Enter new API key (or press Enter to keep current): ")
 		} else {
@@ -2704,7 +2862,18 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, 
 
 	var apiKey string
 	fmt.Scanln(&apiKey)
-	return strings.TrimSpace(apiKey), nil
+	apiKey = strings.TrimSpace(apiKey)
+
+	// Pressing Enter means "keep the current key", not "clear the provider".
+	// The caller in runOnboard treats an empty key as "no provider configured"
+	// and falls back to the default (disabled) openrouter entry, silently
+	// dropping the provider that was already working — the field report that
+	// introduced this fix: reconfiguring an existing NVIDIA install with
+	// Enter-to-keep saved a config with no enabled provider at all.
+	if apiKey == "" && currentKey != "" {
+		apiKey = currentKey
+	}
+	return apiKey, nil
 }
 
 // selectPersonality prompts the user to choose a personality and returns the choice.
@@ -2928,61 +3097,139 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 	fmt.Println("Enter your bot token when ready.")
 	fmt.Println("(Type 'cancel' to abort)")
 	fmt.Println()
-	fmt.Printf("Bot token: ")
 
-	var token string
-	fmt.Scanln(&token)
+	// The token is entered once; if validation fails the user gets one more
+	// chance to correct a typo before we fall back to preserving a working
+	// existing token (or disabling Telegram on a fresh install). The network
+	// itself is already retried inside ValidateToken, so this loop is about
+	// giving the human a second attempt, not about masking a dead network.
+	for prompt := 1; prompt <= 2; prompt++ {
+		fmt.Printf("Bot token: ")
 
-	if token == "cancel" || token == "" {
-		fmt.Println("\nTelegram setup cancelled.")
-		return nil
-	}
+		var token string
+		fmt.Scanln(&token)
 
-	// Sanitize token: strip control characters and escape sequences
-	token = strings.TrimSpace(sanitizeToken(token))
-
-	fmt.Println("\nValidating token...")
-	if err := channels.ValidateToken(token); err != nil {
-		fmt.Printf("Token validation failed: %v\n", err)
-		fmt.Println("Please check your token and try again.")
-		return nil
-	}
-	fmt.Println("Token validated successfully!")
-
-	fmt.Println("\nAllowed usernames (optional)")
-	fmt.Println("Restrict bot access to specific Telegram usernames.")
-	fmt.Println("Leave empty to allow anyone to use the bot.")
-	fmt.Println()
-
-	// Show existing allow from as default
-	defaultUsernames := strings.Join(existingAllowFrom, ", ")
-	fmt.Printf("Usernames (comma-separated) [current: %s]: ", defaultUsernames)
-
-	var usernamesRaw string
-	fmt.Scanln(&usernamesRaw)
-
-	var allowFrom []string
-	// Use existing if no new input
-	if usernamesRaw == "" && len(existingAllowFrom) > 0 {
-		allowFrom = existingAllowFrom
-	} else if usernamesRaw != "" {
-		for _, u := range strings.Split(usernamesRaw, ",") {
-			u = strings.TrimSpace(u)
-			if u != "" {
-				if !strings.HasPrefix(u, "@") {
-					u = "@" + u
+		if token == "cancel" || token == "" {
+			if existingEnabled && existingToken != "" {
+				// Aborting a token change must not disconnect a working bot:
+				// returning nil here would make runOnboard save the config with
+				// Telegram disabled.
+				fmt.Println("\nTelegram setup cancelled. Keeping the existing Telegram configuration.")
+				return &config.TelegramConfig{
+					Enabled:   true,
+					Token:     existingToken,
+					AllowFrom: existingAllowFrom,
 				}
-				allowFrom = append(allowFrom, u)
+			}
+			fmt.Println("\nTelegram setup cancelled.")
+			return nil
+		}
+
+		// Sanitize token: strip control characters and escape sequences
+		token = strings.TrimSpace(sanitizeToken(token))
+
+		fmt.Println("\nValidating token...")
+		if err := validateTelegramToken(token); err != nil {
+			fmt.Printf("Token validation failed: %v\n", err)
+			if channels.IsNetworkError(err) {
+				fmt.Println("This looks like a network problem — joshbot could not reach the Telegram API.")
+				fmt.Println("Check your internet connection and proxy settings.")
+			} else {
+				fmt.Println("The token was rejected by Telegram, or is not in the expected <numeric-id>:<secret> format.")
+				fmt.Println("Double-check it was copied in full.")
+			}
+			if prompt == 2 {
+				return telegramValidationFailed(existingEnabled, existingToken, existingAllowFrom)
+			}
+			fmt.Println("Please check your token and try again.")
+			fmt.Println()
+			continue
+		}
+		fmt.Println("Token validated successfully!")
+
+		fmt.Println("\nAllowed usernames (optional)")
+		fmt.Println("Restrict bot access to specific Telegram usernames.")
+		fmt.Println("Leave empty to allow anyone to use the bot.")
+		fmt.Println()
+
+		// Show existing allow from as default
+		defaultUsernames := strings.Join(existingAllowFrom, ", ")
+		fmt.Printf("Usernames (comma-separated) [current: %s]: ", defaultUsernames)
+
+		usernamesRaw := readLine()
+
+		var allowFrom []string
+		// Use existing if no new input
+		if usernamesRaw == "" && len(existingAllowFrom) > 0 {
+			allowFrom = existingAllowFrom
+		} else if usernamesRaw != "" {
+			for _, u := range strings.Split(usernamesRaw, ",") {
+				u = strings.TrimSpace(u)
+				if u != "" {
+					if !strings.HasPrefix(u, "@") {
+						u = "@" + u
+					}
+					allowFrom = append(allowFrom, u)
+				}
 			}
 		}
+
+		fmt.Println("\nTelegram configured!")
+
+		return &config.TelegramConfig{
+			Enabled:   true,
+			Token:     token,
+			AllowFrom: allowFrom,
+		}
 	}
+	return telegramValidationFailed(existingEnabled, existingToken, existingAllowFrom)
+}
 
-	fmt.Println("\nTelegram configured!")
+// validateTelegramToken is the network boundary for setupTelegram's token
+// validation. It is a package var so tests can stub it and exercise the wizard
+// flow without touching the real Telegram API.
+var validateTelegramToken = channels.ValidateToken
 
+// readLine reads a single line from stdin, spaces included. fmt.Scanln stops at
+// the first space, which truncates a comma-separated username list typed as
+// "@alice, bob" down to just "@alice,". It reads one byte at a time so it never
+// buffers ahead into input a later prompt is waiting for.
+func readLine() string {
+	var sb strings.Builder
+	buf := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if n == 0 || err != nil {
+			break
+		}
+		if buf[0] == '\n' {
+			break
+		}
+		sb.WriteByte(buf[0])
+	}
+	return strings.TrimRight(sb.String(), "\r")
+}
+
+// telegramValidationFailed decides what to do when a freshly-entered token
+// could not be validated after both attempts. An existing working token is
+// preserved — a transient network failure must not silently disconnect a live
+// bot, which is what happened when the old code returned nil and the config
+// was saved with Telegram disabled. On a fresh install Telegram is left
+// disabled with a clear message instead.
+func telegramValidationFailed(existingEnabled bool, existingToken string, existingAllowFrom []string) *config.TelegramConfig {
+	if existingEnabled && existingToken != "" {
+		fmt.Println("\nKeeping the existing Telegram configuration: the new token could not be validated.")
+		return &config.TelegramConfig{
+			Enabled:   true,
+			Token:     existingToken,
+			AllowFrom: existingAllowFrom,
+		}
+	}
+	fmt.Println("\nTelegram setup skipped: no token could be validated.")
 	return &config.TelegramConfig{
-		Enabled:   true,
-		Token:     token,
-		AllowFrom: allowFrom,
+		Enabled:   false,
+		Token:     "",
+		AllowFrom: []string{},
 	}
 }
 
@@ -3201,6 +3448,12 @@ I can create new skills to extend my capabilities.
 
 // runStatus displays the current configuration and status.
 func runStatus(c *cli.Context) error {
+	// Status prints config paths and provider names. Route it through the
+	// redactor so a home directory (which carries the account name) and any
+	// credential-shaped value are stripped before the user copies this into
+	// an issue.
+	out := redact.Writer(os.Stdout)
+
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
 		return err
@@ -3230,30 +3483,30 @@ func runStatus(c *cli.Context) error {
 	}
 
 	// Print status
-	fmt.Println()
-	fmt.Println("╔═══════════════════════════════════════════╗")
-	fmt.Println("║            joshbot status                ║")
-	fmt.Println("╚═══════════════════════════════════════════╝")
-	fmt.Printf("Version:        %s\n", Version)
-	fmt.Printf("Config file:    %s %s\n", configPath, statusBool(configExists))
-	fmt.Printf("Workspace:      %s %s\n", cfg.WorkspaceDir(), statusBool(wsExists))
-	fmt.Printf("Sessions:       %s\n", cfg.SessionsDir())
-	fmt.Println()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "╔═══════════════════════════════════════════╗")
+	fmt.Fprintln(out, "║            joshbot status                ║")
+	fmt.Fprintln(out, "╚═══════════════════════════════════════════╝")
+	fmt.Fprintf(out, "Version:        %s\n", Version)
+	fmt.Fprintf(out, "Config file:    %s %s\n", configPath, statusBool(configExists))
+	fmt.Fprintf(out, "Workspace:      %s %s\n", cfg.WorkspaceDir(), statusBool(wsExists))
+	fmt.Fprintf(out, "Sessions:       %s\n", cfg.SessionsDir())
+	fmt.Fprintln(out)
 
 	// Display model info based on config format
 	if cfg.UseModelsConfig() {
-		fmt.Println("Config format:  model-centric")
-		fmt.Printf("Active model:   %s\n", cfg.ModelsConfig.Agent.Model)
+		fmt.Fprintln(out, "Config format:  model-centric")
+		fmt.Fprintf(out, "Active model:   %s\n", cfg.ModelsConfig.Agent.Model)
 		if len(cfg.ModelsConfig.Agent.Fallback) > 0 {
-			fmt.Printf("Fallback:       %s\n", strings.Join(cfg.ModelsConfig.Agent.Fallback, ", "))
+			fmt.Fprintf(out, "Fallback:       %s\n", strings.Join(cfg.ModelsConfig.Agent.Fallback, ", "))
 		}
 	} else {
-		fmt.Printf("Model:          %s\n", cfg.Agents.Defaults.Model)
+		fmt.Fprintf(out, "Model:          %s\n", cfg.Agents.Defaults.Model)
 	}
-	fmt.Printf("Max tokens:     %d\n", cfg.Agents.Defaults.MaxTokens)
-	fmt.Printf("Temperature:    %.1f\n", cfg.Agents.Defaults.Temperature)
-	fmt.Printf("Memory window:  %d\n", cfg.Agents.Defaults.MemoryWindow)
-	fmt.Println()
+	fmt.Fprintf(out, "Max tokens:     %d\n", cfg.Agents.Defaults.MaxTokens)
+	fmt.Fprintf(out, "Temperature:    %.1f\n", cfg.Agents.Defaults.Temperature)
+	fmt.Fprintf(out, "Memory window:  %d\n", cfg.Agents.Defaults.MemoryWindow)
+	fmt.Fprintln(out)
 
 	// Display providers/models
 	if cfg.UseModelsConfig() {
@@ -3266,26 +3519,26 @@ func runStatus(c *cli.Context) error {
 		if len(modelNames) == 0 {
 			modelNames = []string{"none"}
 		}
-		fmt.Printf("Models:         %s\n", strings.Join(modelNames, ", "))
+		fmt.Fprintf(out, "Models:         %s\n", strings.Join(modelNames, ", "))
 	} else {
-		fmt.Printf("Providers:      %s\n", formatProviderStatus(cfg.Providers))
+		fmt.Fprintf(out, "Providers:      %s\n", formatProviderStatus(cfg.Providers))
 	}
-	fmt.Printf("Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
-	fmt.Printf("Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
+	fmt.Fprintf(out, "Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
+	fmt.Fprintf(out, "Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
 
 	// Skills awaiting review belong here, not only in a startup log line. In
 	// gateway mode that log goes to the journal, where an operator would never
 	// see it — they would just get a quietly worse assistant. `status` is
 	// where someone looks when something seems off.
 	if pending := pendingSkillNames(cfg); len(pending) > 0 {
-		fmt.Printf("Skills:         %d awaiting review (%s)\n", len(pending), strings.Join(pending, ", "))
-		fmt.Println("                not in use — review then run: joshbot skills trust <name>")
+		fmt.Fprintf(out, "Skills:         %d awaiting review (%s)\n", len(pending), strings.Join(pending, ", "))
+		fmt.Fprintln(out, "                not in use — review then run: joshbot skills trust <name>")
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
 	if memorySize > 0 || historySize > 0 {
-		fmt.Printf("MEMORY.md:  %d bytes\n", memorySize)
-		fmt.Printf("HISTORY.md: %d bytes\n", historySize)
+		fmt.Fprintf(out, "MEMORY.md:  %d bytes\n", memorySize)
+		fmt.Fprintf(out, "HISTORY.md: %d bytes\n", historySize)
 	}
 
 	return nil

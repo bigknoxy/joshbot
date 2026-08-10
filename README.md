@@ -264,6 +264,30 @@ joshbot skills untrust <name> # Revoke approval
 
 `joshbot status` also flags any skills awaiting review.
 
+### Managing sessions
+
+A session is one conversation, keyed `channel:senderID` and stored as JSONL under
+`~/.joshbot/sessions`. There is exactly one per user per channel and it is loaded
+automatically on every message, so there is nothing to "resume" — what these
+commands give you is a way to see what exists, read one back, and clear one.
+
+```bash
+joshbot sessions list                    # ID, message count, size, age, notes
+joshbot sessions show <id>               # print the conversation (redacted)
+joshbot sessions show <id> --last 20     # just the tail
+joshbot sessions prune <id>              # delete one conversation
+joshbot sessions prune --older-than 30d  # delete everything untouched for 30 days
+joshbot sessions new <id>                # archive it and start empty
+```
+
+`show` output is redacted: credentials and your home directory are stripped
+before display, though the files on disk are left verbatim. Destructive
+commands prompt for confirmation and take `--force` to run unattended; without a
+terminal they decline rather than hang, and exit non-zero so a script does not
+read a refusal as success. A damaged session is flagged in the `NOTES` column,
+so it is visible without reading the directory; its `.jsonl.corrupt` quarantine
+copy survives being loaded, but `prune` removes it along with the conversation.
+
 Skills use **progressive loading**:
 - **Level 1:** Name + description always in context (~100 tokens)
 - **Level 2:** Full content loaded on demand
@@ -436,7 +460,8 @@ For backward compatibility, the old format still works:
       "max_tokens": 8192,
       "temperature": 0.7,
       "max_tool_iterations": 20,
-      "memory_window": 50
+      "memory_window": 50,
+      "streaming": false
     }
   },
   "channels": {
@@ -474,6 +499,27 @@ For backward compatibility, the old format still works:
 | Other (no sandbox available) | n/a | **Allowlist-only** — the shell tool falls back to a small set of non-escaping read/inspect commands unless the operator sets an explicit `shell_allow_list` |
 
 It fails closed: an unrecognized value, or `"workspace"` on a host whose kernel lacks the needed support, is a startup error rather than a silent no-op — set it back to `"off"` to run without containment. The runtime default is intentionally **not** the sandbox: network-denied-by-default breaks common workflows, so macOS/Linux still rely on the deny list by default and you opt in with `tools.shell_sandbox: "workspace"`.
+
+### Streaming Responses
+
+`agents.defaults.streaming` prints the assistant's reply as it arrives instead of
+after the whole turn completes. It is **off by default** and applies to both
+config formats.
+
+```json
+"agents": { "defaults": { "streaming": true } }
+```
+
+Two limits are worth knowing before turning it on:
+
+- It only takes effect in the **interactive CLI on a real terminal**. `joshbot
+  agent -m`, piped output and the Telegram channel are unaffected, so scripted
+  output stays byte-identical.
+- Streaming gives up the non-streaming path's **transparent provider fallback**.
+  Once the first token has been printed it cannot be unprinted, so a failure
+  part-way through appends a visible `[stream error: ...]` marker to the reply
+  rather than silently retrying against the next provider in the chain. If you
+  value the retry more than the latency, leave it off.
 
 ### Environment Variables
 
@@ -584,11 +630,15 @@ After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 
 5. Run: `joshbot gateway`
 
-On startup joshbot registers its command menu with Telegram (`/start`, `/help`,
-`/new`), so they appear behind the menu button and autocomplete as you type. If
-Telegram rejects the registration it is logged and the bot starts anyway. A
-command that does not exist gets an "Unknown command" reply listing the real
-ones instead of silence.
+On startup joshbot registers its command menu with Telegram (`/start`, `/new`,
+`/status`, `/model`, `/personality`, `/compact`, `/help`), so they appear behind
+the menu button and autocomplete as you type. If Telegram rejects the
+registration it is logged and the bot starts anyway. A command that does not
+exist gets an "Unknown command" reply listing the real ones instead of silence.
+
+The commands whose behaviour lives in the agent (`/status`, `/model`,
+`/personality`, `/compact`) are forwarded to it with the same allowlist gate as
+a direct message, so they work identically in the Telegram menu and the CLI.
 
 While the agent is working, the "typing…" indicator is refreshed every 4 seconds
 until the reply is sent, so it stays visible for the whole turn.
@@ -669,19 +719,43 @@ so a server can never shadow a built-in tool like `shell`.
 - `restrict_to_workspace` limits file and shell operations to the workspace unless explicitly allowed.
 - Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
 - `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock on Linux, Seatbelt on macOS) — see [Shell Sandbox](#shell-sandbox) below. On platforms with no sandbox, the shell tool falls back to allowlist-only by default.
+- Everything joshbot logs or prints is redacted first: API keys, `Authorization` headers, credential-shaped assignments and your home directory path are replaced with `[REDACTED]` and `~`, so a log or `joshbot status` dump can be pasted into a bug report. Session files on disk are deliberately exempt and stay verbatim at `0600` — rewriting conversation content on save would mangle legitimate text.
 
 ## Chat Commands
 
 | Command | Channel | Description |
 |---------|---------|-------------|
 | `/start` | Telegram | Start a conversation (shows the help text) |
-| `/new` | Telegram, Discord, CLI | Start a new session (clears context) |
+| `/new` | Telegram, Discord, CLI | Start a fresh session (clears context, model override and personality) |
+| `/status` | Telegram, CLI | Show the current model, tool count, memory window and max iterations |
+| `/model [name]` | Telegram, CLI | Switch model for this session (`--global` makes it the default for all sessions) |
+| `/personality [name]` | Telegram, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear |
+| `/compact` | Telegram, CLI | Summarize older conversation context now |
 | `/help` | Telegram, Discord, CLI | Show available commands |
 | `/clear` | CLI | Clear the terminal screen |
 | `/history` | CLI | Show input history |
 | `/quit`, `/exit` | CLI | Exit the program |
 
-There is no `/status` chat command — use `joshbot status` from the shell instead.
+### Interactive CLI line editor
+
+When `joshbot agent` runs in a real terminal (stdin *and* stdout are TTYs), the
+plain `> ` prompt is replaced by a lightweight line editor:
+
+- **Tab** cycles slash-command completions, with a hint line listing candidates.
+- **Up / Down** recall history on a single-line buffer, or move the cursor
+  between lines in a multiline buffer.
+- **Left / Right / Home / End / Backspace / Delete** move and edit the line.
+- **Alt+Enter** (or Ctrl+J) inserts a newline for multiline editing.
+- **Ctrl+C** quits; **Ctrl+D** quits on an empty buffer, otherwise deletes
+  forward.
+
+The prompt shows the session's current model, so a `/model` switch is visible
+before you type your next message. The editor activates only when both input
+and output are real terminals — piped or scripted `joshbot agent` output is
+untouched.
+
+`/model` and `/personality` changes are per-session and persisted, so a
+model you pick mid-conversation survives a restart.
 
 ## Architecture
 

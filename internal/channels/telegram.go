@@ -3,11 +3,13 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -77,12 +79,26 @@ type telegramNotifier interface {
 }
 
 // botCommands is the command menu shown in the Telegram UI. Every entry here
-// must have a matching handler registered in setupHandlers.
+// must have a matching handler registered in setupHandlers. Keep the two in
+// step: a menu entry without a handler is silently swallowed by the
+// unknown-command fallback, and a handler without a menu entry is invisible
+// in the UI.
 var botCommands = []telebot.Command{
 	{Text: "start", Description: "Show what this bot can do"},
-	{Text: "help", Description: "Show the list of commands"},
 	{Text: "new", Description: "Start a new session"},
+	{Text: "status", Description: "Show session status"},
+	{Text: "model", Description: "Switch model for this chat"},
+	{Text: "personality", Description: "Set a personality"},
+	{Text: "compact", Description: "Summarize older context"},
+	{Text: "help", Description: "Show the list of commands"},
 }
+
+// forwardedCommands are the slash commands whose behaviour lives in the agent
+// (the CLI and Telegram share the same handlers) and are therefore routed to
+// the bus by handleCommandForward. They must all appear in botCommands, and
+// every botCommands entry that is not handled locally (start/help/new) must
+// appear here — TestTelegramChannel_CommandMenuAndHandlersInStep pins that.
+var forwardedCommands = []string{"/status", "/model", "/personality", "/compact"}
 
 // NewTelegramChannel creates a new Telegram channel instance.
 func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *TelegramChannel {
@@ -371,6 +387,16 @@ func (t *TelegramChannel) setupHandlers(bot *telebot.Bot) {
 		return t.handleNew(ctx)
 	})
 
+	// Commands whose behaviour lives in the agent (shared with the CLI): the
+	// channel packages the raw text and routes it to the bus, and the agent
+	// answers on the outbound channel. The set here must mirror botCommands.
+	for _, command := range forwardedCommands {
+		cmd := command
+		bot.Handle(cmd, func(ctx telebot.Context) error {
+			return t.handleCommandForward(ctx, cmd)
+		})
+	}
+
 	// Any other message types we want to acknowledge but not process
 	bot.Handle(telebot.OnVenue, func(ctx telebot.Context) error {
 		return t.handleUnsupported(ctx, "venue")
@@ -492,8 +518,13 @@ func (t *TelegramChannel) handleHelp(ctx telebot.Context) error {
 Welcome! I'm here to help you.
 
 Available commands:
-/help - Show this help message
+/start - Show what this bot can do
 /new - Start a new session
+/status - Show session status
+/model <name> - Switch model for this chat (add --global for all chats)
+/personality <name> - Set a personality (or /personality none to clear)
+/compact - Summarize older context now
+/help - Show this help
 
 Just send me a message and I'll respond!`
 
@@ -507,6 +538,13 @@ Just send me a message and I'll respond!`
 func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
 	msg := ctx.Message()
 	log.Debug("handleNew called", "sender", msg.Sender.ID)
+
+	// The same allowlist gate handleMessage and handleCommandForward apply:
+	// /new is dispatched outside handleMessage, so it must be re-checked here
+	// or an unallowed caller could still trigger agent work.
+	if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
+		return nil
+	}
 
 	// Send new session command to bus
 	inbound := bus.InboundMessage{
@@ -529,6 +567,46 @@ func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
 
 	_, err := ctx.Bot().Send(ctx.Sender(), "🔄 Starting new session...")
 	return err
+}
+
+// handleCommandForward routes a slash command to the agent through the bus.
+// The command's behaviour is owned by the agent (the CLI uses the same
+// handlers), so the channel only packages the raw text and its routing
+// metadata. Replies come back on the outbound channel.
+//
+// Unlike the unknown-command fallback, telebot routes a registered command
+// directly to its handler, so the allowlist check that lives inside
+// handleMessage is never reached here. It is repeated explicitly: a command
+// like /status or /model would otherwise disclose bot configuration to anyone
+// who can reach the bot, not just users the operator allowed.
+func (t *TelegramChannel) handleCommandForward(ctx telebot.Context, command string) error {
+	msg := ctx.Message()
+	log.Debug("forwarding command to agent", "sender", msg.Sender.ID, "command", command)
+
+	if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
+		return nil
+	}
+
+	t.startTyping(ctx.Chat())
+
+	inbound := bus.InboundMessage{
+		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
+		Content:   msg.Text,
+		Channel:   t.name,
+		Timestamp: time.Now(),
+		Metadata: map[string]any{
+			"message_id": msg.ID,
+			"chat_id":    msg.Chat.ID,
+			"username":   msg.Sender.Username,
+			"is_command": true,
+		},
+	}
+	if !t.bus.Send(inbound) {
+		log.Error("failed to send command to bus", "command", command)
+		_, err := ctx.Bot().Send(ctx.Sender(), "Sorry, I couldn't process that. Please try again.")
+		return err
+	}
+	return nil
 }
 
 // handlePhoto processes incoming photos.
@@ -1484,28 +1562,108 @@ func (t *TelegramChannel) consumeOutbound(ctx context.Context) {
 	}
 }
 
+// telegramAPIBaseURL is the Bot API endpoint ValidateToken talks to. It is a
+// package var (not a const) so tests can point validation at a fake server.
+var telegramAPIBaseURL = "https://api.telegram.org"
+
+// telegramTokenTimeout bounds a single getMe attempt. The transport-level TLS
+// handshake has its own ~10s timeout, so a hung connection cannot stall the
+// onboard wizard forever; this covers the whole exchange.
+const telegramTokenTimeout = 10 * time.Second
+
+// telegramTokenAttempts is how many getMe attempts a transient connectivity
+// failure (dial error, TLS handshake timeout, timeout, connection reset) gets
+// before the token is reported invalid. A single TLS hiccup is a routine event
+// on flaky networks and used to abort an otherwise working setup.
+const telegramTokenAttempts = 3
+
+// telegramTokenFormat is the documented shape of a Bot API token: a numeric bot
+// id, a colon, and a base64url secret. Validated offline so an obviously
+// malformed token fails instantly and without any network traffic.
+var telegramTokenFormat = regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]{30,}$`)
+
 // ValidateToken validates a Telegram bot token by making a getMe API call.
 // Returns nil if the token is valid, or an error describing the failure.
+// Transient connectivity failures are retried up to telegramTokenAttempts
+// times; a definite API rejection (400/401/404) is never retried.
 func ValidateToken(token string) error {
+	return validateTokenWith(token, telegramAPIBaseURL, &http.Client{Timeout: telegramTokenTimeout})
+}
+
+func validateTokenWith(token, baseURL string, client *http.Client) error {
+	if err := validateTokenFormat(token); err != nil {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= telegramTokenAttempts; attempt++ {
+		err := validateTokenAttempt(token, baseURL, client)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !errors.Is(err, ErrTelegramNetwork) || attempt == telegramTokenAttempts {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	}
+	return lastErr
+}
+
+// validateTokenFormat rejects tokens that cannot possibly be valid before any
+// network traffic leaves the machine.
+func validateTokenFormat(token string) error {
 	if token == "" {
 		return fmt.Errorf("token is empty")
 	}
+	if !telegramTokenFormat.MatchString(token) {
+		return fmt.Errorf("token is not a valid Telegram bot token (expected <numeric-id>:<secret>)")
+	}
+	return nil
+}
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+// ErrTelegramNetwork is wrapped into errors from ValidateToken when the
+// Telegram API could not be reached at all — a dial failure, TLS handshake
+// timeout, or request timeout — as opposed to a definite rejection of the
+// token. Only these failures are retried, and callers use IsNetworkError to
+// tell "check your network" apart from "check your token".
+var ErrTelegramNetwork = errors.New("telegram API unreachable")
 
-	// A bounded timeout so a blackholed network cannot hang a non-interactive
-	// `configure`/`onboard` run forever — the exact scriptable use case this
-	// project targets. Without it, bare http.Get waits indefinitely.
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+// IsNetworkError reports whether err is a connectivity failure (dial error, TLS
+// handshake timeout, timeout, reset) rather than a definite rejection of the
+// token by the API.
+func IsNetworkError(err error) bool {
+	return errors.Is(err, ErrTelegramNetwork)
+}
+
+func validateTokenAttempt(token, baseURL string, client *http.Client) error {
+	reqURL := fmt.Sprintf("%s/bot%s/getMe", baseURL, token)
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect to Telegram API: %w", err)
+		return fmt.Errorf("invalid token: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// client.Do wraps a transport failure as a *url.Error whose string form
+		// embeds the full request URL — including the token, which would land
+		// verbatim in a terminal and in the setup output users paste into
+		// issues. Unwrap to the cause so the credential never escapes.
+		cause := err
+		if urlErr, ok := err.(*url.Error); ok {
+			cause = urlErr.Err
+		}
+		return fmt.Errorf("failed to connect to Telegram API: %w: %v", ErrTelegramNetwork, cause)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		// A reset or timeout after the headers arrived is still a
+		// connectivity failure and must be retried, not reported as a
+		// rejected token.
+		return fmt.Errorf("failed to read response: %w: %v", ErrTelegramNetwork, err)
 	}
 
 	var result struct {

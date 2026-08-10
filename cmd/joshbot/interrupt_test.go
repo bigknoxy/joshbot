@@ -57,7 +57,7 @@ func TestRunAgentLoop_ReturnsWhenDoneClosesDuringBlockedRead(t *testing.T) {
 
 	returned := make(chan error, 1)
 	go func() {
-		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil)
+		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil, false)
 	}()
 
 	// Let it reach the blocking read.
@@ -86,7 +86,7 @@ func TestRunAgentLoop_ReturnsWhenContextCancelledDuringBlockedRead(t *testing.T)
 
 	returned := make(chan error, 1)
 	go func() {
-		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil)
+		returned <- runAgentLoop(ctx, cancel, done, reader, out, noopAgent{}, nil, false)
 	}()
 
 	time.Sleep(200 * time.Millisecond)

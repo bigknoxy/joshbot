@@ -18,9 +18,10 @@ import (
 
 // mockProvider is a mock LLM provider for testing.
 type mockProvider struct {
-	chatFn func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error)
-	name   string
-	cfg    providers.Config
+	chatFn   func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error)
+	streamFn func(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error)
+	name     string
+	cfg      providers.Config
 }
 
 func (m *mockProvider) Chat(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
@@ -36,6 +37,9 @@ func (m *mockProvider) Chat(ctx context.Context, req providers.ChatRequest) (*pr
 }
 
 func (m *mockProvider) ChatStream(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
+	if m.streamFn != nil {
+		return m.streamFn(ctx, req)
+	}
 	ch := make(chan providers.StreamChunk)
 	close(ch)
 	return ch, nil

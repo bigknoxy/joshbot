@@ -99,7 +99,7 @@ func TestRunAgentLoop_NonTTY_GoldenExactOutput(t *testing.T) {
 	// mockProgressAgent would emit ⏺/⎿ frames IF a sink were wired — the
 	// point of this test is that at isTTY=false none of that reaches stdout.
 	mock := &mockProgressAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &out, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &out, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestRunAgentLoop_TTY_EmitsFramesAroundAnswer(t *testing.T) {
 	input := bytes.NewBufferString("hello\nexit\n")
 
 	mock := &mockProgressAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &out, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &out, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop: %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestRunAgentLoop_NonTTY_ErrorPathStaysClean(t *testing.T) {
 	input := bytes.NewBufferString("hello\nexit\n")
 
 	mock := &errAgent{}
-	if err := runAgentLoop(ctx, cancel, done, input, &out, mock, nil); err != nil {
+	if err := runAgentLoop(ctx, cancel, done, input, &out, mock, nil, false); err != nil {
 		t.Fatalf("runAgentLoop: %v", err)
 	}
 	got := out.String()

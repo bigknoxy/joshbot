@@ -567,6 +567,21 @@ footer a:hover { text-decoration: underline; }
       <p>Fans out independent tasks to parallel subagents or chains steps sequentially. Each gets focused context.</p>
     </div>
     <div class="case-card">
+      <div class="icon">⚡</div>
+      <h3>Streaming Replies</h3>
+      <p>Opt in with <code>streaming: true</code> and the interactive CLI prints the answer as it is generated instead of after the turn ends. Off by default, and scripted output is unaffected.</p>
+    </div>
+    <div class="case-card">
+      <div class="icon">⌨️</div>
+      <h3>Interactive Line Editor</h3>
+      <p>In a real terminal, <code>joshbot agent</code> gives you Tab slash-command completion, Up/Down history, multiline editing (Alt+Enter) and a prompt that shows the current model.</p>
+    </div>
+    <div class="case-card">
+      <div class="icon">🧭</div>
+      <h3>Slash Commands</h3>
+      <p>Switch models or personalities per-session (<code>/model</code>, <code>/personality</code>), summarize context (<code>/compact</code>) and inspect status (<code>/status</code>) — in the CLI and from the Telegram menu.</p>
+    </div>
+    <div class="case-card">
       <div class="icon">📱</div>
       <h3>Telegram &amp; Discord</h3>
       <p>Chat from anywhere via Telegram or Discord. Full skill and memory access from your phone. Long-polling, no webhooks needed. Both channels fail closed — an empty allowlist rejects everyone.</p>
@@ -575,6 +590,11 @@ footer a:hover { text-decoration: underline; }
       <div class="icon">📜</div>
       <h3>Scriptable &amp; Agent-Testable</h3>
       <p>Every command runs non-interactively. Pipe one message with <code>agent -m</code>, get machine-readable output with <code>--output-format json</code> or NDJSON with <code>stream-json</code>, and thread turns with <code>--resume</code>. Meaningful exit codes make it safe to gate CI on.</p>
+    </div>
+    <div class="case-card">
+      <div class="icon">🛡️</div>
+      <h3>Redacted Output</h3>
+      <p>API keys, auth headers and your home directory are stripped from logs and <code>joshbot status</code> before you ever see them — so a bug report is safe to paste. Conversations on disk stay verbatim, owner-only.</p>
     </div>
   </div>
 </section>

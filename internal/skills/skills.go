@@ -94,6 +94,11 @@ func (s *Skill) ToSummaryXML() string {
 
 // Loader discovers skills in bundled and workspace directories.
 type Loader struct {
+	// bundledDir is empty in production: the bundled set is embedded in the
+	// binary (see bundled.go). It exists so tests can point discovery at a
+	// fixture directory. It was previously the relative path "skills", which
+	// resolved against the working directory and so found nothing unless
+	// joshbot was run from its own source tree.
 	bundledDir   string
 	workspaceDir string
 	skills       map[string]*Skill
@@ -106,9 +111,7 @@ type Loader struct {
 // NewLoader creates a new skills loader. workspace should be the workspace root (contains skills/).
 func NewLoader(workspace string) (*Loader, error) {
 	ws := filepath.Join(workspace, "skills")
-	bundled := filepath.Join("skills")
 	l := &Loader{
-		bundledDir:   bundled,
 		workspaceDir: ws,
 		skills:       map[string]*Skill{},
 	}
@@ -130,7 +133,12 @@ func (l *Loader) TrustStore() *TrustStore { return l.trust }
 func (l *Loader) Discover() error {
 	l.skills = map[string]*Skill{}
 
-	_ = filepath.WalkDir(l.bundledDir, l.walk(true))
+	l.discoverBundled()
+	if l.bundledDir != "" {
+		// A directory override, used by tests to stand in a fixture set for
+		// the embedded one.
+		_ = filepath.WalkDir(l.bundledDir, l.walk(true))
+	}
 	_ = filepath.WalkDir(l.workspaceDir, l.walk(false))
 
 	l.loaded = true
@@ -220,7 +228,18 @@ func (l *Loader) parseSkill(dir, defaultName string) *Skill {
 	if err != nil {
 		return nil
 	}
-	raw := string(data)
+	sk := parseSkillContent(string(data), defaultName)
+	if sk == nil {
+		return nil
+	}
+	sk.Path = dir
+	return sk
+}
+
+// parseSkillContent parses a SKILL.md body. It is split out from parseSkill so
+// the embedded bundled set, which has no file to read, shares exactly the same
+// frontmatter handling as a workspace skill on disk.
+func parseSkillContent(raw, defaultName string) *Skill {
 	name := defaultName
 	description := ""
 	always := false
@@ -266,7 +285,6 @@ func (l *Loader) parseSkill(dir, defaultName string) *Skill {
 	return &Skill{
 		Name:         name,
 		Description:  description,
-		Path:         dir,
 		Always:       always,
 		Requirements: requirements,
 		Tags:         tags,
@@ -367,6 +385,12 @@ func (l *Loader) Delete(name string) error {
 	sk := l.GetSkill(name)
 	if sk == nil {
 		return fmt.Errorf("skill %q not found", name)
+	}
+	if sk.Bundled {
+		// There is nothing on disk to remove, and the path is an embed path.
+		// Before the bundled set was embedded this would have handed a
+		// relative source-tree path to os.RemoveAll.
+		return fmt.Errorf("skill %q ships with joshbot and cannot be deleted", name)
 	}
 	if err := os.RemoveAll(sk.Path); err != nil {
 		return fmt.Errorf("failed to delete skill %q: %w", name, err)

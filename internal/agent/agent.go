@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
@@ -39,6 +41,15 @@ type SessionManager interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// ContextCompressor summarizes a run of messages into a bounded string.
+//
+// The agent depends on the behaviour, not on *ctxpkg.Compressor, so a test can
+// substitute a double and count how often compression actually runs — which is
+// the property issue #125 is about.
+type ContextCompressor interface {
+	CompressMessages(ctx context.Context, model string, messages []providers.Message, budget int) (string, error)
+}
+
 // MemoryLoader is an interface for loading memory content.
 type MemoryLoader interface {
 	LoadMemory(ctx context.Context) (string, error)
@@ -66,16 +77,29 @@ type Agent struct {
 	skills        SkillsLoader
 	logger        *log.Logger
 	budget        *ctxpkg.BudgetManager
-	compressor    *ctxpkg.Compressor
+	compressor    ContextCompressor
 	maxIterations int
 	timeout       time.Duration
 	skillDetector *skills.SkillDetector
 	extractor     *skills.Extractor
 	skillLoader   *skills.Loader
-	modelName     string
+	// modelName holds a runtime global model override set by `joshbot`
+	// /model ... --global. It is read on every model resolution, so it is
+	// mutex-guarded: two sessions processed concurrently (the Telegram bus
+	// does exactly that) must not tear the read or race the write.
+	modelName string
+	modelMu   sync.RWMutex
 }
 
 func (a *Agent) getModelName() string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.getModelNameLocked()
+}
+
+// getModelNameLocked is getModelName without acquiring modelMu; the caller
+// must already hold a read lock.
+func (a *Agent) getModelNameLocked() string {
 	if a.modelName != "" {
 		return a.modelName
 	}
@@ -88,8 +112,16 @@ func (a *Agent) getModelName() string {
 // getResolvedModelName returns the actual model string for context budgeting.
 // In model-centric mode, resolves "smart" -> "nvidia/stepfun-ai/step-3.5-flash".
 func (a *Agent) getResolvedModelName() string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.getResolvedModelNameLocked()
+}
+
+// getResolvedModelNameLocked is getResolvedModelName without acquiring modelMu;
+// the caller must already hold a read lock.
+func (a *Agent) getResolvedModelNameLocked() string {
 	if a.modelName != "" {
-		return a.modelName
+		return a.resolveModelNameLocked(a.modelName)
 	}
 	if !a.cfg.UseModelsConfig() {
 		return a.cfg.Agents.Defaults.Model
@@ -98,6 +130,80 @@ func (a *Agent) getResolvedModelName() string {
 		return modelConfig.Model
 	}
 	return a.cfg.ModelsConfig.Agent.Model
+}
+
+// resolveModelName maps a model name to the concrete model ID when the
+// model-centric config knows it; otherwise the spec is passed through
+// verbatim (a bare model ID, or a "provider:model" spec).
+func (a *Agent) resolveModelName(name string) string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.resolveModelNameLocked(name)
+}
+
+// resolveModelNameLocked is resolveModelName without acquiring modelMu; the
+// caller must already hold a read lock.
+func (a *Agent) resolveModelNameLocked(name string) string {
+	if !a.cfg.UseModelsConfig() {
+		return name
+	}
+	if m, ok := a.cfg.GetModel(name); ok {
+		return m.Model
+	}
+	return name
+}
+
+// modelForSession returns the effective model for a session: the per-session
+// override wins, then the runtime global override, then the config default.
+// The session override never leaks between chats and survives restarts.
+func (a *Agent) modelForSession(sess *session.Session) string {
+	if sess != nil && sess.ModelOverride != "" {
+		return sess.ModelOverride
+	}
+	return a.getModelName()
+}
+
+// modelForSessionLocked is modelForSession without acquiring modelMu; the
+// caller must already hold a read lock.
+func (a *Agent) modelForSessionLocked(sess *session.Session) string {
+	if sess != nil && sess.ModelOverride != "" {
+		return sess.ModelOverride
+	}
+	return a.getModelNameLocked()
+}
+
+// resolvedModelFor is modelForSession with the name resolved to the concrete
+// model ID for context budgeting.
+func (a *Agent) resolvedModelFor(sess *session.Session) string {
+	if sess != nil && sess.ModelOverride != "" {
+		return a.resolveModelName(sess.ModelOverride)
+	}
+	return a.getResolvedModelName()
+}
+
+// resolvedModelForLocked is resolvedModelFor without acquiring modelMu; the
+// caller must already hold a read lock.
+func (a *Agent) resolvedModelForLocked(sess *session.Session) string {
+	if sess != nil && sess.ModelOverride != "" {
+		return a.resolveModelNameLocked(sess.ModelOverride)
+	}
+	return a.getResolvedModelNameLocked()
+}
+
+// setGlobalModel records a runtime-wide model override. It also persists the
+// change to config.json so it survives a restart; on the next boot the config
+// read supplies the same value.
+func (a *Agent) setGlobalModel(name string) {
+	a.modelMu.Lock()
+	a.modelName = name
+	a.modelMu.Unlock()
+}
+
+// currentGlobalModel returns the runtime-wide model override, if any.
+func (a *Agent) currentGlobalModel() string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.modelName
 }
 
 // Option is a functional option for configuring Agent.
@@ -196,6 +302,17 @@ func WithBudgetManager(budget *ctxpkg.BudgetManager) Option {
 // WithCompressor injects a Compressor used to compact messages when needed.
 func WithCompressor(c *ctxpkg.Compressor) Option {
 	return func(a *Agent) {
+		// Guard against a typed nil: assigning one would leave a.compressor
+		// non-nil while every call panics.
+		if c != nil {
+			a.compressor = c
+		}
+	}
+}
+
+// WithContextCompressor injects any ContextCompressor implementation.
+func WithContextCompressor(c ContextCompressor) Option {
+	return func(a *Agent) {
 		if c != nil {
 			a.compressor = c
 		}
@@ -277,6 +394,9 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 	if summary := sess.ConversationSummary(); summary != "" {
 		systemPrompt += "\n\n<conversation_context>\n" + summary + "\n</conversation_context>"
 	}
+	if sess.Personality != "" {
+		systemPrompt += "\n\n<personality>\n" + sess.Personality + "\n</personality>"
+	}
 
 	// Add user message to session
 	userMsg := session.Message{
@@ -291,7 +411,8 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 
 	// Run ReAct loop with channel info for async callbacks
 	channelID := msg.SenderID // Use SenderID as the channel identifier
-	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content)
+	var compaction compactionState
+	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &compaction)
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
 		// Check for timeout
@@ -310,6 +431,11 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 			}
 		}
 	}
+
+	// Fold in any compaction produced during the turn. This runs after the
+	// history append above, which slices sess.Messages from startSessionLen —
+	// shrinking the session before that point would slice out of range.
+	a.applyCompaction(ctx, sess, compaction)
 
 	// Save session
 	if err := a.sessions.Save(ctx, sess); err != nil {
@@ -342,7 +468,7 @@ func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
 }
 
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.
-func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string) (string, error) {
+func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string, st *compactionState) (string, error) {
 	var toolRecords []skills.ToolCallRecord
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
@@ -355,14 +481,26 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 
 		// Call LLM
 		req := providers.ChatRequest{
-			Model:       a.getModelName(),
+			Model:       a.modelForSession(sess),
 			Messages:    messages,
 			Temperature: a.cfg.Agents.Defaults.Temperature,
 			MaxTokens:   a.cfg.Agents.Defaults.MaxTokens,
 			Tools:       toolSchemas,
 		}
 
-		resp, err := a.provider.Chat(ctx, req)
+		// When streaming is enabled and a stream sink is attached to the
+		// request context, use ChatStream and forward text deltas to the
+		// sink as they arrive. Otherwise, use the non-streaming Chat path.
+		sink := streamSinkFromContext(ctx)
+		streaming := a.cfg.Agents.Defaults.Streaming && sink != nil
+
+		var resp *providers.ChatResponse
+		var err error
+		if streaming {
+			resp, err = a.streamChat(ctx, req, sink)
+		} else {
+			resp, err = a.provider.Chat(ctx, req)
+		}
 		if err != nil {
 			return "", fmt.Errorf("LLM call failed: %w", err)
 		}
@@ -533,12 +671,123 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		}
 
 		// Proactive context compaction: check if we need to compact after tool execution
-		messages = a.checkAndCompactContext(ctx, messages, sess)
+		messages = a.checkAndCompactContext(ctx, messages, sess, st)
 	}
 
 	// Hit max iterations
 	a.logger.Warn("Hit max iterations", "max", a.maxIterations)
 	return "I've been working on this for a while. Here's what I found so far - let me know if you'd like me to continue.", nil
+}
+
+// streamErrorMarker renders a mid-stream failure as text the user can see.
+//
+// A leading newline only when text preceded it, so a stream that failed before
+// producing anything does not start the reply with a blank line.
+func streamErrorMarker(err error, hadText bool) string {
+	if hadText {
+		return "\n[stream error: " + err.Error() + "]"
+	}
+	return "[stream error: " + err.Error() + "]"
+}
+
+// drainStream consumes the remainder of a provider stream that is being
+// abandoned, so the goroutine feeding it can finish and release its
+// connection.
+func drainStream(stream <-chan providers.StreamChunk) {
+	for range stream {
+	}
+}
+
+// streamChat sends a streaming chat request, forwards text deltas to the
+// sink as they arrive, and accumulates the full response using the stage-2
+// ChunkAccumulator. On mid-stream failure, a visible error marker is
+// appended to whatever text was already shown — never silently truncated.
+//
+// The returned *ChatResponse has the same shape as the non-streaming Chat
+// path, so everything downstream of the call site is unchanged.
+func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink StreamSink) (*providers.ChatResponse, error) {
+	stream, err := a.provider.ChatStream(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("stream failed to open: %w", err)
+	}
+
+	acc := providers.NewChunkAccumulator()
+	var accumulatedContent string
+
+	for chunk := range stream {
+		if err := acc.Accumulate(chunk); err != nil {
+			// Stream error mid-flight — append a visible marker to what
+			// was already shown. Return partial content, not an error,
+			// so the caller sees the text that was already delivered.
+			//
+			// The marker is emitted even when nothing arrived first. A stream
+			// that dies before any text is the common case, and suppressing
+			// the marker there left an empty response that reactLoop replaced
+			// with "I've processed your request." — a confident non-answer
+			// standing in for a failure.
+			marker := streamErrorMarker(err, accumulatedContent != "")
+			sink(StreamEvent{Delta: marker, Done: true})
+			accumulatedContent += marker
+
+			// Drain the rest of the stream. The provider goroutine blocks
+			// sending into this channel and does not close the response body
+			// until it can, so abandoning it would hold the goroutine and its
+			// connection until the request context expires.
+			//
+			// No test reaches this: ChunkAccumulator.Accumulate has no failing
+			// path today, and every truncation is reported by Result() below,
+			// after the range has drained the channel itself. It guards the
+			// contract, not a live bug — the moment Accumulate can fail, an
+			// early return here becomes a leak.
+			drainStream(stream)
+
+			return &providers.ChatResponse{
+				ID:    "stream-error",
+				Model: req.Model,
+				Choices: []providers.Choice{
+					{
+						Message: providers.Message{
+							Role:    providers.RoleAssistant,
+							Content: accumulatedContent,
+						},
+					},
+				},
+			}, nil
+		}
+
+		// Forward text deltas to the sink as they arrive.
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" {
+				accumulatedContent += choice.Delta.Content
+				sink(StreamEvent{Delta: choice.Delta.Content})
+			}
+		}
+	}
+
+	resp, err := acc.Result()
+	if err != nil {
+		// Stream ended with a truncation error — append a visible marker.
+		marker := streamErrorMarker(err, accumulatedContent != "")
+		sink(StreamEvent{Delta: marker, Done: true})
+		accumulatedContent += marker
+		return &providers.ChatResponse{
+			ID:    "stream-error",
+			Model: req.Model,
+			Choices: []providers.Choice{
+				{
+					Message: providers.Message{
+						Role:    providers.RoleAssistant,
+						Content: accumulatedContent,
+					},
+				},
+			},
+		}, nil
+	}
+
+	// Signal completion to the sink.
+	sink(StreamEvent{Done: true})
+
+	return resp, nil
 }
 
 // afterReActDetection records the trace and, if a strong-enough candidate is
@@ -593,9 +842,81 @@ func (a *Agent) afterReActDetection(finalOutput string, toolRecords []skills.Too
 	a.logger.Info("Skill created successfully", "name", candidate.Name)
 }
 
+// compactionState carries a compaction produced during a turn so it can be
+// applied to the session exactly once, after the turn finishes.
+//
+// It is a local of Process, never a field on Agent: two Telegram messages are
+// processed concurrently, and a shared field would let one conversation's
+// summary overwrite another's. This is the same reasoning that moved the
+// progress callback onto the context.
+//
+// Applying at the end rather than in the loop also keeps `startSessionLen` in
+// Process valid. That index slices sess.Messages to find the turn's new
+// messages for the history log; shrinking the session underneath it would slice
+// out of range.
+type compactionState struct {
+	// summary is the compressed text produced by the compressor.
+	summary string
+	// prefixLen is len(sess.Messages) at the moment the summary was taken, so
+	// the summary stands in for exactly sess.Messages[:prefixLen].
+	prefixLen int
+	// active reports whether a compaction happened at all this turn.
+	active bool
+}
+
+// applyCompaction folds a turn's compaction into the session, replacing the
+// summarized prefix with a single compaction record.
+//
+// This is what makes compaction stick. Before it existed the summary lived only
+// in the provider-facing slice and was discarded when Process returned, so
+// buildMessages rebuilt the full history from sess.Messages on the next turn
+// and the compressor ran again — an extra provider round-trip on every turn
+// past the threshold, forever, while the session file kept growing (#125).
+func (a *Agent) applyCompaction(ctx context.Context, sess *session.Session, st compactionState) {
+	if !st.active || st.summary == "" {
+		return
+	}
+	if st.prefixLen <= 0 || st.prefixLen > len(sess.Messages) {
+		// The session changed shape in a way we did not predict. Dropping the
+		// compaction costs a recomputation next turn; applying it against a
+		// stale index could discard live messages.
+		a.logger.Warn("Skipping compaction write-back: prefix out of range",
+			"prefix_len", st.prefixLen, "session_len", len(sess.Messages))
+		return
+	}
+
+	summarized := sess.Messages[:st.prefixLen]
+
+	// Preserve the messages the summary replaces. The user asked for a smaller
+	// context window, not for their conversation to be deleted. If the store
+	// cannot archive them, keep the full session: recomputing a summary is
+	// cheap compared with destroying history.
+	if archiver, ok := a.sessions.(session.Archiver); ok {
+		archived := make([]session.Message, len(summarized))
+		copy(archived, summarized)
+		if err := archiver.Archive(ctx, sess.ID, archived); err != nil {
+			a.logger.Warn("Skipping compaction write-back: archive failed", "error", err)
+			return
+		}
+	}
+
+	tail := make([]session.Message, 0, len(sess.Messages)-st.prefixLen+1)
+	tail = append(tail, session.NewCompactionRecord(st.summary))
+	tail = append(tail, sess.Messages[st.prefixLen:]...)
+	sess.Messages = tail
+
+	a.logger.Info("Context compaction persisted",
+		"summarized_messages", len(summarized),
+		"session_messages", len(sess.Messages),
+	)
+}
+
 // checkAndCompactContext estimates current message tokens and compacts context if threshold is exceeded.
 // It returns the original messages if under threshold, or compacted messages otherwise.
-func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers.Message, sess *session.Session) []providers.Message {
+//
+// On success it also records the summary in st so Process can persist it once
+// the turn completes; without that the work is repeated on every later turn.
+func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers.Message, sess *session.Session, st *compactionState) []providers.Message {
 	// Only proceed if we have budget manager and compressor
 	if a.budget == nil || a.compressor == nil {
 		return messages
@@ -606,7 +927,7 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 		threshold = 0.7 // default fallback
 	}
 
-	model := a.getResolvedModelName()
+	model := a.resolvedModelFor(sess)
 	maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 	budget := a.budget.ComputeBudget(model, maxCompletion)
 	thresholdBudget := int(float64(budget) * threshold)
@@ -632,8 +953,20 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	// Threshold exceeded - compact messages
 	a.logger.Info("Compacting context", "total_tokens", totalTokens, "threshold_budget", thresholdBudget)
 
-	// Get session messages for compression (excluding system prompt)
+	// Compress the stored session, not the provider slice.
+	//
+	// `messages` has already been through the memory-window truncation in
+	// buildMessages, so it is only the tail of the conversation. The write-back
+	// discards sess.Messages[:prefixLen] and puts the summary in its place, so
+	// summarizing the tail while claiming the whole prefix would destroy every
+	// message the window had already slid past. The two must describe the same
+	// set of messages.
 	sessionMsgs := messages[1:] // Skip system message
+	prefixLen := 0
+	if sess != nil && len(sess.Messages) > 0 {
+		sessionMsgs = sessionToProviderMessages(sess)
+		prefixLen = len(sess.Messages)
+	}
 	compressed, err := a.compressor.CompressMessages(ctx, model, sessionMsgs, thresholdBudget)
 	if err != nil {
 		a.logger.Warn("Context compaction failed", "error", err)
@@ -645,24 +978,27 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 		messages[0], // Keep system message
 		{
 			Role:    providers.RoleUser,
-			Content: "<ctx_compress>\n" + compressed + "\n</ctx_compress>",
+			Content: session.CompactionEnvelope(compressed),
 		},
+	}
+
+	// Record it for the write-back at the end of the turn. A later compaction in
+	// the same turn overwrites this: its summary already subsumes the earlier
+	// one (the compressed text is carried forward in `messages`), and its
+	// prefixLen covers strictly more of the session.
+	if st != nil && prefixLen > 0 {
+		st.summary = compressed
+		st.prefixLen = prefixLen
+		st.active = true
 	}
 
 	a.logger.Debug("Context compacted", "original_messages", len(sessionMsgs), "new_content_len", len(compressed))
 	return newMessages
 }
 
-// buildMessages builds the message list for LLM from session and system prompt.
-func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []providers.Message {
-	msgs := []providers.Message{
-		{
-			Role:    providers.RoleSystem,
-			Content: systemPrompt,
-		},
-	}
-
-	// Convert session messages to provider messages
+// sessionToProviderMessages converts a session's stored messages to the
+// provider wire shape, in order and without truncation.
+func sessionToProviderMessages(sess *session.Session) []providers.Message {
 	providerMsgs := make([]providers.Message, 0, len(sess.Messages))
 	for _, msg := range sess.Messages {
 		providerMsg := providers.Message{
@@ -671,7 +1007,6 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 			ToolCallID: msg.ToolCallID,
 		}
 
-		// Convert tool calls
 		if len(msg.ToolCalls) > 0 {
 			providerToolCalls := make([]providers.ToolCall, len(msg.ToolCalls))
 			for i, tc := range msg.ToolCalls {
@@ -689,6 +1024,29 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 
 		providerMsgs = append(providerMsgs, providerMsg)
 	}
+	return providerMsgs
+}
+
+// buildMessages builds the message list for LLM from session and system prompt.
+func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []providers.Message {
+	msgs := []providers.Message{
+		{
+			Role:    providers.RoleSystem,
+			Content: systemPrompt,
+		},
+	}
+
+	providerMsgs := sessionToProviderMessages(sess)
+
+	// A stored compaction record stands in for everything that came before it,
+	// so it is held out of the memory-window truncation below. Sliding the
+	// window over it would drop the summary and silently lose the whole earlier
+	// conversation — the opposite of what compaction is for.
+	var compactionMsg []providers.Message
+	if _, ok := sess.CompactionRecord(); ok && len(providerMsgs) > 0 {
+		compactionMsg = providerMsgs[:1]
+		providerMsgs = providerMsgs[1:]
+	}
 
 	window := a.cfg.Agents.Defaults.MemoryWindow
 	if window > 0 && len(providerMsgs) > window {
@@ -696,9 +1054,16 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 		providerMsgs = dropOrphanedToolResults(providerMsgs)
 	}
 
+	if len(compactionMsg) > 0 {
+		// The record replaced a run of messages, so whatever now leads the tail
+		// may be a tool result whose announcing assistant message is gone. An
+		// OpenAI-compatible provider rejects that with a 400.
+		providerMsgs = append(compactionMsg, dropOrphanedToolResults(providerMsgs)...)
+	}
+
 	// If we have a budget manager and compressor, consider compressing older messages
 	if a.budget != nil && a.compressor != nil {
-		model := a.getResolvedModelName()
+		model := a.resolvedModelFor(sess)
 		maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 		budget := a.budget.ComputeBudget(model, maxCompletion)
 		budget -= ctxpkg.TokenEstimator(systemPrompt)
@@ -869,17 +1234,25 @@ func (a *Agent) formatToolResult(toolCallID, name, result string) providers.Mess
 
 // handleCommand handles slash commands.
 func (a *Agent) handleCommand(ctx context.Context, msg bus.InboundMessage) string {
-	cmd := cleanCommand(msg.Content)
+	cmdLine := cleanCommand(msg.Content)
+	cmd := cmdLine
+	if i := strings.IndexAny(cmdLine, " \t"); i >= 0 {
+		cmd = cmdLine[:i]
+	}
 
 	switch cmd {
 	case "start":
 		return "Hello! I'm joshbot, your personal AI assistant. How can I help you today?"
 	case "new":
-		// Clear messages but preserve conversation context (user facts survive /new)
+		// Clear messages but preserve conversation context (user facts survive
+		// /new). The per-session model override and personality are scoped to
+		// the conversation, so they are cleared too.
 		sessionKey := getSessionKey(msg)
 		sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
 		if err == nil {
 			sess.ClearMessages()
+			sess.ModelOverride = ""
+			sess.Personality = ""
 			if err := a.sessions.Save(ctx, sess); err != nil {
 				a.logger.Debug("Could not save session after /new", "error", err)
 			}
@@ -904,9 +1277,12 @@ Just type normally to chat with me!`,
 	case "help":
 		return `Available commands:
 /start - Start a conversation
-/new - Start fresh (saves memory first)
-/help - Show this help
+/new - Start fresh (clears session model/personality)
+/model [name] - Switch model for this session (--global for all)
+/personality [name] - Set or clear a personality
+/compact - Summarize older context now
 /status - Show system status
+/help - Show this help
 
 Just type normally to chat with me!`
 	case "status":
@@ -914,19 +1290,310 @@ Just type normally to chat with me!`
 		if a.tools != nil {
 			toolCount = len(a.tools.GetSchemas())
 		}
+		model := a.getModelName()
+		if sess, err := a.sessions.GetOrCreate(ctx, getSessionKey(msg)); err == nil {
+			model = a.modelForSession(sess)
+		}
 		return fmt.Sprintf(`Status:
   Model: %s
   Tools: %d registered
   Memory window: %d
   Max iterations: %d`,
-			a.getModelName(),
+			model,
 			toolCount,
 			a.cfg.Agents.Defaults.MemoryWindow,
 			a.cfg.Agents.Defaults.MaxToolIterations,
 		)
+	case "model":
+		return a.handleModelCommand(ctx, msg)
+	case "personality":
+		return a.handlePersonalityCommand(ctx, msg)
+	case "compact":
+		return a.handleCompactCommand(ctx, msg)
 	}
 
 	return "" // Not a known command, process normally
+}
+
+// handleModelCommand implements /model. With no argument it lists the current
+// model and the ones a user can switch to. With an argument it sets a
+// per-session override (persisted, cleared by /new); with --global it changes
+// the default for every session and writes it to config.json.
+func (a *Agent) handleModelCommand(ctx context.Context, msg bus.InboundMessage) string {
+	sessionKey := getSessionKey(msg)
+	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to load session: %v", err)
+	}
+
+	rest, global := parseModelArgs(cleanCommand(msg.Content))
+
+	if len(rest) == 0 {
+		if global {
+			return "Usage: /model <name> --global"
+		}
+		return a.modelList(sess)
+	}
+
+	canonical, err := a.resolveModelSpec(rest[0])
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+
+	if global {
+		hadOverride := sess.ModelOverride != ""
+		sess.ModelOverride = ""
+		if err := a.setGlobalModelAndPersist(canonical); err != nil {
+			a.logger.Warn("Failed to persist global model", "error", err)
+			return fmt.Sprintf("Error: failed to save config: %v", err)
+		}
+		if hadOverride {
+			if err := a.sessions.Save(ctx, sess); err != nil {
+				a.logger.Warn("Failed to clear session override after global change", "error", err)
+				return fmt.Sprintf("Error: changed the global default but could not clear this session's override: %v", err)
+			}
+		}
+		return fmt.Sprintf("✓ Default model changed to %s for all sessions.\n\nNew conversations use it, and this session's override (if any) was cleared.", canonical)
+	}
+
+	sess.ModelOverride = canonical
+	if err := a.sessions.Save(ctx, sess); err != nil {
+		a.logger.Warn("Failed to save session after /model", "error", err)
+		return fmt.Sprintf("Error: could not save the session, so the model change will not persist: %v", err)
+	}
+	return fmt.Sprintf("✓ Model switched to %s for this session.\n\nUse /model %s --global to make it the default for all sessions.", canonical, canonical)
+}
+
+// parseModelArgs splits a /model line into the model spec tokens and whether
+// the --global flag was present. It expects the slash-stripped command
+// ("model smart --global"). Trailing flags are read here rather than by the
+// caller so the order of the flag relative to the argument does not matter.
+func parseModelArgs(content string) (rest []string, global bool) {
+	fields := strings.Fields(content)
+	for _, f := range fields[1:] {
+		switch f {
+		case "--global":
+			global = true
+		default:
+			rest = append(rest, f)
+		}
+	}
+	return rest, global
+}
+
+// modelList renders the effective model for the session and everything a user
+// can switch to.
+func (a *Agent) modelList(sess *session.Session) string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+
+	active := a.modelForSessionLocked(sess)
+	var b strings.Builder
+	if a.cfg.UseModelsConfig() {
+		fmt.Fprintf(&b, "Current model: %s\n\nAvailable models:\n", active)
+		for _, m := range a.cfg.ModelsConfig.Models {
+			if m.Disabled {
+				continue
+			}
+			marker := "  "
+			if m.Name == active {
+				marker = "> "
+			}
+			fmt.Fprintf(&b, "%s%s - %s\n", marker, m.Name, m.Model)
+		}
+		b.WriteString("\nUsage: /model <name>  or  /model <name> --global")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "Current model: %s\n\nAvailable providers:\n", active)
+	for name, p := range a.cfg.Providers {
+		if !p.Enabled || p.APIKey == "" {
+			continue
+		}
+		marker := "  "
+		if active == name || strings.HasPrefix(active, name+":") {
+			marker = "> "
+		}
+		model := p.Model
+		if model == "" {
+			model = a.cfg.Agents.Defaults.Model
+		}
+		fmt.Fprintf(&b, "%s%s - %s\n", marker, name, model)
+	}
+	b.WriteString("\nUsage: /model <provider:model>  or  /model <name> --global")
+	return b.String()
+}
+
+// resolveModelSpec validates a /model argument and returns the canonical spec
+// to persist: a configured model name in model-centric mode, or a
+// provider:model (or bare provider) spec in legacy mode.
+func (a *Agent) resolveModelSpec(spec string) (string, error) {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.resolveModelSpecLocked(spec)
+}
+
+// resolveModelSpecLocked is resolveModelSpec without acquiring modelMu; the
+// caller must already hold a read lock.
+func (a *Agent) resolveModelSpecLocked(spec string) (string, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", fmt.Errorf("model name is required")
+	}
+	if a.cfg.UseModelsConfig() {
+		if m, ok := a.cfg.GetModel(spec); ok && !m.Disabled {
+			return m.Name, nil
+		}
+		for _, m := range a.cfg.ModelsConfig.Models {
+			if m.Disabled {
+				continue
+			}
+			if m.Model == spec || config.StripProviderPrefix(m.Model) == spec {
+				return m.Name, nil
+			}
+		}
+		return "", fmt.Errorf("unknown model %q (see /model for the list)", spec)
+	}
+	if idx := strings.Index(spec, ":"); idx > 0 {
+		provider := spec[:idx]
+		if p, ok := a.cfg.Providers[provider]; !ok || !p.Enabled {
+			return "", fmt.Errorf("unknown or disabled provider %q", provider)
+		}
+		return spec, nil
+	}
+	if p, ok := a.cfg.Providers[spec]; ok && p.Enabled {
+		return spec, nil
+	}
+	return "", fmt.Errorf("unknown provider %q (see /model for the list)", spec)
+}
+
+// setGlobalModelAndPersist records a runtime-wide model override and writes it
+// to config.json so it survives a restart. Both the in-memory config and the
+// runtime override are mutated under modelMu so concurrent model resolution
+// never observes a torn value. The whole write — including config.Save's
+// marshal of the shared config — runs under the write lock, because a
+// concurrent /model list on another session reads the same fields.
+func (a *Agent) setGlobalModelAndPersist(name string) error {
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+
+	a.modelName = name
+	if a.cfg.UseModelsConfig() {
+		a.cfg.ModelsConfig.Agent.Model = name
+	} else {
+		a.cfg.Agents.Defaults.Model = name
+	}
+	return config.Save(a.cfg)
+}
+
+// handlePersonalityCommand implements /personality. With no argument it shows
+// the current personality. With "none" it clears it. A known preset name
+// expands to a canned instruction; anything else is used verbatim as the
+// personality instruction.
+func (a *Agent) handlePersonalityCommand(ctx context.Context, msg bus.InboundMessage) string {
+	sessionKey := getSessionKey(msg)
+	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to load session: %v", err)
+	}
+
+	arg := strings.TrimSpace(strings.TrimPrefix(cleanCommand(msg.Content), "personality"))
+
+	if arg == "" {
+		if sess.Personality == "" {
+			return fmt.Sprintf("No personality set for this session.\n\nTry one of: %s\nOr your own instruction: /personality <text>\nClear it with: /personality none", presetNames())
+		}
+		return fmt.Sprintf("Current personality: %s\n\nUse /personality none to clear it.", sess.Personality)
+	}
+
+	if strings.EqualFold(arg, "none") {
+		sess.Personality = ""
+		if err := a.sessions.Save(ctx, sess); err != nil {
+			a.logger.Warn("Could not save session after /personality none", "error", err)
+			return fmt.Sprintf("Error: could not clear the personality, it may still be active: %v", err)
+		}
+		return "✓ Personality cleared."
+	}
+
+	if preset, ok := personalityPresets[strings.ToLower(arg)]; ok {
+		sess.Personality = preset
+	} else {
+		sess.Personality = arg
+	}
+	if err := a.sessions.Save(ctx, sess); err != nil {
+		a.logger.Warn("Could not save session after /personality", "error", err)
+		return fmt.Sprintf("Error: could not save the personality, it will not persist: %v", err)
+	}
+	return fmt.Sprintf("✓ Personality set for this session:\n\n%s\n\nUse /personality none to clear it.", sess.Personality)
+}
+
+// handleCompactCommand implements /compact: it summarizes the session history
+// immediately instead of waiting for the context budget to cross its
+// threshold. The summarized prefix is replaced by a compaction record (via
+// applyCompaction, which archives the replaced messages) and persisted.
+func (a *Agent) handleCompactCommand(ctx context.Context, msg bus.InboundMessage) string {
+	sessionKey := getSessionKey(msg)
+	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to load session: %v", err)
+	}
+	if a.budget == nil || a.compressor == nil {
+		return "Context compression is not available in this build."
+	}
+	if len(sess.Messages) == 0 {
+		return "Nothing to compact yet — this session has no messages."
+	}
+
+	model := a.resolvedModelFor(sess)
+	maxCompletion := a.cfg.Agents.Defaults.MaxTokens
+	budget := a.budget.ComputeBudget(model, maxCompletion)
+
+	sessionMsgs := sessionToProviderMessages(sess)
+	compressed, err := a.compressor.CompressMessages(ctx, model, sessionMsgs, budget)
+	if err != nil {
+		a.logger.Warn("Manual context compaction failed", "error", err)
+		return fmt.Sprintf("Error: compaction failed: %v", err)
+	}
+	if strings.TrimSpace(compressed) == "" {
+		return "Error: compaction produced an empty summary."
+	}
+
+	prefixLen := len(sess.Messages)
+	a.applyCompaction(ctx, sess, compactionState{summary: compressed, prefixLen: prefixLen, active: true})
+	if err := a.sessions.Save(ctx, sess); err != nil {
+		a.logger.Warn("Failed to save session after /compact", "error", err)
+	}
+	return fmt.Sprintf("✓ Compressed the last %d messages into a summary. The earlier conversation is archived in this session's history.", prefixLen)
+}
+
+// CurrentModel reports the effective model for the CLI session. The interactive
+// TTY status bar uses it; sessions (and their overrides) belong to the caller
+// of Process, so a per-session override on any other chat never shows here.
+func (a *Agent) CurrentModel() string {
+	sess, err := a.sessions.GetOrCreate(context.Background(), "cli:cli_user")
+	if err != nil {
+		return a.getModelName()
+	}
+	return a.modelForSession(sess)
+}
+
+// personalityPresets is the fixed set of named personalities /personality
+// knows. Any other argument is treated as a custom instruction verbatim.
+var personalityPresets = map[string]string{
+	"concise":   "Answer concisely. Use short, direct sentences and avoid filler.",
+	"technical": "Assume a technical audience. Prefer precise terminology and cite file paths or commands where relevant.",
+	"pirate":    "Talk like a pirate. Sprinkle in 'arr', 'matey' and 'ye'.",
+	"cheerful":  "Be warm, upbeat and encouraging, with light humour.",
+	"formal":    "Use formal, professional language and address the user politely.",
+}
+
+// presetNames lists the named personalities for the /personality help text.
+func presetNames() string {
+	names := make([]string, 0, len(personalityPresets))
+	for name := range personalityPresets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // isCommand checks if the message content is a command.

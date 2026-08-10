@@ -519,7 +519,7 @@ func TestTelegramChannel_RegisterCommands(t *testing.T) {
 		}
 		got = append(got, c.Text)
 	}
-	want := []string{"start", "help", "new"}
+	want := []string{"start", "new", "status", "model", "personality", "compact", "help"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("registered commands = %v, want %v", got, want)
 	}
@@ -579,6 +579,132 @@ func TestTelegramChannel_RegisterCommandsFailureIsNotFatal(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.cmdCalls) != 2 {
 		t.Fatalf("registration should have been attempted twice, got %d", len(fake.cmdCalls))
+	}
+}
+
+// The command menu and the handler registrations must stay in step: a menu
+// entry without a handler is swallowed silently, and a handler without a menu
+// entry is invisible in the Telegram UI (and absent from the unknown-command
+// fallback's list).
+func TestTelegramChannel_CommandMenuAndHandlersInStep(t *testing.T) {
+	locallyHandled := map[string]bool{"start": true, "help": true, "new": true}
+
+	known := make(map[string]bool)
+	for _, c := range botCommands {
+		if c.Description == "" {
+			t.Errorf("command /%s has no description", c.Text)
+		}
+		known[c.Text] = true
+	}
+
+	for _, f := range forwardedCommands {
+		if !known[strings.TrimPrefix(f, "/")] {
+			t.Errorf("forwarded command %s has no menu entry; it would be invisible in Telegram", f)
+		}
+	}
+	for _, c := range botCommands {
+		if locallyHandled[c.Text] {
+			continue
+		}
+		found := false
+		for _, f := range forwardedCommands {
+			if strings.TrimPrefix(f, "/") == c.Text {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("menu entry /%s has no handler; it would be swallowed silently", c.Text)
+		}
+	}
+}
+
+// The commands whose behaviour lives in the agent must arrive on the bus with
+// the raw text and the routing metadata the agent needs to reply.
+func TestTelegramChannel_CommandForwardRoutesToBus(t *testing.T) {
+	// Sender 1 must be allowlisted explicitly: an empty allow_from now denies
+	// every sender rather than allowing all of them.
+	tg := newTestTelegramChannel("1")
+	bot := newFakeTelegramServer(t).bot(t)
+
+	ctx := bot.NewContext(telebot.Update{Message: &telebot.Message{
+		ID:     7,
+		Text:   "/model fast",
+		Chat:   &telebot.Chat{ID: 1},
+		Sender: &telebot.User{ID: 1, Username: "josh"},
+	}})
+
+	if err := tg.handleCommandForward(ctx, "/model"); err != nil {
+		t.Fatalf("handleCommandForward returned %v", err)
+	}
+
+	select {
+	case inbound := <-tg.bus.InboundChannel():
+		if inbound.Content != "/model fast" {
+			t.Errorf("forwarded content = %q, want /model fast", inbound.Content)
+		}
+		if inbound.Channel != "telegram" {
+			t.Errorf("channel = %q, want telegram", inbound.Channel)
+		}
+		if inbound.SenderID != "telegram_1" {
+			t.Errorf("sender = %q, want telegram_1", inbound.SenderID)
+		}
+		if isCmd, _ := inbound.Metadata["is_command"].(bool); !isCmd {
+			t.Error("is_command metadata not set")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no message arrived on the bus")
+	}
+}
+
+// The forwarded commands leak session state (model, status), so the allowlist
+// must apply to them even though telebot routes them outside handleMessage.
+func TestTelegramChannel_CommandForwardRespectsAllowlist(t *testing.T) {
+	tg := newTestTelegramChannel("12345")
+	bot := newFakeTelegramServer(t).bot(t)
+
+	ctx := bot.NewContext(telebot.Update{Message: &telebot.Message{
+		ID:     7,
+		Text:   "/status",
+		Chat:   &telebot.Chat{ID: 1},
+		Sender: &telebot.User{ID: 999, Username: "mallory"},
+	}})
+
+	if err := tg.handleCommandForward(ctx, "/status"); err != nil {
+		t.Fatalf("handleCommandForward returned %v", err)
+	}
+
+	select {
+	case <-tg.bus.InboundChannel():
+		t.Fatal("an unauthorized user's command reached the agent")
+	case <-time.After(100 * time.Millisecond):
+		// expected: nothing forwarded
+	}
+}
+
+// /new is dispatched outside handleMessage (like the forwarded commands), so
+// it must carry the same allowlist gate: an unauthorized user must not be able
+// to trigger a session reset.
+func TestTelegramChannel_NewRespectsAllowlist(t *testing.T) {
+	tg := newTestTelegramChannel("12345")
+	bot := newFakeTelegramServer(t).bot(t)
+
+	ctx := bot.NewContext(telebot.Update{Message: &telebot.Message{
+		ID:     8,
+		Text:   "/new",
+		Chat:   &telebot.Chat{ID: 1},
+		Sender: &telebot.User{ID: 999, Username: "mallory"},
+	}})
+
+	if err := tg.handleNew(ctx); err != nil {
+		t.Fatalf("handleNew returned %v", err)
+	}
+
+	select {
+	case <-tg.bus.InboundChannel():
+		t.Fatal("an unauthorized user's /new reached the agent")
+	case <-time.After(100 * time.Millisecond):
+		// expected: nothing forwarded
 	}
 }
 

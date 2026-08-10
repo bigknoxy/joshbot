@@ -92,21 +92,50 @@ func TestInstallerMatchesReleaseAssetNaming(t *testing.T) {
 }
 
 // TestInstallerFailsClosedOnChecksumMismatch guards the security property that
-// a corrupted or tampered download aborts the install rather than warning.
+// a download which cannot be verified aborts the install rather than warning.
+//
+// This is a static check because the behavioural one needs the network: the
+// end-to-end coverage lives in scripts/test-install.sh, which is not run in CI.
+// It asserts the property rather than an exact sentence — the wording of these
+// messages is expected to change, the failing-closed is not.
 func TestInstallerFailsClosedOnChecksumMismatch(t *testing.T) {
 	install := readRepoFile(t, "install.sh")
 
-	idx := strings.Index(install, "Checksum mismatch")
-	if idx < 0 {
-		t.Fatal("install.sh no longer handles checksum mismatch")
+	// aborts reports whether the block introduced by marker stops the install.
+	// `die` is the script's abort helper; a bare `exit 1` also qualifies.
+	aborts := func(marker string) bool {
+		idx := strings.Index(strings.ToLower(install), strings.ToLower(marker))
+		if idx < 0 {
+			return false
+		}
+		// Start at the beginning of the marker's own line: the message is an
+		// argument to `die`, so the call itself sits before the marker text.
+		if lineStart := strings.LastIndex(install[:idx], "\n"); lineStart >= 0 {
+			idx = lineStart + 1
+		}
+		block := install[idx:]
+		if end := strings.Index(block, "\n    fi"); end > 0 {
+			block = block[:end]
+		}
+		return strings.Contains(block, "die ") || strings.Contains(block, "exit 1")
 	}
-	// Look at the handling block following the message.
-	tail := install[idx:]
-	if end := strings.Index(tail, "\n    fi"); end > 0 {
-		tail = tail[:end]
+
+	// A checksum that does not match: the download is corrupt or tampered with.
+	if !aborts("checksum mismatch") {
+		t.Error("install.sh must abort on a checksum mismatch, not warn and continue")
 	}
-	if !strings.Contains(tail, "exit 1") {
-		t.Errorf("install.sh must exit on checksum mismatch, not continue; got:\n%s", tail)
+
+	// Checksums that cannot be fetched at all. This used to print
+	// "No checksums available" and install anyway, which turned
+	// "verification unavailable" into "not verified".
+	if !aborts("could not fetch the release checksums") {
+		t.Error("install.sh must abort when the release checksums cannot be fetched")
+	}
+
+	// The override has to exist and be opt-in, so an operator who genuinely
+	// needs it is not stuck, and nobody gets it by accident.
+	if !strings.Contains(install, "JOSHBOT_SKIP_CHECKSUM") {
+		t.Error("install.sh should offer a documented override for the fail-closed check")
 	}
 }
 

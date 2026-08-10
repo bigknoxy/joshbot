@@ -329,7 +329,7 @@ footer a:hover { text-decoration: underline; }
 <div class="container">
   <div class="page-hero">
     <h1>Architecture</h1>
-    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~22,076 LOC &middot; 985+ tests</div>
+    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~24,800 LOC &middot; 1,135 tests</div>
   </div>
 
   <section>
@@ -358,7 +358,7 @@ footer a:hover { text-decoration: underline; }
         <div class="arrow-label">routed to agent goroutine</div>
         <div class="box amber full"><span class="name">Agent (ReAct Loop)</span><div class="desc">max 20 iterations: think → act → observe</div></div>
         <div class="diagram-row wrap" style="margin-top: 8px;">
-          <div class="box purple"><span class="name">Tools Registry</span><div class="desc">23 built-in tools</div></div>
+          <div class="box purple"><span class="name">Tools Registry</span><div class="desc">22 built-in tools</div></div>
           <div class="box green"><span class="name">Memory System</span><div class="desc">MEMORY.md + HISTORY.md</div></div>
           <div class="box green"><span class="name">Skills System</span><div class="desc">SKILL.md auto-discovery</div></div>
           <div class="box cyan"><span class="name">LLM Providers</span><div class="desc">OpenRouter, Anthropic, etc.</div></div>
@@ -432,19 +432,22 @@ footer a:hover { text-decoration: underline; }
     <p>The project follows Go conventions with <code>cmd/</code> for the entry point and <code>internal/</code> for all implementation packages.</p>
 
     <div class="file-tree">joshbot/
-├── <span class="dir">cmd/joshbot/</span>       <span class="highlight">← CLI entry point, service wiring (~4,050 LOC)</span>
+├── <span class="dir">cmd/joshbot/</span>       <span class="highlight">← CLI entry point, service wiring (~5,920 LOC)</span>
 │   ├── main.go             entry point, flags, gateway
+│   ├── editor.go           raw-mode line editor for the interactive CLI (Tab completion, history, multiline)
+│   ├── terminal.go         ANSI key parsing + raw-mode helpers for the editor
 │   ├── skills_cmd.go       joshbot skills subcommands (list/trust/untrust)
-│   └── main_test.go, utils_test.go
+│   ├── sessions_cmd.go     joshbot sessions subcommands (list/show/prune/new)
+│   └── main_test.go, editor_test.go, utils_test.go
 ├── <span class="dir">internal/</span>             <span class="highlight">← all implementation</span>
 │   ├── <span class="dir">agent/</span>              ReAct loop, context assembly, prompt caching
 │   ├── <span class="dir">memory/</span>             structured fact store (fact.go, search.go)
 │   ├── <span class="dir">skills/</span>             discovery, detection, extraction, validation, trust
-│   ├── <span class="dir">tools/</span>              23 built-in tools + registry, shell sandbox, shell env allowlist
+│   ├── <span class="dir">tools/</span>              22 built-in tools + registry, shell sandbox, shell env allowlist
 │   ├── <span class="dir">channels/</span>           CLI + Telegram channel implementations
 │   ├── <span class="dir">bus/</span>                goroutine message bus
 │   ├── <span class="dir">providers/</span>          LLM provider layer (OpenRouter, Anthropic, etc.)
-│   ├── <span class="dir">session/</span>            JSONL conversation persistence
+│   ├── <span class="dir">session/</span>            JSONL conversation persistence, inventory, transcript formatting
 │   ├── <span class="dir">subagent/</span>           restricted subagent runner
 │   ├── <span class="dir">cron/</span>               task scheduler
 │   ├── <span class="dir">heartbeat/</span>          proactive wake-up checker
@@ -521,10 +524,12 @@ footer a:hover { text-decoration: underline; }
 
     <h3>Agent (<code>internal/agent/</code>)</h3>
     <p>The core ReAct loop. Each message triggers up to 20 think-act-observe iterations. System prompt is assembled from identity files + memory + skills summaries (with mtime-based caching). The agent serializes the tool schema from the Registry into the LLM's function calling format.</p>
+    <p>Slash commands dispatch on the command word and include <code>/new</code>, <code>/model [name]</code>, <code>/personality [name]</code>, <code>/compact</code>, <code>/status</code> and <code>/help</code>. <code>/model</code> and <code>/personality</code> are <strong>per-session</strong> — each <code>Session</code> carries <code>ModelOverride</code> and <code>Personality</code> persisted in its metadata sidecar, so a model or personality chosen mid-conversation survives a restart (resolution order: session override, then a global runtime override, then the config default). <code>/model ... --global</code> writes the config default for all sessions. <code>/new</code> clears both; <code>/compact</code> summarizes context on demand. These commands are forwarded from the Telegram menu too, with the same allowlist gate as a direct message.</p>
 
     <h3>Tools (<code>internal/tools/</code>)</h3>
     <p>23 tools implement the <code>Tool</code> interface. Each declares Name, Description, Parameters, and Execute. The Registry handles discovery and execution. Tools include: filesystem (plus read/write/edit/list/glob/grep aliases), shell (deny-listed, opt-in sandbox), web fetch (SSRF-protected, aliased for search/fetch/code/company/research), memory search, skill management, config, parallel subagent, chain execution, subagent profile config, message sending, and cron (duration-based scheduled reminders).</p>
     <p>Shell commands run with an <strong>allowlisted environment</strong> (<code>internal/tools/shell_env.go</code>) rather than inheriting joshbot's own process environment — provider API keys and other secrets are stripped before a command spawns, screened a second time against secret-shaped variable names. Optionally, <code>tools.shell_sandbox: "workspace"</code> confines shell commands to the workspace plus build caches and denies outbound network via Linux Landlock (<code>internal/tools/sandbox*.go</code>); it's off by default, Linux-only, and fails closed if the kernel doesn't support it. Web fetches are checked for SSRF both by hostname up front and again at dial time against the resolved IP, closing the DNS-rebinding gap between the two checks.</p>
+    <p>Anything joshbot logs or prints goes through <code>internal/redact</code> first. The log writer and <code>joshbot status</code> are wrapped, so a credential that arrives in a tool result — the model runs <code>cat config.yml</code> and the output carries an API key — never reaches the log verbatim. Vendor key shapes, <code>Authorization</code> headers (the scheme is kept, the credential replaced) and credential-shaped assignments become <code>[REDACTED]</code>, and the host home directory becomes <code>~</code>. Session files on disk are deliberately exempt: rewriting conversation content on save would mangle legitimate text and add a second way for a session to be corrupted, so data at rest relies on the <code>0600</code> mode instead.</p>
 
     <h3>Memory System (<code>internal/memory/</code>)</h3>
     <p>Two files: <code>MEMORY.md</code> (always in context — key facts, preferences, decisions) and <code>HISTORY.md</code> (grep-searchable event log for recall). Facts are extracted after each conversation turn by the learning module.</p>
@@ -564,7 +569,12 @@ footer a:hover { text-decoration: underline; }
   }
 }</div>
     </div>
+    <p><code>agents.defaults.streaming</code> (default <code>false</code>) makes the ReAct loop call the provider's <code>ChatStream</code> and forward text deltas to a context-carried sink as they arrive, so the interactive CLI prints the reply while it is being generated. It activates only when a sink is attached — the interactive CLI on a real terminal — so <code>joshbot agent -m</code>, piped output and Telegram are byte-identical to the non-streaming path. The trade is deliberate: streaming forfeits the transparent provider fallback, because text already printed cannot be retried, so a mid-stream failure appends a visible <code>[stream error: ...]</code> marker rather than silently switching providers.</p>
+    <p>The interactive CLI (<code>runAgentLoop</code> in <code>cmd/joshbot/main.go</code>) swaps the plain <code>&gt; </code> prompt for a raw-mode line editor (<code>editor.go</code>/<code>terminal.go</code>) when both stdin and stdout are real terminals. It adds Tab slash-command completion, Up/Down history, Home/End/Delete editing, Alt+Enter multiline input and Ctrl+C/Ctrl+D to quit, and shows the session's current model in the prompt. A single reader goroutine lives for the editor's lifetime so it never swallows the first bytes of the next line. The editor activates only on a genuine TTY, so piped or scripted output is byte-identical to the plain prompt.</p>
     <p>Environment variable overrides: <code>JOSHBOT_PROVIDERS__OPENROUTER__API_KEY</code> or <code>JOSHBOT_MODELS_CONFIG__AGENT__MODEL</code>. Config is validated JSON, stored at <code>~/.joshbot/config.json</code>, written with <code>0600</code> permissions since it holds live provider API keys. An explicit <code>--config &lt;file&gt;</code> flag names a specific config file, overriding the default home-directory location.</p>
+    <p>The same owner-only treatment covers everything else joshbot writes under <code>~/.joshbot/</code>: session JSONL files, their <code>.meta.json</code> sidecars and the log file are all <code>0600</code> inside <code>0750</code> directories, because a transcript routinely contains credentials, personal data and raw tool output. Session writes go through an atomic write with a per-writer temp name, so the gateway and a concurrent <code>joshbot agent -m</code> sharing the sessions directory cannot publish a torn file. A load that meets an unreadable line skips that line rather than failing the whole session — there is one session per <code>channel:senderID</code> and a fatal parse would lock that user out permanently — and preserves the original bytes at <code>&lt;session-id&gt;.jsonl.corrupt</code> for inspection.</p>
+    <p>Sessions are inspected and cleared with <code>joshbot sessions</code> — <code>list</code>, <code>show &lt;id&gt; [--last N]</code>, <code>prune &lt;id&gt;|--older-than &lt;d&gt;</code> and <code>new &lt;id&gt;</code>. It is not a resume feature: a session is loaded automatically on every inbound message and there is exactly one per user per channel, so there is nothing to select. <code>show</code> output passes through the same redaction as the log. Destructive subcommands prompt, take <code>--force</code> for unattended use, and exit non-zero rather than block when there is no terminal.</p>
+    <p>Once a session crosses <code>agents.defaults.compaction_threshold</code> it is summarized into a single compaction record stored at index 0 of the session, so the summary is computed once rather than rebuilt on every later turn. The messages it replaces are appended to an append-only <code>&lt;session-id&gt;.history.jsonl</code> archive before they leave the live session — the agent never reads that archive back, and if the append fails the compaction is abandoned, since recomputing a summary is cheaper than destroying history. The archive is not rotated or pruned, so it grows for the life of the session.</p>
   </section>
 </div>
 

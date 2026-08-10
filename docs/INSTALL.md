@@ -66,14 +66,24 @@ curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | 
 ```
 
 This script will:
-1. Download the latest pre-built binary for your platform
-2. Verify the checksum
+1. Download the pre-built binary for your platform
+2. Verify it against the release checksums — and **refuse to install** if they
+   do not match, or cannot be fetched at all
 3. Install the binary to `~/.local/bin` (preferred) or `/usr/local/bin`
 
-For a specific version:
+For a specific version, or a different directory:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- -v v1.0.0
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- --version v1.45.2
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- --bin-dir ~/bin
 ```
+
+`--bin-dir` creates the directory if it does not exist. Re-running the script
+upgrades an existing installation in place; installing over an unrelated binary
+at the same path requires `--force`.
+
+Checksum verification fails closed: if the release checksums cannot be
+retrieved, the script installs nothing rather than continuing unverified. Set
+`JOSHBOT_SKIP_CHECKSUM=1` to override that, at your own risk.
 
 After installation, verify it works:
 
@@ -289,6 +299,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot status` | Show configuration and status |
 | `joshbot skills list` \| `trust <name>` \| `untrust <name>` | Review and approve workspace skills |
 | `joshbot configure` | Configure LLM providers and settings |
+| `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` | Inspect and manage stored conversations |
 | `joshbot auth github-copilot` \| `status` | Manage OAuth authentication |
 | `joshbot service install` \| `uninstall` \| `status` | Manage joshbot as a system service |
 | `joshbot update` | Update to the latest release |
@@ -308,7 +319,14 @@ joshbot stores all configuration and data in `~/.joshbot/`:
 ~/.joshbot/
 ├── config.json          # Main configuration file (0600)
 ├── skills.trust         # Approved workspace skills (0600)
-├── sessions/            # Conversation history (JSONL)
+├── sessions/            # Conversation history, one JSONL file per
+│                        #   channel:senderID (0600). A load that hits an
+│                        #   unreadable line skips it and preserves the
+│                        #   original bytes at <session-id>.jsonl.corrupt.
+│                        #   Compaction moves the summarized messages to an
+│                        #   append-only <session-id>.history.jsonl archive,
+│                        #   which the agent never reads back and which grows
+│                        #   for the life of the session
 ├── media/               # Downloaded media files
 ├── cron/                # Created but unused; jobs live in workspace/cron/jobs.json
 └── workspace/           # Memory, skills, and context files
@@ -419,7 +437,8 @@ The old format is still supported for backward compatibility:
       "max_tokens": 8192,
       "temperature": 0.7,
       "max_tool_iterations": 20,
-      "memory_window": 50
+      "memory_window": 50,
+      "streaming": false
     }
   },
   "channels": {
@@ -668,6 +687,15 @@ workspace/
 | `HISTORY.md` | Timestamped log of past conversations (grep-searchable) |
 | `HEARTBEAT.md` | Tasks for autonomous processing (checked every 5 min) |
 
+### Streaming Responses
+
+`agents.defaults.streaming` (default `false`) prints the reply as it arrives
+rather than after the turn completes. It applies only to the interactive CLI on
+a real terminal — `joshbot agent -m` and piped output are unchanged — and it
+trades away the non-streaming path's transparent provider fallback: once text
+has been printed it cannot be retried against another provider, so a mid-stream
+failure appends a visible `[stream error: ...]` marker instead.
+
 ### Skill Approval
 
 A `SKILL.md` placed in `workspace/skills/` — whether you write it or the agent creates it for itself — becomes part of the agent's standing instructions, so it is **inert until you approve it**:
@@ -805,8 +833,13 @@ export PATH=$PATH:$(go env GOPATH)/bin
 
 **Solution:**
 ```bash
-# Fix permissions
-chmod -R 755 ~/.joshbot
+# Take ownership and restore owner-only access.
+# Do NOT use `chmod -R 755` here: config.json holds live provider API keys,
+# and the session and log files hold full conversation content.
+chown -R "$USER" ~/.joshbot
+chmod 700 ~/.joshbot
+find ~/.joshbot -type d -exec chmod 700 {} +
+find ~/.joshbot -type f -exec chmod 600 {} +
 
 # Or recreate
 rm -rf ~/.joshbot
@@ -857,4 +890,4 @@ rm -rf ~/.joshbot  # Also removes config, memory, sessions
 - **Set up Telegram:** Chat with your bot from your phone
 - **Configure heartbeat:** Set up proactive tasks for autonomous processing
 
-For more details, see the [README.md](../README.md) or explore the `skills/` directory for examples.
+For more details, see the [README.md](../README.md) or explore the `internal/skills/bundled/` directory for examples.

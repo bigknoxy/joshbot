@@ -1,6 +1,6 @@
 # Design: response streaming
 
-Status: **draft.** Stages 1–2 implemented (per-request sink plumbing, chunk accumulator); stages 3–5 are not.
+Status: **draft.** Stages 1–3 implemented (per-request sink plumbing, chunk accumulator, reactLoop streaming + CLI sink); stages 4–5 are not.
 
 ## Goal
 

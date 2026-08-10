@@ -68,8 +68,35 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, fmt.Errorf("config path %s is a directory; give the path to a config file", abs)
 	}
 
-	SetHome(filepath.Dir(abs))
-	activeConfigPath = abs
+	if err := UseConfigFile(abs); err != nil {
+		return nil, err
+	}
 
 	return Load()
+}
+
+// UseConfigFile anchors joshbot at an explicit config file without requiring
+// that the file already exist.
+//
+// LoadFrom insists on an existing file, because reading a path that is not
+// there and silently falling back to defaults tells the caller their file was
+// read when it was not. Onboarding is the opposite case: it is creating the
+// file. It still has to anchor first, since it inspects and backs up the home
+// directory before it writes anything — anchoring afterwards means --config
+// names one location while the backup and the rewrite hit the default home.
+func UseConfigFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve config path %s: %w", path, err)
+	}
+	if info, err := os.Stat(abs); err == nil && info.IsDir() {
+		return fmt.Errorf("config path %s is a directory; give the path to a config file", abs)
+	}
+
+	SetHome(filepath.Dir(abs))
+	activeConfigPath = abs
+	return nil
 }

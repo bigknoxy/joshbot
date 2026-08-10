@@ -233,9 +233,10 @@ func TestLoad_LiteralAPIKeyStillWorks(t *testing.T) {
 	t.Run("model-centric", func(t *testing.T) {
 		writeConfigHome(t, `{
 		  "providers": {"openrouter": {"enabled": true, "api_key": "`+fileKey+`"}},
-		  "models": {
+		  "models_config": {
 		    "agent": {"model": "openrouter/anthropic/claude-sonnet-4"},
-		    "models": [{"name": "openrouter/anthropic/claude-sonnet-4"}]
+		    "models": [{"name": "openrouter/anthropic/claude-sonnet-4",
+		                "model": "openrouter/anthropic/claude-sonnet-4"}]
 		  }
 		}`)
 		cfg, err := Load()

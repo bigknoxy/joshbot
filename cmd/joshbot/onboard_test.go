@@ -509,6 +509,61 @@ func TestRunOnboard_Force_FreshHome(t *testing.T) {
 
 // onboard --force must preserve a configured API key instead of prompting for
 // one and, on a closed stdin, silently dropping it (the old behaviour).
+// The bug from the field: reconfiguring an existing NVIDIA install, then
+// pressing Enter at the API key prompt to keep the current key, saved a config
+// with no enabled provider at all. promptProviderAPIKey returned "" for
+// "keep current", runOnboard read that as "no provider configured" and skipped
+// the provider block, so the config fell back to config.Defaults()'s seed of a
+// disabled openrouter entry and `joshbot agent` reported "no providers enabled".
+func TestRunOnboard_Interactive_KeepCurrentAPIKey(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".joshbot")
+	setHome(t, home)
+
+	existing := config.Defaults()
+	existing.Providers = map[string]config.ProviderConfig{
+		"nvidia": {APIKey: "nvapi-keepme", Enabled: true},
+	}
+	existing.ProviderDefaults.Default = "nvidia"
+	existing.Agents.Defaults.Model = "z-ai/glm-5.2"
+	if err := config.Save(existing); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	// 1: keep existing data; 1: nvidia; Enter: keep current key;
+	// 2: personality; Enter: keep name; Enter: accept model;
+	// 2: skip telegram; 2: skip service install.
+	withStdinInput(t, "1\n1\n\n2\n\n\n2\n2\n")
+	calls := stubTokenValidator(t, func(string) error { return nil })
+
+	if err := onboardApp().Run([]string{
+		"joshbot", "--config", filepath.Join(home, "config.json"), "onboard",
+	}); err != nil {
+		t.Fatalf("onboard failed: %v", err)
+	}
+
+	cfg, err := config.LoadFrom(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	p, ok := cfg.Providers["nvidia"]
+	if !ok {
+		t.Fatalf("nvidia provider missing from config: %+v", cfg.Providers)
+	}
+	if p.APIKey != "nvapi-keepme" {
+		t.Errorf("nvidia api_key = %q, want existing key preserved", p.APIKey)
+	}
+	if !p.Enabled {
+		t.Error("nvidia must stay enabled after keep-current onboard")
+	}
+	if cfg.ProviderDefaults.Default != "nvidia" {
+		t.Errorf("default provider = %q, want nvidia", cfg.ProviderDefaults.Default)
+	}
+	if *calls != 0 {
+		t.Errorf("token validator called %d times, want 0 (telegram skipped)", *calls)
+	}
+}
+
 func TestRunOnboard_Force_PreservesExistingAPIKey(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".joshbot")
 	setHome(t, home)

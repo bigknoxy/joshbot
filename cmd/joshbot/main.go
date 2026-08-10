@@ -2303,8 +2303,10 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, 
 	fmt.Printf("\nGet your %s at: %s\n", keyName, keyURL)
 
 	// Show existing key if available
+	var currentKey string
 	if existingCfg != nil {
 		if p, ok := existingCfg.Providers[provider]; ok && p.APIKey != "" {
+			currentKey = p.APIKey
 			fmt.Printf("Current API key: %s\n", configure.MaskAPIKey(p.APIKey))
 			fmt.Print("Enter new API key (or press Enter to keep current): ")
 		} else {
@@ -2316,7 +2318,18 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, 
 
 	var apiKey string
 	fmt.Scanln(&apiKey)
-	return strings.TrimSpace(apiKey), nil
+	apiKey = strings.TrimSpace(apiKey)
+
+	// Pressing Enter means "keep the current key", not "clear the provider".
+	// The caller in runOnboard treats an empty key as "no provider configured"
+	// and falls back to the default (disabled) openrouter entry, silently
+	// dropping the provider that was already working — the field report that
+	// introduced this fix: reconfiguring an existing NVIDIA install with
+	// Enter-to-keep saved a config with no enabled provider at all.
+	if apiKey == "" && currentKey != "" {
+		apiKey = currentKey
+	}
+	return apiKey, nil
 }
 
 // selectPersonality prompts the user to choose a personality and returns the choice.

@@ -124,6 +124,34 @@ func TestValidateToken_TransportFailure_RetriesUntilSuccess(t *testing.T) {
 	}
 }
 
+// A connection that drops after the headers arrive — a reset or timeout during
+// the body read — is still a transport failure and must be retried, not
+// reported as a rejected token. The server advertises a body larger than it
+// writes, so the client hits an unexpected EOF inside io.ReadAll.
+func TestValidateToken_BodyReadFailure_RetriesUntilSuccess(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&calls, 1) == 1 {
+			// Content-Length claims 100 bytes; only ~12 are written, so the
+			// client reads an unexpected EOF.
+			w.Header().Set("Content-Length", "100")
+			fmt.Fprint(w, `{"ok":true}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"result":{"id":1234567890,"is_bot":true}}`)
+	}))
+	defer srv.Close()
+
+	err := validateTokenWith(validTestToken, srv.URL, &http.Client{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Errorf("validateTokenWith = %v, want nil after retry", err)
+	}
+	if calls < 2 {
+		t.Errorf("expected at least 2 attempts, got %d", calls)
+	}
+}
+
 // When the network is down for all attempts, the error must never contain the
 // token. The old implementation embedded the full request URL — including the
 // credential — in the transport error, which ended up printed in the setup

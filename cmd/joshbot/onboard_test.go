@@ -248,16 +248,53 @@ func TestSetupTelegram_RejectedToken_SaysCheckToken(t *testing.T) {
 }
 
 // The user gets exactly one retry: the first token fails, the second succeeds.
+// The stub fails once so this actually exercises the fail->succeed recovery
+// path, and the trailing empty usernames line keeps AllowFrom empty.
 func TestSetupTelegram_FirstTokenFails_SecondSucceeds(t *testing.T) {
 	withStdinInput(t, "1\n"+validOnboardToken+"\n"+validOnboardToken+"\n\n")
-	calls := stubTokenValidator(t, func(string) error { return nil })
+	var first = true
+	calls := stubTokenValidator(t, func(string) error {
+		if first {
+			first = false
+			return networkError()
+		}
+		return nil
+	})
 
 	cfg := setupTelegram(nil)
 	if cfg == nil || cfg.Token != validOnboardToken {
 		t.Errorf("second attempt should succeed, got %+v", cfg)
 	}
-	if *calls != 1 {
-		t.Errorf("validator called %d times, want 1", *calls)
+	if *calls != 2 {
+		t.Errorf("validator called %d times, want 2 (one failure, one success)", *calls)
+	}
+	if len(cfg.AllowFrom) != 0 {
+		t.Errorf("AllowFrom = %v, want empty (usernames prompt left blank)", cfg.AllowFrom)
+	}
+}
+
+// Aborting a token change (cancel / empty) must keep the existing working
+// token; the old code returned nil and runOnboard saved Telegram as disabled,
+// disconnecting a live bot.
+func TestSetupTelegram_Existing_ChangeCancelled_KeepsExisting(t *testing.T) {
+	existing := &config.Config{Channels: config.ChannelsConfig{Telegram: config.TelegramConfig{
+		Enabled: true, Token: "old-token", AllowFrom: []string{"@old"},
+	}}}
+
+	for _, input := range []string{"2\ncancel\n", "2\n\n"} {
+		withStdinInput(t, input)
+		out := captureStdout(t, func() {
+			cfg := setupTelegram(existing)
+			if cfg == nil {
+				t.Fatalf("input %q: expected a Telegram config", input)
+			}
+			if !cfg.Enabled || cfg.Token != "old-token" {
+				t.Errorf("input %q: aborting a change must keep the existing token, got %+v", input, cfg)
+			}
+		})
+		if !strings.Contains(out, "Keeping the existing Telegram configuration") {
+			t.Errorf("input %q: missing keep-existing message:\n%s", input, out)
+		}
 	}
 }
 

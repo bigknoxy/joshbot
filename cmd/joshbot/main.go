@@ -2553,6 +2553,17 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 		fmt.Scanln(&token)
 
 		if token == "cancel" || token == "" {
+			if existingEnabled && existingToken != "" {
+				// Aborting a token change must not disconnect a working bot:
+				// returning nil here would make runOnboard save the config with
+				// Telegram disabled.
+				fmt.Println("\nTelegram setup cancelled. Keeping the existing Telegram configuration.")
+				return &config.TelegramConfig{
+					Enabled:   true,
+					Token:     existingToken,
+					AllowFrom: existingAllowFrom,
+				}
+			}
 			fmt.Println("\nTelegram setup cancelled.")
 			return nil
 		}
@@ -2567,7 +2578,8 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 				fmt.Println("This looks like a network problem — joshbot could not reach the Telegram API.")
 				fmt.Println("Check your internet connection and proxy settings.")
 			} else {
-				fmt.Println("The token was rejected by Telegram. Double-check it was copied in full.")
+				fmt.Println("The token was rejected by Telegram, or is not in the expected <numeric-id>:<secret> format.")
+				fmt.Println("Double-check it was copied in full.")
 			}
 			if prompt == 2 {
 				return telegramValidationFailed(existingEnabled, existingToken, existingAllowFrom)

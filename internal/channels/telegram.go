@@ -1704,7 +1704,10 @@ func validateTokenAttempt(token, baseURL string, client *http.Client) error {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		// A reset or timeout after the headers arrived is still a
+		// connectivity failure and must be retried, not reported as a
+		// rejected token.
+		return fmt.Errorf("failed to read response: %w: %v", ErrTelegramNetwork, err)
 	}
 
 	var result struct {

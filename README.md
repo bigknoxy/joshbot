@@ -547,6 +547,27 @@ Two limits are worth knowing before turning it on:
   rather than silently retrying against the next provider in the chain. If you
   value the retry more than the latency, leave it off.
 
+### Configuration Precedence
+
+Where two sources set the same value, the later one in this list wins:
+
+1. **Defaults** — compiled in (`config.Defaults()`).
+2. **Config file** — `~/.joshbot/config.json`, or whatever `--config` points at.
+3. **Environment variables** — any `JOSHBOT_*` variable overrides the file value
+   for that key (`config.Load` applies the file first, then the env overrides).
+4. **Command flags** — a flag that carries a config value (`onboard --provider`,
+   `--api-key`, `--api-base`, `agent --model`) overrides both.
+
+Two things this list deliberately does not include:
+
+- **There is no project-scoped config.** joshbot does not read a `.joshbot/` or
+  `joshbot.json` from the working directory — one machine has one config, chosen
+  by `--config` when you need a second. A per-directory config would silently
+  change which provider and workspace an agent run used depending on where it
+  was invoked from.
+- `--config` selects *which file* is read; it is not itself an override. Point it
+  at a file and the env layer still applies on top.
+
 ### Environment Variables
 
 All config values can be set via environment variables with `JOSHBOT_` prefix:

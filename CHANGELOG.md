@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP client** (#155) — stdio-transport Model Context Protocol servers configurable in `config.json`; discovered tools register into the normal tool registry, namespaced `mcp__<server>__<tool>` so an MCP server cannot shadow a built-in tool.
 - **macOS Seatbelt shell sandbox** (#150) — `tools.shell_sandbox: "workspace"` now confines shell commands on macOS via `sandbox-exec`, mirroring the Linux Landlock design. On platforms with no sandbox, the shell tool defaults to allowlist-only.
 - **`heartbeat.interval` config key** (#141) — the scanner interval is configurable instead of hardcoded.
+- **Documented configuration precedence** (#148) — README now states the order (defaults < config file < `JOSHBOT_*` env < command flags) and records that there is deliberately no project-scoped config file, so an `agent -m` run cannot change provider or workspace based on the directory it was invoked from.
 
 ### Changed
 - **`allow_from` env overrides** — `JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM` and `JOSHBOT_CHANNELS__DISCORD__ALLOW_FROM` accept a comma-separated list (blank entries dropped), so the key the fail-closed startup warning names can actually be set from the environment.

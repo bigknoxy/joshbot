@@ -491,7 +491,8 @@ The old format is still supported for backward compatibility:
     "shell_allow_list": [],
     "filesystem_allowed_paths": [],
     "shell_sandbox": "off",
-    "shell_sandbox_allow_network": false
+    "shell_sandbox_allow_network": false,
+    "shell_approval": "off"
   },
   "gateway": {
     "host": "0.0.0.0",
@@ -648,9 +649,9 @@ Example:
 
 > Tip: When `shell_allow_list` is non-empty, commands must match an entry exactly or use it as a prefix (e.g., `git status`).
 
-#### Shell Sandbox (Linux only, opt-in)
+#### Shell Sandbox (Linux and macOS, opt-in)
 
-`restrict_to_workspace` and `shell_allow_list` are text-based checks — useful, but not a hard boundary. `tools.shell_sandbox` adds real OS-level containment via [Landlock](https://landlock.io/):
+`restrict_to_workspace` and `shell_allow_list` are text-based checks — useful, but not a hard boundary. `tools.shell_sandbox` adds real OS-level containment — [Landlock](https://landlock.io/) on Linux, Seatbelt (`sandbox-exec`) on macOS:
 
 ```json
 {
@@ -664,7 +665,27 @@ Example:
 - `"off"` (default) — no containment beyond the checks above.
 - `"workspace"` — confines shell commands' filesystem access to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); everything else, including the rest of `$HOME`, is unreachable. Outbound TCP is denied unless `shell_sandbox_allow_network` is `true`.
 
-This is Linux-only and fails closed: an unrecognized value, a non-Linux OS, or a kernel without Landlock support makes joshbot refuse to start rather than run unconfined. Set it back to `"off"` if that happens and you don't need containment.
+It fails closed: an unrecognized value, a platform with no sandbox implementation (Windows, BSD), or a Linux kernel without Landlock support makes joshbot refuse to start rather than run unconfined. Set it back to `"off"` if that happens and you don't need containment. On platforms with no sandbox available, the shell tool instead defaults to allowlist-only when `tools.shell_allow_list` is unset.
+
+#### Shell Approval (opt-in)
+
+`tools.shell_approval` gates shell commands behind your own decision. The sandbox limits what a command can reach; approval decides whether it runs at all.
+
+```json
+{
+  "tools": {
+    "shell_approval": "interactive"
+  }
+}
+```
+
+- `"off"` (default) — commands run without asking.
+- `"interactive"` — prompt before each command; `[a]ll for this session` stands until you exit the CLI.
+- `"always"` — prompt before every command, with no remembered answer.
+
+The prompt shows the full command line and its working directory, and only an explicit `y` approves — EOF, a timed-out turn and Ctrl-C are all denials. An unrecognized value is a startup error, never a silent `"off"`.
+
+**It only works in the interactive CLI.** The prompt is installed by the interactive loop and only when stdout is a terminal, so the gateway (Telegram/Discord), cron jobs, the heartbeat scanner and piped `agent -m` runs have nobody to ask — with the gate on, their shell commands are **denied** rather than left blocking. If joshbot runs as a service, use `shell_sandbox` and `shell_allow_list` there instead.
 
 Separately, spawned shell commands no longer inherit joshbot's own environment — they get an allowlisted subset (PATH, common toolchain variables, etc.) with anything credential-shaped stripped out, so provider API keys are not exposed to commands the agent runs.
 

@@ -545,7 +545,8 @@ For backward compatibility, the old format still works:
     "shell_allow_list": [],
     "filesystem_allowed_paths": [],
     "shell_sandbox": "off",
-    "shell_sandbox_allow_network": false
+    "shell_sandbox_allow_network": false,
+    "shell_approval": "off"
   }
 }
 ```
@@ -575,6 +576,53 @@ program of the caller's choosing; name them in `shell_allow_list` if you need
 them.
 
 It fails closed: an unrecognized value, or `"workspace"` on a host whose kernel lacks the needed support, is a startup error rather than a silent no-op — set it back to `"off"` to run without containment. The runtime default is intentionally **not** the sandbox: network-denied-by-default breaks common workflows, so macOS/Linux still rely on the deny list by default and you opt in with `tools.shell_sandbox: "workspace"`.
+
+### Shell Approval
+
+`tools.shell_approval` asks *you* before a shell command runs. The sandbox
+decides what a command is able to touch; approval decides whether it runs at
+all, and the two are independent — you can enable either, both, or neither.
+
+```json
+{
+  "tools": {
+    "shell_approval": "interactive"
+  }
+}
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `"off"` (default) | Commands run without asking. |
+| `"interactive"` | Prompt before each command, with a `[a]ll for this session` answer that stands until you exit. |
+| `"always"` | Prompt before every command, with no remembered answer. |
+
+The prompt shows the whole command and its working directory — the arguments
+are the dangerous part, so nothing is elided:
+
+```
+⚠️  shell wants to run:
+    rm -rf ./build
+    in /home/you/workspace
+Allow? [y]es / [n]o / [a]ll for this session:
+```
+
+Two things are worth knowing before you turn it on.
+
+**Only the interactive CLI can ask.** The approver is installed by the
+interactive loop, and only when stdout is a real terminal. Every other entry
+point — the Telegram and Discord gateway, cron jobs, the heartbeat scanner,
+`agent -m` in a pipeline — has nobody to ask, so with the gate on **its shell
+commands are refused**, not queued. That is deliberate: a prompt that blocked
+would hang a background goroutine, and one that auto-approved on timeout would
+not be a gate. If you run joshbot as a service and want gated shell access
+there, leave `shell_approval` off and reach for `shell_sandbox` and
+`shell_allow_list` instead.
+
+**Anything that is not an explicit `y` is a no**, including a closed stdin, a
+timed-out turn, and Ctrl-C at the prompt. An unrecognised value for the setting
+itself is a startup error rather than a silent `"off"`, so a typo can never
+leave you believing commands are gated when they are not.
 
 ### Streaming Responses
 
@@ -831,6 +879,7 @@ so a server can never shadow a built-in tool like `shell`.
 - `restrict_to_workspace` limits file and shell operations to the workspace unless explicitly allowed.
 - Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
 - `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock on Linux, Seatbelt on macOS) — see [Shell Sandbox](#shell-sandbox) below. On platforms with no sandbox, the shell tool falls back to allowlist-only by default.
+- `tools.shell_approval` asks before each shell command runs — see [Shell Approval](#shell-approval). Only the interactive CLI can prompt; unattended turns (gateway, cron, heartbeat) are denied rather than left blocking.
 - Everything joshbot logs or prints is redacted first: API keys, `Authorization` headers, credential-shaped assignments and your home directory path are replaced with `[REDACTED]` and `~`, so a log or `joshbot status` dump can be pasted into a bug report. Session files on disk are deliberately exempt and stay verbatim at `0600` — rewriting conversation content on save would mangle legitimate text.
 
 ## Chat Commands

@@ -287,6 +287,13 @@ type ToolsConfig struct {
 	// Off by default: exfiltrating what was read is the usual goal of an
 	// attack that gets as far as running commands.
 	ShellSandboxAllowNetwork bool `mapstructure:"shell_sandbox_allow_network" json:"shell_sandbox_allow_network,omitempty" yaml:"shell_sandbox_allow_network,omitempty"`
+	// ShellApproval gates shell commands behind a human decision:
+	// "off" (default), "interactive" (ask, and allow a remembered "yes to
+	// everything" for the session) or "always" (ask for every command, with
+	// no remembered answer). An unknown value is a startup error, like
+	// ShellSandbox. Turns nobody is watching — cron, heartbeat — carry no
+	// approver and are denied outright rather than left blocking.
+	ShellApproval string `mapstructure:"shell_approval" json:"shell_approval,omitempty" yaml:"shell_approval,omitempty"`
 }
 
 // GatewayConfig holds gateway server configuration.

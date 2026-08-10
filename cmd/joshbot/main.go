@@ -467,6 +467,19 @@ func runApp() error {
 	return app.Run(os.Args)
 }
 
+// explicitConfigPath reports the path the user actually chose with --config,
+// or "" when they left the flag alone.
+//
+// "~/.joshbot/config.json" is compared literally because that is the flag's
+// DefaultText: an untilded string the shell never expands, so it means "the
+// user did not choose a path" rather than an actual location.
+func explicitConfigPath(cfgPath string) string {
+	if cfgPath == "" || cfgPath == "~/.joshbot/config.json" {
+		return ""
+	}
+	return cfgPath
+}
+
 // loadConfig loads configuration from file or environment.
 func loadConfig(cfgPath string) (*config.Config, error) {
 	var cfg *config.Config
@@ -480,7 +493,7 @@ func loadConfig(cfgPath string) (*config.Config, error) {
 	// "~/.joshbot/config.json" is compared literally because that is the flag's
 	// DefaultText: an untilded string the shell never expands, so it means "the
 	// user did not choose a path" rather than an actual location.
-	if cfgPath != "" && cfgPath != "~/.joshbot/config.json" {
+	if explicitConfigPath(cfgPath) != "" {
 		cfg, err = config.LoadFrom(cfgPath)
 	} else {
 		cfg, err = config.Load()
@@ -2504,6 +2517,16 @@ func runOnboard(c *cli.Context) error {
 	providerFlag := c.String("provider")
 	apiKeyFlag := c.String("api-key")
 	apiBaseFlag := c.String("api-base")
+
+	// Anchor before anything reads or writes the home: onboarding inspects the
+	// install, backs it up and rewrites it, all from homeDir. Anchoring later
+	// meant --config selected where the new config.json was written while the
+	// backup and the deletion still hit the real ~/.joshbot (issue #97).
+	if p := explicitConfigPath(c.Path("config")); p != "" {
+		if err := config.UseConfigFile(p); err != nil {
+			return err
+		}
+	}
 	homeDir := config.DefaultHome
 
 	// An unknown --provider used to be accepted, "validated" and written out as

@@ -567,6 +567,10 @@ Two things this list deliberately does not include:
   was invoked from.
 - `--config` selects *which file* is read; it is not itself an override. Point it
   at a file and the env layer still applies on top.
+- `--config` anchors the **whole home**, not just the file. Sessions, media, cron
+  and the skills trust store live beside the config that selected them, so
+  `joshbot onboard --config /tmp/trial/config.json` builds a complete second
+  install under `/tmp/trial/` and leaves `~/.joshbot/` alone.
 
 ### Environment Variables
 

@@ -61,9 +61,25 @@ func NewShellTool(timeout time.Duration, workspace string, restrict bool, allowL
 // -c), `go` (go run, and go test's build directives), and `git` (git -c
 // core.pager='sh -c …', git -c alias.x='!sh …'). An operator who needs them can
 // still name them in tools.shell_allow_list, having chosen to.
+// `rg` and `sort` were removed for the same property: `rg --pre PROGRAM` runs
+// PROGRAM once per file, and `sort --compress-program=PROGRAM` execs it when
+// the sort spills to disk.
+//
+// Screening flag *values* instead of removing the binary was considered and
+// rejected: the boundary would then depend on knowing every exec-capable option
+// of every tool, across GNU/BSD/busybox variants and future releases, and a
+// boundary that has to be exhaustive to hold is not a boundary. Removal is
+// shaped like the property being enforced.
+//
+// Every remaining entry was re-audited against the criterion: none of `ls`,
+// `cat`, `pwd`, `echo`, `head`, `tail`, `wc`, `grep`, `uniq`, `diff`, `stat`,
+// `file`, `date`, `whoami`, `uname`, `hostname`, `which`, `tree`, `du`, `df` or
+// `gofmt` has an option that names a program to run. Anything added here must
+// be checked the same way; TestDefaultUnsandboxedAllowlistHasNoExecutors pins
+// the known escapes.
 var defaultUnsandboxedAllowlist = []string{
-	"ls", "cat", "pwd", "echo", "head", "tail", "wc", "grep", "rg",
-	"sort", "uniq", "diff", "stat", "file", "date", "whoami", "uname",
+	"ls", "cat", "pwd", "echo", "head", "tail", "wc", "grep",
+	"uniq", "diff", "stat", "file", "date", "whoami", "uname",
 	"hostname", "which", "tree", "du", "df", "gofmt",
 }
 
@@ -86,7 +102,7 @@ func (t *ShellTool) checkAllowList(cmd string) error {
 	trimmed := strings.TrimSpace(cmd)
 
 	if construct := commandSeparator(trimmed); construct != "" {
-		return fmt.Errorf("command not allowed: %q chains a second command, "+
+		return fmt.Errorf("command not allowed: %q chains a second command or redirects I/O, "+
 			"which is refused while an allowlist is in force; run one command per call", construct)
 	}
 
@@ -98,10 +114,31 @@ func (t *ShellTool) checkAllowList(cmd string) error {
 	return fmt.Errorf("command not in allowlist: %s", trimmed)
 }
 
-// commandSeparators are the shell constructs that start a new command word.
-// `$(`, backtick and the process-substitution forms are included because the
-// shell runs their bodies too.
-var commandSeparators = []string{"$(", "<(", ">(", ";", "&", "|", "\n", "`"}
+// commandSeparators are the shell constructs that start a new command word or
+// otherwise let the caller direct the command's effects somewhere the allowlist
+// never approved. `$(`, backtick and the process-substitution forms are
+// included because the shell runs their bodies too.
+//
+// Redirection belongs here even though it starts no new process. The command is
+// handed to `sh -c` unchanged, so with an allowlist of read-only tools in force
+// `echo PWNED > /etc/anything`, `echo key >> ~/.ssh/authorized_keys` and
+// `cat < /etc/passwd` all passed the first-word check and then wrote or read
+// wherever they liked — the allowlist's whole premise is that these commands
+// cannot affect state outside what they are handed, and a redirection undoes
+// that with one character. Matching `>` and `<` as substrings covers `>>`,
+// `2>`, `&>`, `<<`, `<>` and friends, as well as the process-substitution forms
+// listed separately for clarity.
+//
+// `\r` is listed because a bare carriage return terminates a command line for
+// some shells and, more practically, is how a `\n` gets smuggled past a check
+// that only knows about `\n`. `$'` is listed because $'...' ANSI-C quoting
+// expands escapes — $'\x3b' is a semicolon the substring scan would never
+// see.
+var commandSeparators = []string{
+	"$(", "<(", ">(", "$'",
+	";", "&", "|", "\n", "\r", "`",
+	">", "<",
+}
 
 // commandSeparator returns the first such construct found in cmd, or "" if
 // there is none. It does not attempt to exempt quoted occurrences: `echo ";"`

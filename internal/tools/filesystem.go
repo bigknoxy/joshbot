@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
-	"syscall"
 )
 
 // ContextKey is a type for context keys.
@@ -137,25 +138,25 @@ func (t *FilesystemTool) Execute(ctx interface{}, args map[string]any) ToolResul
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.readFile(resolvedPath, args)
+		return t.readFile(t.containmentRoot(workspace, resolvedPath), resolvedPath, args)
 	case "write_file":
 		resolvedPath, err := t.resolveRequiredPath(workspace, args)
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.writeFile(resolvedPath, args)
+		return t.writeFile(t.containmentRoot(workspace, resolvedPath), resolvedPath, args)
 	case "edit_file":
 		resolvedPath, err := t.resolveRequiredPath(workspace, args)
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.editFile(resolvedPath, args)
+		return t.editFile(t.containmentRoot(workspace, resolvedPath), resolvedPath, args)
 	case "list_dir":
 		resolvedPath, err := t.resolveRequiredPath(workspace, args)
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.listDir(resolvedPath)
+		return t.listDir(t.containmentRoot(workspace, resolvedPath), resolvedPath)
 	case "glob":
 		return t.glob(workspace, args)
 	case "grep":
@@ -208,6 +209,85 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 	return resolved, nil
 }
 
+// containmentRoot picks the directory every subsequent open is walked from, for
+// an already-resolved path. Containment is only meaningful relative to a root:
+// the workspace normally, an explicitly allowed path when the operator named
+// one, and the filesystem root when restriction is off (the walk still runs,
+// refusing to traverse a symlink, which costs nothing because resolvePath has
+// already resolved the path it returned).
+//
+// Roots are compared symlink-resolved on both sides so a workspace that itself
+// lives behind a symlink (macOS /tmp -> /private/tmp) still matches.
+func (t *FilesystemTool) containmentRoot(workspace, resolved string) string {
+	if !t.restrict {
+		return string(filepath.Separator)
+	}
+
+	base := filepath.Clean(workspace)
+	if rb, err := resolveSymlinks(base); err == nil {
+		base = rb
+	}
+	if isWithinBase(resolved, base) {
+		return base
+	}
+
+	for _, allowed := range t.allowedPaths {
+		a := filepath.Clean(allowed)
+		if r, err := resolveSymlinks(a); err == nil {
+			a = r
+		}
+		if isWithinBase(resolved, a) {
+			return a
+		}
+	}
+
+	// Not inside anything we would permit. resolvePath should already have
+	// refused, but returning the workspace keeps the open contained rather than
+	// falling back to "/" if a future caller reaches here without that check.
+	return base
+}
+
+// safeReadFile reads path through the dirfd walk rooted at root, so no symlink
+// at any component — not just the last — can redirect the read outside.
+func safeReadFile(root, path string) ([]byte, error) {
+	f, err := openInRoot(root, path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// safeWriteFile writes data to path through the same walk. The leaf is opened
+// O_NOFOLLOW too, so an existing symlink there is refused rather than followed.
+func safeWriteFile(root, path string, data []byte, perm os.FileMode) error {
+	f, err := openInRoot(root, path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, werr := f.Write(data); werr != nil {
+		f.Close()
+		return werr
+	}
+	return f.Close()
+}
+
+// readDirIn lists a directory through the same walk, sorted by name to match
+// os.ReadDir's ordering.
+func readDirIn(root, path string) ([]os.DirEntry, error) {
+	f, err := openInRoot(root, path, os.O_RDONLY|openDirFlag, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
+}
+
 // isAllowedPath checks if the path is in the allowed paths list.
 func (t *FilesystemTool) isAllowedPath(path string) bool {
 	for _, allowed := range t.allowedPaths {
@@ -236,7 +316,7 @@ func (t *FilesystemTool) isAllowedResolved(path string) bool {
 }
 
 // readFile reads a file's contents.
-func (t *FilesystemTool) readFile(path string, args map[string]any) ToolResult {
+func (t *FilesystemTool) readFile(root, path string, args map[string]any) ToolResult {
 	offset := 0
 	limit := 100
 
@@ -247,7 +327,7 @@ func (t *FilesystemTool) readFile(path string, args map[string]any) ToolResult {
 		limit = int(l)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := safeReadFile(root, path)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to read file: %w", err)}
 	}
@@ -281,16 +361,16 @@ func (t *FilesystemTool) readFile(path string, args map[string]any) ToolResult {
 }
 
 // writeFile writes content to a file.
-func (t *FilesystemTool) writeFile(path string, args map[string]any) ToolResult {
+func (t *FilesystemTool) writeFile(root, path string, args map[string]any) ToolResult {
 	content, _ := args["content"].(string)
 
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Ensure directory exists. mkdirAllIn, not os.MkdirAll: the latter resolves
+	// intermediate components through symlinks, which is exactly the escape.
+	if err := mkdirAllIn(root, filepath.Dir(path)); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
-	if err := writeNoFollow(path, []byte(content)); err != nil {
+	if err := safeWriteFile(root, path, []byte(content), 0o644); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to write file: %w", err)}
 	}
 
@@ -298,7 +378,7 @@ func (t *FilesystemTool) writeFile(path string, args map[string]any) ToolResult 
 }
 
 // editFile performs search and replace on a file.
-func (t *FilesystemTool) editFile(path string, args map[string]any) ToolResult {
+func (t *FilesystemTool) editFile(root, path string, args map[string]any) ToolResult {
 	search, _ := args["search"].(string)
 	replace, _ := args["replace"].(string)
 
@@ -306,7 +386,7 @@ func (t *FilesystemTool) editFile(path string, args map[string]any) ToolResult {
 		return ToolResult{Error: errors.New("search pattern is required")}
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := safeReadFile(root, path)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to read file: %w", err)}
 	}
@@ -318,35 +398,16 @@ func (t *FilesystemTool) editFile(path string, args map[string]any) ToolResult {
 		return ToolResult{Error: errors.New("search pattern not found in file")}
 	}
 
-	if err := writeNoFollow(path, []byte(modified)); err != nil {
+	if err := safeWriteFile(root, path, []byte(modified), 0o644); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to write file: %w", err)}
 	}
 
 	return ToolResult{Output: fmt.Sprintf("Successfully edited %s", path)}
 }
 
-// writeNoFollow writes data to path, refusing to follow a symlink at the final
-// component. resolvePath has already checked containment, but the check and the
-// open are two separate syscalls: an attacker who can create files in the
-// workspace (the shell tool can) may replace the checked name with a symlink in
-// between and redirect the write anywhere. O_NOFOLLOW makes the kernel reject
-// that atomically — the escape now costs an ELOOP error instead of a file
-// outside the workspace.
-func writeNoFollow(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, werr := f.Write(data); werr != nil {
-		f.Close()
-		return werr
-	}
-	return f.Close()
-}
-
 // listDir lists directory contents.
-func (t *FilesystemTool) listDir(path string) ToolResult {
-	entries, err := os.ReadDir(path)
+func (t *FilesystemTool) listDir(root, path string) ToolResult {
+	entries, err := readDirIn(root, path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return ToolResult{Error: fmt.Errorf("directory does not exist: %s", path)}
@@ -429,19 +490,28 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 	// If path is a file, search just that file
 	// If path is a directory, search all files in it
 	// If path is empty, search the entire workspace
-	searchPath := workspace
-	if path != "" {
-		resolvedPath, err := t.resolvePath(workspace, path)
-		if err != nil {
-			return ToolResult{Error: err}
-		}
-		searchPath = resolvedPath
+	// Resolve even the default, so searchPath and the containment root are
+	// expressed in the same (symlink-resolved) terms — otherwise every read below
+	// would be rejected as outside the root on a system where the workspace
+	// itself sits behind a symlink.
+	target := path
+	if target == "" {
+		target = "."
 	}
+	searchPath, err := t.resolvePath(workspace, target)
+	if err != nil {
+		return ToolResult{Error: err}
+	}
+	root := t.containmentRoot(workspace, searchPath)
 
 	var matches []string
 	var filesSearched int
 
-	err := filepath.Walk(searchPath, func(p string, info fs.FileInfo, err error) error {
+	// filepath.Walk uses Lstat, so it never descends *into* a symlinked
+	// directory; the remaining exposure was the read of each matched file, which
+	// went through os.ReadFile and would follow a symlink straight out of the
+	// workspace. Each read is now contained by the same dirfd walk.
+	werr := filepath.Walk(searchPath, func(p string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -462,7 +532,7 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 
 		filesSearched++
 
-		data, err := os.ReadFile(p)
+		data, err := safeReadFile(root, p)
 		if err != nil {
 			return nil
 		}
@@ -478,8 +548,8 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 		return nil
 	})
 
-	if err != nil {
-		return ToolResult{Error: fmt.Errorf("search failed: %w", err)}
+	if werr != nil {
+		return ToolResult{Error: fmt.Errorf("search failed: %w", werr)}
 	}
 
 	if len(matches) == 0 {

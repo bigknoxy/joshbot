@@ -333,15 +333,25 @@ func TestIsDiscordRetryable(t *testing.T) {
 // channel that could not be restarted: Stop closed stopCh and Start never
 // replaced it, so the second run's consumeOutbound returned immediately and
 // every Send aborted its retries — and the next Stop panicked on a double
-// close. Start is not called here (it needs a live gateway); the Start/Stop
-// stop-channel lifecycle is exercised directly.
+// close. Start itself needs a live gateway, so the test drives beginRun, the
+// method Start delegates the whole running/stop-channel handshake to; the
+// reallocation lives there and nowhere else, so removing it turns this red.
 func TestDiscordChannel_RestartReallocatesStopChannel(t *testing.T) {
 	d, _ := newTestDiscordChannel(t, nil)
 
-	d.mu.Lock()
-	d.running = true
-	first := d.stopCh
-	d.mu.Unlock()
+	if err := d.beginRun(); err != nil {
+		t.Fatalf("first beginRun: %v", err)
+	}
+	first := d.stopChan()
+
+	// A second beginRun while running must be refused, not silently reset the
+	// stop channel out from under the live run.
+	if err := d.beginRun(); err == nil {
+		t.Fatal("beginRun while running should have failed")
+	}
+	if d.stopChan() != first {
+		t.Fatal("a refused beginRun replaced the live run's stop channel")
+	}
 
 	if err := d.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -352,25 +362,33 @@ func TestDiscordChannel_RestartReallocatesStopChannel(t *testing.T) {
 		t.Fatal("Stop did not close the stop channel")
 	}
 
-	// Simulate the second Start: it must hand out a fresh, open channel.
-	d.mu.Lock()
-	d.running = true
-	d.stopCh = make(chan struct{})
-	d.stopClosed = false
-	second := d.stopCh
-	d.mu.Unlock()
-
+	// The second run must hand out a fresh, open channel.
+	if err := d.beginRun(); err != nil {
+		t.Fatalf("second beginRun: %v", err)
+	}
+	second := d.stopChan()
 	if second == first {
 		t.Fatal("restart reused the closed stop channel")
 	}
+	d.mu.Lock()
+	closed := d.stopClosed
+	d.mu.Unlock()
+	if closed {
+		t.Fatal("restart left stopClosed set; the next Stop would skip closing")
+	}
 	select {
-	case <-d.stopChan():
+	case <-second:
 		t.Fatal("restarted channel started already stopped")
 	default:
 	}
 
 	if err := d.Stop(); err != nil {
 		t.Fatalf("second Stop: %v", err)
+	}
+	select {
+	case <-second:
+	default:
+		t.Fatal("second Stop did not close the restarted stop channel")
 	}
 	// A third Stop must be a no-op, not a close-of-closed-channel panic.
 	if err := d.Stop(); err != nil {

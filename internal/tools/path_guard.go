@@ -75,7 +75,17 @@ func appendResolved(base string, tail []string) (string, error) {
 		cur = filepath.Join(cur, comp)
 
 		fi, err := os.Lstat(cur)
-		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		if err != nil {
+			// A component that simply does not exist is the normal case for a
+			// create. Anything else (EACCES, EIO, ENAMETOOLONG) means we cannot
+			// tell whether this component is a symlink, so fail closed rather
+			// than treating it as a plain name and letting the caller open it.
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
 			continue
 		}
 		target, rerr := os.Readlink(cur)

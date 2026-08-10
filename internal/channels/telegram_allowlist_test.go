@@ -29,8 +29,12 @@ func TestTelegramIsAllowed_NumericEntryDoesNotMatchDisplayName(t *testing.T) {
 	if tg.IsAllowed(attacker, "123456789", "", "") {
 		t.Errorf("username spoofing the operator's user ID was allowed")
 	}
-	if tg.IsAllowed(attacker, "", "123456789", "") {
-		t.Errorf("display name spoofing the operator's user ID was allowed")
+	if tg.IsAllowed(attacker, "", "", "123456789") {
+		t.Errorf("last name spoofing the operator's user ID was allowed")
+	}
+	// The full display name is first+last joined, so cover that form too.
+	if tg.IsAllowed(attacker, "", "1234", "56789") {
+		t.Errorf("a first+last display name spoofing the operator's user ID was allowed")
 	}
 }
 

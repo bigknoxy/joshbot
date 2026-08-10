@@ -56,21 +56,37 @@ type Client struct {
 	started bool
 	closed  bool
 
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	writeM sync.Mutex // serializes writes to stdin
+	// sess is the currently running process. It is replaced wholesale by every
+	// successful Connect and read under sessMu, so a request and the channel it
+	// waits on always belong to the same process — see procSession.
+	sessMu sync.Mutex
+	sess   *procSession
+
+	writeM sync.Mutex // serializes writes to a session's stdin
 
 	// pending maps a request id to the channel awaiting its response.
 	pendMu  sync.Mutex
 	nextID  int64
 	pending map[int64]chan *rpcResponse
+}
 
-	// doneCh belongs to the currently running process, not to the Client: it is
-	// replaced by every successful Connect and closed by the readLoop that was
-	// handed it. A single per-Client channel would stay closed after a failed
-	// handshake, so a later successful Connect would report "server stopped" on
-	// every call forever. Both fields are guarded by pendMu.
-	doneCh  chan struct{}
+// procSession bundles everything that belongs to one server process: the writer
+// its requests go to, the process itself, and the channel closed when its
+// readLoop stops. These must move as a unit. Holding stdin/cmd under startMu
+// while writeMessage wrote through the field under writeM was a data race:
+// Connect (after a failed handshake, which is a supported retry path) could
+// swap the pipe underneath an in-flight call, so the request went to process B
+// while its caller waited on process A's done channel — best case a hang until
+// ctx fired, worst case concurrent use of a closed os.File fd.
+//
+// readErr is written by readLoop before it closes done, and only read after
+// done is observed closed, so the close provides the happens-before edge and no
+// lock is needed for it.
+type procSession struct {
+	stdin io.WriteCloser
+	cmd   *exec.Cmd
+
+	done    chan struct{}
 	readErr error
 }
 
@@ -80,8 +96,17 @@ func NewClient(server Server) *Client {
 	return &Client{
 		server:  server,
 		pending: make(map[int64]chan *rpcResponse),
-		doneCh:  make(chan struct{}),
+		// A placeholder session with no writer: calls before Connect fail with
+		// "not connected" rather than blocking on a nil channel.
+		sess: &procSession{done: make(chan struct{})},
 	}
+}
+
+// currentSession returns the live process session.
+func (c *Client) currentSession() *procSession {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	return c.sess
 }
 
 // Name returns the server's configured name.
@@ -131,19 +156,15 @@ func (c *Client) Connect(ctx context.Context) error {
 		return fmt.Errorf("mcp: start %q (%s): %w", c.server.Name, c.server.Command, err)
 	}
 
-	c.cmd = cmd
-	c.stdin = stdin
+	// A fresh session per process — including a fresh done channel, since the
+	// previous one may already be closed by an earlier process's readLoop.
+	sess := &procSession{stdin: stdin, cmd: cmd, done: make(chan struct{})}
+	c.sessMu.Lock()
+	c.sess = sess
+	c.sessMu.Unlock()
 	c.started = true
 
-	// A fresh done channel per process: the previous one may already be closed
-	// by an earlier process's readLoop.
-	done := make(chan struct{})
-	c.pendMu.Lock()
-	c.doneCh = done
-	c.readErr = nil
-	c.pendMu.Unlock()
-
-	go c.readLoop(stdout, done)
+	go c.readLoop(stdout, sess)
 
 	if err := c.handshake(ctx); err != nil {
 		// Roll back a failed start so we do not leak the process.
@@ -233,15 +254,14 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 		c.pendMu.Unlock()
 	}
 
-	// Snapshot the current process's done channel: Connect may replace the
-	// field while this call is in flight, and waiting on the successor would
-	// miss this process stopping.
-	c.pendMu.Lock()
-	done := c.doneCh
-	c.pendMu.Unlock()
+	// Snapshot the whole session, not just its done channel: the request must be
+	// written to the same process this call then waits on. Connect may replace
+	// the session while the call is in flight.
+	sess := c.currentSession()
+	done := sess.done
 
 	req := rpcRequest{JSONRPC: jsonrpcVersion, ID: &id, Method: method, Params: params}
-	if err := c.writeMessage(req); err != nil {
+	if err := c.writeMessage(sess, req); err != nil {
 		cleanup()
 		return nil, err
 	}
@@ -252,10 +272,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 		return nil, fmt.Errorf("mcp: %s on %q: %w", method, c.server.Name, ctx.Err())
 	case <-done:
 		cleanup()
-		c.pendMu.Lock()
-		readErr := c.readErr
-		c.pendMu.Unlock()
-		return nil, fmt.Errorf("mcp: %s on %q: server stopped: %w", method, c.server.Name, readErr)
+		return nil, fmt.Errorf("mcp: %s on %q: server stopped: %w", method, c.server.Name, sess.readErr)
 	case resp := <-ch:
 		cleanup()
 		if resp.Error != nil {
@@ -267,11 +284,13 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 
 // notify sends a JSON-RPC notification (no id, no response expected).
 func (c *Client) notify(method string, params any) error {
-	return c.writeMessage(rpcRequest{JSONRPC: jsonrpcVersion, Method: method, Params: params})
+	return c.writeMessage(c.currentSession(), rpcRequest{JSONRPC: jsonrpcVersion, Method: method, Params: params})
 }
 
-// writeMessage marshals and writes one newline-delimited JSON message.
-func (c *Client) writeMessage(msg rpcRequest) error {
+// writeMessage marshals and writes one newline-delimited JSON message to the
+// given session's stdin. The session is passed in rather than read from the
+// Client so the message cannot land on a process the caller is not waiting on.
+func (c *Client) writeMessage(sess *procSession, msg rpcRequest) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("mcp: marshal %s: %w", msg.Method, err)
@@ -280,10 +299,10 @@ func (c *Client) writeMessage(msg rpcRequest) error {
 
 	c.writeM.Lock()
 	defer c.writeM.Unlock()
-	if c.stdin == nil {
+	if sess == nil || sess.stdin == nil {
 		return errors.New("mcp: client not connected")
 	}
-	if _, err := c.stdin.Write(data); err != nil {
+	if _, err := sess.stdin.Write(data); err != nil {
 		return fmt.Errorf("mcp: write %s to %q: %w", msg.Method, c.server.Name, err)
 	}
 	return nil
@@ -291,10 +310,10 @@ func (c *Client) writeMessage(msg rpcRequest) error {
 
 // readLoop reads newline-delimited JSON from the server until EOF or error,
 // dispatching each response to its waiting caller. It closes the done channel
-// it was given — never the c.doneCh field, which a later Connect may already
-// have replaced — so pending and future calls on this process fail fast
-// instead of blocking forever.
-func (c *Client) readLoop(stdout io.Reader, done chan struct{}) {
+// of the session it was given — never the current c.sess, which a later Connect
+// may already have replaced — so pending and future calls on this process fail
+// fast instead of blocking forever.
+func (c *Client) readLoop(stdout io.Reader, sess *procSession) {
 	reader := bufio.NewReader(stdout)
 	var loopErr error
 	for {
@@ -312,15 +331,11 @@ func (c *Client) readLoop(stdout io.Reader, done chan struct{}) {
 		}
 	}
 
-	c.pendMu.Lock()
-	// Only record the error if this is still the live process; a later Connect
-	// has already reset it for its own readLoop.
-	if c.doneCh == done {
-		c.readErr = loopErr
-	}
-	// Wake every pending caller; the close below is the broadcast.
-	c.pendMu.Unlock()
-	close(done)
+	// The error belongs to this session, so there is no live-process check to
+	// get wrong; the close below both publishes it and wakes every caller
+	// waiting on this process.
+	sess.readErr = loopErr
+	close(sess.done)
 }
 
 // readLine reads one newline-delimited message, refusing anything larger than
@@ -396,20 +411,28 @@ func (c *Client) Close() error {
 
 // shutdownProcess tears down the running process. Caller holds startMu.
 func (c *Client) shutdownProcess() {
-	if c.stdin != nil {
-		_ = c.stdin.Close()
+	sess := c.currentSession()
+	if sess == nil {
+		return
 	}
-	if c.cmd == nil || c.cmd.Process == nil {
+	if sess.stdin != nil {
+		// Under writeM so a concurrent in-flight write is not using the fd as
+		// it is closed.
+		c.writeM.Lock()
+		_ = sess.stdin.Close()
+		c.writeM.Unlock()
+	}
+	if sess.cmd == nil || sess.cmd.Process == nil {
 		return
 	}
 
 	waited := make(chan error, 1)
-	go func() { waited <- c.cmd.Wait() }()
+	go func() { waited <- sess.cmd.Wait() }()
 
 	select {
 	case <-waited:
 	case <-time.After(shutdownGrace):
-		_ = c.cmd.Process.Kill()
+		_ = sess.cmd.Process.Kill()
 		<-waited // reap to avoid a zombie
 	}
 }

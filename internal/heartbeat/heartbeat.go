@@ -36,12 +36,30 @@ type Service struct {
 	ticker        *time.Ticker
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
+
+	// published remembers every task text this process has already put on the
+	// bus. Checking the box off is the durable record, but it is written after
+	// the sends and can fail (read-only workspace, full disk, lost
+	// permissions) — without this set a persistent write failure re-publishes
+	// every task on every tick forever, which is exactly the unbounded token
+	// burn checking off was meant to end. Best-effort by design: it is
+	// per-process, so a restart falls back to the file, which is correct
+	// because a restart is also when the write may have started succeeding.
+	publishedMu sync.Mutex
+	published   map[string]struct{}
 }
 
 // NewService creates a heartbeat service. interval defaults to 30m if zero.
 func NewService(b *bus.MessageBus, workspace string) *Service {
 	p := filepath.Join(workspace, "HEARTBEAT.md")
-	return &Service{bus: b, workspace: workspace, path: p, interval: 30 * time.Minute, stopCh: make(chan struct{})}
+	return &Service{
+		bus:       b,
+		workspace: workspace,
+		path:      p,
+		interval:  30 * time.Minute,
+		stopCh:    make(chan struct{}),
+		published: make(map[string]struct{}),
+	}
 }
 
 // SetInterval overrides the polling interval. Must be called before Start().
@@ -153,6 +171,15 @@ func (s *Service) scanAndPublish() {
 		if !ok {
 			continue
 		}
+		// Already published by this process: the box could not be persisted,
+		// but the task has been dispatched and must not fire again.
+		if s.alreadyPublished(task) {
+			// Still flip the box in memory so a later successful write records
+			// it, rather than leaving it to be rediscovered forever.
+			lines[i] = checked
+			changed = true
+			continue
+		}
 		meta := map[string]any{"source": "heartbeat"}
 		if chatID != "" {
 			meta["chat_id"] = chatID
@@ -170,6 +197,7 @@ func (s *Service) scanAndPublish() {
 			log.Warnf("heartbeat: bus queue full, task left unchecked: %s", task)
 			continue
 		}
+		s.markPublished(task)
 		// One-shot per task: check off every task just published so it does not
 		// re-fire on the next tick. This is what makes the heartbeat stop
 		// burning tokens on the same tasks forever.
@@ -180,8 +208,27 @@ func (s *Service) scanAndPublish() {
 		return
 	}
 	if err := writeFileAtomic(s.path, []byte(strings.Join(lines, "\n"))); err != nil {
-		log.Warnf("heartbeat: failed to update %s: %v", s.path, err)
+		log.Warnf("heartbeat: failed to update %s: %v (tasks will not be re-published by this process)", s.path, err)
 	}
+}
+
+// alreadyPublished reports whether this process has already put task on the bus.
+func (s *Service) alreadyPublished(task string) bool {
+	s.publishedMu.Lock()
+	defer s.publishedMu.Unlock()
+	_, ok := s.published[task]
+	return ok
+}
+
+// markPublished records that task has been dispatched, so a failure to persist
+// the checked box cannot make it fire again on the next tick.
+func (s *Service) markPublished(task string) {
+	s.publishedMu.Lock()
+	defer s.publishedMu.Unlock()
+	if s.published == nil {
+		s.published = make(map[string]struct{})
+	}
+	s.published[task] = struct{}{}
 }
 
 // writeFileAtomic rewrites path via a uniquely named temp file in the same
@@ -230,6 +277,14 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		cleanup()
 		return fmt.Errorf("failed to rename temporary file: %w", err)
+	}
+	// Fsync the directory so the rename itself is durable: the file contents are
+	// synced above, but a crash before the directory entry reaches disk can
+	// still lose the new name. Best-effort — some filesystems refuse to sync a
+	// directory, and the write itself has already succeeded.
+	if dirF, err := os.Open(dir); err == nil {
+		_ = dirF.Sync()
+		_ = dirF.Close()
 	}
 	return nil
 }

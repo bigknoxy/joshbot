@@ -20,6 +20,122 @@ import (
 
 // --- #139: the gateway bus handler must not write to stdout/stderr directly ---
 
+// consoleWrites reports every direct console write reachable from root, as
+// "position: expression" strings. It recognises three shapes:
+//
+//   - any call whose first argument is os.Stdout/os.Stderr
+//     (fmt.Fprintf(os.Stderr, ...), io.Copy(os.Stdout, ...));
+//   - a method on the handle itself (os.Stderr.Write, os.Stdout.WriteString);
+//   - fmt.Print/Printf/Println, which write to stdout with no handle named at
+//     all — the shape a reintroduced debug print takes most naturally.
+//
+// It also follows one level of same-file call indirection: a plain call to a
+// package-level function declared in file is walked too, so moving the write
+// into a helper does not hide it. One level is deliberate — deeper following
+// needs real call-graph analysis, and the guard is scoped to a single closure.
+//
+// fset and file supply positions and the declarations to follow; both tests
+// pass their own, so the fixture test exercises this exact detector rather than
+// a copy of it.
+func consoleWrites(fset *token.FileSet, file *ast.File, root ast.Node) []string {
+	// isConsole reports whether an expression names os.Stdout or os.Stderr.
+	isConsole := func(e ast.Expr) bool {
+		sel, ok := e.(*ast.SelectorExpr)
+		if !ok {
+			return false
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && pkg.Name == "os" && (sel.Sel.Name == "Stdout" || sel.Sel.Name == "Stderr")
+	}
+
+	// decls indexes the file's package-level functions for indirection.
+	decls := map[string]*ast.FuncDecl{}
+	if file != nil {
+		for _, d := range file.Decls {
+			if f, ok := d.(*ast.FuncDecl); ok && f.Recv == nil && f.Body != nil {
+				decls[f.Name.Name] = f
+			}
+		}
+	}
+
+	var out []string
+	seen := map[string]bool{} // guards recursion and duplicate reports
+
+	var walk func(n ast.Node, depth int)
+	walk = func(n ast.Node, depth int) {
+		ast.Inspect(n, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			report := func() {
+				out = append(out, fmt.Sprintf("%s: %s", fset.Position(call.Pos()), types.ExprString(call)))
+			}
+			if len(call.Args) > 0 && isConsole(call.Args[0]) {
+				report()
+				return true
+			}
+			switch fn := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				// os.Stderr.Write(...) / os.Stdout.WriteString(...).
+				if isConsole(fn.X) {
+					report()
+					return true
+				}
+				// fmt.Print/Printf/Println default to stdout.
+				if pkg, ok := fn.X.(*ast.Ident); ok && pkg.Name == "fmt" &&
+					(fn.Sel.Name == "Print" || fn.Sel.Name == "Printf" || fn.Sel.Name == "Println") {
+					report()
+					return true
+				}
+			case *ast.Ident:
+				// One level of same-file indirection: helper() that writes.
+				if depth > 0 {
+					return true
+				}
+				target, ok := decls[fn.Name]
+				if !ok || seen[fn.Name] {
+					return true
+				}
+				seen[fn.Name] = true
+				walk(target.Body, depth+1)
+			}
+			return true
+		})
+	}
+	walk(root, 0)
+	return out
+}
+
+// gatewayBusHandler returns the closure runGateway registers on the message bus
+// (msgBus.Subscribe("all", func(...){...})). The guard is scoped to that
+// closure rather than to all of runGateway on purpose: runGateway legitimately
+// prints a startup banner with fmt.Println, so a whole-function assertion would
+// have to tolerate fmt.Print* and would then miss a reintroduced
+// fmt.Printf("DEBUG: %s", msg.Content) inside the handler — which is the actual
+// regression.
+func gatewayBusHandler(fn *ast.FuncDecl) *ast.FuncLit {
+	var lit *ast.FuncLit
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || lit != nil {
+			return lit == nil
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Subscribe" {
+			return true
+		}
+		for _, arg := range call.Args {
+			if f, ok := arg.(*ast.FuncLit); ok {
+				lit = f
+				return false
+			}
+		}
+		return true
+	})
+	return lit
+}
+
 // TestGatewayHandlerHasNoDirectConsoleWrites guards against reintroducing the
 // raw fmt.Fprintf(os.Stderr, ...) debug print that leaked the full text of every
 // inbound message. The handler now goes through the redacting logger
@@ -54,47 +170,22 @@ func TestGatewayHandlerHasNoDirectConsoleWrites(t *testing.T) {
 		t.Fatal("runGateway not found in main.go; this guard needs updating")
 	}
 
-	// isConsole reports whether an expression names os.Stdout or os.Stderr.
-	isConsole := func(e ast.Expr) bool {
-		sel, ok := e.(*ast.SelectorExpr)
-		if !ok {
-			return false
-		}
-		pkg, ok := sel.X.(*ast.Ident)
-		return ok && pkg.Name == "os" && (sel.Sel.Name == "Stdout" || sel.Sel.Name == "Stderr")
+	handler := gatewayBusHandler(fn)
+	if handler == nil {
+		t.Fatal("runGateway no longer registers a bus handler closure via Subscribe; this guard needs updating")
 	}
 
-	var offenders []string
-	ast.Inspect(fn, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		switch {
-		// fmt.Fprint*/os.Stderr, io.Copy(os.Stdout, ...), etc: any call whose
-		// first argument is the console handle.
-		case len(call.Args) > 0 && isConsole(call.Args[0]):
-		// os.Stderr.Write(...) / os.Stdout.WriteString(...).
-		case isConsole(sel.X):
-		default:
-			return true
-		}
-		offenders = append(offenders, fmt.Sprintf("%s: %s", fset.Position(call.Pos()), types.ExprString(call)))
-		return true
-	})
-
-	if len(offenders) > 0 {
-		t.Fatalf("runGateway writes directly to the console, bypassing the redacting logger and the log level:\n  %s\n"+
+	if offenders := consoleWrites(fset, file, handler.Body); len(offenders) > 0 {
+		t.Fatalf("the gateway bus handler writes directly to the console, bypassing the redacting logger and the log level:\n  %s\n"+
 			"Use log.Debug/log.Info from internal/log instead.", strings.Join(offenders, "\n  "))
 	}
 }
 
 // The guard above is only meaningful if its detector actually fires, so prove
-// it against a fixture containing exactly the regression it screens for.
+// it against a fixture containing exactly the regressions it screens for —
+// including the fmt.Printf form and a write hidden one call deep. This invokes
+// the real consoleWrites and gatewayBusHandler, so breaking either turns this
+// test red rather than leaving a re-implemented copy passing.
 func TestGatewayConsoleWriteDetectorFires(t *testing.T) {
 	const src = `package main
 
@@ -103,9 +194,18 @@ import (
 	"os"
 )
 
+func leakHelper(msg string) {
+	fmt.Fprintf(os.Stderr, "DEBUG: %s\n", msg)
+}
+
 func runGateway() {
-	fmt.Fprintf(os.Stderr, "DEBUG: %s\n", "leaked")
-	os.Stdout.WriteString("also bad")
+	fmt.Println("joshbot gateway starting")   // legitimate banner, outside the handler
+	msgBus.Subscribe("all", func(msg string) {
+		fmt.Fprintf(os.Stderr, "DEBUG: %s\n", msg)
+		os.Stdout.WriteString("also bad")
+		fmt.Printf("DEBUG: %s\n", msg)
+		leakHelper(msg)
+	})
 }
 `
 	fset := token.NewFileSet()
@@ -113,31 +213,43 @@ func runGateway() {
 	if err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}
-	var found int
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+
+	var fn *ast.FuncDecl
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "runGateway" {
+			fn = f
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		isConsole := func(e ast.Expr) bool {
-			s, ok := e.(*ast.SelectorExpr)
-			if !ok {
-				return false
+	}
+	if fn == nil {
+		t.Fatal("fixture runGateway not found")
+	}
+	handler := gatewayBusHandler(fn)
+	if handler == nil {
+		t.Fatal("gatewayBusHandler did not find the Subscribe closure in the fixture")
+	}
+
+	got := consoleWrites(fset, file, handler.Body)
+	if len(got) != 4 {
+		t.Fatalf("detector found %d console writes in the handler, want 4:\n  %s", len(got), strings.Join(got, "\n  "))
+	}
+	for _, want := range []string{"fmt.Fprintf", "os.Stdout.WriteString", "fmt.Printf"} {
+		found := false
+		for _, g := range got {
+			if strings.Contains(g, want) {
+				found = true
 			}
-			pkg, ok := s.X.(*ast.Ident)
-			return ok && pkg.Name == "os" && (s.Sel.Name == "Stdout" || s.Sel.Name == "Stderr")
 		}
-		if (len(call.Args) > 0 && isConsole(call.Args[0])) || isConsole(sel.X) {
-			found++
+		if !found {
+			t.Errorf("detector missed the %s form:\n  %s", want, strings.Join(got, "\n  "))
 		}
-		return true
-	})
-	if found != 2 {
-		t.Fatalf("detector found %d console writes in the fixture, want 2", found)
+	}
+
+	// The banner outside the handler must NOT be reported: the guard is scoped
+	// to the closure, so legitimate startup output stays legal.
+	for _, g := range got {
+		if strings.Contains(g, "joshbot gateway starting") {
+			t.Errorf("detector flagged the legitimate banner print: %s", g)
+		}
 	}
 }
 

@@ -462,33 +462,82 @@ func TestReconnectAfterFailedHandshake(t *testing.T) {
 }
 
 // TestDuplicateResponseDoesNotWedgeClient is the regression test for a hostile
-// server answering the same JSON-RPC id twice. The second response used to
-// block readLoop on a full cap-1 channel, so every later call hung to its ctx
-// deadline. MCP servers are third-party code, so this must be survivable.
+// server answering the same JSON-RPC id twice. dispatch is exercised directly,
+// because an end-to-end call cannot reproduce the wedge: call() removes its
+// pending entry as soon as it returns, so by the time the duplicate arrives
+// there is nothing left to send to. The wedge needs a pending entry whose
+// cap-1 channel is full and undrained — exactly the state a caller that has
+// already given up on its ctx (but not yet run cleanup) leaves behind. Two
+// halves of the fix are pinned here: the delete-under-pendMu (the id must be
+// claimed, so the second dispatch finds nothing) and the non-blocking send (so
+// even if it did find the entry, readLoop is not parked on it forever).
 func TestDuplicateResponseDoesNotWedgeClient(t *testing.T) {
-	c := helperClient(t, "dupe")
-	defer c.Close()
+	c := NewClient(Server{Name: "dupe"})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	const id = int64(7)
+	ch := make(chan *rpcResponse, 1)
+	c.pendMu.Lock()
+	c.pending[id] = ch
+	c.pendMu.Unlock()
 
-	if err := c.Connect(ctx); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	if _, err := c.ListTools(ctx); err != nil {
-		t.Fatalf("ListTools: %v", err)
+	line := []byte(`{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"ok"}]}}`)
+
+	// First dispatch fills the cap-1 channel. Nobody ever drains it: this is
+	// the abandoned-caller state.
+	c.dispatch(line)
+
+	c.pendMu.Lock()
+	_, stillPending := c.pending[id]
+	c.pendMu.Unlock()
+	if stillPending {
+		t.Fatal("dispatch left the pending entry in place; a duplicate response can be delivered twice")
 	}
 
-	// The read loop must still be alive for this second call. A short deadline
-	// makes a wedged loop a fast failure rather than a 20s hang.
-	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer callCancel()
-	out, err := c.CallTool(callCtx, "echo", map[string]any{"text": "x"})
-	if err != nil {
-		t.Fatalf("call after duplicate response: %v", err)
+	// The duplicate must not block. Run it off-goroutine so a blocking send
+	// fails the test on a deadline instead of hanging the whole package.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.dispatch(line)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second dispatch of the same id blocked: readLoop is wedged, and with it every in-flight and future call")
 	}
-	if out != "ok" {
-		t.Fatalf("unexpected output %q", out)
+
+	// Sanity: the response really was delivered once, to the original waiter.
+	select {
+	case resp := <-ch:
+		if resp == nil || resp.ID == nil || *resp.ID != id {
+			t.Fatalf("waiter received the wrong response: %+v", resp)
+		}
+	default:
+		t.Fatal("the first dispatch delivered nothing to the waiting caller")
+	}
+
+	// And an unmatched id is simply dropped, without blocking.
+	c.dispatch([]byte(`{"jsonrpc":"2.0","id":999,"result":{}}`))
+
+	// Second half of the fix, pinned on its own: a pending entry whose cap-1
+	// channel is already full. delete alone does not save readLoop here — the
+	// send happens after the claim, and a blocking one parks forever.
+	const id2 = int64(8)
+	full := make(chan *rpcResponse, 1)
+	full <- &rpcResponse{}
+	c.pendMu.Lock()
+	c.pending[id2] = full
+	c.pendMu.Unlock()
+
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		c.dispatch([]byte(`{"jsonrpc":"2.0","id":8,"result":{}}`))
+	}()
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch blocked sending to an abandoned caller's full channel: readLoop is wedged")
 	}
 }
 

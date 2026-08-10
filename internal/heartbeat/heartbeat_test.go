@@ -337,3 +337,47 @@ func TestScanAndPublishNoChatIDSkips(t *testing.T) {
 		t.Errorf("task was checked off despite no recipient:\n%s", data)
 	}
 }
+
+// TestScanAndPublishDoesNotRepublishWhenWriteFails is the regression test for
+// the unbounded republish loop: checking a task off is only durable if the file
+// write lands, and a read-only workspace (full disk, lost permissions) makes it
+// fail on every tick. Before the in-memory published set, each tick re-sent
+// every task forever — the exact token burn the check-off was added to end.
+func TestScanAndPublishDoesNotRepublishWhenWriteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	b := bus.NewMessageBus()
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "HEARTBEAT.md")
+	if err := os.WriteFile(path, []byte("- [ ] check the disk\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// Read+execute only: the rewrite cannot create its temp file, so the boxes
+	// never persist.
+	if err := os.Chmod(tmpDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	// Restore so t.TempDir cleanup can remove the tree.
+	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o755) })
+
+	svc := NewService(b, tmpDir)
+	for i := 0; i < 3; i++ {
+		svc.scanAndPublish()
+	}
+
+	msgs := drainInbound(b)
+	if len(msgs) != 1 {
+		t.Fatalf("published %d messages across 3 ticks with a failing write, want exactly 1", len(msgs))
+	}
+
+	// The file really did stay unchecked — otherwise the test would be passing
+	// for the wrong reason.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), "[ ]") {
+		t.Fatalf("write unexpectedly succeeded; test does not exercise the failure path:\n%s", data)
+	}
+}

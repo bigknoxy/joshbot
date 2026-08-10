@@ -60,6 +60,12 @@ type DiscordChannel struct {
 	stopCh     chan struct{}
 	stopClosed bool
 
+	// outboundWG tracks the consumeOutbound goroutine so Stop can join it.
+	// Without the join, Stop returning does not mean stopped: a consumer parked
+	// in Send's retry loop has already taken a message off the shared bus
+	// channel, and a subsequent Start briefly runs two competing consumers.
+	outboundWG sync.WaitGroup
+
 	session   *discordgo.Session
 	removeHnd func()
 
@@ -186,23 +192,48 @@ func isSnowflake(s string) bool {
 	return s != ""
 }
 
-// Start opens the Discord gateway connection and begins consuming messages.
-func (d *DiscordChannel) Start(ctx context.Context) error {
+// beginRun claims the channel for a new Start/Stop cycle. It refuses a second
+// concurrent run and, crucially, allocates a fresh stop signal: Stop closes
+// stopCh, so reusing the previous cycle's channel would make the new run's
+// consumeOutbound return immediately and every Send abort its retries — the
+// channel would look started and silently deliver nothing. Split out of Start
+// so the lifecycle is reachable from a test without a live gateway.
+func (d *DiscordChannel) beginRun() error {
 	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.running {
-		d.mu.Unlock()
 		return fmt.Errorf("Discord channel is already running")
 	}
 	d.running = true
 	// Fresh stop signal for this run; the previous cycle's channel is closed.
 	d.stopCh = make(chan struct{})
 	d.stopClosed = false
-	d.mu.Unlock()
+	return nil
+}
+
+// abortRun releases a run claimed by beginRun that never got as far as starting
+// its goroutines. It closes the stop signal beginRun allocated: leaving a fresh
+// never-closed channel behind on a validation failure would strand anything
+// that had already read it via stopChan, and the next beginRun replaces it
+// anyway, so an unclosed one is pure garbage.
+func (d *DiscordChannel) abortRun() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.running = false
+	if !d.stopClosed && d.stopCh != nil {
+		d.stopClosed = true
+		close(d.stopCh)
+	}
+}
+
+// Start opens the Discord gateway connection and begins consuming messages.
+func (d *DiscordChannel) Start(ctx context.Context) error {
+	if err := d.beginRun(); err != nil {
+		return err
+	}
 
 	if d.cfg.Token == "" {
-		d.mu.Lock()
-		d.running = false
-		d.mu.Unlock()
+		d.abortRun()
 		return fmt.Errorf("Discord token is not configured")
 	}
 
@@ -226,9 +257,7 @@ func (d *DiscordChannel) Start(ctx context.Context) error {
 
 	session, err := discordgo.New(token)
 	if err != nil {
-		d.mu.Lock()
-		d.running = false
-		d.mu.Unlock()
+		d.abortRun()
 		return fmt.Errorf("failed to create Discord session: %w", err)
 	}
 
@@ -245,9 +274,7 @@ func (d *DiscordChannel) Start(ctx context.Context) error {
 
 	if err := session.Open(); err != nil {
 		remove()
-		d.mu.Lock()
-		d.running = false
-		d.mu.Unlock()
+		d.abortRun()
 		return fmt.Errorf("failed to open Discord gateway: %w", err)
 	}
 
@@ -262,7 +289,11 @@ func (d *DiscordChannel) Start(ctx context.Context) error {
 	d.selfID = selfID
 	d.mu.Unlock()
 
-	go d.consumeOutbound(ctx)
+	d.outboundWG.Add(1)
+	go func() {
+		defer d.outboundWG.Done()
+		d.consumeOutbound(ctx)
+	}()
 
 	log.Info("Discord channel started")
 	return nil
@@ -727,6 +758,13 @@ func (d *DiscordChannel) Stop() error {
 	d.removeHnd = nil
 	d.session = nil
 	d.mu.Unlock()
+
+	// Join the outbound consumer before returning. Closing stopCh only asks it
+	// to stop; if it is inside Send's retry loop it has already claimed a
+	// message from the shared bus channel, and returning here would let a
+	// subsequent Start run a second consumer alongside it. Waited outside mu:
+	// Send and the typing helpers take the same mutex.
+	d.outboundWG.Wait()
 
 	if remove != nil {
 		remove()

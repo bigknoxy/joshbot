@@ -963,3 +963,55 @@ func TestRestartUnderLoadIsRaceFree(t *testing.T) {
 	}
 	_ = handled.Load()
 }
+
+// TestHandlerContextIsPerStartCycle is the deterministic companion to the race
+// test above. -race only reports the unsynchronized read if the scheduler
+// happens to interleave it with a Start, so a partial revert (reading mb.ctx
+// inside dispatchToHandlers rather than threading the run's own context) can
+// slip through several runs. This asserts the observable consequence instead:
+// each Start cycle hands its handlers a distinct context, and the context a
+// handler received is cancelled by that cycle's Stop — never left live, never
+// shared with the next cycle.
+func TestHandlerContextIsPerStartCycle(t *testing.T) {
+	mb := NewMessageBus()
+
+	got := make(chan context.Context, 8)
+	mb.Subscribe("all", func(ctx context.Context, msg InboundMessage) {
+		got <- ctx
+	})
+
+	var seen []context.Context
+	for cycle := 0; cycle < 3; cycle++ {
+		mb.Start()
+		mb.Send(InboundMessage{Channel: "load", Content: "x"})
+
+		var ctx context.Context
+		select {
+		case ctx = <-got:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("cycle %d: handler never ran", cycle)
+		}
+		if ctx == nil {
+			t.Fatalf("cycle %d: handler received a nil context", cycle)
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("cycle %d: handler received an already-cancelled context: %v", cycle, err)
+		}
+
+		mb.Stop()
+
+		// The cycle's own context must be cancelled by that cycle's Stop.
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatalf("cycle %d: Stop did not cancel the context the handler received", cycle)
+		}
+
+		for i, prev := range seen {
+			if prev == ctx {
+				t.Fatalf("cycle %d reused the context from cycle %d; handlers are not getting a per-run context", cycle, i)
+			}
+		}
+		seen = append(seen, ctx)
+	}
+}

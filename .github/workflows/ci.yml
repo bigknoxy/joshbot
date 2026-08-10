@@ -74,10 +74,17 @@ jobs:
         # have been deleted with CI still passing, which is the failure mode
         # this check exists to prevent.
         #
-        # Last measured 2026-08-10 on darwin/arm64: cmd/joshbot 39.8%,
-        # internal/service 2.7%. internal/service is build-tagged per OS, so
-        # its number can differ on the linux runner; its floor keeps a wider
-        # margin for that reason.
+        # Last measured 2026-08-10: cmd/joshbot 39.8% on darwin/arm64.
+        #
+        # internal/service is build-tagged per OS and the number differs
+        # sharply between them: on darwin only launchd.go compiles and the
+        # package sits at ~2.7%, but this job runs on linux, where
+        # factory_test.go (//go:build linux, 36 tests) plus systemd.go and
+        # openrc.go compile in and the package measures ~48%. A floor set from
+        # the darwin number can never fire here, so the floor below is set from
+        # the linux one, with margin for the handful of cases that behave
+        # differently on a real linux runner than in the tag-swapped
+        # measurement.
         run: |
           set -euo pipefail
           # pkg import-path prefix -> minimum percent of covered statements.
@@ -95,7 +102,7 @@ jobs:
             fi
           }
           check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 39
-          check_pkg "github.com/bigknoxy/joshbot/internal/service" 2.5
+          check_pkg "github.com/bigknoxy/joshbot/internal/service" 40
           echo "PASS: all per-package coverage floors met"
 
       - name: Upload coverage to Codecov

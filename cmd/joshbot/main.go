@@ -3412,7 +3412,9 @@ func installCronStartupEntry() error {
 	}
 
 	logPath := filepath.Join(home, ".joshbot", "logs", "gateway.log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+	// 0700, like every other directory under ~/.joshbot: the gateway log
+	// carries conversation content and tool output.
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
 
@@ -3549,7 +3551,7 @@ I can create new skills to extend my capabilities.
 
 	// Initialize memory files
 	memDir := filepath.Join(wsDir, "memory")
-	if err := os.MkdirAll(memDir, 0755); err != nil {
+	if err := os.MkdirAll(memDir, 0700); err != nil {
 		return fmt.Errorf("failed to create memory directory: %w", err)
 	}
 

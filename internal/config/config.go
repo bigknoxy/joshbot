@@ -741,6 +741,11 @@ func (c *Config) CronDir() string {
 	return filepath.Join(DefaultHome, "cron")
 }
 
+// LogsDir is where the gateway and the installed service write their logs.
+func (c *Config) LogsDir() string {
+	return filepath.Join(DefaultHome, "logs")
+}
+
 // EnsureDirs creates all required directories for joshbot.
 func (c *Config) EnsureDirs() error {
 	dirs := []string{
@@ -749,6 +754,7 @@ func (c *Config) EnsureDirs() error {
 		c.SessionsDir(),
 		c.MediaDir(),
 		c.CronDir(),
+		c.LogsDir(),
 		filepath.Join(c.WorkspaceDir(), "memory"),
 		filepath.Join(c.WorkspaceDir(), "skills"),
 	}

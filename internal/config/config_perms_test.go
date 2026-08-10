@@ -65,6 +65,16 @@ func TestJoshbotHomeDirectoriesAreOwnerOnly(t *testing.T) {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
 
+	// The walk below only proves the modes of directories that exist, so name
+	// the ones EnsureDirs must have created. logs/ was the gap: nothing in
+	// EnsureDirs made it, so the gateway created it at 0755 on first start and
+	// the walk had nothing to fail on.
+	for _, want := range []string{"sessions", "media", "cron", "logs", "workspace"} {
+		if _, err := os.Stat(filepath.Join(root, want)); err != nil {
+			t.Errorf("EnsureDirs did not create %s: %v", want, err)
+		}
+	}
+
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || !info.IsDir() {
 			return err

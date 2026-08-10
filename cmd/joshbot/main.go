@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-isatty"
+	"golang.org/x/term"
 
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
@@ -977,6 +979,17 @@ type progressCapable interface {
 	SetProgressCallback(agent.ProgressFunc)
 }
 
+// modelReporter is implemented by the real *agent.Agent so the TUI line editor
+// can show the session's current model in the prompt. It is checked as an
+// optional capability, so mocks without CurrentModel still work.
+type modelReporter interface {
+	CurrentModel() string
+}
+
+// cliCommandNames are the slash commands offered by the TUI editor's Tab
+// completion. They mirror what the agent's /help lists for CLI sessions.
+var cliCommandNames = []string{"start", "new", "status", "model", "personality", "compact", "help", "exit"}
+
 // isTTY reports whether w is connected to an interactive terminal. It is a
 // variable (not a plain function) so tests can inject deterministic
 // TTY-ness instead of depending on whatever terminal (or lack of one) the
@@ -1152,13 +1165,40 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		}
 	}
 
-	reader := bufio.NewReader(input)
 	fmt.Fprintln(output, "joshbot agent mode. Type 'exit' to quit.")
+
+	// The line editor replaces the plain "> " prompt only when input is a real
+	// terminal. Tests inject isTTY but pass bytes.Buffer / blockingReader as
+	// input, which never satisfy the *os.File assertion, so this branch is not
+	// taken in unit tests and the buffered path below is exercised instead.
+	var editor *lineEditor
+	var oldTermState *term.State
+	if f, ok := input.(*os.File); ok && isTTY(output) && isatty.IsTerminal(f.Fd()) {
+		editor = newLineEditor(output, nil, cliCommandNames)
+		editor.reader = newOSKeyReader(int(f.Fd()))
+		w, h := terminalSize(int(f.Fd()))
+		editor.width, editor.height = w, h
+		if mr, ok := agentInstance.(modelReporter); ok {
+			editor.setPromptFn(func() string {
+				return buildEditorPrompt(mr.CurrentModel())
+			})
+		}
+		var err error
+		oldTermState, err = makeRaw(int(f.Fd()))
+		if err != nil {
+			return fmt.Errorf("failed to enter terminal raw mode: %w", err)
+		}
+		defer restoreTerminal(int(f.Fd()), oldTermState)
+		defer editor.close()
+	}
+
+	reader := bufio.NewReader(input)
 
 	// Reading happens on its own goroutine so a blocked read cannot make the
 	// loop deaf to shutdown. Checking `done` only between reads meant a signal
 	// arriving while sitting at the prompt was never observed, and the process
-	// could only be killed with SIGKILL (issue #104).
+	// could only be killed with SIGKILL (issue #104). The editor path reads
+	// through ReadLine, which selects on ctx.Done() the same way.
 	type readResult struct {
 		line string
 		err  error
@@ -1180,29 +1220,50 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 	}()
 
 	for {
-		fmt.Fprint(output, "> ")
-
 		var line string
 		var readErr error
-		select {
-		case <-done:
-			log.Info("Agent shutdown complete")
-			return nil
-		case <-ctx.Done():
-			log.Info("Agent shutdown complete")
-			return nil
-		case res, ok := <-lines:
-			if !ok {
-				// The reader goroutine is finished; nothing more can arrive.
+
+		if editor != nil {
+			line, readErr = editor.ReadLine(ctx)
+			if readErr == io.EOF {
 				cancel()
 				return nil
 			}
-			line, readErr = res.line, res.err
+			if readErr != nil {
+				if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+					log.Info("Agent shutdown complete")
+					return nil
+				}
+				return fmt.Errorf("failed to read input: %w", readErr)
+			}
+		} else {
+			fmt.Fprint(output, "> ")
+
+			select {
+			case <-done:
+				log.Info("Agent shutdown complete")
+				return nil
+			case <-ctx.Done():
+				log.Info("Agent shutdown complete")
+				return nil
+			case res, ok := <-lines:
+				if !ok {
+					// The reader goroutine is finished; nothing more can arrive.
+					cancel()
+					return nil
+				}
+				line, readErr = res.line, res.err
+			}
+
+			if readErr != nil && readErr != io.EOF {
+				return fmt.Errorf("failed to read input: %w", readErr)
+			}
+			if readErr == io.EOF && strings.TrimSpace(line) == "" {
+				cancel()
+				return nil
+			}
 		}
 
-		if readErr != nil && readErr != io.EOF {
-			return fmt.Errorf("failed to read input: %w", readErr)
-		}
 		inputLine := strings.TrimSpace(line)
 		if inputLine == "" {
 			if readErr == io.EOF {

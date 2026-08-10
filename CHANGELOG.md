@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.45.5] - 2026-08-10
+### Added
+- **Telegram slash commands for `/model`, `/personality`, `/compact` and `/status`** — these commands now run through the agent and are registered in the Telegram command menu (alongside `/start`, `/new`, `/help`), instead of being rejected as unknown. `/model <name>` switches the model for the current session and persists it; `/model <name> --global` writes the default to `config.json` for all sessions. `/personality <name>` sets a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear it. `/compact` summarizes older context on demand. `/status` reports the effective model, tool count, memory window and max iterations.
+- **Per-session model and personality persistence** — `Session` now carries `ModelOverride` and `Personality`, stored in the session metadata sidecar, so a model or personality chosen mid-conversation survives a restart. `/new` clears both.
+- **Interactive CLI line editor** — when `joshbot agent` runs with a real TTY on both stdin and stdout, the `> ` prompt is replaced by a raw-mode line editor with Tab slash-command completion, Up/Down history (or multiline cursor movement), Home/End/Delete editing, Alt+Enter multiline input, Ctrl+C/Ctrl+D to quit, and a prompt that shows the session's current model.
+
+### Changed
+- **`handleCommand` dispatches on the command word** — `/model fast` and friends are no longer mis-parsed as unknown commands because the whole line was treated as the command name.
+
+### Fixed
+- **CLI `/status` and the model/personality/compact commands are now session-aware** — `/status` reports the effective model for the current session rather than the config default.
+
 
 ### Fixed
 - **`joshbot onboard` could silently drop a working provider on a keep-current reconfigure** — reconfiguring an existing install and pressing Enter at the API key prompt ("or press Enter to keep current") returned an empty key, and `runOnboard` read that as "no provider configured": it skipped the provider-config block entirely, so the config was saved with only the disabled `openrouter` default and the chosen provider (e.g. NVIDIA) was gone. `joshbot agent` then died with "no providers enabled: 1 provider(s) found in config (openrouter)". Pressing Enter with an existing key now preserves that key, matching the Telegram-token contract and the `--force` path.

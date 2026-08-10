@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
@@ -81,10 +83,17 @@ type Agent struct {
 	skillDetector *skills.SkillDetector
 	extractor     *skills.Extractor
 	skillLoader   *skills.Loader
-	modelName     string
+	// modelName holds a runtime global model override set by `joshbot`
+	// /model ... --global. It is read on every model resolution, so it is
+	// mutex-guarded: two sessions processed concurrently (the Telegram bus
+	// does exactly that) must not tear the read or race the write.
+	modelName string
+	modelMu   sync.RWMutex
 }
 
 func (a *Agent) getModelName() string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
 	if a.modelName != "" {
 		return a.modelName
 	}
@@ -97,8 +106,10 @@ func (a *Agent) getModelName() string {
 // getResolvedModelName returns the actual model string for context budgeting.
 // In model-centric mode, resolves "smart" -> "nvidia/stepfun-ai/step-3.5-flash".
 func (a *Agent) getResolvedModelName() string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
 	if a.modelName != "" {
-		return a.modelName
+		return a.resolveModelName(a.modelName)
 	}
 	if !a.cfg.UseModelsConfig() {
 		return a.cfg.Agents.Defaults.Model
@@ -107,6 +118,54 @@ func (a *Agent) getResolvedModelName() string {
 		return modelConfig.Model
 	}
 	return a.cfg.ModelsConfig.Agent.Model
+}
+
+// resolveModelName maps a model name to the concrete model ID when the
+// model-centric config knows it; otherwise the spec is passed through
+// verbatim (a bare model ID, or a "provider:model" spec).
+func (a *Agent) resolveModelName(name string) string {
+	if !a.cfg.UseModelsConfig() {
+		return name
+	}
+	if m, ok := a.cfg.GetModel(name); ok {
+		return m.Model
+	}
+	return name
+}
+
+// modelForSession returns the effective model for a session: the per-session
+// override wins, then the runtime global override, then the config default.
+// The session override never leaks between chats and survives restarts.
+func (a *Agent) modelForSession(sess *session.Session) string {
+	if sess != nil && sess.ModelOverride != "" {
+		return sess.ModelOverride
+	}
+	return a.getModelName()
+}
+
+// resolvedModelFor is modelForSession with the name resolved to the concrete
+// model ID for context budgeting.
+func (a *Agent) resolvedModelFor(sess *session.Session) string {
+	if sess != nil && sess.ModelOverride != "" {
+		return a.resolveModelName(sess.ModelOverride)
+	}
+	return a.getResolvedModelName()
+}
+
+// setGlobalModel records a runtime-wide model override. It also persists the
+// change to config.json so it survives a restart; on the next boot the config
+// read supplies the same value.
+func (a *Agent) setGlobalModel(name string) {
+	a.modelMu.Lock()
+	a.modelName = name
+	a.modelMu.Unlock()
+}
+
+// currentGlobalModel returns the runtime-wide model override, if any.
+func (a *Agent) currentGlobalModel() string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.modelName
 }
 
 // Option is a functional option for configuring Agent.
@@ -297,6 +356,9 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 	if summary := sess.ConversationSummary(); summary != "" {
 		systemPrompt += "\n\n<conversation_context>\n" + summary + "\n</conversation_context>"
 	}
+	if sess.Personality != "" {
+		systemPrompt += "\n\n<personality>\n" + sess.Personality + "\n</personality>"
+	}
 
 	// Add user message to session
 	userMsg := session.Message{
@@ -381,7 +443,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 
 		// Call LLM
 		req := providers.ChatRequest{
-			Model:       a.getModelName(),
+			Model:       a.modelForSession(sess),
 			Messages:    messages,
 			Temperature: a.cfg.Agents.Defaults.Temperature,
 			MaxTokens:   a.cfg.Agents.Defaults.MaxTokens,
@@ -820,7 +882,7 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 		threshold = 0.7 // default fallback
 	}
 
-	model := a.getResolvedModelName()
+	model := a.resolvedModelFor(sess)
 	maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 	budget := a.budget.ComputeBudget(model, maxCompletion)
 	thresholdBudget := int(float64(budget) * threshold)
@@ -956,7 +1018,7 @@ func (a *Agent) buildMessages(systemPrompt string, sess *session.Session) []prov
 
 	// If we have a budget manager and compressor, consider compressing older messages
 	if a.budget != nil && a.compressor != nil {
-		model := a.getResolvedModelName()
+		model := a.resolvedModelFor(sess)
 		maxCompletion := a.cfg.Agents.Defaults.MaxTokens
 		budget := a.budget.ComputeBudget(model, maxCompletion)
 		budget -= ctxpkg.TokenEstimator(systemPrompt)
@@ -1127,17 +1189,25 @@ func (a *Agent) formatToolResult(toolCallID, name, result string) providers.Mess
 
 // handleCommand handles slash commands.
 func (a *Agent) handleCommand(ctx context.Context, msg bus.InboundMessage) string {
-	cmd := cleanCommand(msg.Content)
+	cmdLine := cleanCommand(msg.Content)
+	cmd := cmdLine
+	if i := strings.IndexAny(cmdLine, " \t"); i >= 0 {
+		cmd = cmdLine[:i]
+	}
 
 	switch cmd {
 	case "start":
 		return "Hello! I'm joshbot, your personal AI assistant. How can I help you today?"
 	case "new":
-		// Clear messages but preserve conversation context (user facts survive /new)
+		// Clear messages but preserve conversation context (user facts survive
+		// /new). The per-session model override and personality are scoped to
+		// the conversation, so they are cleared too.
 		sessionKey := getSessionKey(msg)
 		sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
 		if err == nil {
 			sess.ClearMessages()
+			sess.ModelOverride = ""
+			sess.Personality = ""
 			if err := a.sessions.Save(ctx, sess); err != nil {
 				a.logger.Debug("Could not save session after /new", "error", err)
 			}
@@ -1162,9 +1232,12 @@ Just type normally to chat with me!`,
 	case "help":
 		return `Available commands:
 /start - Start a conversation
-/new - Start fresh (saves memory first)
-/help - Show this help
+/new - Start fresh (clears session model/personality)
+/model [name] - Switch model for this session (--global for all)
+/personality [name] - Set or clear a personality
+/compact - Summarize older context now
 /status - Show system status
+/help - Show this help
 
 Just type normally to chat with me!`
 	case "status":
@@ -1172,19 +1245,292 @@ Just type normally to chat with me!`
 		if a.tools != nil {
 			toolCount = len(a.tools.GetSchemas())
 		}
+		model := a.getModelName()
+		if sess, err := a.sessions.GetOrCreate(ctx, getSessionKey(msg)); err == nil {
+			model = a.modelForSession(sess)
+		}
 		return fmt.Sprintf(`Status:
   Model: %s
   Tools: %d registered
   Memory window: %d
   Max iterations: %d`,
-			a.getModelName(),
+			model,
 			toolCount,
 			a.cfg.Agents.Defaults.MemoryWindow,
 			a.cfg.Agents.Defaults.MaxToolIterations,
 		)
+	case "model":
+		return a.handleModelCommand(ctx, msg)
+	case "personality":
+		return a.handlePersonalityCommand(ctx, msg)
+	case "compact":
+		return a.handleCompactCommand(ctx, msg)
 	}
 
 	return "" // Not a known command, process normally
+}
+
+// handleModelCommand implements /model. With no argument it lists the current
+// model and the ones a user can switch to. With an argument it sets a
+// per-session override (persisted, cleared by /new); with --global it changes
+// the default for every session and writes it to config.json.
+func (a *Agent) handleModelCommand(ctx context.Context, msg bus.InboundMessage) string {
+	sessionKey := getSessionKey(msg)
+	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to load session: %v", err)
+	}
+
+	rest, global := parseModelArgs(cleanCommand(msg.Content))
+
+	if len(rest) == 0 {
+		if global {
+			return "Usage: /model <name> --global"
+		}
+		return a.modelList(sess)
+	}
+
+	canonical, err := a.resolveModelSpec(rest[0])
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+
+	if global {
+		hadOverride := sess.ModelOverride != ""
+		sess.ModelOverride = ""
+		if err := a.setGlobalModelAndPersist(canonical); err != nil {
+			a.logger.Warn("Failed to persist global model", "error", err)
+			return fmt.Sprintf("Error: failed to save config: %v", err)
+		}
+		if hadOverride {
+			if err := a.sessions.Save(ctx, sess); err != nil {
+				a.logger.Debug("Could not save session after global model change", "error", err)
+			}
+		}
+		return fmt.Sprintf("✓ Default model changed to %s for all sessions.\n\nNew conversations use it, and this session's override (if any) was cleared.", canonical)
+	}
+
+	sess.ModelOverride = canonical
+	if err := a.sessions.Save(ctx, sess); err != nil {
+		a.logger.Debug("Could not save session after /model", "error", err)
+	}
+	return fmt.Sprintf("✓ Model switched to %s for this session.\n\nUse /model %s --global to make it the default for all sessions.", canonical, canonical)
+}
+
+// parseModelArgs splits a /model line into the model spec tokens and whether
+// the --global flag was present. It expects the slash-stripped command
+// ("model smart --global"). Trailing flags are read here rather than by the
+// caller so the order of the flag relative to the argument does not matter.
+func parseModelArgs(content string) (rest []string, global bool) {
+	fields := strings.Fields(content)
+	for _, f := range fields[1:] {
+		switch f {
+		case "--global":
+			global = true
+		default:
+			rest = append(rest, f)
+		}
+	}
+	return rest, global
+}
+
+// modelList renders the effective model for the session and everything a user
+// can switch to.
+func (a *Agent) modelList(sess *session.Session) string {
+	active := a.modelForSession(sess)
+	var b strings.Builder
+	if a.cfg.UseModelsConfig() {
+		fmt.Fprintf(&b, "Current model: %s\n\nAvailable models:\n", active)
+		for _, m := range a.cfg.ModelsConfig.Models {
+			if m.Disabled {
+				continue
+			}
+			marker := "  "
+			if m.Name == active {
+				marker = "> "
+			}
+			fmt.Fprintf(&b, "%s%s - %s\n", marker, m.Name, m.Model)
+		}
+		b.WriteString("\nUsage: /model <name>  or  /model <name> --global")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "Current model: %s\n\nAvailable providers:\n", active)
+	for name, p := range a.cfg.Providers {
+		if !p.Enabled || p.APIKey == "" {
+			continue
+		}
+		marker := "  "
+		if active == name || strings.HasPrefix(active, name+":") {
+			marker = "> "
+		}
+		model := p.Model
+		if model == "" {
+			model = a.cfg.Agents.Defaults.Model
+		}
+		fmt.Fprintf(&b, "%s%s - %s\n", marker, name, model)
+	}
+	b.WriteString("\nUsage: /model <provider:model>  or  /model <name> --global")
+	return b.String()
+}
+
+// resolveModelSpec validates a /model argument and returns the canonical spec
+// to persist: a configured model name in model-centric mode, or a
+// provider:model (or bare provider) spec in legacy mode.
+func (a *Agent) resolveModelSpec(spec string) (string, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", fmt.Errorf("model name is required")
+	}
+	if a.cfg.UseModelsConfig() {
+		if m, ok := a.cfg.GetModel(spec); ok && !m.Disabled {
+			return m.Name, nil
+		}
+		for _, m := range a.cfg.ModelsConfig.Models {
+			if m.Disabled {
+				continue
+			}
+			if m.Model == spec || config.StripProviderPrefix(m.Model) == spec {
+				return m.Name, nil
+			}
+		}
+		return "", fmt.Errorf("unknown model %q (see /model for the list)", spec)
+	}
+	if idx := strings.Index(spec, ":"); idx > 0 {
+		provider := spec[:idx]
+		if p, ok := a.cfg.Providers[provider]; !ok || !p.Enabled {
+			return "", fmt.Errorf("unknown or disabled provider %q", provider)
+		}
+		return spec, nil
+	}
+	if p, ok := a.cfg.Providers[spec]; ok && p.Enabled {
+		return spec, nil
+	}
+	return "", fmt.Errorf("unknown provider %q (see /model for the list)", spec)
+}
+
+// setGlobalModelAndPersist records a runtime-wide model override and writes it
+// to config.json so it survives a restart. Both the in-memory config and the
+// runtime override are mutated under modelMu so concurrent model resolution
+// never observes a torn value.
+func (a *Agent) setGlobalModelAndPersist(name string) error {
+	a.modelMu.Lock()
+	a.modelName = name
+	if a.cfg.UseModelsConfig() {
+		a.cfg.ModelsConfig.Agent.Model = name
+	} else {
+		a.cfg.Agents.Defaults.Model = name
+	}
+	a.modelMu.Unlock()
+	return config.Save(a.cfg)
+}
+
+// handlePersonalityCommand implements /personality. With no argument it shows
+// the current personality. With "none" it clears it. A known preset name
+// expands to a canned instruction; anything else is used verbatim as the
+// personality instruction.
+func (a *Agent) handlePersonalityCommand(ctx context.Context, msg bus.InboundMessage) string {
+	sessionKey := getSessionKey(msg)
+	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to load session: %v", err)
+	}
+
+	arg := strings.TrimSpace(strings.TrimPrefix(cleanCommand(msg.Content), "personality"))
+
+	if arg == "" {
+		if sess.Personality == "" {
+			return fmt.Sprintf("No personality set for this session.\n\nTry one of: %s\nOr your own instruction: /personality <text>\nClear it with: /personality none", presetNames())
+		}
+		return fmt.Sprintf("Current personality: %s\n\nUse /personality none to clear it.", sess.Personality)
+	}
+
+	if strings.EqualFold(arg, "none") {
+		sess.Personality = ""
+		if err := a.sessions.Save(ctx, sess); err != nil {
+			a.logger.Debug("Could not save session after /personality none", "error", err)
+		}
+		return "✓ Personality cleared."
+	}
+
+	if preset, ok := personalityPresets[strings.ToLower(arg)]; ok {
+		sess.Personality = preset
+	} else {
+		sess.Personality = arg
+	}
+	if err := a.sessions.Save(ctx, sess); err != nil {
+		a.logger.Debug("Could not save session after /personality", "error", err)
+	}
+	return fmt.Sprintf("✓ Personality set for this session:\n\n%s\n\nUse /personality none to clear it.", sess.Personality)
+}
+
+// handleCompactCommand implements /compact: it summarizes the session history
+// immediately instead of waiting for the context budget to cross its
+// threshold. The summarized prefix is replaced by a compaction record (via
+// applyCompaction, which archives the replaced messages) and persisted.
+func (a *Agent) handleCompactCommand(ctx context.Context, msg bus.InboundMessage) string {
+	sessionKey := getSessionKey(msg)
+	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to load session: %v", err)
+	}
+	if a.budget == nil || a.compressor == nil {
+		return "Context compression is not available in this build."
+	}
+	if len(sess.Messages) == 0 {
+		return "Nothing to compact yet — this session has no messages."
+	}
+
+	model := a.resolvedModelFor(sess)
+	maxCompletion := a.cfg.Agents.Defaults.MaxTokens
+	budget := a.budget.ComputeBudget(model, maxCompletion)
+
+	sessionMsgs := sessionToProviderMessages(sess)
+	compressed, err := a.compressor.CompressMessages(ctx, model, sessionMsgs, budget)
+	if err != nil {
+		a.logger.Warn("Manual context compaction failed", "error", err)
+		return fmt.Sprintf("Error: compaction failed: %v", err)
+	}
+	if strings.TrimSpace(compressed) == "" {
+		return "Error: compaction produced an empty summary."
+	}
+
+	prefixLen := len(sess.Messages)
+	a.applyCompaction(ctx, sess, compactionState{summary: compressed, prefixLen: prefixLen, active: true})
+	if err := a.sessions.Save(ctx, sess); err != nil {
+		a.logger.Warn("Failed to save session after /compact", "error", err)
+	}
+	return fmt.Sprintf("✓ Compressed the last %d messages into a summary. The earlier conversation is archived in this session's history.", prefixLen)
+}
+
+// CurrentModel reports the effective model for the CLI session. The interactive
+// TTY status bar uses it; sessions (and their overrides) belong to the caller
+// of Process, so a per-session override on any other chat never shows here.
+func (a *Agent) CurrentModel() string {
+	sess, err := a.sessions.GetOrCreate(context.Background(), "cli:cli_user")
+	if err != nil {
+		return a.getModelName()
+	}
+	return a.modelForSession(sess)
+}
+
+// personalityPresets is the fixed set of named personalities /personality
+// knows. Any other argument is treated as a custom instruction verbatim.
+var personalityPresets = map[string]string{
+	"concise":   "Answer concisely. Use short, direct sentences and avoid filler.",
+	"technical": "Assume a technical audience. Prefer precise terminology and cite file paths or commands where relevant.",
+	"pirate":    "Talk like a pirate. Sprinkle in 'arr', 'matey' and 'ye'.",
+	"cheerful":  "Be warm, upbeat and encouraging, with light humour.",
+	"formal":    "Use formal, professional language and address the user politely.",
+}
+
+// presetNames lists the named personalities for the /personality help text.
+func presetNames() string {
+	names := make([]string, 0, len(personalityPresets))
+	for name := range personalityPresets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // isCommand checks if the message content is a command.

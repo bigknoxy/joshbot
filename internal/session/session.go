@@ -100,6 +100,14 @@ type Session struct {
 	UpdatedAt           time.Time         `json:"updated_at"`
 	ConversationTopic   string            `json:"conversation_topic,omitempty"`
 	ConversationContext map[string]string `json:"conversation_context,omitempty"`
+	// ModelOverride, when set, pins this session to a specific model name or
+	// provider:model spec instead of the configured default. Persisted per
+	// session so a /model switch survives restarts but never affects other
+	// chats. Cleared by /new.
+	ModelOverride string `json:"model_override,omitempty"`
+	// Personality, when set, is an instruction appended to the system prompt
+	// for this session only. Cleared by /new.
+	Personality string `json:"personality,omitempty"`
 }
 
 // NewSession creates a new session with the given ID.

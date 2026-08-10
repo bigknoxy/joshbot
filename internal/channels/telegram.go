@@ -79,12 +79,26 @@ type telegramNotifier interface {
 }
 
 // botCommands is the command menu shown in the Telegram UI. Every entry here
-// must have a matching handler registered in setupHandlers.
+// must have a matching handler registered in setupHandlers. Keep the two in
+// step: a menu entry without a handler is silently swallowed by the
+// unknown-command fallback, and a handler without a menu entry is invisible
+// in the UI.
 var botCommands = []telebot.Command{
 	{Text: "start", Description: "Show what this bot can do"},
-	{Text: "help", Description: "Show the list of commands"},
 	{Text: "new", Description: "Start a new session"},
+	{Text: "status", Description: "Show session status"},
+	{Text: "model", Description: "Switch model for this chat"},
+	{Text: "personality", Description: "Set a personality"},
+	{Text: "compact", Description: "Summarize older context"},
+	{Text: "help", Description: "Show the list of commands"},
 }
+
+// forwardedCommands are the slash commands whose behaviour lives in the agent
+// (the CLI and Telegram share the same handlers) and are therefore routed to
+// the bus by handleCommandForward. They must all appear in botCommands, and
+// every botCommands entry that is not handled locally (start/help/new) must
+// appear here — TestTelegramChannel_CommandMenuAndHandlersInStep pins that.
+var forwardedCommands = []string{"/status", "/model", "/personality", "/compact"}
 
 // NewTelegramChannel creates a new Telegram channel instance.
 func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *TelegramChannel {
@@ -360,6 +374,16 @@ func (t *TelegramChannel) setupHandlers(bot *telebot.Bot) {
 		return t.handleNew(ctx)
 	})
 
+	// Commands whose behaviour lives in the agent (shared with the CLI): the
+	// channel packages the raw text and routes it to the bus, and the agent
+	// answers on the outbound channel. The set here must mirror botCommands.
+	for _, command := range forwardedCommands {
+		cmd := command
+		bot.Handle(cmd, func(ctx telebot.Context) error {
+			return t.handleCommandForward(ctx, cmd)
+		})
+	}
+
 	// Any other message types we want to acknowledge but not process
 	bot.Handle(telebot.OnVenue, func(ctx telebot.Context) error {
 		return t.handleUnsupported(ctx, "venue")
@@ -481,8 +505,13 @@ func (t *TelegramChannel) handleHelp(ctx telebot.Context) error {
 Welcome! I'm here to help you.
 
 Available commands:
-/help - Show this help message
+/start - Show what this bot can do
 /new - Start a new session
+/status - Show session status
+/model <name> - Switch model for this chat (add --global for all chats)
+/personality <name> - Set a personality (or /personality none to clear)
+/compact - Summarize older context now
+/help - Show this help
 
 Just send me a message and I'll respond!`
 
@@ -518,6 +547,46 @@ func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
 
 	_, err := ctx.Bot().Send(ctx.Sender(), "🔄 Starting new session...")
 	return err
+}
+
+// handleCommandForward routes a slash command to the agent through the bus.
+// The command's behaviour is owned by the agent (the CLI uses the same
+// handlers), so the channel only packages the raw text and its routing
+// metadata. Replies come back on the outbound channel.
+//
+// Unlike the unknown-command fallback, telebot routes a registered command
+// directly to its handler, so the allowlist check that lives inside
+// handleMessage is never reached here. It is repeated explicitly: a command
+// like /status or /model would otherwise disclose bot configuration to anyone
+// who can reach the bot, not just users the operator allowed.
+func (t *TelegramChannel) handleCommandForward(ctx telebot.Context, command string) error {
+	msg := ctx.Message()
+	log.Debug("forwarding command to agent", "sender", msg.Sender.ID, "command", command)
+
+	if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
+		return nil
+	}
+
+	t.startTyping(ctx.Chat())
+
+	inbound := bus.InboundMessage{
+		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
+		Content:   msg.Text,
+		Channel:   t.name,
+		Timestamp: time.Now(),
+		Metadata: map[string]any{
+			"message_id": msg.ID,
+			"chat_id":    msg.Chat.ID,
+			"username":   msg.Sender.Username,
+			"is_command": true,
+		},
+	}
+	if !t.bus.Send(inbound) {
+		log.Error("failed to send command to bus", "command", command)
+		_, err := ctx.Bot().Send(ctx.Sender(), "Sorry, I couldn't process that. Please try again.")
+		return err
+	}
+	return nil
 }
 
 // handlePhoto processes incoming photos.

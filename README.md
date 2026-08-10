@@ -527,11 +527,15 @@ After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 
 5. Run: `joshbot gateway`
 
-On startup joshbot registers its command menu with Telegram (`/start`, `/help`,
-`/new`), so they appear behind the menu button and autocomplete as you type. If
-Telegram rejects the registration it is logged and the bot starts anyway. A
-command that does not exist gets an "Unknown command" reply listing the real
-ones instead of silence.
+On startup joshbot registers its command menu with Telegram (`/start`, `/new`,
+`/status`, `/model`, `/personality`, `/compact`, `/help`), so they appear behind
+the menu button and autocomplete as you type. If Telegram rejects the
+registration it is logged and the bot starts anyway. A command that does not
+exist gets an "Unknown command" reply listing the real ones instead of silence.
+
+The commands whose behaviour lives in the agent (`/status`, `/model`,
+`/personality`, `/compact`) are forwarded to it with the same allowlist gate as
+a direct message, so they work identically in the Telegram menu and the CLI.
 
 While the agent is working, the "typing…" indicator is refreshed every 4 seconds
 until the reply is sent, so it stays visible for the whole turn.
@@ -567,13 +571,36 @@ until the reply is sent, so it stays visible for the whole turn.
 | Command | Channel | Description |
 |---------|---------|-------------|
 | `/start` | Telegram | Start a conversation (shows the help text) |
-| `/new` | Both | Start a new session (clears context) |
+| `/new` | Both | Start a fresh session (clears context, model override and personality) |
+| `/status` | Both | Show the current model, tool count, memory window and max iterations |
+| `/model [name]` | Both | Switch model for this session (`--global` makes it the default for all sessions) |
+| `/personality [name]` | Both | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear |
+| `/compact` | Both | Summarize older conversation context now |
 | `/help` | Both | Show available commands |
 | `/clear` | CLI | Clear the terminal screen |
 | `/history` | CLI | Show input history |
 | `/quit`, `/exit` | CLI | Exit the program |
 
-There is no `/status` chat command — use `joshbot status` from the shell instead.
+### Interactive CLI line editor
+
+When `joshbot agent` runs in a real terminal (stdin *and* stdout are TTYs), the
+plain `> ` prompt is replaced by a lightweight line editor:
+
+- **Tab** cycles slash-command completions, with a hint line listing candidates.
+- **Up / Down** recall history on a single-line buffer, or move the cursor
+  between lines in a multiline buffer.
+- **Left / Right / Home / End / Backspace / Delete** move and edit the line.
+- **Alt+Enter** (or Ctrl+J) inserts a newline for multiline editing.
+- **Ctrl+C** quits; **Ctrl+D** quits on an empty buffer, otherwise deletes
+  forward.
+
+The prompt shows the session's current model, so a `/model` switch is visible
+before you type your next message. The editor activates only when both input
+and output are real terminals — piped or scripted `joshbot agent` output is
+untouched.
+
+`/model` and `/personality` changes are per-session and persisted, so a
+model you pick mid-conversation survives a restart.
 
 ## Architecture
 

@@ -282,10 +282,14 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 		var meta struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
+			ModelOverride       string            `json:"model_override,omitempty"`
+			Personality         string            `json:"personality,omitempty"`
 		}
 		if err := json.Unmarshal(metaData, &meta); err == nil {
 			sess.ConversationTopic = meta.ConversationTopic
 			sess.ConversationContext = meta.ConversationContext
+			sess.ModelOverride = meta.ModelOverride
+			sess.Personality = meta.Personality
 		}
 	}
 
@@ -331,13 +335,17 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 	}
 
 	// Save conversation metadata separately if present
-	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 {
+	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" {
 		meta := struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
+			ModelOverride       string            `json:"model_override,omitempty"`
+			Personality         string            `json:"personality,omitempty"`
 		}{
 			ConversationTopic:   s.ConversationTopic,
 			ConversationContext: s.ConversationContext,
+			ModelOverride:       s.ModelOverride,
+			Personality:         s.Personality,
 		}
 		metaData, err := json.Marshal(meta)
 		if err != nil {

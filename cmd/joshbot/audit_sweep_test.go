@@ -288,10 +288,14 @@ func withTempHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	origHome, origWs := config.DefaultHome, config.DefaultWorkspace
-	config.DefaultHome = dir
-	config.DefaultWorkspace = filepath.Join(dir, "workspace")
+	// SetHome, not a bare assignment: it also clears the explicit config file
+	// an earlier --config anchored (config.activeConfigPath). Assigning
+	// DefaultHome alone left that anchor in place, so a later test's
+	// config.Save wrote to the previous test's temp file instead of its own
+	// home — a leak that only shows up when the tests run together.
+	config.SetHome(dir)
 	t.Cleanup(func() {
-		config.DefaultHome = origHome
+		config.SetHome(origHome)
 		config.DefaultWorkspace = origWs
 	})
 	return dir

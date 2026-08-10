@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **A global `--output text|json` flag on the read-only reporting commands** (`preflight`, `status`, `skills list`, `auth status`, `configure --list`) (#131). `text` is the default and is byte-for-byte what those commands already printed; `json` emits one versioned document (`schema_version`) on stdout, byte-stable across runs so two invocations can be diffed. Exit codes are unchanged, and a failure in JSON mode is reported as `{"schema_version":1,"error":{"code":N,"message":"..."}}` on stdout so a caller does not need a second reader on stderr. An unknown `--output` value exits 3 (`exitValidation` — this repo already uses 2 for auth failures). The renderers moved to a new `internal/output` package; `cmd/joshbot` keeps only the flag wiring. Note JSON documents are made safe as they are built rather than by the byte-stream redactor, which corrupts encoded JSON — tests pin per command that neither a configured credential nor the home directory appears.
 
+### Changed
+- **Coverage floors raised so the new tests cannot be deleted silently** (#177). Total 45% → 58% (measured 66.7% on darwin/arm64), `cmd/joshbot` 41% → 48% (measured 49.3%). `internal/service` keeps its 40% floor: the new suite is `//go:build darwin` and CI runs on linux, where the package's coverage is unchanged. Coverage added this pass: `internal/service` 2.7% → 92.5% (darwin), `internal/context` 65.2% → 87.4%, `internal/skills` 81.2% → 85.3%, `internal/session` 68.5% → 72.7%, `cmd/joshbot` 42.3% → 49.3%.
+
+### Fixed
+- **Context compression could panic, or silently return an empty context, on a non-positive token budget** (#177). `ComputeBudget` floors at 256, but it is not the only source of a budget: a caller doing its own arithmetic could reach `CompressMessages` with zero or less. At zero the truncation fallback sliced the content away to `""` and reported success — an agent prompt containing no conversation at all, with a nil error; below zero the same tail slice (`out[len(out)-budget*4:]`) ran off the front of the string and panicked. `internal/context/context.go` now clamps the character budget at zero and treats "nothing fits" as a compression error the caller can act on.
+
+- **`joshbot service start` never started the launchd job on macOS** (#177). `Start` ran `launchctl bootstrap gui <plist>`, but `bootstrap` takes a domain *target*, not a domain name — the UID was missing, so launchctl rejected every invocation while `Stop`/`Uninstall` (which did include it) worked. The domain target, service label and both argument vectors are now built by `serviceID`/`domainTarget`/`serviceTarget`/`bootstrapArgs`/`bootoutArgs` in `internal/service/launchd.go`, so the two can no longer disagree, and the launchd path is covered by tests (2.7% → 92.5% statement coverage) including a byte-for-byte golden test of the generated plist.
+
 ## [1.47.1] - 2026-08-10
 
 ### Fixed

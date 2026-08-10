@@ -125,11 +125,25 @@ type Compressor struct {
 // lastNonEmptyContent returns the tail of the last message with non-empty
 // Content, truncated to maxChars. Returns false if no message has content.
 func lastNonEmptyContent(messages []providers.Message, maxChars int) (string, bool) {
+	// A negative maxChars would make the tail slice below run off the front of
+	// the string and panic. Clamp it: "no room at all" is a failed
+	// compression, not a crash.
+	if maxChars < 0 {
+		maxChars = 0
+	}
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Content != "" {
 			content := messages[i].Content
 			if len(content) > maxChars {
 				content = content[len(content)-maxChars:]
+			}
+			// A non-positive maxChars truncates the content away entirely.
+			// Reporting that as a successful fallback made CompressMessages
+			// return an empty context with a nil error — the exact silent
+			// failure this fallback exists to prevent. Report "no content"
+			// instead, so the caller gets an error it can act on.
+			if content == "" {
+				return "", false
 			}
 			return content, true
 		}
@@ -242,6 +256,13 @@ func (c *Compressor) CompressMessages(ctx context.Context, model string, message
 	// fallback: truncate
 	out := joined
 	maxChars := budget * 4
+	// A caller doing its own budget arithmetic can hand us a negative budget.
+	// Left unclamped, the tail slice below is out[len(out)+n:] — a panic, not
+	// a compression failure. Clamp to zero so it degrades into the "nothing
+	// fits" path, which reports an error.
+	if maxChars < 0 {
+		maxChars = 0
+	}
 	if len(out) > maxChars {
 		out = out[len(out)-maxChars:]
 	}

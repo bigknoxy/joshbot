@@ -223,3 +223,84 @@ func TestStatusJSON_DoesNotLeakTheHomeDirectory(t *testing.T) {
 		t.Errorf("status --output json did not report the workspace at all:\n%s", out)
 	}
 }
+
+// preflight carries the same two paths as status and writes them through the
+// same non-redacting JSON writer. It leaked the home directory for exactly as
+// long as this counterpart to the status test was missing.
+func TestPreflightJSON_DoesNotLeakTheHomeDirectory(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		t.Skip("no usable home directory to check against")
+	}
+	cfg := writePreflightConfig(t, `{
+	  "providers": {"openrouter": {"enabled": true, "api_key": "`+preflightKey+`"}},
+	  "agents": {"defaults": {"workspace": "`+filepath.Join(home, ".joshbot-preflight-leak-test")+`"}},
+	  "models_config": {
+	    "agent": {"model": "openrouter/x"},
+	    "models": [{"name": "openrouter/x", "model": "openrouter/x", "api_key": "`+preflightKey+`"}]
+	  }
+	}`)
+
+	out, err := runReportCmd(t, runPreflight, "--config", cfg, "--output", "json")
+	if err != nil {
+		t.Fatalf("preflight: %v\n%s", err, out)
+	}
+	if strings.Contains(out, home) {
+		t.Errorf("preflight --output json printed the home directory %q:\n%s", home, out)
+	}
+	if !strings.Contains(out, "~/.joshbot-preflight-leak-test") {
+		t.Errorf("preflight --output json did not report the workspace at all:\n%s", out)
+	}
+}
+
+// The redacting writer rewrites "<name><sep><value>" pairs wherever it finds
+// them, and an encoded document is made of such pairs — routing JSON through it
+// produced output no parser accepts. This pins the skills document to the plain
+// writer.
+func TestSkillsListJSON_IsValidAndDoesNotLeakTheHomeDirectory(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		t.Skip("no usable home directory to check against")
+	}
+	ws := filepath.Join(home, ".joshbot-skills-leak-test")
+	skillDir := filepath.Join(ws, "skills", "leaky")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(ws) })
+	skillMD := "---\nname: leaky\ndescription: a pending skill\n---\n\nbody\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	cfg := writePreflightConfig(t, `{
+	  "providers": {"openrouter": {"enabled": true, "api_key": "`+preflightKey+`"}},
+	  "agents": {"defaults": {"workspace": "`+ws+`"}}
+	}`)
+
+	out, err := runReportCmd(t, runSkillsList, "--config", cfg, "--output", "json")
+	if err != nil {
+		t.Fatalf("skills list: %v\n%s", err, out)
+	}
+
+	var doc output.Skills
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("skills list --output json is not valid JSON: %v\n%s", err, out)
+	}
+	if strings.Contains(out, home) {
+		t.Errorf("skills list --output json printed the home directory %q:\n%s", home, out)
+	}
+
+	var found bool
+	for _, sk := range doc.Skills {
+		if sk.Name == "leaky" {
+			found = true
+			if !strings.HasPrefix(sk.Path, "~/") {
+				t.Errorf("pending skill path is not home-stripped: %q", sk.Path)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the pending workspace skill is absent, so this test proves nothing:\n%s", out)
+	}
+}

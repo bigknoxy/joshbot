@@ -29,6 +29,11 @@ type Preflight struct {
 // a load error quotes whatever the parser choked on. Both are redacted here,
 // while they are still Go strings, because the JSON form cannot be redacted
 // after encoding without destroying it (see the package comment).
+//
+// The two paths are stripped to ~ for the same reason: the JSON form bypasses
+// the redacting writer entirely, so a default install would otherwise print the
+// account name into a document whose whole purpose is to be pasted into an
+// issue.
 func NewPreflight(report config.PreflightReport, configErr string) Preflight {
 	entries := make([]config.PreflightEntry, len(report.Entries))
 	copy(entries, report.Entries)
@@ -36,6 +41,8 @@ func NewPreflight(report config.PreflightReport, configErr string) Preflight {
 		entries[i].Detail = redact.String(entries[i].Detail)
 	}
 	report.Entries = entries
+	report.ConfigPath = redact.HomePath(report.ConfigPath)
+	report.Workspace = redact.HomePath(report.Workspace)
 
 	return Preflight{
 		SchemaVersion:   SchemaVersion,

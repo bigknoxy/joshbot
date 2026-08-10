@@ -58,7 +58,8 @@ const (
 var Formats = []string{string(Text), string(JSON)}
 
 // ParseFormat maps a --output value onto a Format. An unknown value is a usage
-// error naming the valid ones — the caller turns it into exit code 2, which is
+// error naming the valid ones — the caller turns it into exit code 3
+// (exitValidation), which is
 // how a script tells "you spelled the flag wrong" apart from "the command ran
 // and failed".
 func ParseFormat(s string) (Format, error) {

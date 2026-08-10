@@ -6,6 +6,7 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/output"
+	"github.com/bigknoxy/joshbot/internal/redact"
 	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/urfave/cli/v2"
 )
@@ -63,17 +64,21 @@ func runSkillsList(c *cli.Context) error {
 			entries = append(entries, output.Skill{
 				Name:  sk.Name,
 				State: output.SkillPending,
-				Path:  filepath.Join(sk.Path, "SKILL.md"),
+				// Home-stripped at construction: the JSON form skips the
+				// redacting writer, which would otherwise be the only thing
+				// keeping the account name out of the document.
+				Path: redact.HomePath(filepath.Join(sk.Path, "SKILL.md")),
 			})
 		}
 	}
 	doc := output.NewSkills(entries)
 
-	out := reportWriter()
+	// JSON bypasses the redacting writer — it rewrites encoded name/value pairs
+	// and turns the document into something no parser accepts.
 	if format == output.JSON {
-		return output.WriteJSON(out, doc)
+		return output.WriteJSON(jsonWriter(), doc)
 	}
-	output.RenderSkillsText(out, doc)
+	output.RenderSkillsText(reportWriter(), doc)
 	return nil
 }
 

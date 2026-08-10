@@ -563,7 +563,10 @@ func (e *lineEditor) buildView() editorView {
 		rowCount += len(chunks)
 	}
 
-	// Locate the cursor's chunk and offset within it.
+	// Locate the cursor's chunk and offset within it, and compute its display
+	// column. The column is a sum of rune widths, not the raw rune offset:
+	// a wide rune (CJK, width 2) before the cursor would otherwise put the
+	// cursor one cell left of its true position.
 	cursorRow, cursorCol := 0, 0
 	if cursorLine < len(chunked) {
 		lc := chunked[cursorLine]
@@ -572,7 +575,7 @@ func (e *lineEditor) buildView() editorView {
 		for ri, chunk := range lc.chunks {
 			if remaining <= len(chunk) {
 				cursorRow = lc.lineStart + ri
-				cursorCol = remaining
+				cursorCol = displayWidth(chunk[:remaining])
 				if cursorRow == 0 {
 					cursorCol += promptW
 				}
@@ -583,7 +586,8 @@ func (e *lineEditor) buildView() editorView {
 		}
 		if !found {
 			cursorRow = lc.lineStart + len(lc.chunks) - 1
-			cursorCol = len(lc.chunks[len(lc.chunks)-1])
+			last := lc.chunks[len(lc.chunks)-1]
+			cursorCol = displayWidth(last)
 			if cursorRow == 0 {
 				cursorCol += promptW
 			}
@@ -680,6 +684,15 @@ func runeWidth(r rune) int {
 		return 2
 	}
 	return 1
+}
+
+// displayWidth returns the total display-column width of a rune slice.
+func displayWidth(rs []rune) int {
+	w := 0
+	for _, r := range rs {
+		w += runeWidth(r)
+	}
+	return w
 }
 
 // render redraws the prompt + buffer on screen and positions the edit cursor.

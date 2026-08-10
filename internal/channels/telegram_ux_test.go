@@ -680,6 +680,32 @@ func TestTelegramChannel_CommandForwardRespectsAllowlist(t *testing.T) {
 	}
 }
 
+// /new is dispatched outside handleMessage (like the forwarded commands), so
+// it must carry the same allowlist gate: an unauthorized user must not be able
+// to trigger a session reset.
+func TestTelegramChannel_NewRespectsAllowlist(t *testing.T) {
+	tg := newTestTelegramChannel("12345")
+	bot := newFakeTelegramServer(t).bot(t)
+
+	ctx := bot.NewContext(telebot.Update{Message: &telebot.Message{
+		ID:     8,
+		Text:   "/new",
+		Chat:   &telebot.Chat{ID: 1},
+		Sender: &telebot.User{ID: 999, Username: "mallory"},
+	}})
+
+	if err := tg.handleNew(ctx); err != nil {
+		t.Fatalf("handleNew returned %v", err)
+	}
+
+	select {
+	case <-tg.bus.InboundChannel():
+		t.Fatal("an unauthorized user's /new reached the agent")
+	case <-time.After(100 * time.Millisecond):
+		// expected: nothing forwarded
+	}
+}
+
 // An unknown command used to be swallowed silently, leaving the user with no
 // reply at all.
 func TestTelegramChannel_UnknownCommandGetsReply(t *testing.T) {

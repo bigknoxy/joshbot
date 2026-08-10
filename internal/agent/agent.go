@@ -94,6 +94,12 @@ type Agent struct {
 func (a *Agent) getModelName() string {
 	a.modelMu.RLock()
 	defer a.modelMu.RUnlock()
+	return a.getModelNameLocked()
+}
+
+// getModelNameLocked is getModelName without acquiring modelMu; the caller
+// must already hold a read lock.
+func (a *Agent) getModelNameLocked() string {
 	if a.modelName != "" {
 		return a.modelName
 	}
@@ -108,8 +114,14 @@ func (a *Agent) getModelName() string {
 func (a *Agent) getResolvedModelName() string {
 	a.modelMu.RLock()
 	defer a.modelMu.RUnlock()
+	return a.getResolvedModelNameLocked()
+}
+
+// getResolvedModelNameLocked is getResolvedModelName without acquiring modelMu;
+// the caller must already hold a read lock.
+func (a *Agent) getResolvedModelNameLocked() string {
 	if a.modelName != "" {
-		return a.resolveModelName(a.modelName)
+		return a.resolveModelNameLocked(a.modelName)
 	}
 	if !a.cfg.UseModelsConfig() {
 		return a.cfg.Agents.Defaults.Model
@@ -124,6 +136,14 @@ func (a *Agent) getResolvedModelName() string {
 // model-centric config knows it; otherwise the spec is passed through
 // verbatim (a bare model ID, or a "provider:model" spec).
 func (a *Agent) resolveModelName(name string) string {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.resolveModelNameLocked(name)
+}
+
+// resolveModelNameLocked is resolveModelName without acquiring modelMu; the
+// caller must already hold a read lock.
+func (a *Agent) resolveModelNameLocked(name string) string {
 	if !a.cfg.UseModelsConfig() {
 		return name
 	}
@@ -143,6 +163,15 @@ func (a *Agent) modelForSession(sess *session.Session) string {
 	return a.getModelName()
 }
 
+// modelForSessionLocked is modelForSession without acquiring modelMu; the
+// caller must already hold a read lock.
+func (a *Agent) modelForSessionLocked(sess *session.Session) string {
+	if sess != nil && sess.ModelOverride != "" {
+		return sess.ModelOverride
+	}
+	return a.getModelNameLocked()
+}
+
 // resolvedModelFor is modelForSession with the name resolved to the concrete
 // model ID for context budgeting.
 func (a *Agent) resolvedModelFor(sess *session.Session) string {
@@ -150,6 +179,15 @@ func (a *Agent) resolvedModelFor(sess *session.Session) string {
 		return a.resolveModelName(sess.ModelOverride)
 	}
 	return a.getResolvedModelName()
+}
+
+// resolvedModelForLocked is resolvedModelFor without acquiring modelMu; the
+// caller must already hold a read lock.
+func (a *Agent) resolvedModelForLocked(sess *session.Session) string {
+	if sess != nil && sess.ModelOverride != "" {
+		return a.resolveModelNameLocked(sess.ModelOverride)
+	}
+	return a.getResolvedModelNameLocked()
 }
 
 // setGlobalModel records a runtime-wide model override. It also persists the
@@ -1304,7 +1342,8 @@ func (a *Agent) handleModelCommand(ctx context.Context, msg bus.InboundMessage) 
 		}
 		if hadOverride {
 			if err := a.sessions.Save(ctx, sess); err != nil {
-				a.logger.Debug("Could not save session after global model change", "error", err)
+				a.logger.Warn("Failed to clear session override after global change", "error", err)
+				return fmt.Sprintf("Error: changed the global default but could not clear this session's override: %v", err)
 			}
 		}
 		return fmt.Sprintf("✓ Default model changed to %s for all sessions.\n\nNew conversations use it, and this session's override (if any) was cleared.", canonical)
@@ -1312,7 +1351,8 @@ func (a *Agent) handleModelCommand(ctx context.Context, msg bus.InboundMessage) 
 
 	sess.ModelOverride = canonical
 	if err := a.sessions.Save(ctx, sess); err != nil {
-		a.logger.Debug("Could not save session after /model", "error", err)
+		a.logger.Warn("Failed to save session after /model", "error", err)
+		return fmt.Sprintf("Error: could not save the session, so the model change will not persist: %v", err)
 	}
 	return fmt.Sprintf("✓ Model switched to %s for this session.\n\nUse /model %s --global to make it the default for all sessions.", canonical, canonical)
 }
@@ -1337,7 +1377,10 @@ func parseModelArgs(content string) (rest []string, global bool) {
 // modelList renders the effective model for the session and everything a user
 // can switch to.
 func (a *Agent) modelList(sess *session.Session) string {
-	active := a.modelForSession(sess)
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+
+	active := a.modelForSessionLocked(sess)
 	var b strings.Builder
 	if a.cfg.UseModelsConfig() {
 		fmt.Fprintf(&b, "Current model: %s\n\nAvailable models:\n", active)
@@ -1377,6 +1420,14 @@ func (a *Agent) modelList(sess *session.Session) string {
 // to persist: a configured model name in model-centric mode, or a
 // provider:model (or bare provider) spec in legacy mode.
 func (a *Agent) resolveModelSpec(spec string) (string, error) {
+	a.modelMu.RLock()
+	defer a.modelMu.RUnlock()
+	return a.resolveModelSpecLocked(spec)
+}
+
+// resolveModelSpecLocked is resolveModelSpec without acquiring modelMu; the
+// caller must already hold a read lock.
+func (a *Agent) resolveModelSpecLocked(spec string) (string, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
 		return "", fmt.Errorf("model name is required")
@@ -1411,16 +1462,19 @@ func (a *Agent) resolveModelSpec(spec string) (string, error) {
 // setGlobalModelAndPersist records a runtime-wide model override and writes it
 // to config.json so it survives a restart. Both the in-memory config and the
 // runtime override are mutated under modelMu so concurrent model resolution
-// never observes a torn value.
+// never observes a torn value. The whole write — including config.Save's
+// marshal of the shared config — runs under the write lock, because a
+// concurrent /model list on another session reads the same fields.
 func (a *Agent) setGlobalModelAndPersist(name string) error {
 	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+
 	a.modelName = name
 	if a.cfg.UseModelsConfig() {
 		a.cfg.ModelsConfig.Agent.Model = name
 	} else {
 		a.cfg.Agents.Defaults.Model = name
 	}
-	a.modelMu.Unlock()
 	return config.Save(a.cfg)
 }
 
@@ -1447,7 +1501,8 @@ func (a *Agent) handlePersonalityCommand(ctx context.Context, msg bus.InboundMes
 	if strings.EqualFold(arg, "none") {
 		sess.Personality = ""
 		if err := a.sessions.Save(ctx, sess); err != nil {
-			a.logger.Debug("Could not save session after /personality none", "error", err)
+			a.logger.Warn("Could not save session after /personality none", "error", err)
+			return fmt.Sprintf("Error: could not clear the personality, it may still be active: %v", err)
 		}
 		return "✓ Personality cleared."
 	}
@@ -1458,7 +1513,8 @@ func (a *Agent) handlePersonalityCommand(ctx context.Context, msg bus.InboundMes
 		sess.Personality = arg
 	}
 	if err := a.sessions.Save(ctx, sess); err != nil {
-		a.logger.Debug("Could not save session after /personality", "error", err)
+		a.logger.Warn("Could not save session after /personality", "error", err)
+		return fmt.Sprintf("Error: could not save the personality, it will not persist: %v", err)
 	}
 	return fmt.Sprintf("✓ Personality set for this session:\n\n%s\n\nUse /personality none to clear it.", sess.Personality)
 }

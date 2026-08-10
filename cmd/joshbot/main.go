@@ -987,8 +987,9 @@ type modelReporter interface {
 }
 
 // cliCommandNames are the slash commands offered by the TUI editor's Tab
-// completion. They mirror what the agent's /help lists for CLI sessions.
-var cliCommandNames = []string{"start", "new", "status", "model", "personality", "compact", "help", "exit"}
+// completion. They mirror what the agent's /help lists for CLI sessions plus
+// the CLI-only commands the buffered prompt still supports (/clear, /history).
+var cliCommandNames = []string{"start", "new", "status", "model", "personality", "compact", "help", "clear", "history", "exit"}
 
 // isTTY reports whether w is connected to an interactive terminal. It is a
 // variable (not a plain function) so tests can inject deterministic
@@ -1192,32 +1193,38 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		defer editor.close()
 	}
 
-	reader := bufio.NewReader(input)
-
 	// Reading happens on its own goroutine so a blocked read cannot make the
 	// loop deaf to shutdown. Checking `done` only between reads meant a signal
 	// arriving while sitting at the prompt was never observed, and the process
 	// could only be killed with SIGKILL (issue #104). The editor path reads
-	// through ReadLine, which selects on ctx.Done() the same way.
+	// through ReadLine, which selects on ctx.Done() the same way, and must NOT
+	// share the descriptor with this bufio goroutine — two readers on the same
+	// terminal would steal each other's keystrokes — so it is only created in
+	// the buffered (non-editor) path.
 	type readResult struct {
 		line string
 		err  error
 	}
-	lines := make(chan readResult)
-	go func() {
-		defer close(lines)
-		for {
-			line, err := reader.ReadString('\n')
-			select {
-			case lines <- readResult{line: line, err: err}:
-			case <-ctx.Done():
-				return
+	var lines <-chan readResult
+	if editor == nil {
+		reader := bufio.NewReader(input)
+		ch := make(chan readResult)
+		lines = ch
+		go func() {
+			defer close(ch)
+			for {
+				line, err := reader.ReadString('\n')
+				select {
+				case ch <- readResult{line: line, err: err}:
+				case <-ctx.Done():
+					return
+				}
+				if err != nil {
+					return
+				}
 			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+		}()
+	}
 
 	for {
 		var line string

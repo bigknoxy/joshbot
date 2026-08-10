@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -132,7 +131,8 @@ func TestModelCommandGlobalPersistsConfig(t *testing.T) {
 	t.Cleanup(func() { config.SetHome(origHome); _ = origWorkspace })
 
 	sessions := newMockSessionManager()
-	agent := NewAgent(cfg, &scriptedProvider{}, &mockToolExecutor{}, sessions, newMockLogger())
+	provider := &scriptedProvider{}
+	agent := NewAgent(cfg, provider, &mockToolExecutor{}, sessions, newMockLogger())
 
 	resp, err := agent.Process(context.Background(), cmdMsg("/model fast --global"))
 	if err != nil {
@@ -142,18 +142,23 @@ func TestModelCommandGlobalPersistsConfig(t *testing.T) {
 		t.Errorf("expected a global-change confirmation, got %q", resp)
 	}
 
-	// The running process must route every new session to the new default.
+	// The running process must route a fresh session to the new default.
 	if _, err := agent.Process(context.Background(), cmdMsg("hi")); err != nil {
 		t.Fatalf("Process(hi) returned %v", err)
 	}
-
-	// And the change must be on disk for the next boot.
-	data, err := os.ReadFile(config.ConfigPath())
-	if err != nil {
-		t.Fatalf("read saved config: %v", err)
+	if got := provider.lastRequestModel(); got != "fast" {
+		t.Errorf("next request used %q, want the new global default (fast)", got)
 	}
-	if !strings.Contains(string(data), `"name": "fast"`) {
-		t.Errorf("saved config does not reflect the new default:\n%s", data)
+
+	// And the change must be on disk for the next boot: the agent default in
+	// the saved config, not merely a model name that already appears in the
+	// configured list.
+	saved, err := config.LoadFrom(config.ConfigPath())
+	if err != nil {
+		t.Fatalf("reload saved config: %v", err)
+	}
+	if !saved.UseModelsConfig() || saved.ModelsConfig.Agent.Model != "fast" {
+		t.Errorf("saved config agent default = %q, want %q", saved.ModelsConfig.Agent.Model, "fast")
 	}
 }
 

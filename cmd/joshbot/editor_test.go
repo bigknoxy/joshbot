@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 // chanKeyReader feeds scripted key events to the editor. Push before or
@@ -261,6 +262,44 @@ func TestEditor_ContextCancellation(t *testing.T) {
 	}
 }
 
+// close() must be safe to call more than once, and ReadLine must return on
+// context cancellation even when the reader is blocked and never delivers a
+// key. That is the shutdown path: runAgentLoop cancels ctx, ReadLine returns
+// ctx.Err(), and the deferred editor.close() stops the reader goroutine. The
+// goroutine itself may stay parked inside a blocking ReadKey until a byte
+// arrives or the descriptor closes — the same accepted contract as the
+// buffered reader goroutine in runAgentLoop — so no test asserts it returns
+// the instant close() is called.
+func TestEditor_ReadLineReturnsOnContextCancelWhileBlocked(t *testing.T) {
+	var out bytes.Buffer
+	r := newChanKeyReader() // never delivers a key
+	e := newTestEditor(&out, r, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		e.ReadLine(ctx)
+		close(done)
+	}()
+
+	// Give the reader goroutine time to block on ReadKey, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReadLine did not return after ctx cancel; shutdown path is broken")
+	}
+}
+
+func TestEditor_CloseIsIdempotent(t *testing.T) {
+	var out bytes.Buffer
+	e := newTestEditor(&out, newChanKeyReader(), nil)
+	e.close()
+	e.close() // must not panic
+}
+
 func TestWrapRunes_WideRuneNotSplit(t *testing.T) {
 	got := wrapRunes([]rune("ab中cd"), 3, 5)
 	if len(got) != 2 {
@@ -284,6 +323,27 @@ func TestBuildView_SetsCursorAndRows(t *testing.T) {
 	}
 	if view.cursorRow != 0 || view.cursorCol != 5 {
 		t.Fatalf("cursor = (%d,%d), want (0,5)", view.cursorRow, view.cursorCol)
+	}
+}
+
+// A wide rune (CJK, display width 2) before the cursor must shift the cursor
+// column by its full width, not by the rune count. This is the case the go
+// systems review flagged: cursorCol used the rune offset, so the cursor was
+// drawn one cell left whenever the first line contained a wide rune.
+func TestBuildView_WideRuneShiftsCursorColumn(t *testing.T) {
+	var out bytes.Buffer
+	e := newTestEditor(&out, newChanKeyReader(), nil)
+	e.prompt = "> "
+	e.setBuffer("中abc") // display width: 中=2, a=b=c=1
+	e.cursor = len([]rune("中abc"))
+
+	view := e.buildView()
+	if len(view.rows) != 1 {
+		t.Fatalf("rows = %v, want a single row", view.rows)
+	}
+	// prompt (2) + 中 (2) + abc (3) = column 7
+	if view.cursorCol != 7 {
+		t.Fatalf("cursorCol = %d, want 7 (prompt 2 + wide rune 2 + 3)", view.cursorCol)
 	}
 }
 

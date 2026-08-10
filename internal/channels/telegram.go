@@ -526,6 +526,13 @@ func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
 	msg := ctx.Message()
 	log.Debug("handleNew called", "sender", msg.Sender.ID)
 
+	// The same allowlist gate handleMessage and handleCommandForward apply:
+	// /new is dispatched outside handleMessage, so it must be re-checked here
+	// or an unallowed caller could still trigger agent work.
+	if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
+		return nil
+	}
+
 	// Send new session command to bus
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),

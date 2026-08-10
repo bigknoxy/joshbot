@@ -71,9 +71,7 @@ func (p *scriptedProvider) Chat(ctx context.Context, req providers.ChatRequest) 
 	p.requests = append(p.requests, req)
 
 	idx := p.calls
-	p.calls++
-
-	// Past the end of the script the model just stops calling tools, so a
+	p.calls++ // Past the end of the script the model just stops calling tools, so a
 	// scenario that under-specifies its script terminates instead of hanging.
 	if idx >= len(p.turns) {
 		return &providers.ChatResponse{Choices: []providers.Choice{{
@@ -109,6 +107,17 @@ func (p *scriptedProvider) Transcribe(ctx context.Context, _ []byte, _ string) (
 
 func (p *scriptedProvider) Name() string             { return "scripted" }
 func (p *scriptedProvider) Config() providers.Config { return providers.Config{} }
+
+// lastRequestModel returns the Model of the most recently recorded request,
+// or "" if none. Callers use it to assert which model the loop routed to.
+func (p *scriptedProvider) lastRequestModel() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.requests) == 0 {
+		return ""
+	}
+	return p.requests[len(p.requests)-1].Model
+}
 
 // toolInvocation is one recorded call into the tool layer.
 type toolInvocation struct {

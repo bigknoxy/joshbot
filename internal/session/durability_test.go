@@ -55,6 +55,69 @@ func TestSaveUsesOwnerOnlyPermissions(t *testing.T) {
 	}
 }
 
+// ModelOverride and Personality must survive a Save/Load round-trip: /model
+// and /personality advertise persistence across restarts, and the whole point
+// of the meta sidecar is to carry them past the process lifetime.
+func TestMetaSidecarRoundTripsModelAndPersonality(t *testing.T) {
+	m := newTestManager(t)
+	id := "meta-roundtrip"
+
+	sess := NewSession(id)
+	sess.AddMessage(Message{Role: RoleUser, Content: "hi", Timestamp: time.Now().UTC()})
+	sess.ModelOverride = "fast"
+	sess.Personality = "be terse"
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := m.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.ModelOverride != "fast" {
+		t.Errorf("ModelOverride = %q, want fast", got.ModelOverride)
+	}
+	if got.Personality != "be terse" {
+		t.Errorf("Personality = %q, want %q", got.Personality, "be terse")
+	}
+}
+
+// Clearing both fields must remove the sidecar, not leave a stale one behind:
+// /personality none or /new clears them, and a leftover sidecar would re-inject
+// the cleared value on the next Load.
+func TestMetaSidecarRemovedWhenCleared(t *testing.T) {
+	m := newTestManager(t)
+	id := "meta-clear"
+
+	sess := NewSession(id)
+	sess.AddMessage(Message{Role: RoleUser, Content: "hi", Timestamp: time.Now().UTC()})
+	sess.ModelOverride = "fast"
+	sess.Personality = "be terse"
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save (set): %v", err)
+	}
+	if _, err := os.Stat(m.metadataFilePath(id)); err != nil {
+		t.Fatalf("expected sidecar to exist after set: %v", err)
+	}
+
+	sess.ModelOverride = ""
+	sess.Personality = ""
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save (clear): %v", err)
+	}
+
+	if _, err := os.Stat(m.metadataFilePath(id)); !os.IsNotExist(err) {
+		t.Errorf("sidecar still exists after clear (err=%v); want IsNotExist", err)
+	}
+	got, err := m.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.ModelOverride != "" || got.Personality != "" {
+		t.Errorf("stale override/personality survived clear: %q / %q", got.ModelOverride, got.Personality)
+	}
+}
+
 // A damaged line must not end the conversation: everything that parses is
 // preserved and the original file is quarantined rather than deleted.
 func TestLoadSkipsCorruptLinesAndQuarantines(t *testing.T) {

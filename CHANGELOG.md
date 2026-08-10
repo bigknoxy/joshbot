@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.45.5] - 2026-08-10
+
 ### Fixed
 - **`joshbot onboard` could silently drop a working provider on a keep-current reconfigure** — reconfiguring an existing install and pressing Enter at the API key prompt ("or press Enter to keep current") returned an empty key, and `runOnboard` read that as "no provider configured": it skipped the provider-config block entirely, so the config was saved with only the disabled `openrouter` default and the chosen provider (e.g. NVIDIA) was gone. `joshbot agent` then died with "no providers enabled: 1 provider(s) found in config (openrouter)". Pressing Enter with an existing key now preserves that key, matching the Telegram-token contract and the `--force` path.
 

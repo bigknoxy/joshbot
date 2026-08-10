@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The release Docker image failed to build after the stale `pkg/` duplicate was deleted** — `Dockerfile` still ran `COPY pkg/ ./pkg/`, so the v1.47.0 Docker job died with `"/pkg": not found` after the tag had already been pushed and every platform binary had shipped. The image is now built on every pull request (`docker-build` in `.github/workflows/ci.yml`, one platform, no push), so a Dockerfile that drifts from the tree fails on the PR instead of at release time.
+
 ## [1.47.0] - 2026-08-10
 
 ### ⚠️ Breaking

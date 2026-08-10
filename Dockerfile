@@ -19,7 +19,6 @@ RUN go mod download
 # Copy source code
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-COPY pkg/ ./pkg/
 
 # Build the binary
 # CGO_ENABLED=0 for static binary (no libc dependency)

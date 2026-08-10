@@ -3,7 +3,9 @@ package bus
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -88,7 +90,7 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 	mb.Subscribe("test", handler)
 
 	// Manually dispatch a message to test handler
-	mb.dispatchInbound(InboundMessage{
+	mb.dispatchInbound(context.Background(), InboundMessage{
 		SenderID: "user1",
 		Channel:  "test",
 		Content:  "hello",
@@ -103,7 +105,7 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 
 	// Test unsubscribe
 	mb.Unsubscribe("test", handler)
-	mb.dispatchInbound(InboundMessage{
+	mb.dispatchInbound(context.Background(), InboundMessage{
 		SenderID: "user1",
 		Channel:  "test",
 		Content:  "hello",
@@ -862,4 +864,154 @@ func TestBoundedConcurrencyStrict(t *testing.T) {
 	}
 
 	t.Logf("Max concurrent handlers: %d (limit: %d)", maxConcurrent, MaxConcurrentHandlers)
+}
+
+// TestSendPublishRaceWithStop hammers Send/Publish concurrently while Stop runs.
+//
+// Against the previous implementation (Stop closed and replaced inboundCh /
+// outboundCh under mb.mu while Send/Publish wrote to them without the lock),
+// this reproduced two failures: a "send on closed channel" panic when a writer
+// hit the channel between close and reassignment, and a data race that
+// `go test -race` flags on the channel fields (Stop reassigning them, Send/
+// Publish reading them). With cancel-only shutdown (channels never closed or
+// replaced) it passes cleanly.
+func TestSendPublishRaceWithStop(t *testing.T) {
+	for iter := 0; iter < 10; iter++ {
+		mb := NewMessageBus()
+		mb.Start()
+
+		var wg sync.WaitGroup
+
+		// Writers modeling unsynchronized senders (channels, handler
+		// goroutines). Each does a bounded number of writes, yielding between
+		// them so Stop is guaranteed to overlap them mid-flight rather than
+		// starving the scheduler with a tight spin.
+		for i := 0; i < 6; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 500; j++ {
+					mb.Send(InboundMessage{Channel: "test", Content: "in"})
+					mb.Publish(OutboundMessage{Channel: "test", Content: "out"})
+					runtime.Gosched()
+				}
+			}()
+		}
+
+		// Stop concurrently with the in-flight writers. Against the old code
+		// this was the window where a writer could hit a just-closed channel.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mb.Stop()
+		}()
+
+		wg.Wait()
+	}
+}
+
+// TestRestartUnderLoadIsRaceFree pins the data race that Start/Stop/Start used
+// to trigger: Start reassigned mb.ctx under mb.mu while handler goroutines from
+// the previous run — which Stop deliberately does not wait for — still read the
+// field unlocked. The context is now threaded through processInbound →
+// dispatchInbound → dispatchToHandlers, so nothing reads mb.ctx off-goroutine.
+// Meaningful only under -race.
+func TestRestartUnderLoadIsRaceFree(t *testing.T) {
+	mb := NewMessageBus()
+
+	var handled atomic.Int64
+	mb.Subscribe("all", func(ctx context.Context, msg InboundMessage) {
+		// Touch the context the way a real handler would.
+		select {
+		case <-ctx.Done():
+		default:
+		}
+		handled.Add(1)
+	})
+
+	stop := make(chan struct{})
+	var senders sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		senders.Add(1)
+		go func() {
+			defer senders.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					mb.Send(InboundMessage{Channel: "load", Content: "x"})
+					// Yield between sends: an unthrottled sender can keep the
+					// drain loop in processInbound permanently non-empty.
+					time.Sleep(time.Millisecond)
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 20; i++ {
+		mb.Start()
+		time.Sleep(time.Millisecond)
+		mb.Stop()
+	}
+
+	close(stop)
+	senders.Wait()
+
+	if mb.IsRunning() {
+		t.Error("bus should be stopped")
+	}
+	_ = handled.Load()
+}
+
+// TestHandlerContextIsPerStartCycle is the deterministic companion to the race
+// test above. -race only reports the unsynchronized read if the scheduler
+// happens to interleave it with a Start, so a partial revert (reading mb.ctx
+// inside dispatchToHandlers rather than threading the run's own context) can
+// slip through several runs. This asserts the observable consequence instead:
+// each Start cycle hands its handlers a distinct context, and the context a
+// handler received is cancelled by that cycle's Stop — never left live, never
+// shared with the next cycle.
+func TestHandlerContextIsPerStartCycle(t *testing.T) {
+	mb := NewMessageBus()
+
+	got := make(chan context.Context, 8)
+	mb.Subscribe("all", func(ctx context.Context, msg InboundMessage) {
+		got <- ctx
+	})
+
+	var seen []context.Context
+	for cycle := 0; cycle < 3; cycle++ {
+		mb.Start()
+		mb.Send(InboundMessage{Channel: "load", Content: "x"})
+
+		var ctx context.Context
+		select {
+		case ctx = <-got:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("cycle %d: handler never ran", cycle)
+		}
+		if ctx == nil {
+			t.Fatalf("cycle %d: handler received a nil context", cycle)
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("cycle %d: handler received an already-cancelled context: %v", cycle, err)
+		}
+
+		mb.Stop()
+
+		// The cycle's own context must be cancelled by that cycle's Stop.
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatalf("cycle %d: Stop did not cancel the context the handler received", cycle)
+		}
+
+		for i, prev := range seen {
+			if prev == ctx {
+				t.Fatalf("cycle %d reused the context from cycle %d; handlers are not getting a per-run context", cycle, i)
+			}
+		}
+		seen = append(seen, ctx)
+	}
 }

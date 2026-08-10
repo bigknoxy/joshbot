@@ -329,7 +329,7 @@ footer a:hover { text-decoration: underline; }
 <div class="container">
   <div class="page-hero">
     <h1>Architecture</h1>
-    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~24,800 LOC &middot; 1,135 tests</div>
+    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~29,000 LOC non-test &middot; 1,284 test functions</div>
   </div>
 
   <section>
@@ -348,8 +348,9 @@ footer a:hover { text-decoration: underline; }
 
       <div class="diagram">
         <div class="diagram-row wrap">
-          <div class="box orange wide"><span class="name">CLI Channel</span><div class="desc">bufio.Reader stdin</div></div>
+          <div class="box orange wide"><span class="name">CLI Channel</span><div class="desc">stdin (raw-mode line editor on a TTY)</div></div>
           <div class="box orange wide"><span class="name">Telegram Channel</span><div class="desc">telebot long-polling</div></div>
+          <div class="box orange wide"><span class="name">Discord Channel</span><div class="desc">discordgo gateway websocket</div></div>
         </div>
         <div class="arrow-down"></div>
         <div class="arrow-label">chan InboundMessage</div>
@@ -358,7 +359,8 @@ footer a:hover { text-decoration: underline; }
         <div class="arrow-label">routed to agent goroutine</div>
         <div class="box amber full"><span class="name">Agent (ReAct Loop)</span><div class="desc">max 20 iterations: think → act → observe</div></div>
         <div class="diagram-row wrap" style="margin-top: 8px;">
-          <div class="box purple"><span class="name">Tools Registry</span><div class="desc">22 built-in tools</div></div>
+          <div class="box purple"><span class="name">Tools Registry</span><div class="desc">23 built-in tools + MCP</div></div>
+          <div class="box purple"><span class="name">MCP Clients</span><div class="desc">stdio servers, namespaced</div></div>
           <div class="box green"><span class="name">Memory System</span><div class="desc">MEMORY.md + HISTORY.md</div></div>
           <div class="box green"><span class="name">Skills System</span><div class="desc">SKILL.md auto-discovery</div></div>
           <div class="box cyan"><span class="name">LLM Providers</span><div class="desc">OpenRouter, Anthropic, etc.</div></div>
@@ -369,7 +371,8 @@ footer a:hover { text-decoration: underline; }
         <div class="arrow-down"></div>
         <div class="diagram-row wrap">
           <div class="box orange wide"><span class="name">CLI Output</span><div class="desc">stdout</div></div>
-          <div class="box orange wide"><span class="name">Telegram Output</span><div class="desc">bot.send()</div></div>
+          <div class="box orange wide"><span class="name">Telegram Output</span><div class="desc">bot.Send(), 4096-char split</div></div>
+          <div class="box orange wide"><span class="name">Discord Output</span><div class="desc">ChannelMessageSend(), 2000-char split</div></div>
         </div>
       </div>
     </div>
@@ -378,14 +381,14 @@ footer a:hover { text-decoration: underline; }
   <section>
     <div class="section-label">Data Flow</div>
     <h2>Message Processing Pipeline</h2>
-    <p>Every message — from CLI or Telegram — follows the same path through the system.</p>
+    <p>Every message — from CLI, Telegram or Discord — follows the same path through the system.</p>
 
     <div class="flow-list">
       <div class="flow-item">
         <div class="flow-num">1</div>
         <div class="flow-content">
           <strong>Channel Receives Message</strong>
-          <div class="flow-desc">CLI reads stdin via bufio.Reader. Telegram polls updates via telebot long-polling. Both produce an <code>InboundMessage</code>.</div>
+          <div class="flow-desc">CLI reads stdin. Telegram polls updates via telebot long-polling. Discord consumes message-create events over an outbound discordgo gateway websocket. All produce an <code>InboundMessage</code>.</div>
         </div>
       </div>
       <div class="flow-item">
@@ -443,8 +446,9 @@ footer a:hover { text-decoration: underline; }
 │   ├── <span class="dir">agent/</span>              ReAct loop, context assembly, prompt caching
 │   ├── <span class="dir">memory/</span>             structured fact store (fact.go, search.go)
 │   ├── <span class="dir">skills/</span>             discovery, detection, extraction, validation, trust
-│   ├── <span class="dir">tools/</span>              22 built-in tools + registry, shell sandbox, shell env allowlist
-│   ├── <span class="dir">channels/</span>           CLI + Telegram channel implementations
+│   ├── <span class="dir">tools/</span>              23 built-in tools + registry, shell sandbox, shell env allowlist
+│   ├── <span class="dir">channels/</span>           Channel interface + Telegram and Discord implementations
+│   ├── <span class="dir">mcp/</span>                stdio MCP client + server manager (namespaced tool import)
 │   ├── <span class="dir">bus/</span>                goroutine message bus
 │   ├── <span class="dir">providers/</span>          LLM provider layer (OpenRouter, Anthropic, etc.)
 │   ├── <span class="dir">session/</span>            JSONL conversation persistence, inventory, transcript formatting
@@ -509,7 +513,7 @@ footer a:hover { text-decoration: underline; }
       </div>
       <div class="pattern-card">
         <h4>Defense in Depth for Shell</h4>
-        <p>A deny-list screens command text, an allowlisted environment strips API keys before spawn, and an opt-in Landlock sandbox confines the filesystem and network at the kernel level — each layer catches what the one before it can't guarantee.</p>
+        <p>A deny-list screens command text, an allowlisted environment strips API keys before spawn, and an opt-in OS sandbox (Linux Landlock, macOS Seatbelt) confines the filesystem and network — each layer catches what the one before it can't guarantee.</p>
       </div>
       <div class="pattern-card">
         <h4>Trust-Gated Workspace Skills</h4>
@@ -527,8 +531,8 @@ footer a:hover { text-decoration: underline; }
     <p>Slash commands dispatch on the command word and include <code>/new</code>, <code>/model [name]</code>, <code>/personality [name]</code>, <code>/compact</code>, <code>/status</code> and <code>/help</code>. <code>/model</code> and <code>/personality</code> are <strong>per-session</strong> — each <code>Session</code> carries <code>ModelOverride</code> and <code>Personality</code> persisted in its metadata sidecar, so a model or personality chosen mid-conversation survives a restart (resolution order: session override, then a global runtime override, then the config default). <code>/model ... --global</code> writes the config default for all sessions. <code>/new</code> clears both; <code>/compact</code> summarizes context on demand. These commands are forwarded from the Telegram menu too, with the same allowlist gate as a direct message.</p>
 
     <h3>Tools (<code>internal/tools/</code>)</h3>
-    <p>23 tools implement the <code>Tool</code> interface. Each declares Name, Description, Parameters, and Execute. The Registry handles discovery and execution. Tools include: filesystem (plus read/write/edit/list/glob/grep aliases), shell (deny-listed, opt-in sandbox), web fetch (SSRF-protected, aliased for search/fetch/code/company/research), memory search, skill management, config, parallel subagent, chain execution, subagent profile config, message sending, and cron (duration-based scheduled reminders).</p>
-    <p>Shell commands run with an <strong>allowlisted environment</strong> (<code>internal/tools/shell_env.go</code>) rather than inheriting joshbot's own process environment — provider API keys and other secrets are stripped before a command spawns, screened a second time against secret-shaped variable names. Optionally, <code>tools.shell_sandbox: "workspace"</code> confines shell commands to the workspace plus build caches and denies outbound network via Linux Landlock (<code>internal/tools/sandbox*.go</code>); it's off by default, Linux-only, and fails closed if the kernel doesn't support it. Web fetches are checked for SSRF both by hostname up front and again at dial time against the resolved IP, closing the DNS-rebinding gap between the two checks.</p>
+    <p>23 built-in tools implement the <code>Tool</code> interface (the optional message, skill and cron tools register only when their dependency is wired). Tools discovered from configured MCP servers register alongside them under a server-scoped name, so an MCP server cannot shadow a built-in. Each declares Name, Description, Parameters, and Execute. The Registry handles discovery and execution. Tools include: filesystem (plus read/write/edit/list/glob/grep aliases), shell (deny-listed, opt-in sandbox), web fetch (SSRF-protected, aliased for search/fetch/code/company/research), memory search, skill management, config, parallel subagent, chain execution, subagent profile config, message sending, and cron (duration-based scheduled reminders).</p>
+    <p>Shell commands run with an <strong>allowlisted environment</strong> (<code>internal/childenv</code>) rather than inheriting joshbot's own process environment — provider API keys and other secrets are stripped before a command spawns, screened a second time against secret-shaped variable names. Optionally, <code>tools.shell_sandbox: "workspace"</code> confines shell commands to the workspace plus build caches and denies outbound network (<code>internal/tools/sandbox_&lt;os&gt;.go</code>): Linux uses Landlock via a re-exec helper, macOS a deny-by-default Seatbelt profile through <code>/usr/bin/sandbox-exec</code>. Outbound TCP is gated separately by <code>tools.shell_sandbox_allow_network</code>. It is off by default and fails closed — enabling it on a platform with no sandbox is a startup error, and on such platforms the shell tool defaults to allowlist-only, since the deny list alone is bypassable. The macOS profile allowlists <code>mach-lookup</code> by service name rather than granting it wholesale — a blanket grant reaches XPC services that run outside the profile and would act on the sandboxed process's behalf. Whenever an allowlist is in force, a command containing a construct that can introduce a second command word (<code>;</code>, <code>&amp;</code>, <code>|</code>, newline, backtick, <code>$(</code>, <code>&lt;(</code>, <code>&gt;(</code>) is refused outright, because first-word matching admitted <code>echo hi; id</code>. Web fetches are checked for SSRF both by hostname up front and again at dial time against the resolved IP, closing the DNS-rebinding gap between the two checks.</p>
     <p>Anything joshbot logs or prints goes through <code>internal/redact</code> first. The log writer and <code>joshbot status</code> are wrapped, so a credential that arrives in a tool result — the model runs <code>cat config.yml</code> and the output carries an API key — never reaches the log verbatim. Vendor key shapes, <code>Authorization</code> headers (the scheme is kept, the credential replaced) and credential-shaped assignments become <code>[REDACTED]</code>, and the host home directory becomes <code>~</code>. Session files on disk are deliberately exempt: rewriting conversation content on save would mangle legitimate text and add a second way for a session to be corrupted, so data at rest relies on the <code>0600</code> mode instead.</p>
 
     <h3>Memory System (<code>internal/memory/</code>)</h3>
@@ -538,7 +542,14 @@ footer a:hover { text-decoration: underline; }
     <p>Markdown files with YAML frontmatter in <code>workspace/skills/{name}/SKILL.md</code>. Auto-discovered on startup. Progressive loading: summary only in system prompt, full content loaded when the skill is invoked. The detection module observes tool usage patterns and auto-creates skills. Workspace skills are <strong>inert until an operator approves them</strong> with <code>joshbot skills trust</code> — approval is bound to a hash of the skill's content, stored outside the workspace, so editing an approved skill (or having something write a new one) revokes trust rather than inheriting it. Skills bundled with the release itself are exempt.</p>
 
     <h3>Providers (<code>internal/providers/</code>)</h3>
-    <p>Multi-provider LLM support via a unified <code>Provider</code> interface. Registered providers: OpenRouter, OpenAI, NVIDIA, Groq, Ollama, Anthropic, Poolside, Azure, Custom, LiteLLM. Provider auto-selection by model prefix. ExtraBody support for provider-specific fields (e.g., poolside's chat_template_kwargs).</p>
+    <p>Multi-provider LLM support via a unified <code>Provider</code> interface. Registered providers: OpenRouter, OpenAI, NVIDIA, Groq, Ollama, Anthropic, Poolside, Azure, Custom, LiteLLM, GitHub Copilot. Provider auto-selection by model prefix. ExtraBody support for provider-specific fields (e.g., poolside's chat_template_kwargs).</p>
+
+    <h3>Channels (<code>internal/channels/</code>)</h3>
+    <p><code>Channel</code> is the interface; Telegram (<code>telebot</code>, long-polling) and Discord (<code>discordgo</code>, an outbound gateway websocket) implement it. Neither needs an inbound port or a public webhook URL. Both split long replies on a code-fence-aware boundary (4096 chars for Telegram, 2000 for Discord), keep a typing indicator alive for the length of an agent turn, and enforce the allowlist <strong>deny-by-default</strong>: an empty or unset <code>allow_from</code> rejects every sender and the channel logs an actionable startup warning naming the config key. The interactive CLI is not a <code>Channel</code> — it is <code>runAgentLoop</code> in <code>cmd/joshbot/main.go</code>.</p>
+    <p><strong>Enable one chat channel at a time.</strong> The bus exposes a single outbound channel that channel implementations read competitively, so Telegram and Discord running together steal each other's replies — about half of each conversation's answers are delivered to the other service, silently. Per-channel fan-out in the bus is the fix; until then <code>channels.telegram.enabled</code> and <code>channels.discord.enabled</code> should not both be true.</p>
+
+    <h3>MCP Clients (<code>internal/mcp/</code>)</h3>
+    <p><code>setupComponents</code> in <code>cmd/joshbot/main.go</code> connects the declared servers and registers their tools; the spawned processes are owned by a package-level manager reaped on exit. Model Context Protocol servers declared in <code>config.json</code> are launched as child processes and spoken to over stdio (JSON-RPC: handshake, <code>tools/list</code>, <code>tools/call</code>). Discovered tools are imported into the same registry the built-in tools live in as <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>; because no built-in carries that prefix and <code>Registry.Register</code> refuses a duplicate, an MCP server cannot shadow <code>shell</code> or any other built-in. Registration is fail-soft and bounded: a server that fails its handshake or tools/list inside 15s is logged and skipped rather than sinking the others, a single call is capped at 60s, a result is truncated at 4,000 characters and a single server message over 4&nbsp;MiB kills the connection — third-party text lands straight in the prompt, so it must not be able to exhaust the context or the heap. Server processes get the same allowlisted, credential-screened environment as shell children (<code>internal/childenv</code>), so an MCP server cannot read joshbot's provider API keys; their filesystem access is <em>not</em> sandboxed.</p>
 
     <h3>Message Bus (<code>internal/bus/</code>)</h3>
     <p>Goroutine-safe channel multiplexer. Inbound messages from any channel are routed to the agent goroutine. Outbound messages from the agent are routed back to the originating channel. This decoupling means channels and agent can be developed independently.</p>
@@ -565,7 +576,8 @@ footer a:hover { text-decoration: underline; }
     "nvidia":     { "api_key": "...", "enabled": true }
   },
   "channels": {
-    "telegram": { "enabled": false, "token": "", "allow_from": [] }
+    "telegram": { "enabled": false, "token": "", "allow_from": ["123456789"] },
+    "discord":  { "enabled": false, "token": "", "allow_from": ["123456789"] }
   }
 }</div>
     </div>
@@ -579,6 +591,7 @@ footer a:hover { text-decoration: underline; }
 </div>
 
 <footer>
+  <p>Last updated 2026-08-10</p>
   <p>joshbot — <a href="index.html">Home</a> &middot; <a href="https://github.com/bigknoxy/joshbot">GitHub</a> &middot; MIT License</p>
 </footer>
 

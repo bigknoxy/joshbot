@@ -367,6 +367,31 @@ section .subtitle {
 }
 .cta-section .install-code .copy-btn:hover { background: var(--amber); color: var(--bg); }
 
+/* Hero install one-liner */
+.hero-install {
+  display: inline-flex; align-items: center; gap: 14px;
+  margin-top: 2rem;
+  max-width: 100%;
+  background: var(--bg-alt);
+  border: var(--line);
+  border-radius: 10px;
+  padding: 12px 16px;
+  overflow-x: auto;
+}
+.hero-install code {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  color: var(--green);
+  white-space: nowrap;
+}
+.hero-install .copy-btn {
+  background: var(--surface); border: none; color: var(--text-dim);
+  padding: 6px 12px; border-radius: 4px; cursor: pointer;
+  font-family: var(--font-display); font-size: 0.7rem; transition: all .2s;
+  flex-shrink: 0;
+}
+.hero-install .copy-btn:hover { background: var(--amber); color: var(--bg); }
+
 /* Footer */
 footer {
   border-top: var(--line);
@@ -412,17 +437,21 @@ footer a:hover { text-decoration: underline; }
     <a href="#use-cases">Use Cases</a>
     <a href="architecture.html">Architecture</a>
     <a href="https://github.com/bigknoxy/joshbot" target="_blank">GitHub</a>
-    <a href="https://github.com/bigknoxy/joshbot#quick-start" class="cta">Get Started</a>
+    <a href="#get-started" class="cta">Get Started</a>
   </div>
 </nav>
 
 <section class="hero">
   <div class="prompt-symbol">$ _</div>
-  <h1>your <span class="highlight">personal</span><br>AI <span class="highlight-green">agent</span></h1>
-  <p class="tagline">joshbot is a lightweight, self-learning AI assistant that lives in your terminal. Memory, skills, tool use, Telegram — everything you need, nothing you don't.</p>
+  <h1>a personal AI agent<br>as <span class="highlight-green">one Go binary</span></h1>
+  <p class="tagline">A nanobot-class personal agent with none of the Python. joshbot is a single ~19MB static binary — no venv, no runtime dependencies. Self-hosted, curl to running in under a minute, and scriptable enough to test in CI.</p>
   <div class="actions">
-    <a href="https://github.com/bigknoxy/joshbot#quick-start" class="btn btn-primary">Install Now</a>
+    <a href="#get-started" class="btn btn-primary">Install Now</a>
     <a href="#how" class="btn btn-secondary">How It Works</a>
+  </div>
+  <div class="hero-install">
+    <code>curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash</code>
+    <button class="copy-btn" onclick="navigator.clipboard.writeText('curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',2000)">Copy</button>
   </div>
 
   <div class="terminal-demo">
@@ -477,20 +506,16 @@ footer a:hover { text-decoration: underline; }
 <section class="features">
   <div class="features-inner">
     <div class="feature-item">
-      <div class="value">24,821</div>
-      <div class="label">Lines of Go</div>
+      <div class="value">~19MB</div>
+      <div class="label">Single static binary</div>
     </div>
     <div class="feature-item">
-      <div class="value">92</div>
-      <div class="label">Test Files</div>
+      <div class="value">0</div>
+      <div class="label">Runtime dependencies</div>
     </div>
     <div class="feature-item">
-      <div class="value">1,135</div>
-      <div class="label">Test Functions</div>
-    </div>
-    <div class="feature-item">
-      <div class="value">22</div>
-      <div class="label">Built-in Tools</div>
+      <div class="value">100%</div>
+      <div class="label">Self-hosted</div>
     </div>
   </div>
 </section>
@@ -554,8 +579,13 @@ footer a:hover { text-decoration: underline; }
     </div>
     <div class="case-card">
       <div class="icon">📱</div>
-      <h3>Telegram Integration</h3>
-      <p>Chat from anywhere via Telegram. Full skill and memory access from your phone. Long-polling, no webhooks needed.</p>
+      <h3>Telegram &amp; Discord</h3>
+      <p>Chat from anywhere via Telegram or Discord. Full skill and memory access from your phone. Telegram uses long-polling, Discord an outbound gateway websocket — no webhooks or inbound ports either way. Both channels fail closed — an empty allowlist rejects everyone. Enable one at a time: the bus has a single outbound channel that both read competitively, so running them together has them steal each other's replies.</p>
+    </div>
+    <div class="case-card">
+      <div class="icon">📜</div>
+      <h3>Scriptable &amp; Agent-Testable</h3>
+      <p>Every command runs non-interactively. Pipe one message with <code>agent -m</code>, get machine-readable output with <code>--output-format json</code> or NDJSON with <code>stream-json</code>, and thread turns with <code>--resume</code>. Meaningful exit codes make it safe to gate CI on.</p>
     </div>
     <div class="case-card">
       <div class="icon">🛡️</div>
@@ -565,10 +595,10 @@ footer a:hover { text-decoration: underline; }
   </div>
 </section>
 
-<section class="cta-section">
+<section class="cta-section" id="get-started">
   <div class="section-label">Get Started</div>
   <h2>One command to install</h2>
-  <p class="subtitle" style="margin: 0 auto 1rem;">Open source, MIT licensed. Your data stays on your machine.</p>
+  <p class="subtitle" style="margin: 0 auto 1rem;">Downloads a single binary for your platform (Linux/macOS, amd64/arm64), verifies it, and points you at <code>joshbot onboard</code>. Open source, MIT licensed. Your data stays on your machine.</p>
   <div class="install-code">
     curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
     <button class="copy-btn" onclick="navigator.clipboard.writeText('curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',2000)">Copy</button>

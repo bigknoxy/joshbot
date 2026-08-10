@@ -467,6 +467,21 @@ func setHome(t *testing.T, home string) {
 	})
 }
 
+// runOnboardCmdExpectingError runs onboard and requires it to fail, returning
+// the error so the caller can assert on the message.
+func runOnboardCmdExpectingError(t *testing.T, args ...string) error {
+	t.Helper()
+
+	withStdinInput(t, "")
+
+	full := append([]string{"joshbot", "--config", filepath.Join(config.DefaultHome, "config.json"), "onboard"}, args...)
+	err := onboardApp().Run(full)
+	if err == nil {
+		t.Fatal("onboard succeeded, want an error")
+	}
+	return err
+}
+
 func runOnboardCmd(t *testing.T, args ...string) {
 	t.Helper()
 
@@ -485,7 +500,13 @@ func runOnboardCmd(t *testing.T, args ...string) {
 func TestRunOnboard_Force_FreshHome(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".joshbot")
 	setHome(t, home)
-	runOnboardCmd(t, "--force")
+	// --force with no credential available still writes the config and
+	// workspace scaffold, but must exit non-zero rather than reporting success
+	// over an unusable config (#142).
+	err := runOnboardCmdExpectingError(t, "--force")
+	if !strings.Contains(err.Error(), "did not configure any provider") {
+		t.Errorf("error = %v, want it to name the missing provider", err)
+	}
 
 	cfgPath := filepath.Join(home, "config.json")
 	if _, err := os.Stat(cfgPath); err != nil {
@@ -495,9 +516,9 @@ func TestRunOnboard_Force_FreshHome(t *testing.T) {
 		t.Errorf("workspace files not created: %v", err)
 	}
 
-	cfg, err := config.LoadFrom(cfgPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
+	cfg, loadErr := config.LoadFrom(cfgPath)
+	if loadErr != nil {
+		t.Fatalf("load config: %v", loadErr)
 	}
 	if cfg.Channels.Telegram.Enabled {
 		t.Error("fresh --force must not enable Telegram")

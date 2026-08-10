@@ -227,9 +227,19 @@ type TelegramConfig struct {
 	Proxy     string   `mapstructure:"proxy" json:"proxy" yaml:"proxy"`
 }
 
+// DiscordConfig holds Discord channel configuration.
+type DiscordConfig struct {
+	Enabled bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Token   string `mapstructure:"token" json:"token" yaml:"token"`
+	// AllowFrom is enforced deny-by-default: an empty list rejects every
+	// sender. Entries are numeric Discord user IDs (snowflakes) or usernames.
+	AllowFrom []string `mapstructure:"allow_from" json:"allow_from" yaml:"allow_from"`
+}
+
 // ChannelsConfig holds channels configuration.
 type ChannelsConfig struct {
 	Telegram TelegramConfig `mapstructure:"telegram" json:"telegram" yaml:"telegram"`
+	Discord  DiscordConfig  `mapstructure:"discord" json:"discord" yaml:"discord"`
 }
 
 // WebSearchConfig holds web search tool configuration.
@@ -256,8 +266,10 @@ type ToolsConfig struct {
 	FilesystemAllowedPaths []string       `mapstructure:"filesystem_allowed_paths" json:"filesystem_allowed_paths" yaml:"filesystem_allowed_paths"`
 	ToolOutputMaxChars     int            `mapstructure:"tool_output_max_chars" json:"tool_output_max_chars" yaml:"tool_output_max_chars"`
 	// ShellSandbox selects OS-level containment for shell commands:
-	// "off" (default) or "workspace". Linux only; on other platforms a
-	// non-off value is reported as an error rather than silently ignored.
+	// "off" (default) or "workspace". Enforced on Linux (Landlock) and macOS
+	// (Seatbelt); on a platform with no sandbox a non-off value is reported as
+	// an error rather than silently ignored, and the shell tool there defaults
+	// to allowlist-only instead of trusting the bypassable deny list.
 	ShellSandbox string `mapstructure:"shell_sandbox" json:"shell_sandbox,omitempty" yaml:"shell_sandbox,omitempty"`
 	// ShellSandboxAllowNetwork permits outbound TCP from sandboxed commands.
 	// Off by default: exfiltrating what was read is the usual goal of an
@@ -271,12 +283,39 @@ type GatewayConfig struct {
 	Port int    `mapstructure:"port" json:"port" yaml:"port"`
 }
 
+// HeartbeatConfig configures the HEARTBEAT.md proactive task scanner.
+type HeartbeatConfig struct {
+	// Interval is how often HEARTBEAT.md is scanned for unchecked tasks, as a Go
+	// duration string (e.g. "30m", "1h", "1h30m"). Empty or unparseable falls
+	// back to the 30m default. Overridable with JOSHBOT_HEARTBEAT__INTERVAL.
+	Interval string `mapstructure:"interval" json:"interval,omitempty" yaml:"interval,omitempty"`
+}
+
 // UserConfig holds user preferences for personalization.
 type UserConfig struct {
 	Name string `mapstructure:"name" json:"name,omitempty" yaml:"name,omitempty"`
 }
 
 // Config is the root configuration for joshbot.
+// MCPServerConfig configures a single stdio MCP (Model Context Protocol) server
+// that joshbot spawns and connects to over its stdin/stdout. Its discovered
+// tools are registered under a namespaced name (mcp__<server>__<tool>) so a
+// server can never shadow a built-in tool such as shell or filesystem.
+//
+// Enabled mirrors the provider convention: a server is inert until it is set,
+// so a half-configured entry never spawns a process.
+type MCPServerConfig struct {
+	Command string            `mapstructure:"command" json:"command,omitempty" yaml:"command,omitempty"`
+	Args    []string          `mapstructure:"args" json:"args,omitempty" yaml:"args,omitempty"`
+	Env     map[string]string `mapstructure:"env" json:"env,omitempty" yaml:"env,omitempty"`
+	Enabled bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
+}
+
+// MCPConfig holds the configured MCP servers keyed by operator-chosen name.
+type MCPConfig struct {
+	Servers map[string]MCPServerConfig `mapstructure:"servers" json:"servers,omitempty" yaml:"servers,omitempty"`
+}
+
 type Config struct {
 	SchemaVersion int `mapstructure:"schema_version" json:"schema_version" yaml:"schema_version"`
 
@@ -289,11 +328,33 @@ type Config struct {
 	Agents           AgentsConfig              `mapstructure:"agents" json:"agents" yaml:"agents"`
 
 	// Other config sections
-	Channels ChannelsConfig `mapstructure:"channels" json:"channels" yaml:"channels"`
-	Tools    ToolsConfig    `mapstructure:"tools" json:"tools" yaml:"tools"`
-	Gateway  GatewayConfig  `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
-	LogLevel string         `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
-	User     UserConfig     `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+	Channels  ChannelsConfig  `mapstructure:"channels" json:"channels" yaml:"channels"`
+	Tools     ToolsConfig     `mapstructure:"tools" json:"tools" yaml:"tools"`
+	Gateway   GatewayConfig   `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
+	Heartbeat HeartbeatConfig `mapstructure:"heartbeat" json:"heartbeat,omitempty" yaml:"heartbeat,omitempty"`
+	LogLevel  string          `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User      UserConfig      `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+
+	// MCP configures Model Context Protocol servers whose tools are exposed to
+	// the agent. Declaring a server here is a privileged, operator-only act:
+	// config.json lives outside the workspace and cannot be written by a
+	// workspace-confined tool, so it is the trust boundary for MCP (see
+	// SECURITY.md). A server runs only when its Enabled flag is set.
+	MCP MCPConfig `mapstructure:"mcp" json:"mcp,omitempty" yaml:"mcp,omitempty"`
+}
+
+// HeartbeatInterval returns the configured heartbeat scan interval, falling back
+// to 30m when it is unset, unparseable, or non-positive.
+func (c *Config) HeartbeatInterval() time.Duration {
+	const def = 30 * time.Minute
+	if c == nil || c.Heartbeat.Interval == "" {
+		return def
+	}
+	d, err := time.ParseDuration(c.Heartbeat.Interval)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 // parseConfigFromFile parses JSON config data into the Config struct.
@@ -306,6 +367,19 @@ func serializeConfig(cfg *Config) ([]byte, error) {
 	return json.MarshalIndent(cfg, "", "  ")
 }
 
+// splitEnvList parses a comma-separated env var into a trimmed list, dropping
+// empty entries so a stray comma cannot add a blank allowlist member.
+func splitEnvList(v string) []string {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // applyEnvOverrides applies environment variable overrides to the config.
 func applyEnvOverrides(cfg *Config) {
 	// Helper to get env var with prefix
@@ -316,6 +390,11 @@ func applyEnvOverrides(cfg *Config) {
 	// Schema version
 	if v := getEnv("SCHEMA_VERSION"); v != "" {
 		fmt.Sscanf(v, "%d", &cfg.SchemaVersion)
+	}
+
+	// Heartbeat interval, e.g. JOSHBOT_HEARTBEAT__INTERVAL=30m
+	if v := getEnv("HEARTBEAT__INTERVAL"); v != "" {
+		cfg.Heartbeat.Interval = v
 	}
 
 	// Model-centric config support
@@ -445,6 +524,27 @@ func applyEnvOverrides(cfg *Config) {
 	// Telegram proxy
 	if v := getEnv("CHANNELS__TELEGRAM__PROXY"); v != "" {
 		cfg.Channels.Telegram.Proxy = v
+	}
+
+	// Telegram allowlist (comma-separated). Both channels warn at startup that
+	// this env var is the way to set the allowlist, so it has to exist.
+	if v := getEnv("CHANNELS__TELEGRAM__ALLOW_FROM"); v != "" {
+		cfg.Channels.Telegram.AllowFrom = splitEnvList(v)
+	}
+
+	// Discord enabled
+	if v := getEnv("CHANNELS__DISCORD__ENABLED"); v != "" {
+		cfg.Channels.Discord.Enabled = v == "true" || v == "1"
+	}
+
+	// Discord token
+	if v := getEnv("CHANNELS__DISCORD__TOKEN"); v != "" {
+		cfg.Channels.Discord.Token = v
+	}
+
+	// Discord allowlist (comma-separated)
+	if v := getEnv("CHANNELS__DISCORD__ALLOW_FROM"); v != "" {
+		cfg.Channels.Discord.AllowFrom = splitEnvList(v)
 	}
 
 	// Web search API key
@@ -581,6 +681,11 @@ func Defaults() *Config {
 				Token:     "",
 				AllowFrom: []string{},
 				Proxy:     "",
+			},
+			Discord: DiscordConfig{
+				Enabled:   false,
+				Token:     "",
+				AllowFrom: []string{},
 			},
 		},
 		Tools: ToolsConfig{

@@ -139,17 +139,20 @@ func TestIsRetryable_RetryAfter(t *testing.T) {
 	}
 }
 
+// "bot was blocked" is a permanent 403: retrying just burns backoff inside the
+// single outbound goroutine, stalling every other queued message behind it.
 func TestIsRetryable_BotBlocked(t *testing.T) {
-	err := &testError{"bot was blocked by the user"}
-	if !isRetryable(err) {
-		t.Error("expected 'bot was blocked' to be retryable")
+	err := &testError{"telegram: Forbidden: bot was blocked by the user (403)"}
+	if isRetryable(err) {
+		t.Error("expected 'bot was blocked' to NOT be retryable")
 	}
 }
 
+// "user is deactivated" is likewise a permanent 403.
 func TestIsRetryable_UserDeactivated(t *testing.T) {
-	err := &testError{"user is deactivated"}
-	if !isRetryable(err) {
-		t.Error("expected 'user is deactivated' to be retryable")
+	err := &testError{"telegram: Forbidden: user is deactivated (403)"}
+	if isRetryable(err) {
+		t.Error("expected 'user is deactivated' to NOT be retryable")
 	}
 }
 
@@ -241,104 +244,6 @@ func TestIsRetryable_NilError(t *testing.T) {
 	err := &testError{""}
 	if !isRetryable(err) {
 		t.Error("expected empty error to be retryable (default)")
-	}
-}
-
-func TestParseMarkdown_Bold(t *testing.T) {
-	tg := &TelegramChannel{}
-	result, err := tg.ParseMarkdown("**bold text**")
-	if err != nil {
-		t.Fatalf("ParseMarkdown() error = %v", err)
-	}
-	if !strings.Contains(result, "<b>bold text</b>") {
-		t.Errorf("expected <b>bold text</b> in result, got %q", result)
-	}
-}
-
-func TestParseMarkdown_Italic(t *testing.T) {
-	tg := &TelegramChannel{}
-	result, err := tg.ParseMarkdown("__italic text__")
-	if err != nil {
-		t.Fatalf("ParseMarkdown() error = %v", err)
-	}
-	if !strings.Contains(result, "<i>italic text</i>") {
-		t.Errorf("expected <i>italic text</i> in result, got %q", result)
-	}
-}
-
-func TestParseMarkdown_Code(t *testing.T) {
-	tg := &TelegramChannel{}
-	result, err := tg.ParseMarkdown("`code`")
-	if err != nil {
-		t.Fatalf("ParseMarkdown() error = %v", err)
-	}
-	if !strings.Contains(result, "<code>code</code>") {
-		t.Errorf("expected <code>code</code> in result, got %q", result)
-	}
-}
-
-func TestParseMarkdown_Pre(t *testing.T) {
-	tg := &TelegramChannel{}
-	result, err := tg.ParseMarkdown("```preformatted```")
-	if err != nil {
-		t.Fatalf("ParseMarkdown() error = %v", err)
-	}
-	if !strings.Contains(result, "<pre>preformatted</pre>") {
-		t.Errorf("expected <pre>preformatted</pre> in result, got %q", result)
-	}
-}
-
-func TestParseMarkdown_Link(t *testing.T) {
-	tg := &TelegramChannel{}
-	result, err := tg.ParseMarkdown("[text](https://example.com)")
-	if err != nil {
-		t.Fatalf("ParseMarkdown() error = %v", err)
-	}
-	if !strings.Contains(result, `<a href="https://example.com">text</a>`) {
-		t.Errorf("expected link in result, got %q", result)
-	}
-}
-
-func TestParseMarkdown_Combined(t *testing.T) {
-	tg := &TelegramChannel{}
-	result, err := tg.ParseMarkdown("**bold** and `code` and [link](http://x.com)")
-	if err != nil {
-		t.Fatalf("ParseMarkdown() error = %v", err)
-	}
-	if !strings.Contains(result, "<b>bold</b>") {
-		t.Error("expected bold in result")
-	}
-	if !strings.Contains(result, "<code>code</code>") {
-		t.Error("expected code in result")
-	}
-	if !strings.Contains(result, `<a href="http://x.com">link</a>`) {
-		t.Error("expected link in result")
-	}
-}
-
-func TestParseMarkdown_EmptyString(t *testing.T) {
-	tg := &TelegramChannel{}
-	result, err := tg.ParseMarkdown("")
-	if err != nil {
-		t.Fatalf("ParseMarkdown() error = %v", err)
-	}
-	if result != "" {
-		t.Errorf("expected empty string, got %q", result)
-	}
-}
-
-func TestTelegramChannel_MessageSig(t *testing.T) {
-	em := &editableMessage{
-		messageID: 42,
-		chatID:    100,
-	}
-
-	sig, chatID := em.MessageSig()
-	if sig != "42" {
-		t.Errorf("sig = %q, want '42'", sig)
-	}
-	if chatID != 100 {
-		t.Errorf("chatID = %d, want 100", chatID)
 	}
 }
 

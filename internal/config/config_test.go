@@ -3,8 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
@@ -1078,5 +1080,74 @@ func TestToolsEnvOverrides(t *testing.T) {
 func TestSchemaVersion(t *testing.T) {
 	if CurrentSchemaVersion != 4 {
 		t.Errorf("expected schema version 4, got %d", CurrentSchemaVersion)
+	}
+}
+
+// TestHeartbeatInterval covers the heartbeat.interval config key added for #141:
+// a valid duration is honored, and the documented 30m default is used when the
+// value is empty, unparseable or non-positive.
+func TestHeartbeatInterval(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want time.Duration
+	}{
+		{"empty defaults to 30m", "", 30 * time.Minute},
+		{"valid duration", "45m", 45 * time.Minute},
+		{"compound duration", "1h30m", 90 * time.Minute},
+		{"unparseable defaults", "not-a-duration", 30 * time.Minute},
+		{"zero defaults", "0s", 30 * time.Minute},
+		{"negative defaults", "-5m", 30 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{Heartbeat: HeartbeatConfig{Interval: tc.in}}
+			if got := c.HeartbeatInterval(); got != tc.want {
+				t.Errorf("HeartbeatInterval(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+	// A nil receiver must not panic and returns the default.
+	var nc *Config
+	if got := nc.HeartbeatInterval(); got != 30*time.Minute {
+		t.Errorf("nil HeartbeatInterval() = %v, want 30m", got)
+	}
+}
+
+// TestHeartbeatIntervalEnvOverride verifies JOSHBOT_HEARTBEAT__INTERVAL feeds
+// the heartbeat interval through applyEnvOverrides (#141).
+func TestHeartbeatIntervalEnvOverride(t *testing.T) {
+	t.Setenv("JOSHBOT_HEARTBEAT__INTERVAL", "12m")
+	cfg := Defaults()
+	applyEnvOverrides(cfg)
+	if got := cfg.HeartbeatInterval(); got != 12*time.Minute {
+		t.Errorf("env-overridden HeartbeatInterval() = %v, want 12m", got)
+	}
+}
+
+// TestAllowFromEnvOverrides pins the remediation both channels print at startup:
+// the warning names JOSHBOT_CHANNELS__<CHANNEL>__ALLOW_FROM, and for a while no
+// such override existed, so an operator following the instructions still had a
+// bot that rejected every message.
+func TestAllowFromEnvOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+	defer func() { DefaultHome = oldHome }()
+
+	t.Setenv("JOSHBOT_CHANNELS__DISCORD__ALLOW_FROM", "123456, alice ,")
+	t.Setenv("JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM", "@bob")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	want := []string{"123456", "alice"}
+	if !reflect.DeepEqual(cfg.Channels.Discord.AllowFrom, want) {
+		t.Errorf("discord allow_from = %#v, want %#v", cfg.Channels.Discord.AllowFrom, want)
+	}
+	if !reflect.DeepEqual(cfg.Channels.Telegram.AllowFrom, []string{"@bob"}) {
+		t.Errorf("telegram allow_from = %#v, want [@bob]", cfg.Channels.Telegram.AllowFrom)
 	}
 }

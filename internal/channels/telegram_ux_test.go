@@ -622,7 +622,9 @@ func TestTelegramChannel_CommandMenuAndHandlersInStep(t *testing.T) {
 // The commands whose behaviour lives in the agent must arrive on the bus with
 // the raw text and the routing metadata the agent needs to reply.
 func TestTelegramChannel_CommandForwardRoutesToBus(t *testing.T) {
-	tg := newTestTelegramChannel()
+	// Sender 1 must be allowlisted explicitly: an empty allow_from now denies
+	// every sender rather than allowing all of them.
+	tg := newTestTelegramChannel("1")
 	bot := newFakeTelegramServer(t).bot(t)
 
 	ctx := bot.NewContext(telebot.Update{Message: &telebot.Message{
@@ -711,7 +713,8 @@ func TestTelegramChannel_NewRespectsAllowlist(t *testing.T) {
 func TestTelegramChannel_UnknownCommandGetsReply(t *testing.T) {
 	srv := newFakeTelegramServer(t)
 	bot := srv.bot(t)
-	tg := newTestTelegramChannel()
+	// The unknown-command reply is only sent to an allowlisted sender.
+	tg := newTestTelegramChannel("josh")
 	tg.mu.Lock()
 	tg.bot = bot
 	tg.mu.Unlock()

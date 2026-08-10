@@ -827,3 +827,16 @@ func TestLiteLLMProviderWithTools_ChatWithTools(t *testing.T) {
 
 // Verify LiteLLMProvider implements Provider interface
 var _ Provider = (*LiteLLMProvider)(nil)
+
+// An empty APIBase used to default to openrouter.ai, so callers listing models
+// for some other provider silently queried OpenRouter and treated the answer as
+// that provider's.
+func TestListModels_NoAPIBase(t *testing.T) {
+	_, err := ListModels(Config{APIKey: "sk-x"})
+	if err == nil {
+		t.Fatal("expected an error when no API base is configured")
+	}
+	if !strings.Contains(err.Error(), "no API base URL") {
+		t.Errorf("error = %v, want it to name the missing API base", err)
+	}
+}

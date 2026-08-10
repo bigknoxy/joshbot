@@ -1,6 +1,7 @@
 package configure
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -375,5 +376,93 @@ func TestMaskAPIKey(t *testing.T) {
 		if len(masked) != len(tc.input) {
 			t.Errorf("masked key length %d != input length %d", len(masked), len(tc.input))
 		}
+	}
+}
+
+// TestSupportedProviders_ListsAllEleven verifies every product-supported provider
+// is offered by the guided config path (#160), not just the legacy six.
+func TestSupportedProviders_ListsAllEleven(t *testing.T) {
+	want := []string{
+		"openrouter", "openai", "nvidia", "groq", "ollama",
+		"anthropic", "poolside", "azure", "custom", "litellm", "github-copilot",
+	}
+	got := SupportedProviders()
+	if len(got) != len(want) {
+		t.Fatalf("SupportedProviders() len = %d, want %d: %v", len(got), len(want), got)
+	}
+	set := map[string]bool{}
+	for _, n := range got {
+		set[n] = true
+	}
+	for _, n := range want {
+		if !set[n] {
+			t.Errorf("SupportedProviders() missing %q", n)
+		}
+	}
+}
+
+// TestListProviders_CoversAllSupported ensures ListProviders enumerates every
+// supported provider (#160): previously it hardcoded six.
+func TestListProviders_CoversAllSupported(t *testing.T) {
+	cfg := newTestConfig(t)
+	c := New(cfg)
+	items := c.ListProviders()
+	if len(items) != len(SupportedProviders()) {
+		t.Fatalf("ListProviders() returned %d items, want %d", len(items), len(SupportedProviders()))
+	}
+	seen := map[string]bool{}
+	for _, it := range items {
+		seen[it.Name] = true
+	}
+	for _, n := range SupportedProviders() {
+		if !seen[n] {
+			t.Errorf("ListProviders() missing %q", n)
+		}
+	}
+}
+
+// TestGetDefaultAPIBase_AllSupported verifies each supported provider resolves a
+// correct default API base, or "" only for the endpoints that genuinely have no
+// fixed URL (azure/custom/litellm/github-copilot) (#160).
+func TestGetDefaultAPIBase_AllSupported(t *testing.T) {
+	want := map[string]string{
+		"openrouter": "https://openrouter.ai/api/v1",
+		"openai":     "https://api.openai.com/v1",
+		"nvidia":     "https://integrate.api.nvidia.com/v1",
+		"groq":       "https://api.groq.com/openai/v1",
+		"ollama":     "http://localhost:11434/v1",
+		"anthropic":  "https://api.anthropic.com/v1",
+		"poolside":   "https://inference.poolside.ai/v1",
+	}
+	for name, exp := range want {
+		if got := getDefaultAPIBase(name); got != exp {
+			t.Errorf("getDefaultAPIBase(%q) = %q, want %q", name, got, exp)
+		}
+	}
+	// No-fixed-endpoint providers legitimately return "".
+	for _, name := range []string{"azure", "custom", "litellm"} {
+		if got := getDefaultAPIBase(name); got != "" {
+			t.Errorf("getDefaultAPIBase(%q) = %q, want \"\"", name, got)
+		}
+	}
+}
+
+// A provider with no resolvable endpoint must be reported as unverifiable, not
+// silently checked against some other provider's API (which is what the old
+// ListModels fallback to openrouter.ai did — every key came back "validated").
+func TestValidateProviderCredentials_NoAPIBase(t *testing.T) {
+	for _, name := range []string{"custom", "litellm", "azure"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := newTestConfig(t)
+			cfg.Providers[name] = config.ProviderConfig{APIKey: "sk-x", Enabled: true}
+
+			err := New(cfg).ValidateProviderCredentials(name)
+			if err == nil {
+				t.Fatal("expected an error, got nil (a check that never happened was reported as success)")
+			}
+			if !strings.Contains(err.Error(), "could not verify") {
+				t.Errorf("error = %v, want it to say the credential could not be verified", err)
+			}
+		})
 	}
 }

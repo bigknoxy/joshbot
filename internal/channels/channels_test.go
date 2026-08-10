@@ -23,8 +23,8 @@ func TestTelegramChannel_NewChannel(t *testing.T) {
 	}
 
 	// Verify allowlist was populated
-	if len(tg.allowSet) != 2 {
-		t.Errorf("expected 2 allowlist entries, got %d", len(tg.allowSet))
+	if got := len(tg.allowIDs) + len(tg.allowNames); got != 2 {
+		t.Errorf("expected 2 allowlist entries, got %d", got)
 	}
 }
 
@@ -38,15 +38,15 @@ func TestTelegramChannel_IsAllowed(t *testing.T) {
 
 	tg := NewTelegramChannel(msgBus, cfg)
 
-	// Empty allowlist should allow everyone
+	// Empty allowlist must deny everyone: a shell-capable bot fails closed.
 	cfg2 := &config.TelegramConfig{
 		Token:     "test_token",
 		AllowFrom: []string{},
 	}
 	tg2 := NewTelegramChannel(msgBus, cfg2)
 
-	if !tg2.IsAllowed(123, "anyone", "Anyone", "") {
-		t.Error("expected empty allowlist to allow everyone")
+	if tg2.IsAllowed(123, "anyone", "Anyone", "") {
+		t.Error("expected empty allowlist to deny everyone")
 	}
 
 	// Test username matching (case insensitive)

@@ -122,7 +122,7 @@ func (c *Configurator) RemoveProvider(name string) error {
 }
 
 func (c *Configurator) ListProviders() []ProviderListItem {
-	providerNames := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
+	providerNames := SupportedProviders()
 	defaultName := c.cfg.ProviderDefaults.Default
 	var items []ProviderListItem
 
@@ -167,6 +167,12 @@ func (c *Configurator) ValidateProviderCredentials(name string) error {
 	if baseURL == "" {
 		baseURL = getDefaultAPIBase(name)
 	}
+	// Azure, custom and litellm have no fixed endpoint, and an unrecognised
+	// provider name has none at all. Say so rather than dialling some other
+	// provider's endpoint and reporting the result as a validated credential.
+	if baseURL == "" {
+		return fmt.Errorf("could not verify %q credentials: no API base URL configured (set api_base)", name)
+	}
 	_, err := providers.ListModels(providers.Config{
 		APIKey:  p.APIKey,
 		APIBase: baseURL,
@@ -174,18 +180,26 @@ func (c *Configurator) ValidateProviderCredentials(name string) error {
 	return err
 }
 
+// SupportedProviders lists every provider the guided config path can configure.
+// It mirrors the providers registered in internal/providers.
+func SupportedProviders() []string {
+	return []string{
+		"openrouter", "openai", "nvidia", "groq", "ollama",
+		"anthropic", "poolside", "azure", "custom", "litellm", "github-copilot",
+	}
+}
+
+// getDefaultAPIBase returns a provider's default API base URL. The values come
+// from the provider registry (the single source of truth), so they cannot drift
+// from what the runtime actually dials. Azure, custom and litellm have no fixed
+// endpoint and return "" — the operator must supply --api-base. Ollama's
+// registry entry leaves the base empty (its factory fills it in at request
+// time), so it is filled in here explicitly for the guided path.
 func getDefaultAPIBase(name string) string {
-	bases := map[string]string{
-		"nvidia":     "https://integrate.api.nvidia.com/v1",
-		"openrouter": "https://openrouter.ai/api/v1",
-		"groq":       "https://api.groq.com/openai/v1",
-		"ollama":     "http://localhost:11434",
-		"poolside":   "https://inference.poolside.ai/v1",
+	if name == "ollama" {
+		return "http://localhost:11434/v1"
 	}
-	if base, ok := bases[name]; ok {
-		return base
-	}
-	return ""
+	return providers.GetDefaultAPIBaseFor(name)
 }
 
 func Save(cfg *config.Config) error {
@@ -196,15 +210,9 @@ func Save(cfg *config.Config) error {
 }
 
 func GetProviderDisplayName(name string) string {
-	names := map[string]string{
-		"nvidia":         "NVIDIA NIM",
-		"openrouter":     "OpenRouter",
-		"groq":           "Groq",
-		"ollama":         "Ollama",
-		"github-copilot": "GitHub Copilot",
-		"poolside":       "Poolside",
-	}
-	if display, ok := names[name]; ok {
+	// Prefer the registry's display name (the source of truth), falling back to
+	// a title-cased provider key for anything it does not name.
+	if display := providers.GetProviderDisplayName(name); display != "" && display != name {
 		return display
 	}
 	return cases.Title(language.Und).String(name)

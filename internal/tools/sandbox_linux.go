@@ -3,12 +3,37 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/landlock-lsm/go-landlock/landlock"
 )
+
+// newSandboxCommand builds the command that runs cmd under Landlock.
+//
+// Landlock restricts the calling process irreversibly and every process it
+// spawns, so joshbot cannot apply it to itself. Instead it re-execs its own
+// binary with the hidden __sandbox-exec subcommand; that short-lived helper
+// restricts itself and runs the one command. See sandbox_helper.go.
+func newSandboxCommand(ctx context.Context, t *ShellTool, cmd, workingDir string) (*exec.Cmd, error) {
+	helper := t.helperPath
+	if helper == "" {
+		self, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("shell sandbox needs to re-exec this binary but its path could not be determined: %w", err)
+		}
+		helper = self
+	}
+
+	ws := t.sandboxWorkspace(workingDir)
+
+	return exec.CommandContext(ctx, helper, SandboxHelperArg,
+		ws, strconv.FormatBool(t.allowNetwork), cmd), nil
+}
 
 // SandboxAvailable reports whether this build can enforce anything.
 func SandboxAvailable() bool { return true }

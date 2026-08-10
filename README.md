@@ -7,7 +7,20 @@
 [![GitHub release](https://img.shields.io/github/v/release/bigknoxy/joshbot?include_prereleases)](https://github.com/bigknoxy/joshbot/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A lightweight personal AI assistant written in Go, featuring self-learning memory, skill self-creation, subagent delegation, and Telegram integration. Inspired by [nanobot](https://github.com/HKUDS/nanobot).
+A nanobot-class personal AI agent as a **single ~19MB Go binary** — no Python, no venv, no runtime dependencies. Self-hosted, curl to running in under a minute, and scriptable enough to test in CI. Self-learning memory, skill self-creation, subagent delegation, multi-provider LLM routing, and Telegram/Discord chat all ship in the one static binary.
+
+### Why joshbot instead of a Python agent stack?
+
+| | joshbot | Typical Python agent (e.g. nanobot) |
+|---|---|---|
+| **Install** | `curl … \| bash` → one binary | `pip`/`venv`, interpreter + wheels to keep in sync |
+| **Runtime deps** | Zero — static Go binary (~19MB) | CPython + a dependency tree |
+| **Startup** | No interpreter, no imports — the binary is the runtime | Interpreter + import cost |
+| **Shell safety** | Deny-listed **and** env-stripped (no API keys inherited), optional OS sandbox | Varies |
+| **Untrusted skills** | Inert until `joshbot skills trust`, bound to a directory-tree hash | Varies |
+| **Scriptability** | Every command non-interactive; `--output-format json`, exit-code contract | Varies |
+
+joshbot is heavier on guarantees, lighter on your machine.
 
 ## Features
 
@@ -15,7 +28,8 @@ A lightweight personal AI assistant written in Go, featuring self-learning memor
 - **Context Compression** - Summarizes old context to stay within token limits; works well with small local models
 - **Skill Self-Creation** - Creates new capabilities for itself as markdown files, with auto-detection from conversation patterns and LLM-based extraction
 - **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
-- **Telegram Integration** - Chat from your phone with full media support
+- **Telegram & Discord** - Chat from your phone with full media support; both fail closed on an empty allowlist
+- **Scriptable / Non-Interactive** - Every command runs headless; `agent -m` for one-shot, `--output-format json`/`stream-json` for machine-readable output, `--resume` to thread sessions, and a stable exit-code contract for CI
 - **Interactive CLI** - Rich terminal interface with markdown rendering
 - **Multi-Provider LLM** - OpenRouter, Anthropic, OpenAI, Groq, Poolside, DeepSeek, Gemini, NVIDIA, and more
 - **Model-Centric Config** - Simplified model configuration with provider auto-detection and fallback chains
@@ -86,6 +100,61 @@ joshbot update # Update to the latest release
 joshbot uninstall # Remove joshbot binary and config
 ```
 
+### Global flags
+
+These apply to every command:
+
+| Flag | Effect |
+|------|--------|
+| `--no-color` | Strip ANSI colour from all output |
+| `--log-level debug\|info\|warn\|error` | Set log verbosity (takes precedence over `--verbose`/`--debug`) |
+| `--verbose` / `--debug` | Shortcuts for more detailed logging |
+
+### Non-interactive & scriptable use
+
+Every command works headless — no TTY, no prompts. This makes joshbot safe to drive from scripts and CI.
+
+```bash
+# One-shot message, plain text on stdout
+joshbot agent -m "summarize ./NOTES.md"
+
+# Machine-readable single JSON result (stdout is data only; logs go to stderr)
+joshbot agent -m "hello" --output-format json
+
+# Streaming NDJSON: tool_start / tool_done lines, then a terminal result line
+joshbot agent -m "run the tests" --output-format stream-json
+
+# Resume a prior session by the id echoed in a previous json result
+joshbot agent -m "and now lint it" --output-format json --resume <session-id>
+```
+
+`--output-format` accepts `text` (default), `json`, or `stream-json`. The JSON
+modes are non-interactive and require `-m`/`--message`. In JSON modes stdout
+carries **only** the result document — logs are routed to stderr — so consumers
+can parse stdout directly. `cost_usd` is emitted as `null` (no pricing table is
+bundled; compute cost from the returned token `usage`).
+
+#### Exit codes
+
+joshbot returns a stable exit code so scripts can branch on the failure class:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | General error |
+| `2` | Auth / no provider configured (remediation included in the message) |
+| `3` | Validation error (bad flag, e.g. unknown `--output-format`, or JSON mode without `-m`) |
+| `4` | Confirmation required (reserved for destructive flows) |
+
+In JSON modes a failure is emitted as a well-formed `{"type":"error","code":…,"remediation":…}` object on stderr.
+
+A turn that fails **inside** the agent counts as a failure too: the agent reports
+LLM errors in band as reply text (`Error processing request: ...`) so a chat
+channel can show them, but `agent -m` translates that back into exit code `1`. In
+JSON mode the result document carries `"is_error": true` with the failure text in
+`result`, alongside the `{"type":"error",…}` document on stderr. The success path
+is unchanged.
+
 ### Interactive CLI progress indicators
 
 When `joshbot agent` runs interactively in a real terminal, it now shows
@@ -133,9 +202,32 @@ This is especially useful when troubleshooting why joshbot returns "I've process
 joshbot onboard              # Interactive setup
 joshbot onboard --force      # Overwrite existing config
 joshbot onboard --keep-data  # Reconfigure but preserve memory/skills
+
+# Fully non-interactive: configure a provider without any prompts
+joshbot onboard --force \
+  --provider openrouter \
+  --api-key "$OPENROUTER_API_KEY"
 ```
 
-The onboard flow will:
+**Non-interactive onboarding** takes `--provider`, `--api-key` and `--api-base`
+(the last is required for `azure`/`custom`). The API key also falls back to
+`JOSHBOT_PROVIDERS__<PROVIDER>__API_KEY`. If `--force` is given with no way to
+wire a real credential — no flag, no env key, no existing provider — onboarding
+now **fails with a non-zero exit and an actionable message** instead of writing
+a stub config and reporting success. `--provider` must name one of the supported
+providers (`openrouter`, `openai`, `nvidia`, `groq`, `ollama`, `anthropic`,
+`poolside`, `azure`, `custom`, `litellm`, `github-copilot`); anything else is
+rejected and nothing is written. With `--force --provider <name>` the default
+model comes from that provider (e.g. `llama3.1:8b` for `ollama`), not from
+OpenRouter. Interactive `onboard` follows the same rule: if no provider ended up
+configured — running with stdin closed, say — it exits non-zero with the same
+message the `--force` path uses, though the config and workspace scaffold are
+still written. After saving, onboard validates the credential (non-fatal) and
+prints the provider's key URL if it looks wrong. Providers with no fixed
+endpoint (`azure`, `custom`, `litellm`) report "could not verify ... no API base
+URL configured" rather than being validated against someone else's API.
+
+The interactive onboard flow will:
 - Ask for your LLM API key (defaults to NVIDIA NIM; OpenRouter free tier also supported at [openrouter.ai/keys](https://openrouter.ai/keys))
 - Let you choose a personality (Professional, Friendly, Sarcastic, Minimal, or Custom)
 - Set up your workspace and memory files
@@ -254,6 +346,24 @@ The heartbeat service (active in gateway mode) reads `~/.joshbot/workspace/HEART
 - [ ] Check if the server is still running
 - [ ] Summarize today's news about AI
 ```
+
+**Scan interval** defaults to **30m** and is configurable:
+
+```json
+{ "heartbeat": { "interval": "1h" } }
+```
+
+The value is a Go duration string (`30m`, `1h`, `1h30m`); empty, unparseable or
+non-positive values fall back to 30m. Override with `JOSHBOT_HEARTBEAT__INTERVAL`.
+
+**Completion contract:** each task is published to the agent with a marker telling
+it this is an automated background check, not a user message — and to reply with
+exactly `HEARTBEAT_OK` when nothing needs your attention. Those `HEARTBEAT_OK`
+(and empty) replies are suppressed rather than delivered, so the heartbeat is
+silent unless something genuinely warrants a ping. A tick is **skipped** (tasks
+left unchecked, to retry) when no recipient chat ID is known yet; a task is only
+checked off `[x]` once it has actually been published, so it never re-fires or
+silently burns tokens against a dead end.
 
 ## Configuration
 
@@ -397,7 +507,24 @@ For backward compatibility, the old format still works:
 - `"off"` (default) — no containment beyond the deny list.
 - `"workspace"` — confines the filesystem to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); `$HOME` and everything else outside that is unreachable. Outbound TCP is denied unless `tools.shell_sandbox_allow_network` is `true`.
 
-Implemented via [Landlock](https://landlock.io/) and **Linux-only**. It fails closed: an unrecognized value, running on a non-Linux OS, or a kernel without Landlock support is a startup error rather than a silent no-op — set it back to `"off"` if you need to run without containment.
+**Per-platform enforcement:**
+
+| Platform | Mechanism when `"workspace"` | Default (`"off"`) posture |
+|----------|------------------------------|---------------------------|
+| Linux | [Landlock](https://landlock.io/) LSM (re-exec helper) | Deny-list only |
+| macOS | Seatbelt (`sandbox-exec` profile) | Deny-list only |
+| Other (no sandbox available) | n/a | **Allowlist-only** — the shell tool falls back to a small set of non-escaping read/inspect commands unless the operator sets an explicit `shell_allow_list` |
+
+While an allowlist is in force — whether set explicitly or defaulted on a
+platform with no sandbox — a command containing a shell construct that can
+introduce a second command word (`;`, `&`, `|`, a newline, a backtick, `$(`,
+`<(`, `>(`) is refused: the command is passed to `sh -c` unchanged, so matching
+only the first word admitted `echo hi; id`. Run one command per call. The
+default list deliberately omits `find`, `go` and `git`, each of which launches a
+program of the caller's choosing; name them in `shell_allow_list` if you need
+them.
+
+It fails closed: an unrecognized value, or `"workspace"` on a host whose kernel lacks the needed support, is a startup error rather than a silent no-op — set it back to `"off"` to run without containment. The runtime default is intentionally **not** the sandbox: network-denied-by-default breaks common workflows, so macOS/Linux still rely on the deny list by default and you opt in with `tools.shell_sandbox: "workspace"`.
 
 ### Streaming Responses
 
@@ -419,6 +546,27 @@ Two limits are worth knowing before turning it on:
   part-way through appends a visible `[stream error: ...]` marker to the reply
   rather than silently retrying against the next provider in the chain. If you
   value the retry more than the latency, leave it off.
+
+### Configuration Precedence
+
+Where two sources set the same value, the later one in this list wins:
+
+1. **Defaults** — compiled in (`config.Defaults()`).
+2. **Config file** — `~/.joshbot/config.json`, or whatever `--config` points at.
+3. **Environment variables** — any `JOSHBOT_*` variable overrides the file value
+   for that key (`config.Load` applies the file first, then the env overrides).
+4. **Command flags** — a flag that carries a config value (`onboard --provider`,
+   `--api-key`, `--api-base`, `agent --model`) overrides both.
+
+Two things this list deliberately does not include:
+
+- **There is no project-scoped config.** joshbot does not read a `.joshbot/` or
+  `joshbot.json` from the working directory — one machine has one config, chosen
+  by `--config` when you need a second. A per-directory config would silently
+  change which provider and workspace an agent run used depending on where it
+  was invoked from.
+- `--config` selects *which file* is read; it is not itself an override. Point it
+  at a file and the env layer still applies on top.
 
 ### Environment Variables
 
@@ -444,6 +592,7 @@ export JOSHBOT_MODELS_CONFIG__AGENT__FALLBACK="fast"
 ```bash
 export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-..."
 export JOSHBOT_CHANNELS__TELEGRAM__ENABLED="true"
+export JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM="123456789,987654321"   # comma-separated
 ```
 
 ### Changing the LLM Model
@@ -508,6 +657,8 @@ After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 
 ## Telegram Setup
 
+> **⚠️ BREAKING (unreleased):** An **empty `allow_from` now denies every sender** instead of allowing everyone. Previously a Telegram bot with no allowlist was open to the whole internet — anyone who found it got a direct line into an agent loop holding the shell tool. It now fails closed and logs a loud warning at startup naming the exact key to set. **If you relied on an empty allowlist, your bot will reject all messages until you add your numeric Telegram user ID to `channels.telegram.allow_from`.** The same fail-closed rule applies to Discord's `allow_from`.
+
 1. Message [@BotFather](https://t.me/BotFather) and send `/newbot` to create your bot
 2. Copy the bot token
 3. Find your user ID from [@userinfobot](https://t.me/userinfobot)
@@ -540,6 +691,68 @@ a direct message, so they work identically in the Telegram menu and the CLI.
 While the agent is working, the "typing…" indicator is refreshed every 4 seconds
 until the reply is sent, so it stays visible for the whole turn.
 
+## Discord Setup
+
+joshbot also speaks Discord (gateway websocket + REST via the pure-Go
+`discordgo` library, compiled into the single binary). Configure it in
+`config.json` or via env vars — the onboarding wizard does not yet prompt for it:
+
+```json
+{
+  "channels": {
+    "discord": {
+      "enabled": true,
+      "token": "your-bot-token",
+      "allow_from": ["123456789012345678"]
+    }
+  }
+}
+```
+
+- `allow_from` entries are numeric Discord user IDs (snowflakes), usernames, or
+  global names. Like Telegram, **an empty allowlist rejects everyone.**
+- Env overrides: `JOSHBOT_CHANNELS__DISCORD__ENABLED`, `JOSHBOT_CHANNELS__DISCORD__TOKEN`, `JOSHBOT_CHANNELS__DISCORD__ALLOW_FROM` (comma-separated).
+- Messages over 2000 chars are split (code-fence aware); the bot ignores its own
+  and other bots' messages; `/help` and `/new` work as text commands.
+
+> **⚠️ Enable one chat channel at a time.** The message bus exposes a *single*
+> outbound channel that channel implementations read competitively, so running
+> Discord and Telegram simultaneously has them steal each other's replies —
+> roughly half of each conversation's answers are delivered to the other
+> service's chat, with no error anywhere. Until the bus fans out per channel,
+> enable **either** `channels.telegram` **or** `channels.discord`, not both.
+> (`internal/channels/discord.go`, `consumeOutbound`.)
+
+## MCP Servers (experimental)
+
+joshbot ships a stdio [MCP](https://modelcontextprotocol.io/) client. Declaring a
+server is an **operator-only** act — `config.json` lives outside the workspace
+and cannot be written by a workspace-confined tool, so it is the trust boundary.
+Discovered tools are registered under a namespaced name `mcp__<server>__<tool>`,
+so a server can never shadow a built-in tool like `shell`.
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "myserver": {
+        "command": "some-mcp-server",
+        "args": ["--stdio"],
+        "env": { "FOO": "bar" },
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+> **Note:** declared servers are now started during component setup and their
+> tools registered; startup is fail-soft, so a server that will not start is
+> logged and skipped rather than aborting joshbot, and the processes are reaped
+> on exit. MCP child processes get the same allowlisted, credential-screened
+> environment as shell children (no provider API keys), but their **filesystem
+> access is not sandboxed**. See `SECURITY.md`.
+
 ## Built-in Tools
 
 | Tool | Description |
@@ -563,7 +776,7 @@ until the reply is sent, so it stays visible for the whole turn.
 - `web_fetch` and `web_search` block localhost, private IP ranges, and metadata hosts (SSRF protection), enforced at dial time.
 - `restrict_to_workspace` limits file and shell operations to the workspace unless explicitly allowed.
 - Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
-- `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock, Linux only) — see [Shell Sandbox](#shell-sandbox) below.
+- `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock on Linux, Seatbelt on macOS) — see [Shell Sandbox](#shell-sandbox) below. On platforms with no sandbox, the shell tool falls back to allowlist-only by default.
 - Everything joshbot logs or prints is redacted first: API keys, `Authorization` headers, credential-shaped assignments and your home directory path are replaced with `[REDACTED]` and `~`, so a log or `joshbot status` dump can be pasted into a bug report. Session files on disk are deliberately exempt and stay verbatim at `0600` — rewriting conversation content on save would mangle legitimate text.
 
 ## Chat Commands
@@ -571,12 +784,12 @@ until the reply is sent, so it stays visible for the whole turn.
 | Command | Channel | Description |
 |---------|---------|-------------|
 | `/start` | Telegram | Start a conversation (shows the help text) |
-| `/new` | Both | Start a fresh session (clears context, model override and personality) |
-| `/status` | Both | Show the current model, tool count, memory window and max iterations |
-| `/model [name]` | Both | Switch model for this session (`--global` makes it the default for all sessions) |
-| `/personality [name]` | Both | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear |
-| `/compact` | Both | Summarize older conversation context now |
-| `/help` | Both | Show available commands |
+| `/new` | Telegram, Discord, CLI | Start a fresh session (clears context, model override and personality) |
+| `/status` | Telegram, CLI | Show the current model, tool count, memory window and max iterations |
+| `/model [name]` | Telegram, CLI | Switch model for this session (`--global` makes it the default for all sessions) |
+| `/personality [name]` | Telegram, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear |
+| `/compact` | Telegram, CLI | Summarize older conversation context now |
+| `/help` | Telegram, Discord, CLI | Show available commands |
 | `/clear` | CLI | Clear the terminal screen |
 | `/history` | CLI | Show input history |
 | `/quit`, `/exit` | CLI | Exit the program |
@@ -612,9 +825,10 @@ joshbot/
 │   ├── memory/      # Structured fact store (fact.go, search.go, metadata.go)
 │   ├── skills/      # Skill discovery, detection, extraction, validation
 │   ├── tools/       # Built-in tools (incl. memory_search, skill_registry)
-│   ├── channels/    # Chat integrations (CLI, Telegram)
+│   ├── channels/    # Chat integrations (Telegram, Discord)
 │   ├── bus/         # Message bus (decouples channels from agent)
 │   ├── providers/   # LLM provider layer
+│   ├── mcp/         # stdio MCP client (namespaced tool registration)
 │   ├── session/     # Conversation persistence (JSONL)
 │   ├── cron/        # Task scheduling
 │   ├── heartbeat/   # Proactive wake-ups
@@ -662,3 +876,10 @@ If you see rate limit errors (HTTP 429), configure fallback providers in your co
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+<!-- agent-skills:doc-keeper:start -->
+## Reference (auto-tracked by doc-keeper)
+
+### Environment Variables
+- `JOSHBOT_WORKSPACE`: _(add description)_
+<!-- agent-skills:doc-keeper:end -->

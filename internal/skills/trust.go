@@ -71,13 +71,80 @@ func LoadTrustStore(path string) (*TrustStore, error) {
 }
 
 // HashSkillFile returns the digest a trust entry is bound to.
+//
+// It covers the ENTIRE skill directory tree, not just SKILL.md: a skill's
+// SKILL.md can tell the agent to run a sibling script, so binding trust to
+// SKILL.md alone would let an attacker rewrite that script after approval and
+// keep the skill trusted. The digest folds in every regular file's relative
+// path and content, walked in sorted order so the result is deterministic
+// regardless of filesystem iteration order. Editing, adding, or removing any
+// file in the directory changes the digest and so revokes trust.
+//
+// Symlinks are folded in by name and raw target, never dereferenced: reading
+// through one could reach outside the directory, but ignoring them entirely
+// would leave the digest unchanged when an attacker drops a link to /bin/sh
+// (or repoints an existing one) into an approved skill.
+//
+// The hash format changed in a way that is intentionally incompatible with the
+// old SKILL.md-only digest: a store written by an older joshbot will simply
+// fail to match, which revokes affected skills (they must be re-inspected and
+// re-trusted) rather than crashing or silently staying approved.
 func HashSkillFile(skillDir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	h := sha256.New()
+
+	// Collect entries with their directory-relative paths first, so the digest
+	// does not depend on WalkDir's traversal order.
+	type entry struct {
+		rel     string
+		symlink bool
+	}
+	var entries []entry
+	err := filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		// Sockets, devices and the like carry no skill content.
+		isLink := d.Type()&os.ModeSymlink != 0
+		if !d.Type().IsRegular() && !isLink {
+			return nil
+		}
+		rel, err := filepath.Rel(skillDir, path)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, entry{rel: rel, symlink: isLink})
+		return nil
+	})
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
+
+	for _, e := range entries {
+		full := filepath.Join(skillDir, e.rel)
+		// Length-prefix path and payload so no two distinct trees collide by
+		// concatenation (e.g. "ab"+"c" vs "a"+"bc"). The "L" marker keeps a
+		// symlink distinct from a regular file holding its target as text.
+		if e.symlink {
+			target, err := os.Readlink(full)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintf(h, "%s\x00L%d\x00%s", filepath.ToSlash(e.rel), len(target), target)
+			continue
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(e.rel), len(data))
+		h.Write(data)
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // IsTrusted reports whether the skill's current content has been approved.

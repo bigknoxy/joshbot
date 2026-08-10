@@ -1,6 +1,17 @@
 package agent
 
-import "context"
+import (
+	"context"
+
+	"github.com/bigknoxy/joshbot/internal/providers"
+)
+
+// UsageSink receives per-LLM-call token usage from the ReAct loop. It is
+// called once per provider Chat response so a headless caller (e.g. the
+// JSON output modes of the CLI) can accumulate total token usage for a
+// request. Like ProgressFunc and StreamSink it rides the per-request
+// context, never touching shared Agent state.
+type UsageSink func(providers.Usage)
 
 // StreamEvent is emitted during streaming to deliver incremental assistant
 // text to a per-request sink.
@@ -31,6 +42,7 @@ type StreamSink func(StreamEvent)
 type requestSink struct {
 	progress ProgressFunc
 	stream   StreamSink
+	usage    UsageSink
 }
 
 // sinkKey is an unexported context key type to avoid collisions.
@@ -97,4 +109,41 @@ func streamSinkFromContext(ctx context.Context) StreamSink {
 		return s.stream
 	}
 	return nil
+}
+
+// WithUsageSink attaches a per-request token-usage callback to the context.
+// When the context already carries a sink, the new usage callback replaces
+// the existing one. Passing nil clears the usage callback while preserving
+// any progress and stream callbacks.
+func WithUsageSink(ctx context.Context, usage UsageSink) context.Context {
+	existing := sinkFromContext(ctx)
+	if existing != nil {
+		s := *existing
+		s.usage = usage
+		return context.WithValue(ctx, sinkKey{}, &s)
+	}
+	return context.WithValue(ctx, sinkKey{}, &requestSink{usage: usage})
+}
+
+// usageFromContext returns the per-request usage callback from the context,
+// or nil if none is attached.
+func usageFromContext(ctx context.Context) UsageSink {
+	if s := sinkFromContext(ctx); s != nil {
+		return s.usage
+	}
+	return nil
+}
+
+// ProgressFromContext exposes the per-request progress callback to callers
+// outside this package (e.g. test doubles that stand in for *agent.Agent and
+// need to emit synthetic tool-progress events the way the real ReAct loop
+// does). Returns nil if none is attached.
+func ProgressFromContext(ctx context.Context) ProgressFunc {
+	return progressFromContext(ctx)
+}
+
+// UsageFromContext exposes the per-request usage callback to callers outside
+// this package. Returns nil if none is attached.
+func UsageFromContext(ctx context.Context) UsageSink {
+	return usageFromContext(ctx)
 }

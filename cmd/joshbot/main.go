@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-isatty"
+	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
 	"github.com/bigknoxy/joshbot/internal/agent"
@@ -36,6 +37,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/heartbeat"
 	"github.com/bigknoxy/joshbot/internal/learning"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/mcp"
 	"github.com/bigknoxy/joshbot/internal/memory"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/redact"
@@ -47,6 +49,64 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/urfave/cli/v2"
 )
+
+// Exit codes form joshbot's machine-readable contract for scripted and
+// agentic consumers (issue #148). They are stable: 0 success, 1 general
+// failure, 2 authentication/credential problem, 3 invalid usage/validation,
+// 4 confirmation required (a destructive action needs --force or a prompt).
+const (
+	exitOK           = 0
+	exitGeneral      = 1
+	exitAuth         = 2
+	exitValidation   = 3
+	exitConfirmation = 4
+)
+
+// exitError wraps an error with a specific process exit code. main() unwraps
+// it to choose the code; any other error maps to exitGeneral. It also carries
+// an optional remediation string surfaced in JSON error output.
+type exitError struct {
+	code        int
+	err         error
+	remediation string
+}
+
+func (e *exitError) Error() string { return e.err.Error() }
+func (e *exitError) Unwrap() error { return e.err }
+
+// newExitError builds an exitError with a code and optional remediation.
+func newExitError(code int, remediation string, err error) *exitError {
+	return &exitError{code: code, err: err, remediation: remediation}
+}
+
+// exitErrorf is a convenience constructor for a formatted exitError with no
+// remediation.
+func exitErrorf(code int, format string, args ...any) *exitError {
+	return &exitError{code: code, err: fmt.Errorf(format, args...)}
+}
+
+// codeForError maps an error to its process exit code, honouring an
+// exitError anywhere in the chain and defaulting to exitGeneral.
+func codeForError(err error) int {
+	if err == nil {
+		return exitOK
+	}
+	var ee *exitError
+	if errors.As(err, &ee) {
+		return ee.code
+	}
+	return exitGeneral
+}
+
+// remediationForError returns the remediation hint from an exitError in the
+// chain, or "" if none.
+func remediationForError(err error) string {
+	var ee *exitError
+	if errors.As(err, &ee) {
+		return ee.remediation
+	}
+	return ""
+}
 
 // runningContext describes how joshbot is running.
 type runningContext struct {
@@ -107,10 +167,20 @@ func main() {
 	}
 
 	if err := runApp(); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+		// A command that already emitted a machine-readable JSON error to
+		// stderr sets jsonErrorEmitted so we don't also print a plain-text
+		// "Error:" line and double-report. The exit code still applies.
+		if !jsonErrorEmitted {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+		}
+		os.Exit(codeForError(err))
 	}
 }
+
+// jsonErrorEmitted is set by the JSON output modes when they have already
+// written a structured error to stderr, so main() suppresses the plain-text
+// duplicate while still applying the exit code.
+var jsonErrorEmitted bool
 
 func runApp() error {
 	// Setup global logger configuration
@@ -143,6 +213,14 @@ func runApp() error {
 				Usage:       "Enable debug logging (more detailed than verbose)",
 				Destination: new(bool),
 			},
+			&cli.BoolFlag{
+				Name:  "no-color",
+				Usage: "Disable ANSI colour in all output",
+			},
+			&cli.StringFlag{
+				Name:  "log-level",
+				Usage: "Log level: debug, info, warn, error (default info)",
+			},
 		},
 		Commands: []*cli.Command{
 			{
@@ -152,6 +230,16 @@ func runApp() error {
 					&cli.StringFlag{
 						Name:  "model",
 						Usage: "Model to use (overrides config)",
+					},
+					&cli.StringFlag{
+						Name:  "output-format",
+						Usage: "Output format: text, json, or stream-json (json modes are non-interactive and require --message)",
+						Value: "text",
+					},
+					&cli.StringFlag{
+						Name:    "resume",
+						Aliases: []string{"session"},
+						Usage:   "Resume a prior session by its id (from a previous json result)",
 					},
 					&cli.StringFlag{
 						Name:    "message",
@@ -192,6 +280,18 @@ func runApp() error {
 						Name:    "model",
 						Aliases: []string{"m"},
 						Usage:   "Model to use (overrides config)",
+					},
+					&cli.StringFlag{
+						Name:  "provider",
+						Usage: "Provider to configure non-interactively (openrouter, openai, anthropic, poolside, nvidia, groq, ollama, azure, custom, litellm, github-copilot)",
+					},
+					&cli.StringFlag{
+						Name:  "api-key",
+						Usage: "API key for the provider (non-interactive; falls back to JOSHBOT_PROVIDERS__<PROVIDER>__API_KEY)",
+					},
+					&cli.StringFlag{
+						Name:  "api-base",
+						Usage: "API base URL for the provider (required for azure/custom)",
 					},
 				},
 				Action: runOnboard,
@@ -334,9 +434,19 @@ func runApp() error {
 			},
 		},
 		Before: func(c *cli.Context) error {
-			// Update log level if verbose or debug is set
-			if c.Bool("verbose") || c.Bool("debug") {
+			// Explicit --log-level wins; --verbose/--debug are shorthands for
+			// debug. Precedence: flags > env > project config > user config.
+			if lvl := c.String("log-level"); lvl != "" {
+				parsed, err := parseLogLevel(lvl)
+				if err != nil {
+					return newExitError(exitValidation, "valid levels: debug, info, warn, error", err)
+				}
+				log.SetLevel(parsed)
+			} else if c.Bool("verbose") || c.Bool("debug") {
 				log.SetLevel(log.DebugLevel)
+			}
+			if c.Bool("no-color") {
+				applyNoColor()
 			}
 			return nil
 		},
@@ -692,6 +802,13 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
 	)
 
+	// Connect any configured MCP servers and register their tools. Fail-soft by
+	// design: a server that will not start is logged and skipped, never a
+	// startup abort — MCP is additive and must not be able to break the agent.
+	// The spawned processes are owned by a package-level manager reaped by
+	// closeMCPServers, which every long-lived entry point defers.
+	registerMCPServers(context.Background(), toolsRegistry, cfg.MCP)
+
 	// Create function to reload providers from config (for config tool hot-reload)
 	reloadProviders := func() error {
 		multiProvider.Clear()
@@ -813,7 +930,12 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	// Start background services (best-effort)
 	cronSvc.Start()
 	hb := heartbeat.NewService(msgBus, cfg.Agents.Defaults.Workspace)
-	hb.SetInterval(5 * time.Minute) // shorter default for local setups
+	hb.SetInterval(cfg.HeartbeatInterval())
+	// Route heartbeat tasks to the same channel scheduled reminders use, and
+	// resolve that channel's stored chat ID so results reach a real recipient
+	// instead of failing with "no valid recipient".
+	hb.SetChannel(defaultReminderChannel(cfg))
+	hb.SetChatIDResolver(messageSender.GetChatID)
 	hb.Start()
 
 	// Start consolidator (self-learning memory consolidation)
@@ -825,12 +947,55 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	return msgBus, multiProvider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
 }
 
+// mcpMu guards mcpManager, which holds the MCP server processes spawned during
+// setup. It is a package var rather than a seventh return value from
+// setupComponents because the manager is process-scoped: exactly one setup runs
+// per invocation, and the only thing a caller ever does with it is reap it on
+// the way out.
+var (
+	mcpMu      sync.Mutex
+	mcpManager *mcp.Manager
+)
+
+// registerMCPServers connects the enabled MCP servers and registers their tools
+// on reg. It never returns an error: MCP is additive, so a server that fails to
+// start is logged and skipped inside RegisterMCPTools rather than aborting
+// startup. The resulting manager is stashed for closeMCPServers.
+func registerMCPServers(ctx context.Context, reg *tools.Registry, cfg config.MCPConfig) {
+	mgr := tools.RegisterMCPTools(ctx, reg, cfg)
+	if mgr == nil {
+		return
+	}
+	mcpMu.Lock()
+	prev := mcpManager
+	mcpManager = mgr
+	mcpMu.Unlock()
+	if prev != nil {
+		prev.Close()
+	}
+}
+
+// closeMCPServers reaps every spawned MCP server process. Safe to call when no
+// servers were configured, and safe to call twice.
+func closeMCPServers() {
+	mcpMu.Lock()
+	mgr := mcpManager
+	mcpManager = nil
+	mcpMu.Unlock()
+	if mgr != nil {
+		mgr.Close()
+	}
+}
+
 // defaultReminderChannel picks where a scheduled reminder goes when the agent
 // does not name a channel. A reminder delivered to a CLI session nobody is
 // sitting at is lost, so a configured Telegram channel wins.
 func defaultReminderChannel(cfg *config.Config) string {
 	if cfg != nil && cfg.Channels.Telegram.Enabled {
 		return "telegram"
+	}
+	if cfg != nil && cfg.Channels.Discord.Enabled {
+		return "discord"
 	}
 	return "cli"
 }
@@ -884,9 +1049,38 @@ func runAgent(c *cli.Context) error {
 		return err
 	}
 
+	// Validate --output-format before doing any work so a typo fails fast
+	// with a validation exit code rather than after model setup.
+	format := c.String("output-format")
+	switch format {
+	case "", "text":
+		format = "text"
+	case "json", "stream-json":
+	default:
+		return newExitError(exitValidation, "use one of: text, json, stream-json",
+			fmt.Errorf("invalid --output-format %q", format))
+	}
+	jsonMode := format != "text"
+
+	// HARD RULE: in JSON modes stdout carries data only. Route every log line
+	// (including setup diagnostics below) to stderr. Independent of TTY
+	// detection — the flag alone selects it.
+	if jsonMode {
+		log.Get().Logger.SetOutput(os.Stderr)
+		if c.String("message") == "" {
+			return newExitError(exitValidation, "json output modes are non-interactive; pass -m/--message",
+				fmt.Errorf("--output-format %s requires --message", format))
+		}
+	}
+
 	// Check for either legacy providers or new model-centric config
 	if !cfg.UseModelsConfig() && len(cfg.Providers) == 0 {
-		return fmt.Errorf("no providers configured. Run 'joshbot onboard' first")
+		err := newExitError(exitAuth, "run 'joshbot onboard' to configure a provider",
+			fmt.Errorf("no providers configured"))
+		if jsonMode {
+			emitJSONError(os.Stderr, "", err)
+		}
+		return err
 	}
 
 	// Override model from CLI flag if provided (works for both config formats)
@@ -918,7 +1112,13 @@ func runAgent(c *cli.Context) error {
 
 	// Setup components
 	_, _, _, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
+	defer closeMCPServers()
 	if err != nil {
+		// HARD RULE: in JSON modes a setup failure must still be well-formed —
+		// a machine-readable error on stderr, not a plain-text line.
+		if jsonMode {
+			emitJSONError(os.Stderr, "", err)
+		}
 		return err
 	}
 
@@ -926,7 +1126,12 @@ func runAgent(c *cli.Context) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start async callback printer for CLI mode
+	// Start async callback printer for CLI mode. In JSON modes stdout is
+	// reserved for data, so background-task notices go to stderr instead.
+	asyncOut := io.Writer(os.Stdout)
+	if jsonMode {
+		asyncOut = os.Stderr
+	}
 	go func() {
 		for {
 			select {
@@ -943,14 +1148,21 @@ func runAgent(c *cli.Context) error {
 					}
 					msg = fmt.Sprintf("\n✅ Background task completed (%s):\n%s\n> ", result.ToolName, output)
 				}
-				fmt.Fprint(os.Stdout, msg)
+				fmt.Fprint(asyncOut, msg)
 			}
 		}
 	}()
 
-	// Non-interactive mode: send single message and exit
+	// Non-interactive JSON modes: machine-readable single turn.
+	if jsonMode {
+		err := runAgentJSON(ctx, agentInstance, c.String("message"), format, c.String("resume"), os.Stdout, os.Stderr, messageSender)
+		time.Sleep(2 * time.Second) // let async callbacks drain to stderr
+		return err
+	}
+
+	// Non-interactive text mode: send single message and exit.
 	if message := c.String("message"); message != "" {
-		err := runAgentSingleMessage(ctx, agentInstance, message, os.Stdout, messageSender)
+		err := runAgentSingleMessage(ctx, agentInstance, message, c.String("resume"), os.Stdout, messageSender)
 		// Wait a bit for async callbacks
 		time.Sleep(2 * time.Second)
 		return err
@@ -1344,17 +1556,215 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 	}
 }
 
-// runAgentSingleMessage sends a single message and prints the response.
-func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, message string, output io.Writer, messageSender *tools.BusMessageSender) error {
+// parseLogLevel converts a textual log level to a log.Level. It accepts the
+// four charmbracelet levels plus common aliases.
+func parseLogLevel(s string) (log.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return log.DebugLevel, nil
+	case "info", "":
+		return log.InfoLevel, nil
+	case "warn", "warning":
+		return log.WarnLevel, nil
+	case "error", "err":
+		return log.ErrorLevel, nil
+	default:
+		return log.InfoLevel, fmt.Errorf("unknown log level %q", s)
+	}
+}
+
+// applyNoColor strips ANSI colour from the logger and from lipgloss-rendered
+// output. Honoured everywhere colour is emitted (issue #148).
+func applyNoColor() {
+	log.Get().Logger.SetColorProfile(termenv.Ascii)
+	lipgloss.SetColorProfile(termenv.Ascii)
+}
+
+// headlessSession resolves the (channel, senderID) pair that getSessionKey in
+// the agent turns into a session id. A resume id of the form "channel:sender"
+// is split on its first colon; a bare id is treated as a sender under the
+// "cli" channel; empty resumes to the default headless session.
+func headlessSession(resume string) (channel, sender string) {
+	resume = strings.TrimSpace(resume)
+	if resume == "" {
+		return "cli", "cli_user"
+	}
+	if i := strings.IndexByte(resume, ':'); i >= 0 {
+		ch, sn := resume[:i], resume[i+1:]
+		if ch == "" || sn == "" {
+			return "cli", strings.TrimPrefix(resume, ":")
+		}
+		return ch, sn
+	}
+	return "cli", resume
+}
+
+// jsonUsage is the token-usage block emitted in JSON output. Cost is omitted
+// (null) because joshbot has no per-model pricing table; consumers compute
+// cost from the token counts and their own rate card.
+type jsonUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// jsonToolCall records a tool invocation for the JSON result.
+type jsonToolCall struct {
+	Tool    string `json:"tool"`
+	Summary string `json:"summary,omitempty"`
+}
+
+// jsonResult is the single document emitted on stdout in --output-format json,
+// and the terminal line in stream-json.
+type jsonResult struct {
+	Type      string         `json:"type"` // always "result"
+	SessionID string         `json:"session_id"`
+	Result    string         `json:"result"`
+	IsError   bool           `json:"is_error"`
+	Usage     jsonUsage      `json:"usage"`
+	CostUSD   *float64       `json:"cost_usd"` // null: no pricing table
+	ToolCalls []jsonToolCall `json:"tool_calls"`
+}
+
+// jsonErrorDoc is the structured error emitted on stderr in JSON modes.
+type jsonErrorDoc struct {
+	Type        string `json:"type"` // always "error"
+	Error       string `json:"error"`
+	Code        int    `json:"code"`
+	Remediation string `json:"remediation,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+}
+
+// emitJSONError writes a machine-readable error to stderr and records that a
+// JSON error was emitted so main() does not also print a plain-text line.
+func emitJSONError(w io.Writer, sessionID string, err error) {
+	doc := jsonErrorDoc{
+		Type:        "error",
+		Error:       err.Error(),
+		Code:        codeForError(err),
+		Remediation: remediationForError(err),
+		SessionID:   sessionID,
+	}
+	b, _ := json.Marshal(doc)
+	fmt.Fprintln(w, string(b))
+	jsonErrorEmitted = true
+}
+
+// runAgentJSON runs a single headless turn and emits machine-readable output.
+// stdout carries data ONLY: the streamed events (stream-json) and the final
+// result document. Every diagnostic goes to stderr. This is the single most
+// important property for agent consumers (issue #144).
+//
+// It is deliberately independent of isTTY: JSON output is selected by the
+// flag, never inferred from whether stdout is a terminal.
+func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, format, resume string, stdout, stderr io.Writer, messageSender *tools.BusMessageSender) error {
+	channel, sender := headlessSession(resume)
+	sessionID := channel + ":" + sender
+
+	if messageSender != nil {
+		messageSender.SetChatID(channel, sender)
+	}
+
+	stream := format == "stream-json"
+
+	var (
+		mu        sync.Mutex
+		usage     jsonUsage
+		toolCalls []jsonToolCall
+	)
+	enc := json.NewEncoder(stdout)
+
+	// Capture tool calls (and, in stream-json, emit them live) via the
+	// per-request progress sink already used by the interactive CLI.
+	progressCtx := agent.WithSink(ctx, func(e agent.ToolProgressEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		if e.Phase == agent.ToolProgressStart {
+			toolCalls = append(toolCalls, jsonToolCall{Tool: e.Tool, Summary: e.Summary})
+		}
+		if stream {
+			evt := map[string]any{"tool": e.Tool, "summary": e.Summary}
+			if e.Phase == agent.ToolProgressStart {
+				evt["type"] = "tool_start"
+			} else {
+				evt["type"] = "tool_done"
+				evt["elapsed_seconds"] = e.Elapsed.Seconds()
+				if e.Err != nil {
+					evt["error"] = e.Err.Error()
+				}
+			}
+			_ = enc.Encode(evt) // one JSON object per line (NDJSON)
+		}
+	})
+	// Accumulate token usage across ReAct iterations.
+	fullCtx := agent.WithUsageSink(progressCtx, func(u providers.Usage) {
+		mu.Lock()
+		defer mu.Unlock()
+		usage.PromptTokens += u.PromptTokens
+		usage.CompletionTokens += u.CompletionTokens
+		usage.TotalTokens += u.TotalTokens
+	})
+
+	msg := bus.InboundMessage{
+		SenderID:  sender,
+		Content:   message,
+		Channel:   channel,
+		Timestamp: time.Now(),
+		Metadata:  map[string]any{"username": "user"},
+	}
+
+	response, procErr := agentInstance.Process(fullCtx, msg)
+	if procErr != nil {
+		err := exitErrorf(exitGeneral, "failed to process message: %w", procErr)
+		emitJSONError(stderr, sessionID, err)
+		return err
+	}
+
+	// A turn the agent could not complete comes back as reply text with a nil
+	// error (it answers a chat channel). The result document must report that
+	// as is_error, and the process must exit non-zero — a consumer that only
+	// reads stdout would otherwise treat the failure as an answer.
+	replyErr := agentReplyError(response)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if toolCalls == nil {
+		toolCalls = []jsonToolCall{}
+	}
+	res := jsonResult{
+		Type:      "result",
+		SessionID: sessionID,
+		Result:    strings.TrimSpace(response),
+		IsError:   replyErr != nil,
+		Usage:     usage,
+		CostUSD:   nil,
+		ToolCalls: toolCalls,
+	}
+	if err := enc.Encode(res); err != nil {
+		return exitErrorf(exitGeneral, "failed to encode result: %w", err)
+	}
+	if replyErr != nil {
+		err := exitErrorf(exitGeneral, "failed to process message: %w", replyErr)
+		emitJSONError(stderr, sessionID, err)
+		return err
+	}
+	return nil
+}
+
+// runAgentSingleMessage sends a single message and prints the response. When
+// resume is non-empty it continues that prior session; otherwise it uses the
+// default headless session (cli:cli_user), preserving existing behaviour.
+func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, message, resume string, output io.Writer, messageSender *tools.BusMessageSender) error {
+	channel, sender := headlessSession(resume)
 	// Set chat ID for CLI mode so message tools work
 	if messageSender != nil {
-		messageSender.SetChatID("cli", "cli_user")
+		messageSender.SetChatID(channel, sender)
 	}
 
 	msg := bus.InboundMessage{
-		SenderID:  "cli_user",
+		SenderID:  sender,
 		Content:   message,
-		Channel:   "cli",
+		Channel:   channel,
 		Timestamp: time.Now(),
 		Metadata: map[string]any{
 			"username": "user",
@@ -1362,12 +1772,32 @@ func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, me
 	}
 
 	response, err := agentInstance.Process(ctx, msg)
+	if err == nil {
+		err = agentReplyError(response)
+	}
 	if err != nil {
-		return fmt.Errorf("failed to process message: %w", err)
+		return exitErrorf(exitGeneral, "failed to process message: %w", err)
 	}
 
 	fmt.Fprintln(output, strings.TrimSpace(response))
 	return nil
+}
+
+// agentReplyPrefix is the in-band failure report the ReAct loop returns when a
+// turn could not be completed (see internal/agent).
+const agentReplyPrefix = "Error processing request: "
+
+// agentReplyError turns that in-band report back into an error. The agent
+// answers a chat channel, so it reports provider failures as reply text with a
+// nil error; a non-interactive CLI must not exit 0 over one — a script piping
+// `joshbot agent -m` cannot otherwise tell a real answer from an unreachable
+// provider.
+func agentReplyError(response string) error {
+	trimmed := strings.TrimSpace(response)
+	if !strings.HasPrefix(trimmed, agentReplyPrefix) {
+		return nil
+	}
+	return errors.New(strings.TrimSpace(strings.TrimPrefix(trimmed, agentReplyPrefix)))
 }
 
 func runVersion(c *cli.Context) error {
@@ -1887,10 +2317,12 @@ func runGateway(c *cli.Context) error {
 	log.Info("Starting gateway mode",
 		"model", modelName,
 		"telegram", cfg.Channels.Telegram.Enabled,
+		"discord", cfg.Channels.Discord.Enabled,
 	)
 
 	// Setup components
 	msgBus, _, _, agentInstance, _, sender, err := setupComponents(cfg)
+	defer closeMCPServers()
 	if err != nil {
 		return err
 	}
@@ -1907,8 +2339,7 @@ func runGateway(c *cli.Context) error {
 
 	// Subscribe agent to all channels
 	msgBus.Subscribe("all", func(ctx context.Context, msg bus.InboundMessage) {
-		// DEBUG: Direct stderr logging
-		fmt.Fprintf(os.Stderr, "!!! BUS HANDLER INVOKED channel=%s content=%q\n", msg.Channel, msg.Content)
+		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("panic in agent handler",
@@ -1948,6 +2379,18 @@ func runGateway(c *cli.Context) error {
 			return
 		}
 
+		// Heartbeat messages are proactive background checks: when the agent
+		// decides nothing needs the user's attention it replies HEARTBEAT_OK (see
+		// the heartbeat completion contract), and that reply is suppressed rather
+		// than delivered to the chat. An empty reply is treated the same way.
+		if msg.SenderID == "heartbeat" {
+			trimmed := strings.TrimSpace(response)
+			if trimmed == "" || strings.HasPrefix(strings.ToUpper(trimmed), "HEARTBEAT_OK") {
+				log.Debug("Heartbeat produced no actionable output; suppressing reply", "task", msg.Content)
+				return
+			}
+		}
+
 		// Send response back to the appropriate channel
 		channelID := getChannelID(msg)
 		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
@@ -1972,12 +2415,24 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
+	// Start Discord channel if enabled
+	var discordChannel *channels.DiscordChannel
+	if cfg.Channels.Discord.Enabled && cfg.Channels.Discord.Token != "" {
+		discordChannel = channels.NewDiscordChannel(msgBus, &cfg.Channels.Discord)
+		if err := discordChannel.Start(ctx); err != nil {
+			log.Error("Failed to start Discord channel", "error", err)
+		} else {
+			log.Info("Discord channel started")
+		}
+	}
+
 	// Print startup banner
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════╗")
 	fmt.Println("║         joshbot gateway running           ║")
 	fmt.Printf("║  Model: %-34s ║\n", cfg.Agents.Defaults.Model)
 	fmt.Printf("║  Telegram: %-30s ║\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
+	fmt.Printf("║  Discord: %-31s ║\n", boolToEnabled(cfg.Channels.Discord.Enabled))
 	fmt.Println("║                                           ║")
 	fmt.Println("║  Press Ctrl+C to stop                     ║")
 	fmt.Println("╚═══════════════════════════════════════════╝")
@@ -1989,6 +2444,11 @@ func runGateway(c *cli.Context) error {
 	// Stop Telegram channel
 	if tgChannel != nil {
 		tgChannel.Stop()
+	}
+
+	// Stop Discord channel
+	if discordChannel != nil {
+		discordChannel.Stop()
 	}
 
 	log.Info("Gateway stopped")
@@ -2026,7 +2486,17 @@ func runOnboard(c *cli.Context) error {
 	force := c.Bool("force")
 	keepData := c.Bool("keep-data")
 	modelFlag := c.String("model")
+	providerFlag := c.String("provider")
+	apiKeyFlag := c.String("api-key")
+	apiBaseFlag := c.String("api-base")
 	homeDir := config.DefaultHome
+
+	// An unknown --provider used to be accepted, "validated" and written out as
+	// a config nothing can dial. Reject it before anything is touched.
+	if providerFlag != "" && !isSupportedProvider(providerFlag) {
+		return fmt.Errorf("unknown provider %q (supported: %s)",
+			providerFlag, strings.Join(configure.SupportedProviders(), ", "))
+	}
 
 	// Welcome banner
 	fmt.Println()
@@ -2125,13 +2595,10 @@ func runOnboard(c *cli.Context) error {
 		// Use defaults for non-interactive setup
 		personalityChoice = "2" // Friendly
 		soulContent = getPersonalitySoul(personalityChoice)
-		if modelFlag != "" {
-			model = modelFlag
-		} else {
-			model = config.DefaultModel
-		}
-		// Get provider from existing config or use default
-		if existingCfg != nil && len(existingCfg.Providers) > 0 {
+		// Provider precedence: --provider flag, then existing config, then default.
+		if providerFlag != "" {
+			provider = providerFlag
+		} else if existingCfg != nil && len(existingCfg.Providers) > 0 {
 			for p := range existingCfg.Providers {
 				provider = p
 				break
@@ -2140,22 +2607,46 @@ func runOnboard(c *cli.Context) error {
 		if provider == "" {
 			provider = "openrouter"
 		}
-		// Reuse the existing key instead of prompting. --force is documented as
-		// non-interactive, but it used to call promptProviderAPIKey, which reads
-		// stdin: with a terminal attached it hung forever, and with stdin closed
-		// it silently saved a config with no provider configured at all.
-		if existingCfg != nil {
+		// The model must follow the chosen provider: config.DefaultModel is an
+		// OpenRouter id, so `--force --provider ollama` used to write a model
+		// the selected provider cannot serve.
+		switch {
+		case modelFlag != "":
+			model = modelFlag
+		case providers.GetDefaultModel(provider) != "":
+			model = providers.GetDefaultModel(provider)
+		default:
+			model = config.DefaultModel
+		}
+		// API key precedence: --api-key flag, then env, then existing config.
+		// --force must never block on stdin, so promptProviderAPIKey is not used:
+		// it reads stdin, so with a terminal attached it hung forever, and with
+		// stdin closed it silently saved a config with no provider configured.
+		apiKey = strings.TrimSpace(apiKeyFlag)
+		if apiKey == "" {
+			apiKey = providerAPIKeyFromEnv(provider)
+		}
+		if apiKey == "" && existingCfg != nil {
 			if p, ok := existingCfg.Providers[provider]; ok && p.APIKey != "" {
 				apiKey = p.APIKey
 			}
 		}
 	} else {
-		// Interactive prompts - pass existing config for defaults
-		provider = selectProvider(existingCfg)
-		var err error
-		apiKey, err = promptProviderAPIKey(provider, existingCfg)
-		if err != nil {
-			return err
+		// Interactive prompts - pass existing config for defaults. Flags, when
+		// supplied, pre-fill the corresponding answer instead of prompting.
+		if providerFlag != "" {
+			provider = providerFlag
+		} else {
+			provider = selectProvider(existingCfg)
+		}
+		if apiKeyFlag != "" {
+			apiKey = strings.TrimSpace(apiKeyFlag)
+		} else {
+			var err error
+			apiKey, err = promptProviderAPIKey(provider, existingCfg)
+			if err != nil {
+				return err
+			}
 		}
 		personalityChoice = selectPersonality(existingCfg)
 		soulContent = getPersonalitySoul(personalityChoice)
@@ -2166,6 +2657,7 @@ func runOnboard(c *cli.Context) error {
 
 	// Build config
 	cfg := config.Defaults()
+	providerConfigured := false
 	if apiKey != "" || provider == "ollama" || provider == "github-copilot" {
 		// Get provider's default model as fallback
 		defaultModel := providers.GetDefaultModel(provider)
@@ -2179,6 +2671,7 @@ func runOnboard(c *cli.Context) error {
 		// Build provider config
 		providerCfg := config.ProviderConfig{
 			APIKey:  apiKey,
+			APIBase: strings.TrimSpace(apiBaseFlag),
 			Enabled: true,
 			Model:   model,
 		}
@@ -2190,7 +2683,16 @@ func runOnboard(c *cli.Context) error {
 			provider: providerCfg,
 		}
 		cfg.ProviderDefaults.Default = provider
+		providerConfigured = true
 	}
+
+	// A non-interactive --force run that ends up with no usable provider must
+	// fail loudly instead of printing "Setup complete!" over an unusable config
+	// — otherwise the next `joshbot agent` tells the user to onboard again, the
+	// exact loop reported in issue #142. config.Defaults() seeds a stub
+	// "openrouter" entry with no key, so length alone is not a usable signal;
+	// providerConfigured tracks whether a real credential (or a keyless local
+	// provider like ollama) was actually wired up.
 	cfg.Agents.Defaults.Model = model
 	if userName != "" {
 		cfg.User.Name = userName
@@ -2206,6 +2708,22 @@ func runOnboard(c *cli.Context) error {
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	// Validate the credential now, so a bad key is reported here rather than
+	// surfacing as a raw provider 401 on the user's first chat (issue #160).
+	// A failure is reported, not fatal: it may be an offline onboard or a
+	// transient network error, and the config is already written.
+	if apiKey != "" {
+		cfgr := configure.New(cfg)
+		if err := cfgr.ValidateProviderCredentials(provider); err != nil {
+			fmt.Printf("\n  ⚠ Could not validate %s credentials: %v\n", configure.GetProviderDisplayName(provider), err)
+			if url := providerKeyURL(provider); url != "" {
+				fmt.Printf("    Check your key at: %s\n", url)
+			}
+		} else {
+			fmt.Printf("\n  ✓ %s credentials validated\n", configure.GetProviderDisplayName(provider))
+		}
 	}
 
 	// Only create workspace files if NOT keeping existing data
@@ -2232,9 +2750,31 @@ func runOnboard(c *cli.Context) error {
 		}
 	}
 
-	// Print completion banner
 	configPath := filepath.Join(homeDir, "config.json")
 	wsDir := cfg.WorkspaceDir()
+
+	// The config and workspace scaffold above are written unconditionally so a
+	// caller that intends to supply a credential separately still gets a usable
+	// tree. But a run with no usable provider must not print "Setup
+	// complete!" and exit 0 — that is the loop reported in issue #142, where the
+	// next `joshbot agent` just tells the user to onboard again.
+	//
+	// The interactive path gets the same treatment: with stdin closed every
+	// prompt reads EOF and takes its default, which produced a config with an
+	// empty provider entry, "Setup complete!" and exit 0.
+	if !providerConfigured {
+		cmd := "onboard"
+		if force {
+			cmd = "onboard --force"
+		}
+		return fmt.Errorf("%s did not configure any provider: pass --provider <name> --api-key <key>, "+
+			"or set JOSHBOT_PROVIDERS__%s__API_KEY (supported: %s)",
+			cmd,
+			strings.ToUpper(strings.ReplaceAll(provider, "-", "_")),
+			strings.Join(configure.SupportedProviders(), ", "))
+	}
+
+	// Print completion banner
 
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════╗")
@@ -2334,21 +2874,55 @@ func selectProvider(existingCfg *config.Config) string {
 	}
 }
 
-// promptProviderAPIKey prompts for the API key based on the selected provider.
-func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, error) {
-	var keyURL, keyName string
+// providerKeyURL returns the URL where a provider's API key can be obtained, or
+// "" if there is no well-known page.
+func providerKeyURL(provider string) string {
 	switch provider {
 	case "nvidia":
-		keyURL = "https://build.nvidia.com"
+		return "https://build.nvidia.com"
+	case "openrouter":
+		return "https://openrouter.ai/keys"
+	case "groq":
+		return "https://console.groq.com/keys"
+	case "poolside":
+		return "https://poolside.ai"
+	case "openai":
+		return "https://platform.openai.com/api-keys"
+	case "anthropic":
+		return "https://console.anthropic.com/settings/keys"
+	default:
+		return ""
+	}
+}
+
+// providerAPIKeyFromEnv reads a provider's API key from the environment,
+// accepting both the canonical nested form
+// (JOSHBOT_PROVIDERS__<PROVIDER>__API_KEY) and the shorthand
+// (JOSHBOT_<PROVIDER>_API_KEY). The provider key is upper-cased with hyphens
+// mapped to underscores (github-copilot -> GITHUB_COPILOT).
+func providerAPIKeyFromEnv(provider string) string {
+	up := strings.ToUpper(strings.ReplaceAll(provider, "-", "_"))
+	if v := os.Getenv("JOSHBOT_PROVIDERS__" + up + "__API_KEY"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	if v := os.Getenv("JOSHBOT_" + up + "_API_KEY"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// promptProviderAPIKey prompts for the API key based on the selected provider.
+func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, error) {
+	var keyName string
+	keyURL := providerKeyURL(provider)
+	switch provider {
+	case "nvidia":
 		keyName = "NVIDIA API key"
 	case "openrouter":
-		keyURL = "https://openrouter.ai/keys"
 		keyName = "OpenRouter API key"
 	case "groq":
-		keyURL = "https://console.groq.com/keys"
 		keyName = "Groq API key"
 	case "poolside":
-		keyURL = "https://poolside.ai"
 		keyName = "Poolside API key"
 	case "ollama":
 		fmt.Println("\nOllama runs locally - no API key needed.")
@@ -2368,7 +2942,12 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, 
 		return "", nil
 	}
 
-	fmt.Printf("\nGet your %s at: %s\n", keyName, keyURL)
+	if keyName == "" {
+		keyName = configure.GetProviderDisplayName(provider) + " API key"
+	}
+	if keyURL != "" {
+		fmt.Printf("\nGet your %s at: %s\n", keyName, keyURL)
+	}
 
 	// Show existing key if available
 	var currentKey string
@@ -3235,12 +3814,15 @@ func runConfigureWizard(cfg *config.Config) error {
 		fmt.Println("  5. Configure GitHub Copilot")
 		fmt.Println("  6. Configure Poolside")
 		fmt.Println("  7. Set default provider")
-		fmt.Println("  7. Configure fallback order")
-		fmt.Println("  8. Done")
+		fmt.Println("  8. Configure fallback order")
+		fmt.Println("  9. Done")
 		fmt.Println()
 
 		fmt.Print("Choice [9]: ")
 
+		// On EOF (closed stdin) Scanln leaves choice empty, which takes the
+		// default and saves-and-exits — the wizard must never spin on
+		// "Invalid choice" against a stdin that will never produce one.
 		var choice string
 		fmt.Scanln(&choice)
 		if choice == "" {
@@ -4078,6 +4660,17 @@ func runAuthStatus(c *cli.Context) error {
 // with the gating conditions there: openrouter/nvidia/groq/poolside/custom
 // all require p.APIKey != "", while ollama (local server) and github-copilot
 // (OAuth token file, not api_key) do not.
+// isSupportedProvider reports whether name is one of the providers the guided
+// paths know how to configure, i.e. one the runtime can actually dial.
+func isSupportedProvider(name string) bool {
+	for _, p := range configure.SupportedProviders() {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 func providerRequiresAPIKey(name string) bool {
 	switch name {
 	case "ollama", "github-copilot":
@@ -4129,32 +4722,54 @@ func formatProviderStatus(providersCfg map[string]config.ProviderConfig) string 
 // diagnostic issue #71 was filed about. See issue #71.
 func noProvidersRegisteredError(providersCfg map[string]config.ProviderConfig) error {
 	if len(providersCfg) == 0 {
-		return fmt.Errorf("no providers configured. Run 'joshbot onboard' first")
+		return newExitError(exitAuth, "run 'joshbot onboard' to configure a provider",
+			fmt.Errorf("no providers configured. Run 'joshbot onboard' first"))
 	}
 
 	names := make([]string, 0, len(providersCfg))
-	var keyless []string
+	var keyless, unknown []string
 	for name, p := range providersCfg {
 		names = append(names, name)
-		if p.Enabled && providerRequiresAPIKey(name) && p.APIKey == "" {
+		if !p.Enabled {
+			continue
+		}
+		if !isSupportedProvider(name) {
+			unknown = append(unknown, name)
+			continue
+		}
+		if providerRequiresAPIKey(name) && p.APIKey == "" {
 			keyless = append(keyless, name)
 		}
 	}
 	sort.Strings(names)
 	sort.Strings(keyless)
+	sort.Strings(unknown)
+
+	// Enabled but not a provider that exists: telling this user to add
+	// "enabled": true is doubly wrong — it is already set, and the name is the
+	// actual fault.
+	if len(unknown) > 0 {
+		return newExitError(exitAuth, "fix the provider name in config.json, or run 'joshbot configure'",
+			fmt.Errorf(
+				"no providers usable: %s enabled but not a known provider — supported providers are: %s",
+				strings.Join(unknown, ", "), strings.Join(configure.SupportedProviders(), ", "),
+			))
+	}
 
 	// Enabled but unusable: the enabled flag is not the problem.
 	if len(keyless) > 0 {
-		return fmt.Errorf(
-			"no providers usable: %s enabled but missing \"api_key\" — set an api_key, or run 'joshbot configure'",
-			strings.Join(keyless, ", "),
-		)
+		return newExitError(exitAuth, "set an api_key for the provider, or run 'joshbot configure'",
+			fmt.Errorf(
+				"no providers usable: %s enabled but missing \"api_key\" — set an api_key, or run 'joshbot configure'",
+				strings.Join(keyless, ", "),
+			))
 	}
 
-	return fmt.Errorf(
-		"no providers enabled: %d provider(s) found in config (%s) but none have \"enabled\": true — add \"enabled\": true to the provider you want to use",
-		len(providersCfg), strings.Join(names, ", "),
-	)
+	return newExitError(exitAuth, "add \"enabled\": true to the provider you want to use, or run 'joshbot configure'",
+		fmt.Errorf(
+			"no providers enabled: %d provider(s) found in config (%s) but none have \"enabled\": true — add \"enabled\": true to the provider you want to use",
+			len(providersCfg), strings.Join(names, ", "),
+		))
 }
 
 func boolToEnabled(b bool) string {

@@ -276,8 +276,18 @@ func (r *Registry) GetSchemas() []providers.Tool {
 
 // toolToProviderTool converts a Tool to a providers.Tool.
 func toolToProviderTool(tool Tool) providers.Tool {
-	schemaStr := GenerateSchema(tool.Parameters())
-	raw := json.RawMessage(schemaStr)
+	// A tool may supply a complete JSON Schema directly (e.g. MCP tools, whose
+	// server-provided inputSchema would lose nested structure if flattened into
+	// []Parameter). Prefer it when present and non-empty.
+	var raw json.RawMessage
+	if sp, ok := tool.(rawSchemaProvider); ok {
+		if s := sp.RawSchema(); len(s) > 0 {
+			raw = s
+		}
+	}
+	if raw == nil {
+		raw = json.RawMessage(GenerateSchema(tool.Parameters()))
+	}
 
 	return providers.Tool{
 		Type: "function",

@@ -51,3 +51,4 @@ htmlcov/
 
 # Agent worktrees (transient)
 .claude/worktrees/
+/bin/

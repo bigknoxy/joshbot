@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.47.0] - 2026-08-10
+
 ### ⚠️ Breaking
 - **Telegram: an empty `allow_from` now denies every sender** (previously it allowed everyone). A bot with no allowlist handed anyone on the internet a direct line into an agent loop holding the shell tool. `IsAllowed` now fails closed on an empty allowlist and `Start` logs a loud warning naming the exact key to set (`channels.telegram.allow_from`, or the comma-separated `JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM` env override; Discord has the matching `channels.discord.allow_from` / `JOSHBOT_CHANNELS__DISCORD__ALLOW_FROM`). **If you relied on an open bot, add your numeric Telegram user ID to `allow_from` or it will reject all messages.** The new Discord channel enforces the same fail-closed rule.
 

@@ -13,6 +13,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/output"
 	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
@@ -342,10 +343,10 @@ func TestCLIProgressStopSpinnerJoinsGoroutine(t *testing.T) {
 	}
 }
 
-// TestFormatProviderStatus covers the `status` provider line for issue #71:
+// TestProviderStatuses covers the `status` provider line for issue #71:
 // a provider missing "enabled": true (or, where applicable, an api_key) must
 // be visibly flagged rather than listed as if it were configured and ready.
-func TestFormatProviderStatus(t *testing.T) {
+func TestProviderStatuses(t *testing.T) {
 	tests := []struct {
 		name      string
 		providers map[string]config.ProviderConfig
@@ -396,9 +397,9 @@ func TestFormatProviderStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatProviderStatus(tt.providers)
+			got := output.FormatProviders(providerStatuses(tt.providers))
 			if got != tt.want {
-				t.Fatalf("formatProviderStatus() = %q, want %q", got, tt.want)
+				t.Fatalf("FormatProviders() = %q, want %q", got, tt.want)
 			}
 		})
 	}

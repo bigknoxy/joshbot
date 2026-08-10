@@ -39,6 +39,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/mcp"
 	"github.com/bigknoxy/joshbot/internal/memory"
+	"github.com/bigknoxy/joshbot/internal/output"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/redact"
 	"github.com/bigknoxy/joshbot/internal/service"
@@ -225,6 +226,16 @@ func runApp() error {
 				Usage:       "Enable debug logging (more detailed than verbose)",
 				Destination: new(bool),
 			},
+			&cli.StringFlag{
+				// Global, not per-command: a script wrapping joshbot sets it
+				// once. Only the read-only reporting commands honour it today
+				// (status, preflight, skills list, auth status,
+				// configure --list); `agent` keeps its own --output-format,
+				// which is a superset carrying stream-json as well.
+				Name:  "output",
+				Usage: "Output format for reporting commands: " + strings.Join(output.Formats, ", "),
+				Value: string(output.Text),
+			},
 			&cli.BoolFlag{
 				Name:  "no-color",
 				Usage: "Disable ANSI colour in all output",
@@ -311,7 +322,7 @@ func runApp() error {
 			{
 				Name:   "status",
 				Usage:  "Show configuration and status",
-				Action: runStatus,
+				Action: withJSONErrors(runStatus),
 			},
 			{
 				Name:  "preflight",
@@ -320,7 +331,7 @@ func runApp() error {
 					"provider, the exact model ID sent on the wire, the API host, and whether a\n" +
 					"credential is present and where it came from. Never prints the credential and\n" +
 					"never contacts a provider. Exits non-zero when joshbot would not start.",
-				Action: runPreflight,
+				Action: withJSONErrors(runPreflight),
 			},
 			{
 				Name:  "skills",
@@ -332,7 +343,7 @@ func runApp() error {
 					{
 						Name:   "list",
 						Usage:  "List skills and whether they are approved",
-						Action: runSkillsList,
+						Action: withJSONErrors(runSkillsList),
 					},
 					{
 						Name:      "trust",
@@ -389,7 +400,7 @@ func runApp() error {
 						Usage: "Remove a configured provider",
 					},
 				},
-				Action: runConfigure,
+				Action: withJSONErrors(runConfigure),
 			},
 			{
 				Name:   "update",
@@ -449,7 +460,7 @@ func runApp() error {
 					{
 						Name:   "status",
 						Usage:  "Show authentication status for all providers",
-						Action: runAuthStatus,
+						Action: withJSONErrors(runAuthStatus),
 					},
 				},
 			},
@@ -3636,26 +3647,6 @@ I can create new skills to extend my capabilities.
 	return nil
 }
 
-// preflightEntryLines renders one preflight entry, already safe to print
-// through the redactor.
-//
-// The problem line is "problem <class> — <detail>", not "<class>: <detail>":
-// two of the problem classes end in the word "credential", and internal/redact
-// reads "<secret-name>: <value>" as an assignment, so the colon form published
-// "missing-credential: [REDACTED] \"openrouter/x\"" — it blanked the diagnosis
-// instead of a secret.
-func preflightEntryLines(e config.PreflightEntry) []string {
-	mark := "✓"
-	if e.Problem != "" {
-		mark = "✗"
-	}
-	lines := []string{fmt.Sprintf("%s %s", mark, e.Summary())}
-	if e.Problem != "" {
-		lines = append(lines, fmt.Sprintf("    problem %s — %s", e.Problem, e.Detail))
-	}
-	return lines
-}
-
 // runPreflight reports whether joshbot would start, and with what, without
 // dialling anything.
 //
@@ -3664,46 +3655,53 @@ func preflightEntryLines(e config.PreflightEntry) []string {
 // describe a config the operator never wrote while the file in front of them is
 // the broken one.
 func runPreflight(c *cli.Context) error {
-	// Same redaction as `joshbot status`: this output exists to be pasted into
-	// an issue, so a home directory (which carries the account name) and any
-	// credential-shaped value are stripped first.
-	out := redact.Writer(os.Stdout)
+	format, err := outputFormat(c)
+	if err != nil {
+		return err
+	}
 
 	cfg, loadErr := config.LoadStrictFrom(c.Path("config"))
 	if cfg == nil {
 		return loadErr
 	}
 
-	report := config.Preflight(cfg)
-	fmt.Fprintf(out, "config:    %s\n", report.ConfigPath)
-	fmt.Fprintf(out, "format:    %s\n", report.ConfigFormat)
-	fmt.Fprintf(out, "workspace: %s\n", report.Workspace)
+	configErr := ""
 	if loadErr != nil {
-		fmt.Fprintf(out, "\nconfig rejected: %v\n", loadErr)
+		configErr = loadErr.Error()
 	}
+	// NewPreflight redacts the free-text fields as it builds the document, so
+	// this output is safe to paste into an issue in either format.
+	doc := output.NewPreflight(config.Preflight(cfg), configErr)
 
-	if len(report.Entries) > 0 {
-		fmt.Fprintln(out)
-	}
-	for _, e := range report.Entries {
-		for _, line := range preflightEntryLines(e) {
-			fmt.Fprintln(out, line)
+	if format == output.JSON {
+		if err := output.WriteJSON(jsonWriter(), doc); err != nil {
+			return err
 		}
+		if doc.OK {
+			return nil
+		}
+		// Same contract as the text path: the document above is the whole
+		// report, so exit non-zero without printing a second diagnosis.
+		return cli.Exit("", 1)
 	}
 
-	if report.OK() {
-		fmt.Fprintln(out, "\nOK — joshbot would start.")
+	// Same redaction as `joshbot status`: this output exists to be pasted into
+	// an issue, so a home directory (which carries the account name) and any
+	// credential-shaped value are stripped first.
+	output.RenderPreflightText(reportWriter(), doc)
+
+	if doc.OK {
 		return nil
 	}
 
-	problem, detail := report.FirstProblem()
+	problem, _ := doc.FirstProblem()
 	if problem == "" && loadErr != nil {
 		// A config the resolver could not even reach: the load error is the
 		// whole diagnosis, and reporting nothing here would exit non-zero with
 		// no reason attached.
 		return loadErr
 	}
-	fmt.Fprintf(out, "\nNOT OK — %s\n", detail)
+	// The "NOT OK — ..." line is printed by RenderPreflightText above.
 	// cli.Exit rather than a plain error: the message is already printed above
 	// in full, and urfave/cli would otherwise print it a second time.
 	return cli.Exit("", 1)
@@ -3711,11 +3709,10 @@ func runPreflight(c *cli.Context) error {
 
 // runStatus displays the current configuration and status.
 func runStatus(c *cli.Context) error {
-	// Status prints config paths and provider names. Route it through the
-	// redactor so a home directory (which carries the account name) and any
-	// credential-shaped value are stripped before the user copies this into
-	// an issue.
-	out := redact.Writer(os.Stdout)
+	format, err := outputFormat(c)
+	if err != nil {
+		return err
+	}
 
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
@@ -3745,66 +3742,73 @@ func runStatus(c *cli.Context) error {
 		historySize = histStats.Size()
 	}
 
-	// Print status
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "╔═══════════════════════════════════════════╗")
-	fmt.Fprintln(out, "║            joshbot status                ║")
-	fmt.Fprintln(out, "╚═══════════════════════════════════════════╝")
-	fmt.Fprintf(out, "Version:        %s\n", Version)
-	fmt.Fprintf(out, "Config file:    %s %s\n", configPath, statusBool(configExists))
-	fmt.Fprintf(out, "Workspace:      %s %s\n", cfg.WorkspaceDir(), statusBool(wsExists))
-	fmt.Fprintf(out, "Sessions:       %s\n", cfg.SessionsDir())
-	fmt.Fprintln(out)
-
-	// Display model info based on config format
-	if cfg.UseModelsConfig() {
-		fmt.Fprintln(out, "Config format:  model-centric")
-		fmt.Fprintf(out, "Active model:   %s\n", cfg.ModelsConfig.Agent.Model)
-		if len(cfg.ModelsConfig.Agent.Fallback) > 0 {
-			fmt.Fprintf(out, "Fallback:       %s\n", strings.Join(cfg.ModelsConfig.Agent.Fallback, ", "))
-		}
-	} else {
-		fmt.Fprintf(out, "Model:          %s\n", cfg.Agents.Defaults.Model)
+	// Paths are stripped of the home directory here rather than relying on the
+	// output writer: the JSON form is not written through the redactor (see the
+	// internal/output package comment), so a raw path would leak the account
+	// name into a document meant to be pasted into an issue.
+	doc := output.Status{
+		SchemaVersion:       output.SchemaVersion,
+		Version:             Version,
+		ConfigPath:          redact.HomePath(configPath),
+		ConfigExists:        configExists,
+		Workspace:           redact.HomePath(cfg.WorkspaceDir()),
+		WorkspaceExists:     wsExists,
+		SessionsDir:         redact.HomePath(cfg.SessionsDir()),
+		ConfigFormat:        output.FormatLegacy,
+		Model:               cfg.Agents.Defaults.Model,
+		MaxTokens:           cfg.Agents.Defaults.MaxTokens,
+		Temperature:         cfg.Agents.Defaults.Temperature,
+		MemoryWindow:        cfg.Agents.Defaults.MemoryWindow,
+		TelegramEnabled:     cfg.Channels.Telegram.Enabled,
+		WorkspaceRestricted: cfg.Tools.RestrictToWorkspace,
+		PendingSkills:       pendingSkillNames(cfg),
+		MemoryBytes:         memorySize,
+		HistoryBytes:        historySize,
 	}
-	fmt.Fprintf(out, "Max tokens:     %d\n", cfg.Agents.Defaults.MaxTokens)
-	fmt.Fprintf(out, "Temperature:    %.1f\n", cfg.Agents.Defaults.Temperature)
-	fmt.Fprintf(out, "Memory window:  %d\n", cfg.Agents.Defaults.MemoryWindow)
-	fmt.Fprintln(out)
-
-	// Display providers/models
 	if cfg.UseModelsConfig() {
-		modelNames := make([]string, 0, len(cfg.ModelsConfig.Models))
+		doc.ConfigFormat = output.FormatModelCentric
+		doc.Model = cfg.ModelsConfig.Agent.Model
+		doc.Fallback = cfg.ModelsConfig.Agent.Fallback
 		for _, m := range cfg.ModelsConfig.Models {
 			if !m.Disabled {
-				modelNames = append(modelNames, m.Name)
+				doc.Models = append(doc.Models, m.Name)
 			}
 		}
-		if len(modelNames) == 0 {
-			modelNames = []string{"none"}
-		}
-		fmt.Fprintf(out, "Models:         %s\n", strings.Join(modelNames, ", "))
 	} else {
-		fmt.Fprintf(out, "Providers:      %s\n", formatProviderStatus(cfg.Providers))
-	}
-	fmt.Fprintf(out, "Telegram:       %s\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
-	fmt.Fprintf(out, "Workspace restricted: %s\n", boolToEnabled(cfg.Tools.RestrictToWorkspace))
-
-	// Skills awaiting review belong here, not only in a startup log line. In
-	// gateway mode that log goes to the journal, where an operator would never
-	// see it — they would just get a quietly worse assistant. `status` is
-	// where someone looks when something seems off.
-	if pending := pendingSkillNames(cfg); len(pending) > 0 {
-		fmt.Fprintf(out, "Skills:         %d awaiting review (%s)\n", len(pending), strings.Join(pending, ", "))
-		fmt.Fprintln(out, "                not in use — review then run: joshbot skills trust <name>")
-	}
-	fmt.Fprintln(out)
-
-	if memorySize > 0 || historySize > 0 {
-		fmt.Fprintf(out, "MEMORY.md:  %d bytes\n", memorySize)
-		fmt.Fprintf(out, "HISTORY.md: %d bytes\n", historySize)
+		doc.Providers = providerStatuses(cfg.Providers)
 	}
 
+	if format == output.JSON {
+		return output.WriteJSON(jsonWriter(), doc)
+	}
+
+	output.RenderStatusText(reportWriter(), doc)
 	return nil
+}
+
+// providerStatuses maps the legacy providers map onto the reporting struct,
+// mirroring the registration gates in setupComponents so status never claims a
+// provider is configured when it is actually inert. See issue #71.
+func providerStatuses(providersCfg map[string]config.ProviderConfig) []output.ProviderStatus {
+	names := make([]string, 0, len(providersCfg))
+	for name := range providersCfg {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]output.ProviderStatus, 0, len(names))
+	for _, name := range names {
+		p := providersCfg[name]
+		switch {
+		case !p.Enabled:
+			out = append(out, output.ProviderStatus{Name: name, Reason: output.ReasonNotEnabled})
+		case providerRequiresAPIKey(name) && p.APIKey == "":
+			out = append(out, output.ProviderStatus{Name: name, Reason: output.ReasonNoAPIKey})
+		default:
+			out = append(out, output.ProviderStatus{Name: name, Usable: true})
+		}
+	}
+	return out
 }
 
 // runConfigure handles the configure command.
@@ -3819,7 +3823,11 @@ func runConfigure(c *cli.Context) error {
 	conf := configure.New(cfg)
 
 	if c.Bool("list") {
-		return listProviders(cfg)
+		format, err := outputFormat(c)
+		if err != nil {
+			return err
+		}
+		return listProviders(cfg, format)
 	}
 
 	if provider := c.String("remove"); provider != "" {
@@ -3879,47 +3887,56 @@ func flushConfig(cfg *config.Config) error {
 }
 
 // listProviders displays the configured providers.
-func listProviders(cfg *config.Config) error {
-	fmt.Println()
-	fmt.Println("╔═══════════════════════════════════════════╗")
-	fmt.Println("║        Configured Providers              ║")
-	fmt.Println("╚═══════════════════════════════════════════╝")
-	fmt.Println()
-
-	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
+func listProviders(cfg *config.Config, format output.Format) error {
+	names := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
 	defaultProvider := cfg.ProviderDefaults.Default
 
-	for _, name := range providers {
+	doc := output.Providers{
+		SchemaVersion: output.SchemaVersion,
+		Default:       defaultProvider,
+		Providers:     make([]output.ConfiguredProvider, 0, len(names)),
+	}
+	for _, name := range names {
 		p, exists := cfg.Providers[name]
-		isDefault := name == defaultProvider
-		statusIcon := "○"
-		statusText := "not configured"
+		status := output.ProviderNotConfigured
 
 		if exists && p.Enabled {
-			if name == "github-copilot" {
-				homeDir, _ := copilot.GetHomeDir()
-				copilotToken, copilotErr := copilot.LoadToken(homeDir)
-				if copilotErr == nil && copilotToken != nil && copilotToken.AccessToken != "" {
-					statusIcon = "✓"
-					statusText = "authenticated"
+			switch {
+			case name == "github-copilot":
+				if copilotAuthenticated() {
+					status = output.ProviderAuthenticated
 				} else {
-					statusIcon = "○"
-					statusText = "OAuth required"
+					status = output.ProviderOAuthRequired
 				}
-			} else if p.APIKey != "" {
-				statusIcon = "✓"
-				statusText = "configured"
+			case p.APIKey != "":
+				status = output.ProviderConfigured
 			}
 		}
-		if isDefault {
-			statusText += " (default)"
-		}
 
-		fmt.Printf("  %s %-12s %s\n", statusIcon, name, statusText)
+		doc.Providers = append(doc.Providers, output.ConfiguredProvider{
+			Name:      name,
+			Status:    status,
+			IsDefault: name == defaultProvider,
+		})
 	}
 
-	fmt.Println()
+	out := reportWriter()
+	if format == output.JSON {
+		return output.WriteJSON(out, doc)
+	}
+	output.RenderProvidersText(out, doc)
 	return nil
+}
+
+// copilotAuthenticated reports whether a usable GitHub Copilot token is on
+// disk. Presence only — the token itself never leaves this function.
+func copilotAuthenticated() bool {
+	homeDir, err := copilot.GetHomeDir()
+	if err != nil {
+		return false
+	}
+	token, err := copilot.LoadToken(homeDir)
+	return err == nil && token != nil && token.AccessToken != ""
 }
 
 // runConfigureWizard runs the interactive provider configuration wizard.
@@ -4802,24 +4819,26 @@ func runAuthCopilot(c *cli.Context) error {
 }
 
 func runAuthStatus(c *cli.Context) error {
-	homeDir, err := copilot.GetHomeDir()
+	format, err := outputFormat(c)
 	if err != nil {
+		return err
+	}
+	if _, err := copilot.GetHomeDir(); err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	token, err := copilot.LoadToken(homeDir)
-
-	fmt.Println("Authentication Status:")
-	fmt.Println()
-	fmt.Printf("  GitHub Copilot: ")
-
-	if err != nil || token == nil || token.AccessToken == "" {
-		fmt.Println("not authenticated")
-		fmt.Println("    Run 'joshbot auth github-copilot' to authenticate")
-	} else {
-		fmt.Println("authenticated")
+	doc := output.Auth{
+		SchemaVersion: output.SchemaVersion,
+		Providers: []output.AuthedProvider{
+			{Name: "github-copilot", Authenticated: copilotAuthenticated()},
+		},
 	}
 
+	out := reportWriter()
+	if format == output.JSON {
+		return output.WriteJSON(out, doc)
+	}
+	output.RenderAuthText(out, doc)
 	return nil
 }
 
@@ -4848,39 +4867,6 @@ func providerRequiresAPIKey(name string) bool {
 	default:
 		return true
 	}
-}
-
-// formatProviderStatus renders the legacy providers map for `joshbot status`,
-// flagging any provider that setupComponents will NOT register: either
-// because "enabled": true is missing, or (for providers that need one)
-// because api_key is empty. This mirrors the registration gates in
-// setupComponents so status never claims a provider is configured when it
-// is actually inert. See issue #71.
-func formatProviderStatus(providersCfg map[string]config.ProviderConfig) string {
-	if len(providersCfg) == 0 {
-		return "none"
-	}
-
-	names := make([]string, 0, len(providersCfg))
-	for name := range providersCfg {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		p := providersCfg[name]
-		switch {
-		case !p.Enabled:
-			parts = append(parts, fmt.Sprintf(`%s (disabled — set "enabled": true)`, name))
-		case providerRequiresAPIKey(name) && p.APIKey == "":
-			parts = append(parts, fmt.Sprintf(`%s (disabled — missing "api_key")`, name))
-		default:
-			parts = append(parts, name)
-		}
-	}
-
-	return strings.Join(parts, ", ")
 }
 
 // noProvidersRegisteredError builds the diagnostic error returned when the

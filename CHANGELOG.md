@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A global `--output text|json` flag on the read-only reporting commands** (`preflight`, `status`, `skills list`, `auth status`, `configure --list`) (#131). `text` is the default and is byte-for-byte what those commands already printed; `json` emits one versioned document (`schema_version`) on stdout, byte-stable across runs so two invocations can be diffed. Exit codes are unchanged, and a failure in JSON mode is reported as `{"schema_version":1,"error":{"code":N,"message":"..."}}` on stdout so a caller does not need a second reader on stderr. An unknown `--output` value exits 3 (`exitValidation` — this repo already uses 2 for auth failures). The renderers moved to a new `internal/output` package; `cmd/joshbot` keeps only the flag wiring. Note JSON documents are made safe as they are built rather than by the byte-stream redactor, which corrupts encoded JSON — tests pin per command that neither a configured credential nor the home directory appears.
+
 ## [1.47.1] - 2026-08-10
 
 ### Fixed

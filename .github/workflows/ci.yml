@@ -74,7 +74,7 @@ jobs:
         # have been deleted with CI still passing, which is the failure mode
         # this check exists to prevent.
         #
-        # Last measured 2026-08-10: cmd/joshbot 39.8% on darwin/arm64.
+        # Last measured 2026-08-10: cmd/joshbot 41.6% on darwin/arm64.
         #
         # internal/service is build-tagged per OS and the number differs
         # sharply between them: on darwin only launchd.go compiles and the
@@ -101,7 +101,7 @@ jobs:
               exit 1
             fi
           }
-          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 39
+          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 41
           check_pkg "github.com/bigknoxy/joshbot/internal/service" 40
           echo "PASS: all per-package coverage floors met"
 

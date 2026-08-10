@@ -2072,10 +2072,14 @@ func runOnboard(c *cli.Context) error {
 		if provider == "" {
 			provider = "openrouter"
 		}
-		var err error
-		apiKey, err = promptProviderAPIKey(provider, existingCfg)
-		if err != nil {
-			return err
+		// Reuse the existing key instead of prompting. --force is documented as
+		// non-interactive, but it used to call promptProviderAPIKey, which reads
+		// stdin: with a terminal attached it hung forever, and with stdin closed
+		// it silently saved a config with no provider configured at all.
+		if existingCfg != nil {
+			if p, ok := existingCfg.Providers[provider]; ok && p.APIKey != "" {
+				apiKey = p.APIKey
+			}
 		}
 	} else {
 		// Interactive prompts - pass existing config for defaults
@@ -2536,61 +2540,127 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 	fmt.Println("Enter your bot token when ready.")
 	fmt.Println("(Type 'cancel' to abort)")
 	fmt.Println()
-	fmt.Printf("Bot token: ")
 
-	var token string
-	fmt.Scanln(&token)
+	// The token is entered once; if validation fails the user gets one more
+	// chance to correct a typo before we fall back to preserving a working
+	// existing token (or disabling Telegram on a fresh install). The network
+	// itself is already retried inside ValidateToken, so this loop is about
+	// giving the human a second attempt, not about masking a dead network.
+	for prompt := 1; prompt <= 2; prompt++ {
+		fmt.Printf("Bot token: ")
 
-	if token == "cancel" || token == "" {
-		fmt.Println("\nTelegram setup cancelled.")
-		return nil
-	}
+		var token string
+		fmt.Scanln(&token)
 
-	// Sanitize token: strip control characters and escape sequences
-	token = strings.TrimSpace(sanitizeToken(token))
+		if token == "cancel" || token == "" {
+			fmt.Println("\nTelegram setup cancelled.")
+			return nil
+		}
 
-	fmt.Println("\nValidating token...")
-	if err := channels.ValidateToken(token); err != nil {
-		fmt.Printf("Token validation failed: %v\n", err)
-		fmt.Println("Please check your token and try again.")
-		return nil
-	}
-	fmt.Println("Token validated successfully!")
+		// Sanitize token: strip control characters and escape sequences
+		token = strings.TrimSpace(sanitizeToken(token))
 
-	fmt.Println("\nAllowed usernames (optional)")
-	fmt.Println("Restrict bot access to specific Telegram usernames.")
-	fmt.Println("Leave empty to allow anyone to use the bot.")
-	fmt.Println()
+		fmt.Println("\nValidating token...")
+		if err := validateTelegramToken(token); err != nil {
+			fmt.Printf("Token validation failed: %v\n", err)
+			if channels.IsNetworkError(err) {
+				fmt.Println("This looks like a network problem — joshbot could not reach the Telegram API.")
+				fmt.Println("Check your internet connection and proxy settings.")
+			} else {
+				fmt.Println("The token was rejected by Telegram. Double-check it was copied in full.")
+			}
+			if prompt == 2 {
+				return telegramValidationFailed(existingEnabled, existingToken, existingAllowFrom)
+			}
+			fmt.Println("Please check your token and try again.")
+			fmt.Println()
+			continue
+		}
+		fmt.Println("Token validated successfully!")
 
-	// Show existing allow from as default
-	defaultUsernames := strings.Join(existingAllowFrom, ", ")
-	fmt.Printf("Usernames (comma-separated) [current: %s]: ", defaultUsernames)
+		fmt.Println("\nAllowed usernames (optional)")
+		fmt.Println("Restrict bot access to specific Telegram usernames.")
+		fmt.Println("Leave empty to allow anyone to use the bot.")
+		fmt.Println()
 
-	var usernamesRaw string
-	fmt.Scanln(&usernamesRaw)
+		// Show existing allow from as default
+		defaultUsernames := strings.Join(existingAllowFrom, ", ")
+		fmt.Printf("Usernames (comma-separated) [current: %s]: ", defaultUsernames)
 
-	var allowFrom []string
-	// Use existing if no new input
-	if usernamesRaw == "" && len(existingAllowFrom) > 0 {
-		allowFrom = existingAllowFrom
-	} else if usernamesRaw != "" {
-		for _, u := range strings.Split(usernamesRaw, ",") {
-			u = strings.TrimSpace(u)
-			if u != "" {
-				if !strings.HasPrefix(u, "@") {
-					u = "@" + u
+		usernamesRaw := readLine()
+
+		var allowFrom []string
+		// Use existing if no new input
+		if usernamesRaw == "" && len(existingAllowFrom) > 0 {
+			allowFrom = existingAllowFrom
+		} else if usernamesRaw != "" {
+			for _, u := range strings.Split(usernamesRaw, ",") {
+				u = strings.TrimSpace(u)
+				if u != "" {
+					if !strings.HasPrefix(u, "@") {
+						u = "@" + u
+					}
+					allowFrom = append(allowFrom, u)
 				}
-				allowFrom = append(allowFrom, u)
 			}
 		}
+
+		fmt.Println("\nTelegram configured!")
+
+		return &config.TelegramConfig{
+			Enabled:   true,
+			Token:     token,
+			AllowFrom: allowFrom,
+		}
 	}
+	return telegramValidationFailed(existingEnabled, existingToken, existingAllowFrom)
+}
 
-	fmt.Println("\nTelegram configured!")
+// validateTelegramToken is the network boundary for setupTelegram's token
+// validation. It is a package var so tests can stub it and exercise the wizard
+// flow without touching the real Telegram API.
+var validateTelegramToken = channels.ValidateToken
 
+// readLine reads a single line from stdin, spaces included. fmt.Scanln stops at
+// the first space, which truncates a comma-separated username list typed as
+// "@alice, bob" down to just "@alice,". It reads one byte at a time so it never
+// buffers ahead into input a later prompt is waiting for.
+func readLine() string {
+	var sb strings.Builder
+	buf := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if n == 0 || err != nil {
+			break
+		}
+		if buf[0] == '\n' {
+			break
+		}
+		sb.WriteByte(buf[0])
+	}
+	return strings.TrimRight(sb.String(), "\r")
+}
+
+// telegramValidationFailed decides what to do when a freshly-entered token
+// could not be validated after both attempts. An existing working token is
+// preserved — a transient network failure must not silently disconnect a live
+// bot, which is what happened when the old code returned nil and the config
+// was saved with Telegram disabled. On a fresh install Telegram is left
+// disabled with a clear message instead.
+func telegramValidationFailed(existingEnabled bool, existingToken string, existingAllowFrom []string) *config.TelegramConfig {
+	if existingEnabled && existingToken != "" {
+		fmt.Println("\nKeeping the existing Telegram configuration: the new token could not be validated.")
+		return &config.TelegramConfig{
+			Enabled:   true,
+			Token:     existingToken,
+			AllowFrom: existingAllowFrom,
+		}
+	}
+	fmt.Println("\nTelegram setup skipped: no token could be validated.")
 	return &config.TelegramConfig{
-		Enabled:   true,
-		Token:     token,
-		AllowFrom: allowFrom,
+		Enabled:   false,
+		Token:     "",
+		AllowFrom: []string{},
 	}
 }
 

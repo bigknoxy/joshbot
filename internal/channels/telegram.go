@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -1605,18 +1606,99 @@ func (t *TelegramChannel) ParseMarkdown(text string) (string, error) {
 	return text, nil
 }
 
+// telegramAPIBaseURL is the Bot API endpoint ValidateToken talks to. It is a
+// package var (not a const) so tests can point validation at a fake server.
+var telegramAPIBaseURL = "https://api.telegram.org"
+
+// telegramTokenTimeout bounds a single getMe attempt. The transport-level TLS
+// handshake has its own ~10s timeout, so a hung connection cannot stall the
+// onboard wizard forever; this covers the whole exchange.
+const telegramTokenTimeout = 10 * time.Second
+
+// telegramTokenAttempts is how many getMe attempts a transient connectivity
+// failure (dial error, TLS handshake timeout, timeout, connection reset) gets
+// before the token is reported invalid. A single TLS hiccup is a routine event
+// on flaky networks and used to abort an otherwise working setup.
+const telegramTokenAttempts = 3
+
+// telegramTokenFormat is the documented shape of a Bot API token: a numeric bot
+// id, a colon, and a base64url secret. Validated offline so an obviously
+// malformed token fails instantly and without any network traffic.
+var telegramTokenFormat = regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]{30,}$`)
+
 // ValidateToken validates a Telegram bot token by making a getMe API call.
 // Returns nil if the token is valid, or an error describing the failure.
+// Transient connectivity failures are retried up to telegramTokenAttempts
+// times; a definite API rejection (400/401/404) is never retried.
 func ValidateToken(token string) error {
+	return validateTokenWith(token, telegramAPIBaseURL, &http.Client{Timeout: telegramTokenTimeout})
+}
+
+func validateTokenWith(token, baseURL string, client *http.Client) error {
+	if err := validateTokenFormat(token); err != nil {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= telegramTokenAttempts; attempt++ {
+		err := validateTokenAttempt(token, baseURL, client)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !errors.Is(err, ErrTelegramNetwork) || attempt == telegramTokenAttempts {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	}
+	return lastErr
+}
+
+// validateTokenFormat rejects tokens that cannot possibly be valid before any
+// network traffic leaves the machine.
+func validateTokenFormat(token string) error {
 	if token == "" {
 		return fmt.Errorf("token is empty")
 	}
+	if !telegramTokenFormat.MatchString(token) {
+		return fmt.Errorf("token is not a valid Telegram bot token (expected <numeric-id>:<secret>)")
+	}
+	return nil
+}
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+// ErrTelegramNetwork is wrapped into errors from ValidateToken when the
+// Telegram API could not be reached at all — a dial failure, TLS handshake
+// timeout, or request timeout — as opposed to a definite rejection of the
+// token. Only these failures are retried, and callers use IsNetworkError to
+// tell "check your network" apart from "check your token".
+var ErrTelegramNetwork = errors.New("telegram API unreachable")
 
-	resp, err := http.Get(url)
+// IsNetworkError reports whether err is a connectivity failure (dial error, TLS
+// handshake timeout, timeout, reset) rather than a definite rejection of the
+// token by the API.
+func IsNetworkError(err error) bool {
+	return errors.Is(err, ErrTelegramNetwork)
+}
+
+func validateTokenAttempt(token, baseURL string, client *http.Client) error {
+	reqURL := fmt.Sprintf("%s/bot%s/getMe", baseURL, token)
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect to Telegram API: %w", err)
+		return fmt.Errorf("invalid token: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// client.Do wraps a transport failure as a *url.Error whose string form
+		// embeds the full request URL — including the token, which would land
+		// verbatim in a terminal and in the setup output users paste into
+		// issues. Unwrap to the cause so the credential never escapes.
+		cause := err
+		if urlErr, ok := err.(*url.Error); ok {
+			cause = urlErr.Err
+		}
+		return fmt.Errorf("failed to connect to Telegram API: %w: %v", ErrTelegramNetwork, cause)
 	}
 	defer resp.Body.Close()
 

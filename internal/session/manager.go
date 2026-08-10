@@ -282,10 +282,14 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 		var meta struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
+			ModelOverride       string            `json:"model_override,omitempty"`
+			Personality         string            `json:"personality,omitempty"`
 		}
 		if err := json.Unmarshal(metaData, &meta); err == nil {
 			sess.ConversationTopic = meta.ConversationTopic
 			sess.ConversationContext = meta.ConversationContext
+			sess.ModelOverride = meta.ModelOverride
+			sess.Personality = meta.Personality
 		}
 	}
 
@@ -330,14 +334,22 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 		return err
 	}
 
-	// Save conversation metadata separately if present
-	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 {
+	// Save conversation metadata separately if present. When every field is
+	// empty the sidecar is removed instead of written: a stale sidecar would
+	// otherwise re-inject a cleared model override or personality on the next
+	// Load, so `/personality none` or `/model x --global` (which clears the
+	// session override) would silently do nothing after a restart.
+	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" {
 		meta := struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
+			ModelOverride       string            `json:"model_override,omitempty"`
+			Personality         string            `json:"personality,omitempty"`
 		}{
 			ConversationTopic:   s.ConversationTopic,
 			ConversationContext: s.ConversationContext,
+			ModelOverride:       s.ModelOverride,
+			Personality:         s.Personality,
 		}
 		metaData, err := json.Marshal(meta)
 		if err != nil {
@@ -346,6 +358,8 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 		if err := writeFileAtomic(m.metadataFilePath(s.ID), metaData, sessionFileMode); err != nil {
 			return err
 		}
+	} else if err := os.Remove(m.metadataFilePath(s.ID)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove stale session metadata: %w", err)
 	}
 
 	return nil

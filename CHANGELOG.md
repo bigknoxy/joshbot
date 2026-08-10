@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Telegram slash commands for `/model`, `/personality`, `/compact` and `/status`** — these commands now run through the agent and are registered in the Telegram command menu (alongside `/start`, `/new`, `/help`), instead of being rejected as unknown. `/model <name>` switches the model for the current session and persists it; `/model <name> --global` writes the default to `config.json` for all sessions. `/personality <name>` sets a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear it. `/compact` summarizes older context on demand. `/status` reports the effective model, tool count, memory window and max iterations.
+- **Per-session model and personality persistence** — `Session` now carries `ModelOverride` and `Personality`, stored in the session metadata sidecar, so a model or personality chosen mid-conversation survives a restart. `/new` clears both.
+- **Interactive CLI line editor** — when `joshbot agent` runs with a real TTY on both stdin and stdout, the `> ` prompt is replaced by a raw-mode line editor with Tab slash-command completion, Up/Down history (or multiline cursor movement), Home/End/Delete editing, Alt+Enter multiline input, Ctrl+C/Ctrl+D to quit, and a prompt that shows the session's current model.
+
+### Changed
+- **`handleCommand` dispatches on the command word** — `/model fast` and friends are no longer mis-parsed as unknown commands because the whole line was treated as the command name.
+- **`/new` on Telegram now applies the same allowlist gate as the forwarded commands** — it is dispatched outside `handleMessage`, so an unallowed caller could previously trigger a session reset.
+- **Clearing a session's model override or personality now removes the metadata sidecar** — `/personality none` and `/model ... --global` (which clears the session override) previously left a stale sidecar that re-injected the cleared value on the next message after a restart.
+- **`/model` and `/personality` now fail loudly (return an error) if the session cannot be saved**, instead of reporting success for a change that would be lost on the next message.
+
+### Fixed
+- **CLI `/status` and the model/personality/compact commands are now session-aware** — `/status` reports the effective model for the current session rather than the config default.
+
 ## [1.45.5] - 2026-08-10
 
 ### Fixed

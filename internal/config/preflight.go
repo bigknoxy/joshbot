@@ -174,6 +174,9 @@ func preflightModel(cfg *Config, name, role string) PreflightEntry {
 
 	model, ok := cfg.GetModel(name)
 	if !ok {
+		// Set even here: an empty source renders as "credential source=" with
+		// nothing after it, which reads as output that got cut off.
+		e.CredentialSource = CredentialMissing
 		e.Problem = ProblemUnresolvable
 		e.Detail = fmt.Sprintf("model %q is referenced but not defined under models.models", name)
 		return e
@@ -193,6 +196,11 @@ func preflightModel(cfg *Config, name, role string) PreflightEntry {
 			return e
 		}
 		if model.APIKey == "" && e.Provider != "ollama" {
+			// A model-centric route reads api_key off the model entry, not off
+			// the provider entry (ResolveModelConfig), so a key sitting under
+			// providers must not be reported as this route's source — that
+			// combination reads as "credential present, still refused".
+			e.CredentialSource = CredentialMissing
 			e.Problem = ProblemNoCredential
 			e.Detail = credentialHint(e.Provider, name)
 			return e
@@ -316,6 +324,10 @@ func (e PreflightEntry) Summary() string {
 	if e.Endpoint != "" {
 		fmt.Fprintf(&b, " endpoint=%s", e.Endpoint)
 	}
-	fmt.Fprintf(&b, " credential=%s", e.CredentialSource)
+	// "credential source=", not "credential=": this line is printed through
+	// internal/redact, whose assignment rule treats "credential" as a secret
+	// name and would blank whatever followed the "=" — turning the answer to
+	// the question the operator asked into "[REDACTED]".
+	fmt.Fprintf(&b, " credential source=%s", e.CredentialSource)
 	return b.String()
 }

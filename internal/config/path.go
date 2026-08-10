@@ -51,28 +51,42 @@ func LoadFrom(path string) (*Config, error) {
 	if path == "" {
 		return Load()
 	}
+	if err := anchorAt(path); err != nil {
+		return nil, err
+	}
+	return Load()
+}
 
+// LoadStrictFrom is LoadFrom without the fall back to defaults. See LoadStrict.
+func LoadStrictFrom(path string) (*Config, error) {
+	if path == "" {
+		return LoadStrict()
+	}
+	if err := anchorAt(path); err != nil {
+		return nil, err
+	}
+	return LoadStrict()
+}
+
+// anchorAt validates an explicit config path and points joshbot at it.
+func anchorAt(path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolve config path %s: %w", path, err)
+		return fmt.Errorf("resolve config path %s: %w", path, err)
 	}
 
 	info, err := os.Stat(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("config file not found: %s", abs)
+			return fmt.Errorf("config file not found: %s", abs)
 		}
-		return nil, fmt.Errorf("config file %s: %w", abs, err)
+		return fmt.Errorf("config file %s: %w", abs, err)
 	}
 	if info.IsDir() {
-		return nil, fmt.Errorf("config path %s is a directory; give the path to a config file", abs)
+		return fmt.Errorf("config path %s is a directory; give the path to a config file", abs)
 	}
 
-	if err := UseConfigFile(abs); err != nil {
-		return nil, err
-	}
-
-	return Load()
+	return UseConfigFile(abs)
 }
 
 // UseConfigFile anchors joshbot at an explicit config file without requiring

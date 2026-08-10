@@ -315,6 +315,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot agent` | Interactive CLI chat mode |
 | `joshbot gateway` | Start all channels (Telegram, Discord) |
 | `joshbot status` | Show configuration and status |
+| `joshbot preflight` | Check the config would work, without calling any provider (exits non-zero if it would not) |
 | `joshbot skills list` \| `trust <name>` \| `untrust <name>` | Review and approve workspace skills |
 | `joshbot configure` | Configure LLM providers and settings |
 | `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` | Inspect and manage stored conversations |

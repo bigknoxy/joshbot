@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
 func loadFixture(t *testing.T, body string) *Config {
@@ -281,6 +283,26 @@ func TestPreflight_FirstProblemPrefersTheActiveRoute(t *testing.T) {
 	}}
 	if got, detail := r.FirstProblem(); got != ProblemNotEnabled || detail != "active detail" {
 		t.Errorf("FirstProblem = %q/%q with the fallback listed first, want the active route", got, detail)
+	}
+}
+
+// The command prints through internal/redact, so a credential source label that
+// looks like an assignment is destroyed on its way to the terminal — the first
+// version read "api_key in the config file" and printed "api_key [REDACTED] the
+// config file", which looks like joshbot hiding the answer to the question that
+// was asked.
+func TestPreflight_SummarySurvivesRedaction(t *testing.T) {
+	for _, source := range []string{
+		CredentialFromFile,
+		CredentialFromEnv(canonVar),
+		CredentialMissing,
+		"api_key on the model in the config file",
+	} {
+		e := PreflightEntry{Name: "m", Role: "active", CredentialSource: source}
+		if got := redact.String(e.Summary()); got != e.Summary() {
+			t.Errorf("redaction rewrote the summary for source %q:\n got  %s\n want %s",
+				source, got, e.Summary())
+		}
 	}
 }
 

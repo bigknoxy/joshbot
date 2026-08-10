@@ -11,6 +11,7 @@ import (
 // for humans and for `joshbot preflight`; nothing branches on them.
 const (
 	// CredentialFromFile means the literal api_key field in the config file.
+	//
 	CredentialFromFile = "api_key in the config file"
 	// CredentialMissing means no source supplied one.
 	CredentialMissing = "not configured"

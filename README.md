@@ -91,6 +91,7 @@ joshbot agent --debug # CLI chat with debug logging
 joshbot gateway # Start all channels (Telegram, etc.)
 joshbot gateway --debug # Gateway with debug logging
 joshbot status # Show configuration and status
+joshbot preflight # Check the config would work, without calling any provider
 joshbot skills list # Review workspace skills and approval state
 joshbot skills trust <name> # Approve a workspace skill after reviewing it
 joshbot configure # Configure LLM providers and settings
@@ -457,6 +458,55 @@ authoritative list:
 curl -s https://inference.poolside.ai/v1/models \
   -H "Authorization: Bearer $POOLSIDE_API_KEY" | jq -r '.data[].id'
 ```
+
+### Credentials: `api_key` vs `api_key_env`
+
+A provider or model entry may name an environment variable instead of carrying the
+secret, so a config file that is backed up, synced or pasted into an issue holds a
+variable name rather than a key:
+
+```json
+{"providers": {"openrouter": {"enabled": true, "api_key_env": "MY_OPENROUTER_KEY"}}}
+```
+
+Setting both `api_key` and `api_key_env` on the same entry is an error, not a
+precedence question — joshbot refuses to start rather than leave you unable to tell
+which credential is in use. Naming a variable that is not set is also fatal, and the
+error names the variable, because a typo there is otherwise indistinguishable from a
+revoked key.
+
+Precedence, highest first:
+
+| Source | Example |
+|---|---|
+| `JOSHBOT_PROVIDERS__<NAME>__API_KEY` | `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY=sk-...` |
+| `api_key_env` | `"api_key_env": "MY_OPENROUTER_KEY"` |
+| `api_key` | `"api_key": "sk-..."` |
+
+### Checking the config before you use it
+
+`joshbot preflight` resolves the config the same way the agent does and reports what
+would actually be used — provider, the exact model ID sent on the wire, the API host,
+and whether a credential is present and where it came from. It contacts no provider
+and prints no credential, and it exits non-zero when joshbot would not start, so it is
+usable as a scripted check:
+
+```
+$ joshbot preflight
+config:    ~/.joshbot/config.json
+format:    model-centric
+workspace: ~/.joshbot/workspace
+
+✓ claude (active) → anthropic model=claude-sonnet-4 endpoint=api.anthropic.com credential source=$MY_ANTHROPIC_KEY
+✗ backup (fallback) → openrouter model=x credential source=not configured
+    problem missing-credential — model "backup" (provider "openrouter") has no credential; set api_key, api_key_env, or JOSHBOT_PROVIDERS__OPENROUTER__API_KEY
+
+OK — joshbot would start.
+```
+
+Unlike every other command, `preflight` does not fall back to defaults when the config
+file is unusable: a report about a default config you never wrote is the opposite of a
+diagnosis.
 
 ### Legacy Provider Configuration (Still Supported)
 

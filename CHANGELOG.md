@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`joshbot onboard` could silently disconnect a working Telegram bot on a transient network failure** — a valid token, one TLS handshake timeout against `api.telegram.org`, and the old code abandoned the token entry: `setupTelegram` returned `nil`, the config was saved with Telegram **disabled**, and the service was installed on top of it, so the bot that "used to work" went silent with no warning. Token validation now retries transient connectivity failures (dial errors, TLS handshake timeouts, timeouts, and connection resets while reading the response body) up to three times inside `ValidateToken`, gives the user one more chance to re-enter the token, and on persistent failure **preserves the existing working token** when there is one — or leaves Telegram cleanly disabled on a fresh install — instead of dropping the whole configuration. Aborting a token *change* with `cancel` or an empty input likewise keeps the existing token rather than saving Telegram as disabled. The failure message now tells you whether the problem was reaching the API (network) or the token being rejected.
+- **`ValidateToken` printed the bot token into the error message** — `http.Get` wraps transport failures in a `*url.Error` whose string form is `Get "https://api.telegram.org/bot<token>/getMe": ...`, and onboard printed that verbatim, so the setup output a user pastes into an issue carried the credential. The transport cause is now unwrapped before the error leaves `internal/channels`. A malformed token is also rejected **offline** by a format check before any request is made, and the getMe call now runs on a client with a real timeout instead of relying on the TLS layer's.
+- **`onboard --force` was documented as non-interactive but blocked on stdin** — the force path called `promptProviderAPIKey`, which reads a line: with a terminal attached `onboard --force` hung forever waiting for input, and with stdin closed it silently saved a config with **no provider configured at all**. `--force` now reuses the configured API key from the existing config without reading stdin, so the documented "backup + defaults, no prompts" behaviour is actually true.
+- **Comma-separated Telegram usernames with spaces were truncated** — `fmt.Scanln` reads one space-delimited token, so entering `@alice, bob` at the "Usernames" prompt kept only `@alice`. The prompt now reads a full line, so both usernames are kept.
+
 ## [1.45.3] - 2026-08-09
 
 ### Fixed

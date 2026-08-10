@@ -93,7 +93,13 @@ var DefaultWorkspace = filepath.Join(DefaultHome, "workspace")
 
 // ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
-	APIKey       string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIKey string `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	// APIKeyEnv names the environment variable holding the credential, so a
+	// config file that is backed up, synced or pasted carries a variable name
+	// rather than a secret. Setting it together with APIKey is a load error:
+	// silently preferring one leaves the operator unable to tell which
+	// credential is in use.
+	APIKeyEnv    string            `mapstructure:"api_key_env" json:"api_key_env,omitempty" yaml:"api_key_env,omitempty"`
 	APIKeys      []string          `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
 	APIBase      string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
 	Model        string            `mapstructure:"model" json:"model,omitempty" yaml:"model,omitempty"`
@@ -347,6 +353,11 @@ type Config struct {
 	// workspace-confined tool, so it is the trust boundary for MCP (see
 	// SECURITY.md). A server runs only when its Enabled flag is set.
 	MCP MCPConfig `mapstructure:"mcp" json:"mcp,omitempty" yaml:"mcp,omitempty"`
+
+	// credentialSource records where each provider's API key came from, for
+	// `joshbot preflight`. Unexported and unserialised on purpose: it is
+	// derived state, and a round-trip through Save must not write it back.
+	credentialSource map[string]string
 }
 
 // HeartbeatInterval returns the configured heartbeat scan interval, falling back
@@ -370,7 +381,7 @@ func parseConfigFromFile(data []byte, cfg *Config) error {
 
 // serializeConfig serializes the Config struct to JSON.
 func serializeConfig(cfg *Config) ([]byte, error) {
-	return json.MarshalIndent(cfg, "", "  ")
+	return json.MarshalIndent(withoutEnvCredentials(cfg), "", "  ")
 }
 
 // splitEnvList parses a comma-separated env var into a trimmed list, dropping
@@ -650,6 +661,25 @@ func applyEnvOverrides(cfg *Config) {
 		} else {
 			cfg.Providers["nvidia"] = ProviderConfig{APIKey: nvKey, Enabled: true}
 		}
+	}
+
+	// The canonical per-provider override, for every configured provider
+	// rather than the two that had hand-written blocks above. It runs last
+	// because it is the highest-precedence source, ahead of api_key_env and
+	// ahead of the literal api_key.
+	for name, p := range cfg.Providers {
+		key := providerEnvKey(name)
+		if v := os.Getenv(key); v != "" {
+			p.APIKey = strings.TrimSpace(v)
+			cfg.Providers[name] = p
+			cfg.noteCredentialSource(name, CredentialFromEnv(key))
+		}
+	}
+	if os.Getenv("JOSHBOT_OPENROUTER_API_KEY") != "" && os.Getenv(providerEnvKey("openrouter")) == "" {
+		cfg.noteCredentialSource("openrouter", CredentialFromEnv("JOSHBOT_OPENROUTER_API_KEY"))
+	}
+	if os.Getenv("JOSHBOT_NVIDIA_API_KEY") != "" && os.Getenv(providerEnvKey("nvidia")) == "" {
+		cfg.noteCredentialSource("nvidia", CredentialFromEnv("JOSHBOT_NVIDIA_API_KEY"))
 	}
 }
 
@@ -1028,6 +1058,81 @@ func (c *Config) Validate() error {
 
 // Load loads configuration from file and environment variables.
 // Priority: env vars > config file > defaults
+// fatalConfigError marks a failure Load must not paper over with defaults.
+type fatalConfigError struct{ error }
+
+func (e fatalConfigError) Unwrap() error { return e.error }
+
+// loadFileConfig builds a config from raw config-file bytes, reporting every
+// failure instead of substituting defaults.
+//
+// It returns the config it built alongside any error, because the broken config
+// is exactly what `joshbot preflight` has to describe: a config that Load has
+// silently replaced with defaults is the condition preflight exists to catch,
+// and reporting the defaults instead would send the operator to inspect a file
+// that has nothing to do with what they are seeing.
+func loadFileConfig(data []byte) (*Config, error) {
+	cfg := Defaults()
+	if err := parseConfigFromFile(data, cfg); err != nil {
+		return cfg, fmt.Errorf("parse config file: %w", err)
+	}
+
+	// Before the env overrides, so JOSHBOT_PROVIDERS__<NAME>__API_KEY still
+	// wins and the both-fields-set check sees the operator's file rather than
+	// a key the environment supplied.
+	if err := resolveProviderCredentials(cfg); err != nil {
+		return cfg, fatalConfigError{err}
+	}
+
+	applyEnvOverrides(cfg)
+
+	// Sanitize string fields that may have whitespace from user input
+	for name, p := range cfg.Providers {
+		p.APIKey = strings.TrimSpace(p.APIKey)
+		p.APIBase = strings.TrimSpace(p.APIBase)
+		cfg.Providers[name] = p
+	}
+	// Also sanitize model API keys
+	for i := range cfg.ModelsConfig.Models {
+		cfg.ModelsConfig.Models[i].APIKey = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIKey)
+		cfg.ModelsConfig.Models[i].APIBase = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIBase)
+	}
+	cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
+	cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)
+
+	if cfg.SchemaVersion < CurrentSchemaVersion {
+		if err := migrateConfig(cfg, data); err != nil {
+			return cfg, fmt.Errorf("migrate config: %w", err)
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// LoadStrict loads the config file without Load's fall back to defaults,
+// returning the config as written alongside the first reason it is unusable.
+//
+// Load warns and substitutes defaults so that a broken file cannot stop joshbot
+// from starting at all. That is the right behaviour for the daemon and the
+// wrong behaviour for diagnostics: an operator running `joshbot preflight`
+// wants to be told their active model is undefined, not handed a report about
+// a default config they never wrote.
+func LoadStrict() (*Config, error) {
+	configPath := ConfigPath()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			cfg := Defaults()
+			applyEnvOverrides(cfg)
+			return cfg, fmt.Errorf("no config file at %s; run `joshbot onboard`", configPath)
+		}
+		return nil, err
+	}
+	return loadFileConfig(data)
+}
+
 func Load() (*Config, error) {
 	// Check for config file
 	configPath := ConfigPath()
@@ -1043,48 +1148,23 @@ func Load() (*Config, error) {
 			return cfg, nil
 		}
 
-		cfg := Defaults()
-		// Override with file values using simple JSON parsing
-		if err := parseConfigFromFile(data, cfg); err != nil {
-			logger.Warn("Failed to parse config file, using defaults", "error", err)
+		cfg, err := loadFileConfig(data)
+		if err != nil {
+			// A credential the operator asked for and did not get must not be
+			// downgraded to a config nothing can dial: the failure would
+			// otherwise resurface as a 401 mid-turn, which reads as a revoked
+			// key and sends them to the provider dashboard instead of their
+			// shell profile.
+			var fatal fatalConfigError
+			if errors.As(err, &fatal) {
+				return nil, err
+			}
+			logger.Warn("Config unusable, using defaults", "error", err)
 			cfg = Defaults()
 			if err := cfg.Validate(); err != nil {
 				return nil, err
 			}
-			return cfg, nil
 		}
-
-		// Apply environment variable overrides
-		applyEnvOverrides(cfg)
-
-		// Sanitize string fields that may have whitespace from user input
-		for name, p := range cfg.Providers {
-			p.APIKey = strings.TrimSpace(p.APIKey)
-			p.APIBase = strings.TrimSpace(p.APIBase)
-			cfg.Providers[name] = p
-		}
-		// Also sanitize model API keys
-		for i := range cfg.ModelsConfig.Models {
-			cfg.ModelsConfig.Models[i].APIKey = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIKey)
-			cfg.ModelsConfig.Models[i].APIBase = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIBase)
-		}
-		cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
-		cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)
-
-		// Apply migrations if needed
-		if cfg.SchemaVersion < CurrentSchemaVersion {
-			if err := migrateConfig(cfg, data); err != nil {
-				logger.Warn("Config migration failed, using defaults", "error", err)
-				cfg = Defaults()
-			}
-		}
-
-		// Validate configuration
-		if err := cfg.Validate(); err != nil {
-			logger.Warn("Config validation failed, using defaults", "error", err)
-			cfg = Defaults()
-		}
-
 		return cfg, nil
 	}
 

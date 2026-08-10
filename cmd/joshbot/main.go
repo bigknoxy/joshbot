@@ -314,6 +314,15 @@ func runApp() error {
 				Action: runStatus,
 			},
 			{
+				Name:  "preflight",
+				Usage: "Check the config would actually work, without calling any provider",
+				Description: "Resolves the config the way the agent does and reports what would be used:\n" +
+					"provider, the exact model ID sent on the wire, the API host, and whether a\n" +
+					"credential is present and where it came from. Never prints the credential and\n" +
+					"never contacts a provider. Exits non-zero when joshbot would not start.",
+				Action: runPreflight,
+			},
+			{
 				Name:  "skills",
 				Usage: "Review and approve workspace skills",
 				Description: "Workspace skills become part of the agent's instructions, so they are\n" +
@@ -3587,6 +3596,79 @@ I can create new skills to extend my capabilities.
 	}
 
 	return nil
+}
+
+// preflightEntryLines renders one preflight entry, already safe to print
+// through the redactor.
+//
+// The problem line is "problem <class> — <detail>", not "<class>: <detail>":
+// two of the problem classes end in the word "credential", and internal/redact
+// reads "<secret-name>: <value>" as an assignment, so the colon form published
+// "missing-credential: [REDACTED] \"openrouter/x\"" — it blanked the diagnosis
+// instead of a secret.
+func preflightEntryLines(e config.PreflightEntry) []string {
+	mark := "✓"
+	if e.Problem != "" {
+		mark = "✗"
+	}
+	lines := []string{fmt.Sprintf("%s %s", mark, e.Summary())}
+	if e.Problem != "" {
+		lines = append(lines, fmt.Sprintf("    problem %s — %s", e.Problem, e.Detail))
+	}
+	return lines
+}
+
+// runPreflight reports whether joshbot would start, and with what, without
+// dialling anything.
+//
+// It uses LoadStrictFrom rather than loadConfig on purpose: Load replaces an
+// unusable config with defaults, which would have this command cheerfully
+// describe a config the operator never wrote while the file in front of them is
+// the broken one.
+func runPreflight(c *cli.Context) error {
+	// Same redaction as `joshbot status`: this output exists to be pasted into
+	// an issue, so a home directory (which carries the account name) and any
+	// credential-shaped value are stripped first.
+	out := redact.Writer(os.Stdout)
+
+	cfg, loadErr := config.LoadStrictFrom(c.Path("config"))
+	if cfg == nil {
+		return loadErr
+	}
+
+	report := config.Preflight(cfg)
+	fmt.Fprintf(out, "config:    %s\n", report.ConfigPath)
+	fmt.Fprintf(out, "format:    %s\n", report.ConfigFormat)
+	fmt.Fprintf(out, "workspace: %s\n", report.Workspace)
+	if loadErr != nil {
+		fmt.Fprintf(out, "\nconfig rejected: %v\n", loadErr)
+	}
+
+	if len(report.Entries) > 0 {
+		fmt.Fprintln(out)
+	}
+	for _, e := range report.Entries {
+		for _, line := range preflightEntryLines(e) {
+			fmt.Fprintln(out, line)
+		}
+	}
+
+	if report.OK() {
+		fmt.Fprintln(out, "\nOK — joshbot would start.")
+		return nil
+	}
+
+	problem, detail := report.FirstProblem()
+	if problem == "" && loadErr != nil {
+		// A config the resolver could not even reach: the load error is the
+		// whole diagnosis, and reporting nothing here would exit non-zero with
+		// no reason attached.
+		return loadErr
+	}
+	fmt.Fprintf(out, "\nNOT OK — %s\n", detail)
+	// cli.Exit rather than a plain error: the message is already printed above
+	// in full, and urfave/cli would otherwise print it a second time.
+	return cli.Exit("", 1)
 }
 
 // runStatus displays the current configuration and status.

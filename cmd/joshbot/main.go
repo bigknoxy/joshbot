@@ -943,6 +943,9 @@ func defaultReminderChannel(cfg *config.Config) string {
 	if cfg != nil && cfg.Channels.Telegram.Enabled {
 		return "telegram"
 	}
+	if cfg != nil && cfg.Channels.Discord.Enabled {
+		return "discord"
+	}
 	return "cli"
 }
 
@@ -2089,6 +2092,7 @@ func runGateway(c *cli.Context) error {
 	log.Info("Starting gateway mode",
 		"model", modelName,
 		"telegram", cfg.Channels.Telegram.Enabled,
+		"discord", cfg.Channels.Discord.Enabled,
 	)
 
 	// Setup components
@@ -2185,12 +2189,24 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
+	// Start Discord channel if enabled
+	var discordChannel *channels.DiscordChannel
+	if cfg.Channels.Discord.Enabled && cfg.Channels.Discord.Token != "" {
+		discordChannel = channels.NewDiscordChannel(msgBus, &cfg.Channels.Discord)
+		if err := discordChannel.Start(ctx); err != nil {
+			log.Error("Failed to start Discord channel", "error", err)
+		} else {
+			log.Info("Discord channel started")
+		}
+	}
+
 	// Print startup banner
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════╗")
 	fmt.Println("║         joshbot gateway running           ║")
 	fmt.Printf("║  Model: %-34s ║\n", cfg.Agents.Defaults.Model)
 	fmt.Printf("║  Telegram: %-30s ║\n", boolToEnabled(cfg.Channels.Telegram.Enabled))
+	fmt.Printf("║  Discord: %-31s ║\n", boolToEnabled(cfg.Channels.Discord.Enabled))
 	fmt.Println("║                                           ║")
 	fmt.Println("║  Press Ctrl+C to stop                     ║")
 	fmt.Println("╚═══════════════════════════════════════════╝")
@@ -2202,6 +2218,11 @@ func runGateway(c *cli.Context) error {
 	// Stop Telegram channel
 	if tgChannel != nil {
 		tgChannel.Stop()
+	}
+
+	// Stop Discord channel
+	if discordChannel != nil {
+		discordChannel.Stop()
 	}
 
 	log.Info("Gateway stopped")

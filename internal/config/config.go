@@ -224,9 +224,19 @@ type TelegramConfig struct {
 	Proxy     string   `mapstructure:"proxy" json:"proxy" yaml:"proxy"`
 }
 
+// DiscordConfig holds Discord channel configuration.
+type DiscordConfig struct {
+	Enabled bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Token   string `mapstructure:"token" json:"token" yaml:"token"`
+	// AllowFrom is enforced deny-by-default: an empty list rejects every
+	// sender. Entries are numeric Discord user IDs (snowflakes) or usernames.
+	AllowFrom []string `mapstructure:"allow_from" json:"allow_from" yaml:"allow_from"`
+}
+
 // ChannelsConfig holds channels configuration.
 type ChannelsConfig struct {
 	Telegram TelegramConfig `mapstructure:"telegram" json:"telegram" yaml:"telegram"`
+	Discord  DiscordConfig  `mapstructure:"discord" json:"discord" yaml:"discord"`
 }
 
 // WebSearchConfig holds web search tool configuration.
@@ -500,6 +510,16 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Channels.Telegram.Proxy = v
 	}
 
+	// Discord enabled
+	if v := getEnv("CHANNELS__DISCORD__ENABLED"); v != "" {
+		cfg.Channels.Discord.Enabled = v == "true" || v == "1"
+	}
+
+	// Discord token
+	if v := getEnv("CHANNELS__DISCORD__TOKEN"); v != "" {
+		cfg.Channels.Discord.Token = v
+	}
+
 	// Web search API key
 	if v := getEnv("TOOLS__WEB__SEARCH__API_KEY"); v != "" {
 		cfg.Tools.Web.Search.APIKey = v
@@ -634,6 +654,11 @@ func Defaults() *Config {
 				Token:     "",
 				AllowFrom: []string{},
 				Proxy:     "",
+			},
+			Discord: DiscordConfig{
+				Enabled:   false,
+				Token:     "",
+				AllowFrom: []string{},
 			},
 		},
 		Tools: ToolsConfig{

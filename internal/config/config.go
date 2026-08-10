@@ -93,7 +93,13 @@ var DefaultWorkspace = filepath.Join(DefaultHome, "workspace")
 
 // ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
-	APIKey       string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIKey string `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	// APIKeyEnv names the environment variable holding the credential, so a
+	// config file that is backed up, synced or pasted carries a variable name
+	// rather than a secret. Setting it together with APIKey is a load error:
+	// silently preferring one leaves the operator unable to tell which
+	// credential is in use.
+	APIKeyEnv    string            `mapstructure:"api_key_env" json:"api_key_env,omitempty" yaml:"api_key_env,omitempty"`
 	APIKeys      []string          `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
 	APIBase      string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
 	Model        string            `mapstructure:"model" json:"model,omitempty" yaml:"model,omitempty"`
@@ -347,6 +353,11 @@ type Config struct {
 	// workspace-confined tool, so it is the trust boundary for MCP (see
 	// SECURITY.md). A server runs only when its Enabled flag is set.
 	MCP MCPConfig `mapstructure:"mcp" json:"mcp,omitempty" yaml:"mcp,omitempty"`
+
+	// credentialSource records where each provider's API key came from, for
+	// `joshbot preflight`. Unexported and unserialised on purpose: it is
+	// derived state, and a round-trip through Save must not write it back.
+	credentialSource map[string]string
 }
 
 // HeartbeatInterval returns the configured heartbeat scan interval, falling back
@@ -370,7 +381,7 @@ func parseConfigFromFile(data []byte, cfg *Config) error {
 
 // serializeConfig serializes the Config struct to JSON.
 func serializeConfig(cfg *Config) ([]byte, error) {
-	return json.MarshalIndent(cfg, "", "  ")
+	return json.MarshalIndent(withoutEnvCredentials(cfg), "", "  ")
 }
 
 // splitEnvList parses a comma-separated env var into a trimmed list, dropping
@@ -650,6 +661,25 @@ func applyEnvOverrides(cfg *Config) {
 		} else {
 			cfg.Providers["nvidia"] = ProviderConfig{APIKey: nvKey, Enabled: true}
 		}
+	}
+
+	// The canonical per-provider override, for every configured provider
+	// rather than the two that had hand-written blocks above. It runs last
+	// because it is the highest-precedence source, ahead of api_key_env and
+	// ahead of the literal api_key.
+	for name, p := range cfg.Providers {
+		key := providerEnvKey(name)
+		if v := os.Getenv(key); v != "" {
+			p.APIKey = strings.TrimSpace(v)
+			cfg.Providers[name] = p
+			cfg.noteCredentialSource(name, CredentialFromEnv(key))
+		}
+	}
+	if os.Getenv("JOSHBOT_OPENROUTER_API_KEY") != "" && os.Getenv(providerEnvKey("openrouter")) == "" {
+		cfg.noteCredentialSource("openrouter", CredentialFromEnv("JOSHBOT_OPENROUTER_API_KEY"))
+	}
+	if os.Getenv("JOSHBOT_NVIDIA_API_KEY") != "" && os.Getenv(providerEnvKey("nvidia")) == "" {
+		cfg.noteCredentialSource("nvidia", CredentialFromEnv("JOSHBOT_NVIDIA_API_KEY"))
 	}
 }
 
@@ -1052,6 +1082,15 @@ func Load() (*Config, error) {
 				return nil, err
 			}
 			return cfg, nil
+		}
+
+		// Before the env overrides, so JOSHBOT_PROVIDERS__<NAME>__API_KEY still
+		// wins and the both-fields-set check sees the operator's file rather
+		// than a key the environment supplied. Returned, never warned past: a
+		// credential the operator asked for and did not get must not be
+		// downgraded to a config nothing can dial.
+		if err := resolveProviderCredentials(cfg); err != nil {
+			return nil, err
 		}
 
 		// Apply environment variable overrides

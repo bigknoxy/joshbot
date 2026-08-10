@@ -817,6 +817,25 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 			"mechanism", tools.SandboxDescription(), "network", cfg.Tools.ShellSandboxAllowNetwork)
 	}
 
+	// Resolve the shell approval gate. Same rule as the sandbox: an
+	// unrecognised value is a startup error, because an operator who typed
+	// "interactve" would otherwise believe every command was being confirmed
+	// while none of them were.
+	approvalMode, ok := tools.ParseApprovalMode(cfg.Tools.ShellApproval)
+	if !ok {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf(
+			"tools.shell_approval has unknown value %q; use \"off\", \"interactive\" or \"always\"",
+			cfg.Tools.ShellApproval)
+	}
+	if approvalMode != tools.ApprovalOff {
+		log.Info("Shell approval gate enabled", "mode", approvalMode)
+	}
+	// Read by runAgentLoop, which installs the terminal approver. Nothing
+	// else installs one, so every non-interactive entry point — the gateway,
+	// cron, the heartbeat — leaves the request with no approver and the gate
+	// denies rather than blocks.
+	shellApprovalMode = approvalMode
+
 	// Create tools registry with defaults
 	// The cron service is built before the registry so the cron tool can be
 	// registered against it. It is started further down with the other
@@ -833,6 +852,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.FilesystemAllowedPaths,
 		skillsLoader,
 		tools.WithShellSandbox(sandboxMode, cfg.Tools.ShellSandboxAllowNetwork),
+		tools.WithShellApproval(approvalMode),
 		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
 	)
 
@@ -1412,6 +1432,18 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		}
 	}
 
+	// The approval gate needs somewhere to ask, so it is installed only for a
+	// real terminal. Everywhere else the request carries no approver and
+	// tools.ApproverFromContext denies — which is the point: an unattended
+	// turn must not be able to wait on an answer that is never coming.
+	var approver *cliApprover
+	if shellApprovalMode != tools.ApprovalOff && isTTY(output) {
+		approver = newCLIApprover(output, input, false, shellApprovalMode)
+	}
+	// raw is decided below, when the line editor puts the terminal into raw
+	// mode; a raw terminal delivers the keystroke with no trailing newline to
+	// discard, and draining one there would eat the next character typed.
+
 	fmt.Fprintln(output, "joshbot agent mode. Type 'exit' to quit.")
 
 	// The line editor replaces the plain "> " prompt only when input is a real
@@ -1434,6 +1466,9 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		oldTermState, err = makeRaw(int(f.Fd()))
 		if err != nil {
 			return fmt.Errorf("failed to enter terminal raw mode: %w", err)
+		}
+		if approver != nil {
+			approver.raw = true
 		}
 		defer restoreTerminal(int(f.Fd()), oldTermState)
 		defer editor.close()
@@ -1556,6 +1591,9 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		processCtx := ctx
 		if progress != nil {
 			processCtx = agent.WithSink(ctx, progress.onToolEvent)
+		}
+		if approver != nil {
+			processCtx = tools.WithApprover(processCtx, approver)
 		}
 		if streaming && progress != nil {
 			processCtx = agent.WithStreamSink(processCtx, progress.onStreamEvent)

@@ -27,6 +27,23 @@ type ShellTool struct {
 	// helperPath is the binary re-executed to apply the sandbox. Defaults to
 	// this executable; tests point it at their own binary.
 	helperPath string
+
+	// approval gates execution behind a human decision. Off by default; see
+	// approval.go. The approver itself is not stored here — it rides the
+	// request context, because a struct field would be shared across the
+	// concurrent Process calls Telegram makes and would hand one user's
+	// prompt to another's turn.
+	approval ApprovalMode
+}
+
+// SetApproval turns the human-approval gate on for shell commands. The
+// approver comes from the request context (WithApprover); a request that
+// carries none is denied.
+func (t *ShellTool) SetApproval(mode ApprovalMode) {
+	if mode == "" {
+		mode = ApprovalOff
+	}
+	t.approval = mode
 }
 
 // SetSandbox enables OS-level containment for spawned commands. allowNetwork
@@ -259,6 +276,14 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 		}
 	}
 
+	// Ask the human, if the gate is on. Deliberately last of the checks: a
+	// command the deny list or the allowlist would refuse anyway must not
+	// produce a prompt, or the operator is trained to approve commands that
+	// were never going to run.
+	if err := t.checkApproval(ctx, cmd, workingDir); err != nil {
+		return ToolResult{Error: err}
+	}
+
 	// Get timeout
 	timeout := t.timeout
 	if to, ok := args["timeout"].(float64); ok && to > 0 {
@@ -271,6 +296,36 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 
 	// Execute command
 	return t.runCommand(execCtx, cmd, workingDir)
+}
+
+// checkApproval runs the human-approval gate, returning nil when the command
+// may proceed.
+//
+// ctx is the request context as the tool interface carries it (interface{}).
+// A value that is not a context.Context — or a nil one — is treated as an
+// unattended request and denied, rather than approved: the gate must not turn
+// off because a caller passed something unexpected.
+func (t *ShellTool) checkApproval(ctx interface{}, cmd, workingDir string) error {
+	if t.approval == ApprovalOff || t.approval == "" {
+		return nil
+	}
+
+	reqCtx, ok := ctx.(context.Context)
+	if !ok || reqCtx == nil {
+		reqCtx = context.Background()
+	}
+
+	req := ApprovalRequest{Tool: "shell", Command: cmd, WorkingDir: workingDir}
+	decision, err := ApproverFromContext(reqCtx).Approve(reqCtx, req)
+	if decision == Approve && err == nil {
+		return nil
+	}
+	if err != nil {
+		// Wrapped, not replaced: the approver's message is what says *why*
+		// (no human attached, prompt timed out, operator said no).
+		return fmt.Errorf("%w: %s", ErrDenied, strings.TrimPrefix(err.Error(), ErrDenied.Error()+": "))
+	}
+	return fmt.Errorf("%w: run it yourself, or ask the user to approve it", ErrDenied)
 }
 
 // isDenied checks whether a command is too dangerous to run, returning a
@@ -529,6 +584,14 @@ func (t *ShellTool) ExecuteAsync(ctx context.Context, args map[string]any, callb
 				return ToolResult{Error: err}
 			}
 		}
+	}
+
+	// The gate applies to the async path too. Without this an agent could get
+	// any command past it by passing async=true, which is one boolean away
+	// from no gate at all.
+	if err := t.checkApproval(ctx, cmd, workingDir); err != nil {
+		callback(AsyncResult{Error: err})
+		return ToolResult{Error: err}
 	}
 
 	// Get timeout

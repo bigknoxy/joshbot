@@ -344,6 +344,7 @@ func DefaultRegistry() *Registry {
 type registrySettings struct {
 	sandbox            SandboxMode
 	allowNetwork       bool
+	approval           ApprovalMode
 	cronService        *cron.Service
 	cronDefaultChannel string
 }
@@ -358,6 +359,15 @@ func WithShellSandbox(mode SandboxMode, allowNetwork bool) RegistryOption {
 	return func(s *registrySettings) {
 		s.sandbox = mode
 		s.allowNetwork = allowNetwork
+	}
+}
+
+// WithShellApproval turns on the human-approval gate for shell commands. The
+// approver itself rides the request context (WithApprover), so a turn nobody
+// is watching — cron, heartbeat — is denied rather than blocked.
+func WithShellApproval(mode ApprovalMode) RegistryOption {
+	return func(s *registrySettings) {
+		s.approval = mode
 	}
 }
 
@@ -382,7 +392,7 @@ func RegistryWithDefaults(
 	skillLoader *skills.Loader,
 	opts ...RegistryOption,
 ) *Registry {
-	settings := registrySettings{sandbox: SandboxOff}
+	settings := registrySettings{sandbox: SandboxOff, approval: ApprovalOff}
 	for _, opt := range opts {
 		opt(&settings)
 	}
@@ -426,6 +436,7 @@ func RegistryWithDefaults(
 		AllowList: shellAllowList,
 	})
 	shellTool.SetSandbox(settings.sandbox, settings.allowNetwork)
+	shellTool.SetApproval(settings.approval)
 	_ = registry.Register(shellTool)
 
 	// Web tool

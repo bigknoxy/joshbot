@@ -48,7 +48,7 @@ Priority score = Severity (1–5) × Reach (1–5) ÷ Effort (S=1, M=2, L=3), sc
 | 12 | Headless session resume: emit + accept session ID for `agent -m` chains (Claude Code `--resume` pattern) | Evals | 3 | 4 | M | **12** | Parity |
 | 13 | macOS Seatbelt (`sandbox-exec`) or allowlist-only shell default on unsandboxed platforms | Security | 4 | 3 | L | **8** | Sec/Parity |
 | 14 | Untimed HTTP in `ValidateToken` (`telegram.go:1617`) + `isRetryable` retries permanent 403s — add 10s timeout, stop retrying blocked/deactivated | Go systems | 3 | 3 | S | **18** | Bug |
-| 15 | Delete repo debris: `pyproject.toml`, `tests/*.py`, stale `pkg/` (public `pkg.go.dev` surface + abandonment signal) | Growth/Go | 2 | 4 | S | **16** | Cleanup |
+| 15 | ~~Delete repo debris: `pyproject.toml`, `tests/*.py`, stale `pkg/`~~ — **done** (audit sweep, 2026-08-10) | Growth/Go | 2 | 4 | S | **16** | Cleanup |
 | 16 | Symlink-resolve filesystem containment (`EvalSymlinks` in `path_guard.go`) — load-bearing once sandbox on | Security | 3 | 2 | S | **12** | Sec |
 | 17 | Per-package coverage floors (or targeted tests) for `cmd/joshbot` (9.4%) + golden-output test of `agent -m` non-TTY | Evals/Go | 3 | 3 | M | **9** | Test |
 | 18 | MCP client support (universal extension mechanism — Goose/Claude Code/Codex all have it; joshbot only for web) | Parity | 3 | 4 | L | **8** | Parity |

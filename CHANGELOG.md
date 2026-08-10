@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI per-package coverage floors were not enforcing anything** — the `cmd/joshbot` floor sat at 15% while the package measured ~40%, so any amount of its test suite could be deleted with the build still green. Floors are re-measured and raised to just under current coverage, and documented as ratcheting upward.
 - Security and stability sweep across bus, channels, tools and skills (committed as `4f55479`; issues #138, #140, #143, #147, #151, #153, #157).
 
+### Removed
+- **Repo debris deleted: `pkg/`, `pyproject.toml`, `tests/test_markdown.py`, `tests/test_outbound_messages.py`.** `pkg/` was an abandoned parallel refactor holding duplicate copies of `internal/bus` and `internal/channels` that nothing imported — but because it sat under `pkg/`, it was joshbot's public `pkg.go.dev` surface, so the first Go API a visitor saw was dead code frozen mid-refactor. The `pyproject.toml` and the two Python tests were left over from joshbot's pre-Go era and made the repo read as a half-migrated project. `tests/integration_test.go` is live Go (package `integration`) and stays.
+
 ## [1.46.0] - 2026-08-10
 
 ### Added

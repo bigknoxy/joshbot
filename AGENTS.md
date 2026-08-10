@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-joshbot is a lightweight personal AI assistant (~29,000 LOC Go non-test excluding the stale `pkg/`, 1,284 test functions across 112 test files — measured 2026-08-10) with self-learning memory, auto-skill-creation from tool usage patterns, and Telegram and Discord integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
+joshbot is a lightweight personal AI assistant (~30,100 LOC Go non-test, 1,330 test functions across 114 test files — measured 2026-08-10) with self-learning memory, auto-skill-creation from tool usage patterns, and Telegram and Discord integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
 
 Module: `github.com/bigknoxy/joshbot`. Go 1.24.0.
 
@@ -122,12 +122,9 @@ cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~4,
     skills/skills.go           -- Skill discovery from SKILL.md files
     subagent/subagent.go       -- Restricted subagent runner
     tools/                     -- Tool interface + Registry + filesystem, shell, web, message, async
-  pkg/                         -- Incomplete refactor from internal/ (only bus + channels exist here)
-    bus/                       -- Duplicates internal/bus
-    channels/                  -- Duplicates internal/channels
 ```
 
-> **IMPORTANT**: Edit `internal/` not `pkg/`. The `pkg/` directory is an incomplete parallel refactor. All production code imports from `internal/`.
+> **IMPORTANT**: All production code lives under `internal/`. A `pkg/` directory once held an abandoned parallel refactor of `bus` and `channels`; it was deleted in the 2026-08 audit sweep.
 
 ## Key Interfaces
 
@@ -414,7 +411,6 @@ The same keep-existing hazard covers the **API key prompt**, not just the token:
 - **Discord has its own retry classifier and its own stop-channel lifecycle**: `isDiscordRetryable` (`internal/channels/discord.go`) is deliberately separate from Telegram's `isRetryable` — Discord reports permanent failures as `discordgo.RESTError` codes (50007 cannot send to this user, 50001 missing access, 10003 unknown channel, 10013 unknown user, 50013 missing permissions), which Telegram's string matching would retry through the full backoff inside the single `consumeOutbound` goroutine, and its unclassified-error log line names the wrong channel. 429 retries, any other 4xx does not. Separately, `stopCh` belongs to one Start/Stop cycle: `Start` allocates a fresh one and `Stop` closes it under `mu` behind a `stopClosed` latch. Reusing a single channel made a restarted channel deliver nothing (its `consumeOutbound` returned at once, every `Send` aborted its retries) and panicked the process on the second `Stop`. Read it through `stopChan()`, never the field, or the reallocation is a data race.
 
 - **`isRetryable` treats Telegram 403s as permanent**: `bot was blocked`, `user is deactivated`, `message to reply`, and `chat not found` all return `false` — retrying them just burns backoff inside the single `consumeOutbound` goroutine and stalls every queued message behind the doomed send. Unknown errors still default to retry but log at Debug so an unclassified error surfaces. This is orthogonal to `isParseEntityError`, which drives the plain-text fallback in `Send` — keep both.
-- **`pkg/` is stale**: `pkg/` duplicates `internal/bus` and `internal/channels` — do not edit unless purposely finishing the refactor
 - **Web tool refuses non-public addresses at dial time**: `NewWebTool` installs `guardedDialControl` on its transport (`internal/tools/web.go`), so the client rejects any connection to loopback, RFC1918, link-local or other non-public addresses regardless of which code path issued the request. Two consequences: an `httptest` server (which listens on `127.0.0.1`) cannot be reached through `WebTool.httpClient`, so test HTTP paths by extracting the decision into a function and testing that directly; and `WebToolConfig.SearchAPI` cannot point at a LAN or localhost search engine. Do not weaken the guard to make a test pass — it is the enforcement point that survives DNS rebinding, and `validateURLForSSRF` alone does not.
 - **`--config` names a file, and the home follows it**: `config.LoadFrom(path)` loads exactly that path and anchors `DefaultHome` to its directory, so sessions, media, cron, the skills trust store and `Save` all agree with the config that was loaded. Resolve the config file through `config.ConfigPath()`, never `filepath.Join(DefaultHome, "config.json")` — that ignores an explicitly chosen file name. CLI commands must read config via `loadConfig(c.Path("config"))`, not `config.Load()`, or the flag silently does not reach them. A missing path is an error, never a fallback to defaults.
 - **Workspace skills require operator approval**: a `SKILL.md` under `<workspace>/skills/` becomes part of the agent's instructions — its description always, and with `always: true` its whole body on every request, permanently. So workspace skills are inert until approved via `joshbot skills trust <name>`. Approval lives in `~/.joshbot/skills.trust`, **outside the workspace**, so a command confined to the workspace cannot approve skills for itself, and binds to a SHA-256 of the **entire skill directory tree** (every regular file's relative path + content, walked in sorted order), so editing, adding, or removing any file in the directory — not just `SKILL.md`, but a sibling script it tells the agent to run — revokes approval. A legacy digest from an older joshbot that hashed only `SKILL.md` no longer matches and safely revokes (re-inspect and re-trust) rather than crashing. `Loader.Create` (the agent's `skill_registry` tool) writes but never approves — if writing implied trust the gate would be decorative. Bundled skills ship with the binary and are exempt. Do not "helpfully" auto-approve on first run.

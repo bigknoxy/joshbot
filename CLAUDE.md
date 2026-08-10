@@ -1,6 +1,6 @@
 # joshbot — Architect's Guide
 
-joshbot is a self-hosted Go personal AI assistant (~29.0K LOC non-test excluding the stale `pkg/`, 1,284 test functions across 112 test files — measured 2026-08-10). Single binary, zero runtime deps.
+joshbot is a self-hosted Go personal AI assistant (~30.1K LOC non-test, 1,330 test functions across 114 test files — measured 2026-08-10). Single binary, zero runtime deps.
 
 **`AGENTS.md` (repo root) is the full agent guide** — key interfaces, code style, naming, concurrency and logging patterns, complete gotchas list. Read it before non-trivial work. This file is the quick index.
 
@@ -50,7 +50,7 @@ experience, growth, Go systems) that debates and scores a change. Charters are i
 
 ## Important gotchas
 
-- `internal/` is the source of truth. `pkg/` is a stale incomplete refactor — do not edit.
+- `internal/` is the source of truth. A stale `pkg/` duplicate of `bus` and `channels` was deleted in the 2026-08 audit sweep — if a doc or search result still points there, it is out of date.
 - The interactive CLI is `runAgentLoop` in `cmd/joshbot/main.go`, not a `Channel` implementation. `internal/channels` holds only the `Channel` interface and the Telegram and Discord implementations; a dead `cli.go` that implemented it was deleted in v1.42.x after misleading a bug diagnosis.
 - `agent.Agent` carries its tool-progress callback **per-request via the context** (`agent.WithSink`), not as a struct field — so concurrent `Process` calls (e.g. Telegram) never cross-deliver events. `runAgentLoop` wires it up only when stdout is a real TTY, to drive the interactive CLI's tool-call lines (`⏺ tool(args)` / `⎿ ok (1.2s)`) and "thinking..." spinner. Non-TTY detection is the `isTTY` package var in `cmd/joshbot/main.go` (type-asserts to `*os.File` + `github.com/mattn/go-isatty`), overridable in tests instead of probing a real terminal.
 - A blocking read inside a `select` with `default:` makes shutdown unobservable; `signal.Notify` also disables default termination, so a one-shot signal handler leaves the process unkillable (issue #104).

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/providers"
 )
 
 // MaxQueueSize is the maximum number of messages that can be buffered in any channel.
@@ -25,6 +26,13 @@ type InboundMessage struct {
 	Channel   string         // Source channel (e.g., "telegram", "cli")
 	Timestamp time.Time      // When the message was received
 	Metadata  map[string]any // Additional context (username, chat ID, etc.)
+
+	// Images are attachments that arrived with this message, already validated
+	// and type-sniffed by whichever channel received them. They are carried as
+	// decoded bytes for the duration of the turn only: the agent attaches them
+	// to the provider request and stores a descriptor, never the bytes, in the
+	// session (see session.ImageRef).
+	Images []providers.Image
 }
 
 // OutboundMessage represents a message to be sent to a chat channel.

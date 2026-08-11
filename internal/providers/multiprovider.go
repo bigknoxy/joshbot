@@ -131,6 +131,43 @@ func (mp *MultiProvider) Config() Config {
 	return DefaultConfig()
 }
 
+// screenForImages applies the image rules that can only be checked once the
+// fallback chain is known, before any request is dialled.
+//
+// Two things happen here. The total-payload limit is enforced across the whole
+// request, and candidates whose model cannot accept an image are dropped from
+// the chain rather than dialled — a provider rejects an image_url part as an
+// opaque 400 that reads as a joshbot bug, and falling back to a text-only model
+// would silently answer as though no image had been sent. If that empties the
+// chain, the error names every model tried and how to change it.
+func (mp *MultiProvider) screenForImages(req ChatRequest, providers []*ProviderEntry, modelName string) ([]*ProviderEntry, error) {
+	if !RequestHasImages(req) {
+		return providers, nil
+	}
+	var images []Image
+	for _, m := range req.Messages {
+		images = append(images, m.Images...)
+	}
+	if err := ValidateImages(images); err != nil {
+		return nil, err
+	}
+
+	capable := make([]*ProviderEntry, 0, len(providers))
+	tried := make([]string, 0, len(providers))
+	for _, entry := range providers {
+		model := mp.resolveModel(entry, modelName)
+		if SupportsVision(model) {
+			capable = append(capable, entry)
+			continue
+		}
+		tried = append(tried, model)
+	}
+	if len(capable) == 0 {
+		return nil, &ErrVisionUnsupported{Models: tried}
+	}
+	return capable, nil
+}
+
 // Chat sends a chat request with automatic fallback.
 func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	providerName, modelName := mp.parseModel(req.Model)
@@ -138,6 +175,11 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
+	}
+
+	providers, err := mp.screenForImages(req, providers, modelName)
+	if err != nil {
+		return nil, err
 	}
 
 	var lastErr error
@@ -200,6 +242,11 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
+	}
+
+	providers, err := mp.screenForImages(req, providers, modelName)
+	if err != nil {
+		return nil, err
 	}
 
 	var lastErr error

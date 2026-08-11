@@ -419,7 +419,7 @@ footer a:hover { text-decoration: underline; }
 <section class="hero">
   <div class="prompt-symbol">$ _</div>
   <h1>your <span class="highlight">personal</span><br>AI <span class="highlight-green">agent</span></h1>
-  <p class="tagline">joshbot is a lightweight, self-learning AI assistant that lives in your terminal. Memory, skills, tool use, Telegram — everything you need, nothing you don't.</p>
+  <p class="tagline">A single ~17MB Go binary. No Python, no venv, no Docker daemon, no runtime dependencies. Self-hosted — your conversations and API keys stay on your machine.</p>
   <div class="actions">
     <a href="https://github.com/bigknoxy/joshbot#quick-start" class="btn btn-primary">Install Now</a>
     <a href="#how" class="btn btn-secondary">How It Works</a>
@@ -435,6 +435,7 @@ footer a:hover { text-decoration: underline; }
       joshbot — interactive session
     </div>
     <div class="term-body">
+      <div class="line"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash</div>
       <div class="line"><span class="prompt">$</span> joshbot agent</div>
       <div class="line"><span class="prompt">></span> what was that article about Go concurrency patterns?</div>
       <div class="line output amber">[memory_search] Found 3 relevant facts...</div>
@@ -568,7 +569,7 @@ footer a:hover { text-decoration: underline; }
 <section class="cta-section">
   <div class="section-label">Get Started</div>
   <h2>One command to install</h2>
-  <p class="subtitle" style="margin: 0 auto 1rem;">Open source, MIT licensed. Your data stays on your machine.</p>
+  <p class="subtitle" style="margin: 0 auto 1rem;">Open source, MIT licensed. A single ~17MB binary — no Python, no Docker, no runtime deps. Your data stays on your machine.</p>
   <div class="install-code">
     curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
     <button class="copy-btn" onclick="navigator.clipboard.writeText('curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',2000)">Copy</button>

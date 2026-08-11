@@ -9,6 +9,14 @@
 
 A lightweight personal AI assistant written in Go, featuring self-learning memory, skill self-creation, subagent delegation, and Telegram integration. Inspired by [nanobot](https://github.com/HKUDS/nanobot).
 
+**One ~17MB static binary. No Python, no venv, no Docker daemon, no runtime dependencies.** Self-hosted — your conversations and API keys stay on your machine.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash
+joshbot onboard   # pick a model, paste an API key
+joshbot agent     # start chatting
+```
+
 ## Features
 
 - **Self-Learning Memory** - Automatically remembers important facts across conversations using a structured fact system (categorized with SHA256-based IDs, confidence scoring, source tracking, and deduplication)

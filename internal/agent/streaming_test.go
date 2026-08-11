@@ -54,15 +54,20 @@ func newStreamingConfig() *config.Config {
 	return cfg
 }
 
-// newNonStreamingConfig returns a config with streaming disabled (default).
+// newNonStreamingConfig returns a config with streaming explicitly off. It must
+// set the field rather than lean on the default: streaming defaults to on since
+// v1.48.0, and a helper that assumed otherwise turned this test into a copy of
+// the flag-on one.
 func newNonStreamingConfig() *config.Config {
-	return config.Defaults()
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Streaming = false
+	return cfg
 }
 
 // --- Tests ---
 
 // TestStreaming_FlagOffIdenticalToNonStreaming verifies that when streaming
-// is disabled (the default), behavior is byte-identical to the non-streaming
+// is disabled, behavior is byte-identical to the non-streaming
 // path. The mock provider's ChatStream should never be called.
 func TestStreaming_FlagOffIdenticalToNonStreaming(t *testing.T) {
 	cfg := newNonStreamingConfig()

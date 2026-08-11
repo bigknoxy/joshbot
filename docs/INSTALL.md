@@ -477,7 +477,7 @@ The old format is still supported for backward compatibility:
       "temperature": 0.7,
       "max_tool_iterations": 20,
       "memory_window": 50,
-      "streaming": false
+      "streaming": true
     }
   },
   "channels": {
@@ -760,13 +760,19 @@ workspace/
 
 ### Streaming Responses
 
-`agents.defaults.streaming` (default `false`) prints the reply as it arrives
+`agents.defaults.streaming` (default `true` since v1.48.0; set it to `false` to
+restore whole-reply delivery) prints the reply as it arrives
 rather than after the turn completes. It applies to the interactive CLI on a
 real terminal and to Telegram, where the reply message is edited in place at
 most every 3 seconds — `joshbot agent -m` and piped output are unchanged — and it
 trades away the non-streaming path's transparent provider fallback: once text
 has been printed it cannot be retried against another provider, so a mid-stream
 failure appends a visible `[stream error: ...]` marker instead.
+
+Upgrading from v1.47.x turns it on even if your config file already says
+`"streaming": false`: that key has no `omitempty`, so it was written into every
+config those versions saved regardless of intent. The schema v4→v5 migration
+resets it once and logs that it did; set it to `false` afterwards and it stays off.
 
 ### Skill Approval
 

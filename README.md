@@ -678,7 +678,7 @@ For backward compatibility, the old format still works:
       "temperature": 0.7,
       "max_tool_iterations": 20,
       "memory_window": 50,
-      "streaming": false
+      "streaming": true
     }
   },
   "channels": {
@@ -777,12 +777,18 @@ leave you believing commands are gated when they are not.
 ### Streaming Responses
 
 `agents.defaults.streaming` prints the assistant's reply as it arrives instead of
-after the whole turn completes. It is **off by default** and applies to both
-config formats.
+after the whole turn completes. It is **on by default** since v1.48.0 and applies
+to both config formats. To restore whole-reply delivery:
 
 ```json
-"agents": { "defaults": { "streaming": true } }
+"agents": { "defaults": { "streaming": false } }
 ```
+
+Upgrading from v1.47.x flips it on even though your saved config already contains
+`"streaming": false` — the field has no `omitempty`, so every config written by
+those versions carries that value whether or not you ever set it. The schema v4→v5
+migration therefore resets it once, and logs that it did. Set it to `false` after
+upgrading and it stays off.
 
 Two limits are worth knowing before turning it on:
 

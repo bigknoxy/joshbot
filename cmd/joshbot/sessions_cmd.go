@@ -78,6 +78,26 @@ func sessionsCommand() *cli.Command {
 				Action: runSessionsPrune,
 			},
 			{
+				Name:      "export",
+				Usage:     "Write a redacted Markdown transcript and JSON manifest",
+				ArgsUsage: "<session id>",
+				Description: "Writes <id>.export.md and <id>.export.manifest.json. Credentials and\n" +
+					"home-directory paths are stripped before anything is written, the\n" +
+					"session on disk is not modified, and two exports of an unchanged\n" +
+					"session are byte-identical.",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "out",
+						Usage: "Directory to write the export into (default: current directory)",
+					},
+					&cli.BoolFlag{
+						Name:  "force",
+						Usage: "Replace an existing export",
+					},
+				},
+				Action: runSessionsExport,
+			},
+			{
 				Name:      "new",
 				Usage:     "Archive a session and start it empty",
 				ArgsUsage: "<session id>",
@@ -128,7 +148,7 @@ func runSessionsList(c *cli.Context) error {
 }
 
 func runSessionsShow(c *cli.Context) error {
-	parsed, err := parseSessionArgs(c.Args().Slice(), true, false)
+	parsed, err := parseSessionArgs(c.Args().Slice(), true, false, false)
 	if err != nil {
 		return usageError("%v", err)
 	}
@@ -166,7 +186,7 @@ func runSessionsShow(c *cli.Context) error {
 }
 
 func runSessionsPrune(c *cli.Context) error {
-	parsed, err := parseSessionArgs(c.Args().Slice(), false, true)
+	parsed, err := parseSessionArgs(c.Args().Slice(), false, true, false)
 	if err != nil {
 		return usageError("%v", err)
 	}
@@ -253,7 +273,7 @@ func runSessionsPrune(c *cli.Context) error {
 }
 
 func runSessionsNew(c *cli.Context) error {
-	parsed, err := parseSessionArgs(c.Args().Slice(), false, false)
+	parsed, err := parseSessionArgs(c.Args().Slice(), false, false, false)
 	if err != nil {
 		return usageError("%v", err)
 	}
@@ -280,6 +300,53 @@ func runSessionsNew(c *cli.Context) error {
 		return sessionError(id, err)
 	}
 	fmt.Fprintf(out, "Session %q is now empty. Previous history archived as %s\n", id, archived)
+	return nil
+}
+
+// runSessionsExport writes a shareable copy of one session.
+//
+// It prints where the files went and, when the source had unreadable lines,
+// says so — an export that quietly dropped part of the conversation would be
+// worse than no export, because it reads as complete.
+func runSessionsExport(c *cli.Context) error {
+	parsed, err := parseSessionArgs(c.Args().Slice(), false, false, true)
+	if err != nil {
+		return usageError("%v", err)
+	}
+	id := strings.TrimSpace(parsed.id)
+	if id == "" {
+		return usageError("sessions export needs a session id (see: joshbot sessions list)")
+	}
+	force := c.Bool("force") || parsed.force
+	outDir := strings.TrimSpace(c.String("out"))
+	if parsed.outSet {
+		outDir = strings.TrimSpace(parsed.out)
+	}
+	if outDir == "" {
+		outDir = "."
+	}
+
+	mgr, err := sessionManagerForCLI(c)
+	if err != nil {
+		return err
+	}
+
+	res, err := mgr.Export(c.Context, id, outDir, force)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) || errors.Is(err, session.ErrInvalidSessionID) {
+			return sessionError(id, err)
+		}
+		return cli.Exit(redact.String(err.Error()), 1)
+	}
+
+	out := sessionsOut()
+	fmt.Fprintf(out, "Exported session %q (%d message(s)):\n", id, res.Manifest.Messages)
+	fmt.Fprintf(out, "  %s\n", res.TranscriptPath)
+	fmt.Fprintf(out, "  %s\n", res.ManifestPath)
+	if res.Manifest.CorruptLines > 0 {
+		fmt.Fprintf(out, "Warning: %d unreadable line(s) were skipped; the transcript is incomplete.\n",
+			res.Manifest.CorruptLines)
+	}
 	return nil
 }
 
@@ -321,6 +388,8 @@ type sessionArgs struct {
 	force        bool
 	olderThan    string
 	olderThanSet bool
+	out          string
+	outSet       bool
 }
 
 // parseSessionArgs reads the positional id and any flags that trail it.
@@ -334,7 +403,7 @@ type sessionArgs struct {
 //
 // Unknown flags are an error rather than being ignored, so a typo cannot look
 // like it worked.
-func parseSessionArgs(args []string, allowLast, allowOlderThan bool) (sessionArgs, error) {
+func parseSessionArgs(args []string, allowLast, allowOlderThan, allowOut bool) (sessionArgs, error) {
 	var out sessionArgs
 
 	for i := 0; i < len(args); i++ {
@@ -379,6 +448,22 @@ func parseSessionArgs(args []string, allowLast, allowOlderThan bool) (sessionArg
 				raw = args[i]
 			}
 			out.olderThan, out.olderThanSet = raw, true
+
+		case arg == "--out" || strings.HasPrefix(arg, "--out="):
+			if !allowOut {
+				return out, fmt.Errorf("unknown flag %q", "--out")
+			}
+			var raw string
+			if v, ok := strings.CutPrefix(arg, "--out="); ok {
+				raw = v
+			} else {
+				if i+1 >= len(args) {
+					return out, fmt.Errorf("--out needs a value")
+				}
+				i++
+				raw = args[i]
+			}
+			out.out, out.outSet = raw, true
 
 		case strings.HasPrefix(arg, "-"):
 			return out, fmt.Errorf("unknown flag %q", arg)

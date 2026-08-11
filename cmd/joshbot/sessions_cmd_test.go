@@ -448,7 +448,7 @@ func TestParseSessionArgs(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseSessionArgs(tc.args, tc.allowLast, tc.allowOlderThan)
+			got, err := parseSessionArgs(tc.args, tc.allowLast, tc.allowOlderThan, false)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %+v", got)

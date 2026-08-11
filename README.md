@@ -299,6 +299,8 @@ joshbot sessions show <id> --last 20     # just the tail
 joshbot sessions prune <id>              # delete one conversation
 joshbot sessions prune --older-than 30d  # delete everything untouched for 30 days
 joshbot sessions new <id>                # archive it and start empty
+joshbot sessions export <id>             # redacted Markdown + JSON manifest
+joshbot sessions export <id> --out ./bug --force
 ```
 
 `show` output is redacted: credentials and your home directory are stripped
@@ -308,6 +310,18 @@ terminal they decline rather than hang, and exit non-zero so a script does not
 read a refusal as success. A damaged session is flagged in the `NOTES` column,
 so it is visible without reading the directory; its `.jsonl.corrupt` quarantine
 copy survives being loaded, but `prune` removes it along with the conversation.
+
+`export` writes two files — `<id>.export.md`, a readable transcript, and
+`<id>.export.manifest.json`, carrying the session ID, message and role counts,
+per-tool call/result tallies, the byte size and a SHA-256 of the source session
+file. Everything is redacted before any bytes are written, so a credential never
+exists in the output even briefly, and the export is deterministic: nothing in it
+comes from an export-time clock, so two exports of an unchanged session are
+byte-identical. It reads only — the session file and its sidecars are untouched,
+including a damaged one, whose recoverable messages still export and whose
+skipped lines are counted in `corrupt_lines` and flagged in the transcript. An
+existing export is never replaced without `--force`. `--out` selects the
+directory, defaulting to the current one.
 
 Skills use **progressive loading**:
 - **Level 1:** Name + description always in context (~100 tokens)

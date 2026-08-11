@@ -322,7 +322,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot skills list` \| `trust <name>` \| `untrust <name>` | Review and approve workspace skills |
 | `joshbot mcp list` \| `trust <name>` \| `untrust <name>` | Review and approve MCP servers' advertised tools |
 | `joshbot configure` | Configure LLM providers and settings |
-| `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` | Inspect and manage stored conversations |
+| `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` \| `export <id>` | Inspect, manage and export stored conversations |
 | `joshbot auth github-copilot` \| `status` | Manage OAuth authentication |
 | `joshbot service install` \| `uninstall` \| `status` | Manage joshbot as a system service |
 | `joshbot update` | Update to the latest release |

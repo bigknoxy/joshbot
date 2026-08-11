@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
 // Logger is a simple logger interface for the config package.
@@ -20,12 +22,32 @@ type Logger interface {
 // defaultLogger is the default logger used when none is provided.
 type defaultLogger struct{}
 
+// format renders a message and its arguments, redacted.
+//
+// This logger writes straight to the standard library's log package, so it
+// never passed through the redacting writer that internal/log installs — and
+// it is the logger in force before joshbot has configured its own. That is why
+// `joshbot configure` printed the operator's full home directory path while
+// every other command printed "~". Credentials are stripped here too: this
+// package handles config values, which is exactly where they live.
+func (d *defaultLogger) format(level, msg string, args ...interface{}) string {
+	out := level + ": " + msg
+	for _, a := range args {
+		if s, ok := a.(string); ok {
+			out += " " + s
+		} else {
+			out += " " + fmt.Sprint(a)
+		}
+	}
+	return redact.String(out)
+}
+
 func (d *defaultLogger) Warn(msg string, args ...interface{}) {
-	log.Printf("WARN: "+msg, args...)
+	log.Print(d.format("WARN", msg, args...))
 }
 
 func (d *defaultLogger) Info(msg string, args ...interface{}) {
-	log.Printf("INFO: "+msg, args...)
+	log.Print(d.format("INFO", msg, args...))
 }
 
 // logger is the package-level logger.
@@ -38,7 +60,7 @@ func SetLogger(l Logger) {
 
 const (
 	// DefaultModel is the default LLM model.
-	DefaultModel = "arcee-ai/trinity-large-preview:free"
+	DefaultModel = "openrouter/free"
 	// DefaultExecTimeout is the default shell execution timeout in seconds.
 	DefaultExecTimeout = 60
 	// DefaultGatewayHost is the default gateway host.
@@ -57,6 +79,8 @@ const (
 	DefaultCompactionThreshold = 0.7
 	// DefaultToolOutputMaxChars is the default max characters for tool output truncation.
 	DefaultToolOutputMaxChars = 4000
+	// DefaultMaxMemorySize is the default maximum bytes for MEMORY.md content loaded into context.
+	DefaultMaxMemorySize = 4096
 	// CurrentSchemaVersion is the current config schema version.
 	CurrentSchemaVersion = 4
 )
@@ -69,10 +93,18 @@ var DefaultWorkspace = filepath.Join(DefaultHome, "workspace")
 
 // ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
-	APIKey       string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIKey string `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	// APIKeyEnv names the environment variable holding the credential, so a
+	// config file that is backed up, synced or pasted carries a variable name
+	// rather than a secret. Setting it together with APIKey is a load error:
+	// silently preferring one leaves the operator unable to tell which
+	// credential is in use.
+	APIKeyEnv    string            `mapstructure:"api_key_env" json:"api_key_env,omitempty" yaml:"api_key_env,omitempty"`
+	APIKeys      []string          `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
 	APIBase      string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
 	Model        string            `mapstructure:"model" json:"model,omitempty" yaml:"model,omitempty"`
 	ExtraHeaders map[string]string `mapstructure:"extra_headers" json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
+	ExtraBody    map[string]any    `mapstructure:"extra_body" json:"extra_body,omitempty" yaml:"extra_body,omitempty"`
 	Enabled      bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Timeout      time.Duration     `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
@@ -92,6 +124,10 @@ type AgentDefaults struct {
 	MaxToolIterations   int     `mapstructure:"max_tool_iterations" json:"max_tool_iterations" yaml:"max_tool_iterations"`
 	MemoryWindow        int     `mapstructure:"memory_window" json:"memory_window" yaml:"memory_window"`
 	CompactionThreshold float64 `mapstructure:"compaction_threshold" json:"compaction_threshold" yaml:"compaction_threshold"`
+	MaxMemorySize       int     `mapstructure:"max_memory_size" json:"max_memory_size" yaml:"max_memory_size"`
+	// Streaming enables incremental text delivery via ChatStream when a
+	// stream sink is attached to the request context. Default false.
+	Streaming bool `mapstructure:"streaming" json:"streaming" yaml:"streaming"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -99,8 +135,10 @@ type ModelConfig struct {
 	Name      string            `mapstructure:"name" json:"name" yaml:"name"`
 	Model     string            `mapstructure:"model" json:"model" yaml:"model"`
 	APIKey    string            `mapstructure:"api_key" json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIKeys   []string          `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
 	APIBase   string            `mapstructure:"api_base" json:"api_base,omitempty" yaml:"api_base,omitempty"`
 	Extra     map[string]string `mapstructure:"extra" json:"extra,omitempty" yaml:"extra,omitempty"`
+	ExtraBody map[string]any    `mapstructure:"extra_body" json:"extra_body,omitempty" yaml:"extra_body,omitempty"`
 	Disabled  bool              `mapstructure:"disabled" json:"disabled,omitempty" yaml:"disabled,omitempty"`
 	MaxTokens int               `mapstructure:"max_tokens" json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
 }
@@ -132,7 +170,9 @@ type ResolvedModelConfig struct {
 	APIFormat string
 	APIBase   string
 	APIKey    string
+	APIKeys   []string
 	Extra     map[string]string
+	ExtraBody map[string]any
 	MaxTokens int
 }
 
@@ -142,11 +182,13 @@ var providerPrefixes = map[string]ProviderInfo{
 	"openai/":     {Name: "openai", APIFormat: "openai", BaseURL: "https://api.openai.com/v1"},
 	"groq/":       {Name: "groq", APIFormat: "openai", BaseURL: "https://api.groq.com/openai/v1"},
 	"ollama/":     {Name: "ollama", APIFormat: "openai", BaseURL: "http://localhost:11434/v1"},
+	"poolside/":   {Name: "poolside", APIFormat: "openai", BaseURL: "https://inference.poolside.ai/v1"},
 	"openrouter/": {Name: "openrouter", APIFormat: "openai", BaseURL: "https://openrouter.ai/api/v1"},
 	"nvidia/":     {Name: "nvidia", APIFormat: "openai", BaseURL: "https://integrate.api.nvidia.com/v1"},
 	"deepseek/":   {Name: "deepseek", APIFormat: "openai", BaseURL: "https://api.deepseek.com/v1"},
 	"gemini/":     {Name: "gemini", APIFormat: "openai", BaseURL: "https://generativelanguage.googleapis.com/v1beta"},
 	"cerebras/":   {Name: "cerebras", APIFormat: "openai", BaseURL: "https://api.cerebras.ai/v1"},
+	"custom/":     {Name: "custom", APIFormat: "openai", BaseURL: ""},
 }
 
 // DetectProvider extracts provider info from a model string.
@@ -159,10 +201,25 @@ func DetectProvider(model string) ProviderInfo {
 	return ProviderInfo{Name: "unknown", APIFormat: "openai", BaseURL: ""}
 }
 
-// StripProviderPrefix removes the provider prefix from a model name.
+// prefixesPartOfModelID lists providers whose published model IDs genuinely
+// begin with the prefix — it identifies the model, it is not a routing hint
+// joshbot added. Stripping it produces a name the API does not know.
+//
+// Poolside is one: https://inference.poolside.ai/v1/models lists
+// "poolside/laguna-s-2.1", and the chat endpoint answers 200 for that and
+// 404 "please check the model you provided" for "laguna-s-2.1".
+var prefixesPartOfModelID = map[string]bool{
+	"poolside/": true,
+}
+
+// StripProviderPrefix removes the provider prefix from a model name, except
+// where the prefix is part of the model ID the provider expects.
 func StripProviderPrefix(model string) string {
 	for prefix := range providerPrefixes {
 		if strings.HasPrefix(model, prefix) {
+			if prefixesPartOfModelID[prefix] {
+				return model
+			}
 			return strings.TrimPrefix(model, prefix)
 		}
 	}
@@ -182,9 +239,19 @@ type TelegramConfig struct {
 	Proxy     string   `mapstructure:"proxy" json:"proxy" yaml:"proxy"`
 }
 
+// DiscordConfig holds Discord channel configuration.
+type DiscordConfig struct {
+	Enabled bool   `mapstructure:"enabled" json:"enabled" yaml:"enabled"`
+	Token   string `mapstructure:"token" json:"token" yaml:"token"`
+	// AllowFrom is enforced deny-by-default: an empty list rejects every
+	// sender. Entries are numeric Discord user IDs (snowflakes) or usernames.
+	AllowFrom []string `mapstructure:"allow_from" json:"allow_from" yaml:"allow_from"`
+}
+
 // ChannelsConfig holds channels configuration.
 type ChannelsConfig struct {
 	Telegram TelegramConfig `mapstructure:"telegram" json:"telegram" yaml:"telegram"`
+	Discord  DiscordConfig  `mapstructure:"discord" json:"discord" yaml:"discord"`
 }
 
 // WebSearchConfig holds web search tool configuration.
@@ -210,6 +277,23 @@ type ToolsConfig struct {
 	ShellAllowList         []string       `mapstructure:"shell_allow_list" json:"shell_allow_list" yaml:"shell_allow_list"`
 	FilesystemAllowedPaths []string       `mapstructure:"filesystem_allowed_paths" json:"filesystem_allowed_paths" yaml:"filesystem_allowed_paths"`
 	ToolOutputMaxChars     int            `mapstructure:"tool_output_max_chars" json:"tool_output_max_chars" yaml:"tool_output_max_chars"`
+	// ShellSandbox selects OS-level containment for shell commands:
+	// "off" (default) or "workspace". Enforced on Linux (Landlock) and macOS
+	// (Seatbelt); on a platform with no sandbox a non-off value is reported as
+	// an error rather than silently ignored, and the shell tool there defaults
+	// to allowlist-only instead of trusting the bypassable deny list.
+	ShellSandbox string `mapstructure:"shell_sandbox" json:"shell_sandbox,omitempty" yaml:"shell_sandbox,omitempty"`
+	// ShellSandboxAllowNetwork permits outbound TCP from sandboxed commands.
+	// Off by default: exfiltrating what was read is the usual goal of an
+	// attack that gets as far as running commands.
+	ShellSandboxAllowNetwork bool `mapstructure:"shell_sandbox_allow_network" json:"shell_sandbox_allow_network,omitempty" yaml:"shell_sandbox_allow_network,omitempty"`
+	// ShellApproval gates shell commands behind a human decision:
+	// "off" (default), "interactive" (ask, and allow a remembered "yes to
+	// everything" for the session) or "always" (ask for every command, with
+	// no remembered answer). An unknown value is a startup error, like
+	// ShellSandbox. Turns nobody is watching — cron, heartbeat — carry no
+	// approver and are denied outright rather than left blocking.
+	ShellApproval string `mapstructure:"shell_approval" json:"shell_approval,omitempty" yaml:"shell_approval,omitempty"`
 }
 
 // GatewayConfig holds gateway server configuration.
@@ -218,12 +302,39 @@ type GatewayConfig struct {
 	Port int    `mapstructure:"port" json:"port" yaml:"port"`
 }
 
+// HeartbeatConfig configures the HEARTBEAT.md proactive task scanner.
+type HeartbeatConfig struct {
+	// Interval is how often HEARTBEAT.md is scanned for unchecked tasks, as a Go
+	// duration string (e.g. "30m", "1h", "1h30m"). Empty or unparseable falls
+	// back to the 30m default. Overridable with JOSHBOT_HEARTBEAT__INTERVAL.
+	Interval string `mapstructure:"interval" json:"interval,omitempty" yaml:"interval,omitempty"`
+}
+
 // UserConfig holds user preferences for personalization.
 type UserConfig struct {
 	Name string `mapstructure:"name" json:"name,omitempty" yaml:"name,omitempty"`
 }
 
 // Config is the root configuration for joshbot.
+// MCPServerConfig configures a single stdio MCP (Model Context Protocol) server
+// that joshbot spawns and connects to over its stdin/stdout. Its discovered
+// tools are registered under a namespaced name (mcp__<server>__<tool>) so a
+// server can never shadow a built-in tool such as shell or filesystem.
+//
+// Enabled mirrors the provider convention: a server is inert until it is set,
+// so a half-configured entry never spawns a process.
+type MCPServerConfig struct {
+	Command string            `mapstructure:"command" json:"command,omitempty" yaml:"command,omitempty"`
+	Args    []string          `mapstructure:"args" json:"args,omitempty" yaml:"args,omitempty"`
+	Env     map[string]string `mapstructure:"env" json:"env,omitempty" yaml:"env,omitempty"`
+	Enabled bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
+}
+
+// MCPConfig holds the configured MCP servers keyed by operator-chosen name.
+type MCPConfig struct {
+	Servers map[string]MCPServerConfig `mapstructure:"servers" json:"servers,omitempty" yaml:"servers,omitempty"`
+}
+
 type Config struct {
 	SchemaVersion int `mapstructure:"schema_version" json:"schema_version" yaml:"schema_version"`
 
@@ -236,11 +347,50 @@ type Config struct {
 	Agents           AgentsConfig              `mapstructure:"agents" json:"agents" yaml:"agents"`
 
 	// Other config sections
-	Channels ChannelsConfig `mapstructure:"channels" json:"channels" yaml:"channels"`
-	Tools    ToolsConfig    `mapstructure:"tools" json:"tools" yaml:"tools"`
-	Gateway  GatewayConfig  `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
-	LogLevel string         `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
-	User     UserConfig     `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+	Channels  ChannelsConfig  `mapstructure:"channels" json:"channels" yaml:"channels"`
+	Tools     ToolsConfig     `mapstructure:"tools" json:"tools" yaml:"tools"`
+	Gateway   GatewayConfig   `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
+	Heartbeat HeartbeatConfig `mapstructure:"heartbeat" json:"heartbeat,omitempty" yaml:"heartbeat,omitempty"`
+	LogLevel  string          `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User      UserConfig      `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+
+	// MCP configures Model Context Protocol servers whose tools are exposed to
+	// the agent. Declaring a server here is a privileged, operator-only act:
+	// config.json lives outside the workspace and cannot be written by a
+	// workspace-confined tool, so it is the trust boundary for MCP (see
+	// SECURITY.md). A server runs only when its Enabled flag is set.
+	MCP MCPConfig `mapstructure:"mcp" json:"mcp,omitempty" yaml:"mcp,omitempty"`
+
+	// Profiles are named endpoint/model setups selectable with --profile. See
+	// profiles.go; a profile never holds a credential.
+	Profiles map[string]Profile `mapstructure:"profiles" json:"profiles,omitempty" yaml:"profiles,omitempty"`
+	// DefaultProfile names the profile used when --profile is absent. Empty
+	// means no profile is applied and the rest of the config is used as-is.
+	DefaultProfile string `mapstructure:"default_profile" json:"default_profile,omitempty" yaml:"default_profile,omitempty"`
+
+	// activeProfile records the profile ApplyProfile installed, for status
+	// output. Unexported for the same reason as credentialSource: derived
+	// state must not round-trip through Save.
+	activeProfile string
+
+	// credentialSource records where each provider's API key came from, for
+	// `joshbot preflight`. Unexported and unserialised on purpose: it is
+	// derived state, and a round-trip through Save must not write it back.
+	credentialSource map[string]string
+}
+
+// HeartbeatInterval returns the configured heartbeat scan interval, falling back
+// to 30m when it is unset, unparseable, or non-positive.
+func (c *Config) HeartbeatInterval() time.Duration {
+	const def = 30 * time.Minute
+	if c == nil || c.Heartbeat.Interval == "" {
+		return def
+	}
+	d, err := time.ParseDuration(c.Heartbeat.Interval)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 // parseConfigFromFile parses JSON config data into the Config struct.
@@ -250,7 +400,20 @@ func parseConfigFromFile(data []byte, cfg *Config) error {
 
 // serializeConfig serializes the Config struct to JSON.
 func serializeConfig(cfg *Config) ([]byte, error) {
-	return json.MarshalIndent(cfg, "", "  ")
+	return json.MarshalIndent(withoutEnvCredentials(cfg), "", "  ")
+}
+
+// splitEnvList parses a comma-separated env var into a trimmed list, dropping
+// empty entries so a stray comma cannot add a blank allowlist member.
+func splitEnvList(v string) []string {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // applyEnvOverrides applies environment variable overrides to the config.
@@ -263,6 +426,11 @@ func applyEnvOverrides(cfg *Config) {
 	// Schema version
 	if v := getEnv("SCHEMA_VERSION"); v != "" {
 		fmt.Sscanf(v, "%d", &cfg.SchemaVersion)
+	}
+
+	// Heartbeat interval, e.g. JOSHBOT_HEARTBEAT__INTERVAL=30m
+	if v := getEnv("HEARTBEAT__INTERVAL"); v != "" {
+		cfg.Heartbeat.Interval = v
 	}
 
 	// Model-centric config support
@@ -374,6 +542,11 @@ func applyEnvOverrides(cfg *Config) {
 		fmt.Sscanf(v, "%f", &cfg.Agents.Defaults.CompactionThreshold)
 	}
 
+	// Max memory size
+	if v := getEnv("AGENTS__DEFAULTS__MAX_MEMORY_SIZE"); v != "" {
+		fmt.Sscanf(v, "%d", &cfg.Agents.Defaults.MaxMemorySize)
+	}
+
 	// Telegram enabled
 	if v := getEnv("CHANNELS__TELEGRAM__ENABLED"); v != "" {
 		cfg.Channels.Telegram.Enabled = v == "true" || v == "1"
@@ -387,6 +560,27 @@ func applyEnvOverrides(cfg *Config) {
 	// Telegram proxy
 	if v := getEnv("CHANNELS__TELEGRAM__PROXY"); v != "" {
 		cfg.Channels.Telegram.Proxy = v
+	}
+
+	// Telegram allowlist (comma-separated). Both channels warn at startup that
+	// this env var is the way to set the allowlist, so it has to exist.
+	if v := getEnv("CHANNELS__TELEGRAM__ALLOW_FROM"); v != "" {
+		cfg.Channels.Telegram.AllowFrom = splitEnvList(v)
+	}
+
+	// Discord enabled
+	if v := getEnv("CHANNELS__DISCORD__ENABLED"); v != "" {
+		cfg.Channels.Discord.Enabled = v == "true" || v == "1"
+	}
+
+	// Discord token
+	if v := getEnv("CHANNELS__DISCORD__TOKEN"); v != "" {
+		cfg.Channels.Discord.Token = v
+	}
+
+	// Discord allowlist (comma-separated)
+	if v := getEnv("CHANNELS__DISCORD__ALLOW_FROM"); v != "" {
+		cfg.Channels.Discord.AllowFrom = splitEnvList(v)
 	}
 
 	// Web search API key
@@ -487,6 +681,25 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Providers["nvidia"] = ProviderConfig{APIKey: nvKey, Enabled: true}
 		}
 	}
+
+	// The canonical per-provider override, for every configured provider
+	// rather than the two that had hand-written blocks above. It runs last
+	// because it is the highest-precedence source, ahead of api_key_env and
+	// ahead of the literal api_key.
+	for name, p := range cfg.Providers {
+		key := providerEnvKey(name)
+		if v := os.Getenv(key); v != "" {
+			p.APIKey = strings.TrimSpace(v)
+			cfg.Providers[name] = p
+			cfg.noteCredentialSource(name, CredentialFromEnv(key))
+		}
+	}
+	if os.Getenv("JOSHBOT_OPENROUTER_API_KEY") != "" && os.Getenv(providerEnvKey("openrouter")) == "" {
+		cfg.noteCredentialSource("openrouter", CredentialFromEnv("JOSHBOT_OPENROUTER_API_KEY"))
+	}
+	if os.Getenv("JOSHBOT_NVIDIA_API_KEY") != "" && os.Getenv(providerEnvKey("nvidia")) == "" {
+		cfg.noteCredentialSource("nvidia", CredentialFromEnv("JOSHBOT_NVIDIA_API_KEY"))
+	}
 }
 
 // Defaults returns a Config with all default values set.
@@ -514,6 +727,7 @@ func Defaults() *Config {
 				MaxToolIterations:   DefaultMaxToolIterations,
 				MemoryWindow:        DefaultMemoryWindow,
 				CompactionThreshold: DefaultCompactionThreshold,
+				MaxMemorySize:       DefaultMaxMemorySize,
 			},
 		},
 		Channels: ChannelsConfig{
@@ -522,6 +736,11 @@ func Defaults() *Config {
 				Token:     "",
 				AllowFrom: []string{},
 				Proxy:     "",
+			},
+			Discord: DiscordConfig{
+				Enabled:   false,
+				Token:     "",
+				AllowFrom: []string{},
 			},
 		},
 		Tools: ToolsConfig{
@@ -571,6 +790,11 @@ func (c *Config) CronDir() string {
 	return filepath.Join(DefaultHome, "cron")
 }
 
+// LogsDir is where the gateway and the installed service write their logs.
+func (c *Config) LogsDir() string {
+	return filepath.Join(DefaultHome, "logs")
+}
+
 // EnsureDirs creates all required directories for joshbot.
 func (c *Config) EnsureDirs() error {
 	dirs := []string{
@@ -579,12 +803,25 @@ func (c *Config) EnsureDirs() error {
 		c.SessionsDir(),
 		c.MediaDir(),
 		c.CronDir(),
+		c.LogsDir(),
 		filepath.Join(c.WorkspaceDir(), "memory"),
 		filepath.Join(c.WorkspaceDir(), "skills"),
 	}
 
+	// Owner-only, and re-applied to directories that already exist.
+	//
+	// MkdirAll leaves an existing directory's mode alone, so an install
+	// created before this was tightened keeps whatever it had. It also means
+	// these 0755 directories used to win over the 0750 that
+	// session.NewManager asks for, since onboarding creates the tree first:
+	// session *files* were 0600 while the directory holding them stayed
+	// world-listable, and a session filename is "telegram:<senderID>" — the
+	// identity of everyone who talks to this bot.
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, dirMode); err != nil {
+			return err
+		}
+		if err := os.Chmod(dir, dirMode); err != nil {
 			return err
 		}
 	}
@@ -664,6 +901,20 @@ func (c *Config) ResolveModelConfig(name string) (ResolvedModelConfig, error) {
 
 	modelID := StripProviderPrefix(model.Model)
 
+	apiKeys := model.APIKeys
+	if model.APIKey != "" {
+		hasExplicit := false
+		for _, k := range apiKeys {
+			if k == model.APIKey {
+				hasExplicit = true
+				break
+			}
+		}
+		if !hasExplicit {
+			apiKeys = append([]string{model.APIKey}, apiKeys...)
+		}
+	}
+
 	return ResolvedModelConfig{
 		Name:      model.Name,
 		ModelID:   modelID,
@@ -671,7 +922,9 @@ func (c *Config) ResolveModelConfig(name string) (ResolvedModelConfig, error) {
 		APIFormat: provider.APIFormat,
 		APIBase:   apiBase,
 		APIKey:    model.APIKey,
+		APIKeys:   apiKeys,
 		Extra:     model.Extra,
+		ExtraBody: model.ExtraBody,
 		MaxTokens: model.MaxTokens,
 	}, nil
 }
@@ -722,6 +975,12 @@ func (c *Config) Validate() error {
 	if c.UseModelsConfig() {
 		if len(c.ModelsConfig.Models) == 0 {
 			return errors.New("no models configured")
+		}
+		// Expand ~ in API keys if present
+		for i, m := range c.ModelsConfig.Models {
+			if strings.HasPrefix(m.APIKey, "~/") {
+				c.ModelsConfig.Models[i].APIKey = filepath.Join(os.Getenv("HOME"), m.APIKey[1:])
+			}
 		}
 
 		if c.ModelsConfig.Agent.Model == "" {
@@ -787,6 +1046,11 @@ func (c *Config) Validate() error {
 		return errors.New("compaction_threshold must be between 0 and 1")
 	}
 
+	// Validate max_memory_size is positive
+	if c.Agents.Defaults.MaxMemorySize <= 0 {
+		return errors.New("max_memory_size must be positive")
+	}
+
 	// Validate exec timeout is positive
 	if c.Tools.Exec.Timeout <= 0 {
 		return errors.New("exec timeout must be positive")
@@ -813,9 +1077,91 @@ func (c *Config) Validate() error {
 
 // Load loads configuration from file and environment variables.
 // Priority: env vars > config file > defaults
+// fatalConfigError marks a failure Load must not paper over with defaults.
+type fatalConfigError struct{ error }
+
+func (e fatalConfigError) Unwrap() error { return e.error }
+
+// loadFileConfig builds a config from raw config-file bytes, reporting every
+// failure instead of substituting defaults.
+//
+// It returns the config it built alongside any error, because the broken config
+// is exactly what `joshbot preflight` has to describe: a config that Load has
+// silently replaced with defaults is the condition preflight exists to catch,
+// and reporting the defaults instead would send the operator to inspect a file
+// that has nothing to do with what they are seeing.
+func loadFileConfig(data []byte) (*Config, error) {
+	cfg := Defaults()
+	if err := parseConfigFromFile(data, cfg); err != nil {
+		return cfg, fmt.Errorf("parse config file: %w", err)
+	}
+
+	// Before the env overrides, so JOSHBOT_PROVIDERS__<NAME>__API_KEY still
+	// wins and the both-fields-set check sees the operator's file rather than
+	// a key the environment supplied.
+	if err := resolveProviderCredentials(cfg); err != nil {
+		return cfg, fatalConfigError{err}
+	}
+
+	// Fatal for the same reason: a profile carrying a raw api_key, or a
+	// default_profile naming something that does not exist, must not be
+	// papered over with a default config that silently dials somewhere else.
+	if err := validateProfiles(cfg); err != nil {
+		return cfg, fatalConfigError{err}
+	}
+
+	applyEnvOverrides(cfg)
+
+	// Sanitize string fields that may have whitespace from user input
+	for name, p := range cfg.Providers {
+		p.APIKey = strings.TrimSpace(p.APIKey)
+		p.APIBase = strings.TrimSpace(p.APIBase)
+		cfg.Providers[name] = p
+	}
+	// Also sanitize model API keys
+	for i := range cfg.ModelsConfig.Models {
+		cfg.ModelsConfig.Models[i].APIKey = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIKey)
+		cfg.ModelsConfig.Models[i].APIBase = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIBase)
+	}
+	cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
+	cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)
+
+	if cfg.SchemaVersion < CurrentSchemaVersion {
+		if err := migrateConfig(cfg, data); err != nil {
+			return cfg, fmt.Errorf("migrate config: %w", err)
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// LoadStrict loads the config file without Load's fall back to defaults,
+// returning the config as written alongside the first reason it is unusable.
+//
+// Load warns and substitutes defaults so that a broken file cannot stop joshbot
+// from starting at all. That is the right behaviour for the daemon and the
+// wrong behaviour for diagnostics: an operator running `joshbot preflight`
+// wants to be told their active model is undefined, not handed a report about
+// a default config they never wrote.
+func LoadStrict() (*Config, error) {
+	configPath := ConfigPath()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			cfg := Defaults()
+			applyEnvOverrides(cfg)
+			return cfg, fmt.Errorf("no config file at %s; run `joshbot onboard`", configPath)
+		}
+		return nil, err
+	}
+	return loadFileConfig(data)
+}
+
 func Load() (*Config, error) {
 	// Check for config file
-	configPath := filepath.Join(DefaultHome, "config.json")
+	configPath := ConfigPath()
 	if _, err := os.Stat(configPath); err == nil {
 		// Try to load from file
 		data, err := os.ReadFile(configPath)
@@ -828,48 +1174,23 @@ func Load() (*Config, error) {
 			return cfg, nil
 		}
 
-		cfg := Defaults()
-		// Override with file values using simple JSON parsing
-		if err := parseConfigFromFile(data, cfg); err != nil {
-			logger.Warn("Failed to parse config file, using defaults", "error", err)
+		cfg, err := loadFileConfig(data)
+		if err != nil {
+			// A credential the operator asked for and did not get must not be
+			// downgraded to a config nothing can dial: the failure would
+			// otherwise resurface as a 401 mid-turn, which reads as a revoked
+			// key and sends them to the provider dashboard instead of their
+			// shell profile.
+			var fatal fatalConfigError
+			if errors.As(err, &fatal) {
+				return nil, err
+			}
+			logger.Warn("Config unusable, using defaults", "error", err)
 			cfg = Defaults()
 			if err := cfg.Validate(); err != nil {
 				return nil, err
 			}
-			return cfg, nil
 		}
-
-		// Apply environment variable overrides
-		applyEnvOverrides(cfg)
-
-		// Sanitize string fields that may have whitespace from user input
-		for name, p := range cfg.Providers {
-			p.APIKey = strings.TrimSpace(p.APIKey)
-			p.APIBase = strings.TrimSpace(p.APIBase)
-			cfg.Providers[name] = p
-		}
-		// Also sanitize model API keys
-		for i := range cfg.ModelsConfig.Models {
-			cfg.ModelsConfig.Models[i].APIKey = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIKey)
-			cfg.ModelsConfig.Models[i].APIBase = strings.TrimSpace(cfg.ModelsConfig.Models[i].APIBase)
-		}
-		cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
-		cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)
-
-		// Apply migrations if needed
-		if cfg.SchemaVersion < CurrentSchemaVersion {
-			if err := migrateConfig(cfg, data); err != nil {
-				logger.Warn("Config migration failed, using defaults", "error", err)
-				cfg = Defaults()
-			}
-		}
-
-		// Validate configuration
-		if err := cfg.Validate(); err != nil {
-			logger.Warn("Config validation failed, using defaults", "error", err)
-			cfg = Defaults()
-		}
-
 		return cfg, nil
 	}
 
@@ -894,10 +1215,17 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// dirMode is the mode for every directory joshbot creates under ~/.joshbot.
+//
+// Owner-only: the tree holds conversations, memory, downloaded media and the
+// config file with live provider keys. Even where the files themselves are
+// 0600, a world-listable directory discloses the file names.
+const dirMode = 0o700
+
 // Save saves the configuration to the config file.
 func Save(cfg *Config) error {
 	// Ensure config directory exists
-	if err := os.MkdirAll(DefaultHome, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(ConfigPath()), dirMode); err != nil {
 		return err
 	}
 
@@ -907,8 +1235,10 @@ func Save(cfg *Config) error {
 		return err
 	}
 
-	configPath := filepath.Join(DefaultHome, "config.json")
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+	configPath := ConfigPath()
+	// 0600: this file holds live provider API keys, so group and other must
+	// have no access to it.
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		return err
 	}
 
@@ -977,17 +1307,19 @@ func migrateConfig(cfg *Config, rawJSON []byte) error {
 	if cfg.SchemaVersion < 1 {
 		// Update defunct model if present
 		if cfg.Agents.Defaults.Model == "google/gemma-2-9b-it:free" {
-			cfg.Agents.Defaults.Model = "arcee-ai/tranny-large-preview:free"
-			logger.Info("Migrated model from google/gemma-2-9b-it:free to arcee-ai/tranny-large-preview:free")
+			cfg.Agents.Defaults.Model = "openrouter/free"
+			logger.Info("Migrated model from google/gemma-2-9b-it:free to openrouter/free")
 		}
 		cfg.SchemaVersion = 1
 
 		// Backup old config
-		configPath := filepath.Join(DefaultHome, "config.json")
+		configPath := ConfigPath()
 		if _, err := os.Stat(configPath); err == nil {
 			backupPath := configPath + ".bak"
 			if data, err := os.ReadFile(configPath); err == nil {
-				_ = os.WriteFile(backupPath, data, 0o644)
+				// The backup is a verbatim copy of config.json, API keys
+				// included, so it gets the same 0600 treatment.
+				_ = os.WriteFile(backupPath, data, 0o600)
 				logger.Info("Backed up config", "to", backupPath)
 			}
 		}

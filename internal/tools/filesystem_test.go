@@ -138,3 +138,69 @@ func TestFilesystemToolAllowedPathsGlob(t *testing.T) {
 		t.Fatalf("expected output to contain data.json, got: %s", res.Output)
 	}
 }
+
+// TestFilesystemToolSymlinkEscape covers #153: a symlink that is lexically
+// inside the workspace but points outside it must be rejected. Without
+// symlink resolution, ws/link/passwd cleans to a path under the workspace and
+// slips past isWithinBase, reading /etc through the link.
+func TestFilesystemToolSymlinkEscape(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("top secret"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(ws, "link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	tool := NewFilesystemTool(ws, true)
+
+	// Read through the escaping symlink must be denied.
+	res := tool.Execute(context.Background(), map[string]any{
+		"operation": "read_file",
+		"path":      "link/secret.txt",
+	})
+	if res.Error == nil {
+		t.Fatalf("expected read through escaping symlink to be denied, got output: %s", res.Output)
+	}
+	if !strings.Contains(res.Error.Error(), "outside workspace") {
+		t.Fatalf("expected access-denied error, got: %v", res.Error)
+	}
+
+	// Write through the escaping symlink must be denied too.
+	res = tool.Execute(context.Background(), map[string]any{
+		"operation": "write_file",
+		"path":      "link/planted.txt",
+		"content":   "payload",
+	})
+	if res.Error == nil {
+		t.Fatalf("expected write through escaping symlink to be denied")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "planted.txt")); err == nil {
+		t.Fatalf("write escaped the workspace: file was planted outside")
+	}
+}
+
+// A create of a not-yet-existing file inside the workspace must still succeed:
+// EvalSymlinks fails on the missing leaf, so resolvePath resolves the parent.
+func TestFilesystemToolCreateNewFileInsideWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	tool := NewFilesystemTool(ws, true)
+
+	res := tool.Execute(context.Background(), map[string]any{
+		"operation": "write_file",
+		"path":      "sub/dir/new.txt",
+		"content":   "hello",
+	})
+	if res.Error != nil {
+		t.Fatalf("create inside workspace should succeed, got: %v", res.Error)
+	}
+	data, err := os.ReadFile(filepath.Join(ws, "sub", "dir", "new.txt"))
+	if err != nil {
+		t.Fatalf("file was not created: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("unexpected content: %q", data)
+	}
+}

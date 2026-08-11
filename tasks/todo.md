@@ -1,34 +1,21 @@
-# Tasks
+# Fix `/new` command experience
 
-## Goal: Fix model config bug + abstract configure with CLI flags + tests
+## Root Cause
+CLI channel handles `/new` **locally** — clears input history but never sends through the bus.
+Agent never gets the message → session file never deleted → next message loads old session →
+old messages exceed budget → compressor wraps them in `<conversation_summary>` →
+summary content is degenerate → LLM sees empty tags → responds with bizarre meta-commentary.
 
-### Acceptance Criteria
-- `joshbot config --provider nvidia --api-key xxx --model foo` sets the config correctly
-- Interactive `joshbot config` wizard produces identical results
-- `joshbot agent` picks up the configured model, not the registry default
-- All paths have unit test coverage
+## Changes Needed
 
-### Bugs to Fix
-1. `setDefaultProvider` (main.go:2901) overwrites model with registry default
-2. `configureProvider` auto-default (main.go:2683) doesn't set model
-3. NVIDIA registration (main.go:369-381) doesn't pass `p.Model`
+1. **`internal/channels/cli.go`**: `handleCommand("/new")` — remove local handling, instead send through the bus via `c.sendToBus()` (same as regular messages), letting the agent handle session deletion and return a useful response
 
-### Implementation Plan
+2. **`internal/agent/agent.go`**: `handleCommand("new")` — improve response to show current model, tool count, memory window after session reset
 
-**Phase 1: Fix Bugs (targeted)**
-- main.go:2901 — prefer per-provider model over registry default
-- main.go:2683-2684 — also set model when auto-defaulting
-- main.go:369-381 — pass p.Model to NVIDIA registration
+3. **`internal/context/context.go`**: `CompressMessages` — if the joined/compressed content is empty, return empty string instead of `"<conversation_summary>\n"` wrapper (defensive fix)
 
-**Phase 2: Create `internal/configure/` package**
-- `configurator.go` — Configurator type with non-interactive API
-- `configure_test.go` — comprehensive tests
-
-**Phase 3: Wire CLI flags in main.go**
-- `--provider`, `--api-key`, `--api-base`, `--model`, `--set-default`, `--remove` flags
-- `runConfigure` delegates to configure package when flags are set
-- Interactive wizard delegates to same package
-
-**Phase 4: End-to-end verification**
-- Build + test
-- Manual smoke test
+## Verification
+- `go build ./cmd/joshbot`
+- `gofmt -d .`
+- `go vet ./...`
+- `go test -race ./...`

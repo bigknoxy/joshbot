@@ -44,14 +44,53 @@ type Message struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ToolCalls is the list of tool calls made by the assistant
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// Images are attachments carried alongside Content. The field is excluded
+	// from the struct tags and handled by MarshalJSON instead, because the wire
+	// format is not "a field next to content" — an image turns content itself
+	// from a string into an array of parts.
+	Images []Image `json:"-"`
+}
+
+// MarshalJSON serialises a message in the OpenAI-compatible shape.
+//
+// A message with no images must produce byte-identical JSON to what it produced
+// before images existed: every provider joshbot talks to receives this, and a
+// stray field or a content array where a string was expected is a 400 on every
+// request rather than a visible failure here. That is why the no-image path is
+// the zero-work path — it marshals the plain struct through an alias and adds
+// nothing.
+//
+// With images, content becomes an array of parts: the text first (omitted
+// entirely when empty, since a part with an empty string is not valid), then
+// one image_url part per attachment carrying a data: URL.
+func (m Message) MarshalJSON() ([]byte, error) {
+	type wireMessage Message // alias: no MarshalJSON, so no recursion
+	if len(m.Images) == 0 {
+		return json.Marshal(wireMessage(m))
+	}
+	parts := make([]Content, 0, len(m.Images)+1)
+	if m.Content != "" {
+		parts = append(parts, Content{Type: "text", Text: m.Content})
+	}
+	for _, im := range m.Images {
+		parts = append(parts, Content{Type: "image_url", ImageURL: &ImageURL{URL: im.DataURL()}})
+	}
+	return json.Marshal(struct {
+		wireMessage
+		Content []Content `json:"content"`
+	}{wireMessage: wireMessage(m), Content: parts})
 }
 
 // ToolCall represents a tool call made by the model.
 type ToolCall struct {
+	// Index identifies which tool call this fragment belongs to in a
+	// streaming response. Present only in StreamChoice.Delta.ToolCalls;
+	// zero in non-streaming responses.
+	Index int `json:"index,omitempty"`
 	// ID is the unique identifier for this tool call
-	ID string `json:"id"`
+	ID string `json:"id,omitempty"`
 	// Type is the type of tool call (function)
-	Type string `json:"type"`
+	Type string `json:"type,omitempty"`
 	// Function is the function call details
 	Function FunctionCall `json:"function"`
 }
@@ -59,9 +98,9 @@ type ToolCall struct {
 // FunctionCall represents a function call within a tool call.
 type FunctionCall struct {
 	// Name is the name of the function to call
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 	// Arguments is the JSON string of arguments to pass to the function
-	Arguments string `json:"arguments"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // Tool represents a tool that can be called by the model.
@@ -204,6 +243,8 @@ type Config struct {
 	APIBase string
 	// ExtraHeaders are additional headers to include in requests
 	ExtraHeaders map[string]string
+	// ExtraBody are additional JSON body fields merged into requests
+	ExtraBody map[string]any
 	// Timeout is the request timeout (default 120 seconds)
 	Timeout time.Duration
 	// Model is the default model to use

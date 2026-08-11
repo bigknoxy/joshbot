@@ -1,0 +1,454 @@
+package output
+
+import (
+	"fmt"
+	"io"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/redact"
+)
+
+// Preflight wraps config.PreflightReport for emission. The report type already
+// carries json tags — it was designed to be machine-readable — so this adds
+// only the schema version and the pass/fail bit a script actually branches on,
+// rather than making every consumer re-derive OK() from the entries.
+type Preflight struct {
+	SchemaVersion int    `json:"schema_version"`
+	OK            bool   `json:"ok"`
+	ConfigError   string `json:"config_error,omitempty"`
+	config.PreflightReport
+}
+
+// NewPreflight builds the document. configErr is the reason the config was
+// rejected outright, empty when it loaded.
+//
+// Detail and configErr are the free-text fields of this report — a detail
+// quotes a model name and a provider straight out of the operator's config, and
+// a load error quotes whatever the parser choked on. Both are redacted here,
+// while they are still Go strings, because the JSON form cannot be redacted
+// after encoding without destroying it (see the package comment).
+//
+// The two paths are stripped to ~ for the same reason: the JSON form bypasses
+// the redacting writer entirely, so a default install would otherwise print the
+// account name into a document whose whole purpose is to be pasted into an
+// issue.
+func NewPreflight(report config.PreflightReport, configErr string) Preflight {
+	entries := make([]config.PreflightEntry, len(report.Entries))
+	copy(entries, report.Entries)
+	for i := range entries {
+		entries[i].Detail = redact.String(entries[i].Detail)
+	}
+	report.Entries = entries
+	report.ConfigPath = redact.HomePath(report.ConfigPath)
+	report.Workspace = redact.HomePath(report.Workspace)
+
+	return Preflight{
+		SchemaVersion:   SchemaVersion,
+		OK:              report.OK(),
+		ConfigError:     redact.String(configErr),
+		PreflightReport: report,
+	}
+}
+
+// RenderPreflightText writes the human form of a preflight report, byte for
+// byte as `joshbot preflight` printed it before --output existed.
+func RenderPreflightText(w io.Writer, p Preflight) {
+	fmt.Fprintf(w, "config:    %s\n", p.ConfigPath)
+	fmt.Fprintf(w, "format:    %s\n", p.ConfigFormat)
+	fmt.Fprintf(w, "workspace: %s\n", p.Workspace)
+	if p.ConfigError != "" {
+		fmt.Fprintf(w, "\nconfig rejected: %s\n", p.ConfigError)
+	}
+
+	if len(p.Entries) > 0 {
+		fmt.Fprintln(w)
+	}
+	for _, e := range p.Entries {
+		mark := "✓"
+		if e.Problem != "" {
+			mark = "✗"
+		}
+		fmt.Fprintf(w, "%s %s\n", mark, e.Summary())
+		if e.Problem != "" {
+			fmt.Fprintf(w, "    problem %s — %s\n", e.Problem, e.Detail)
+		}
+	}
+
+	if p.OK {
+		fmt.Fprintln(w, "\nOK — joshbot would start.")
+		return
+	}
+	if _, detail := p.FirstProblem(); detail != "" {
+		fmt.Fprintf(w, "\nNOT OK — %s\n", detail)
+	}
+}
+
+// Skills is what `joshbot skills list` reports.
+type Skills struct {
+	SchemaVersion int     `json:"schema_version"`
+	Skills        []Skill `json:"skills"`
+	// Pending is the count of skills awaiting review, i.e. discovered but not
+	// in use. A script gating a deploy on "no unapproved skills" reads this.
+	Pending int `json:"pending"`
+}
+
+// Skill is one entry in the registry.
+type Skill struct {
+	Name string `json:"name"`
+	// State is "bundled", "approved" or "awaiting_review".
+	State string `json:"state"`
+	// Path is the SKILL.md an operator would read before approving. Empty for
+	// bundled skills, whose Path is an embed path inside the binary rather
+	// than a file anyone can open.
+	Path string `json:"path,omitempty"`
+}
+
+// Skill states, as they appear in the JSON contract.
+const (
+	SkillBundled  = "bundled"
+	SkillApproved = "approved"
+	SkillPending  = "awaiting_review"
+)
+
+// NewSkills builds the document, sorting by name so the output is stable.
+func NewSkills(entries []Skill) Skills {
+	sorted := append([]Skill(nil), entries...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	pending := 0
+	for _, s := range sorted {
+		if s.State == SkillPending {
+			pending++
+		}
+	}
+	return Skills{SchemaVersion: SchemaVersion, Skills: sorted, Pending: pending}
+}
+
+// RenderSkillsText writes the human form of the skill registry.
+func RenderSkillsText(w io.Writer, s Skills) {
+	if len(s.Skills) == 0 {
+		fmt.Fprintln(w, "No skills found.")
+		return
+	}
+
+	fmt.Fprintln(w, "Skills:")
+	for _, sk := range s.Skills {
+		switch sk.State {
+		case SkillBundled:
+			fmt.Fprintf(w, "  %-28s bundled\n", sk.Name)
+		case SkillApproved:
+			fmt.Fprintf(w, "  %-28s approved\n", sk.Name)
+		default:
+			fmt.Fprintf(w, "  %-28s AWAITING REVIEW  %s\n", sk.Name, sk.Path)
+		}
+	}
+
+	if s.Pending > 0 {
+		fmt.Fprintf(w, "\n%d skill(s) are not being used until you approve them.\n", s.Pending)
+		fmt.Fprintln(w, "Read the file, then run: joshbot skills trust <name>")
+		fmt.Fprintln(w, "A skill's text becomes part of the agent's instructions, so review it as you would a script you are about to run.")
+	}
+}
+
+// SkillPath is the file an operator reads before approving a skill. Bundled
+// skills return "" because their Path is an embed path, not a file on disk.
+func SkillPath(dir string, bundled bool) string {
+	if bundled {
+		return ""
+	}
+	return filepath.Join(dir, "SKILL.md")
+}
+
+// Auth is what `joshbot auth status` reports. One entry per provider that has
+// an auth flow rather than a plain api_key; today that is GitHub Copilot only,
+// but the shape is a list so adding a second one is not a breaking change.
+type Auth struct {
+	SchemaVersion int              `json:"schema_version"`
+	Providers     []AuthedProvider `json:"providers"`
+}
+
+// AuthedProvider reports presence of a credential, never its value.
+type AuthedProvider struct {
+	Name          string `json:"name"`
+	Authenticated bool   `json:"authenticated"`
+}
+
+// RenderAuthText writes the human form of the auth status.
+func RenderAuthText(w io.Writer, a Auth) {
+	fmt.Fprintln(w, "Authentication Status:")
+	fmt.Fprintln(w)
+	for _, p := range a.Providers {
+		fmt.Fprintf(w, "  %s: ", authDisplayName(p.Name))
+		if p.Authenticated {
+			fmt.Fprintln(w, "authenticated")
+			continue
+		}
+		fmt.Fprintln(w, "not authenticated")
+		fmt.Fprintf(w, "    Run 'joshbot auth %s' to authenticate\n", p.Name)
+	}
+}
+
+// authDisplayName maps a provider key onto the label the text output uses.
+func authDisplayName(name string) string {
+	if name == "github-copilot" {
+		return "GitHub Copilot"
+	}
+	return name
+}
+
+// Providers is what `joshbot configure --list` reports.
+type Providers struct {
+	SchemaVersion int                  `json:"schema_version"`
+	Default       string               `json:"default"`
+	Providers     []ConfiguredProvider `json:"providers"`
+}
+
+// ConfiguredProvider is one row of the configure --list table. (The status
+// strings are part of the contract: "configured", "authenticated",
+// "OAuth required", "not configured".)
+type ConfiguredProvider struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	IsDefault bool   `json:"is_default"`
+}
+
+// Provider status values shared by both renderings.
+const (
+	ProviderConfigured    = "configured"
+	ProviderAuthenticated = "authenticated"
+	ProviderOAuthRequired = "OAuth required"
+	ProviderNotConfigured = "not configured"
+)
+
+// RenderProvidersText writes the human form of `configure --list`.
+func RenderProvidersText(w io.Writer, p Providers) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "╔═══════════════════════════════════════════╗")
+	fmt.Fprintln(w, "║        Configured Providers              ║")
+	fmt.Fprintln(w, "╚═══════════════════════════════════════════╝")
+	fmt.Fprintln(w)
+
+	for _, entry := range p.Providers {
+		icon := "○"
+		if entry.Status == ProviderConfigured || entry.Status == ProviderAuthenticated {
+			icon = "✓"
+		}
+		text := entry.Status
+		if entry.IsDefault {
+			text += " (default)"
+		}
+		fmt.Fprintf(w, "  %s %-12s %s\n", icon, entry.Name, text)
+	}
+
+	fmt.Fprintln(w)
+}
+
+// MCPState is an MCP server's provenance state, as `joshbot mcp list` reports it.
+type MCPState string
+
+const (
+	// MCPApproved means the operator has approved exactly the tool list the
+	// server is advertising right now, so its tools are in use.
+	MCPApproved MCPState = "approved"
+	// MCPPending means the server advertises tools that have not been approved
+	// — either never, or not since it changed them. Its tools are not in use.
+	MCPPending MCPState = "pending"
+	// MCPDisabled means the server is configured but not enabled, so joshbot
+	// never spawns it.
+	MCPDisabled MCPState = "disabled"
+	// MCPUnreachable means the server could not be started or would not answer
+	// tools/list, so there is no manifest to show or approve.
+	MCPUnreachable MCPState = "unreachable"
+)
+
+// MCPTool is one tool an MCP server advertises.
+type MCPTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// MCPServer is one configured MCP server and what it advertises.
+type MCPServer struct {
+	Name    string    `json:"name"`
+	State   MCPState  `json:"state"`
+	Enabled bool      `json:"enabled"`
+	Command string    `json:"command,omitempty"`
+	Tools   []MCPTool `json:"tools,omitempty"`
+	// Error is why the manifest could not be read, when State is unreachable.
+	Error string `json:"error,omitempty"`
+}
+
+// MCPServers is what `joshbot mcp list` reports.
+type MCPServers struct {
+	SchemaVersion int         `json:"schema_version"`
+	Servers       []MCPServer `json:"servers"`
+	// Pending is the count of servers advertising an unapproved tool list. A
+	// script gating a deploy on "no unapproved MCP servers" reads this.
+	Pending int `json:"pending"`
+}
+
+// NewMCPServers builds the document, sorting by name so the output is stable.
+func NewMCPServers(entries []MCPServer) MCPServers {
+	// Allocated, not nil: a nil slice encodes as `null` and a consumer doing
+	// `for s in doc["servers"]` would break on "no servers configured", which is
+	// the ordinary first-run state rather than an error.
+	sorted := append(make([]MCPServer, 0, len(entries)), entries...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	pending := 0
+	for _, s := range sorted {
+		if s.State == MCPPending {
+			pending++
+		}
+	}
+	return MCPServers{SchemaVersion: SchemaVersion, Servers: sorted, Pending: pending}
+}
+
+// RenderMCPServersText writes the human form. Tool names and descriptions are
+// shown for a pending server in particular, because reading them is the whole
+// point of the command: an operator cannot approve a manifest they cannot see.
+func RenderMCPServersText(w io.Writer, s MCPServers) {
+	if len(s.Servers) == 0 {
+		fmt.Fprintln(w, "No MCP servers configured.")
+		return
+	}
+
+	fmt.Fprintln(w, "MCP servers:")
+	for _, srv := range s.Servers {
+		switch srv.State {
+		case MCPApproved:
+			fmt.Fprintf(w, "  %-28s approved         %d tool(s)\n", srv.Name, len(srv.Tools))
+		case MCPDisabled:
+			fmt.Fprintf(w, "  %-28s disabled\n", srv.Name)
+		case MCPUnreachable:
+			fmt.Fprintf(w, "  %-28s UNREACHABLE      %s\n", srv.Name, srv.Error)
+		default:
+			fmt.Fprintf(w, "  %-28s AWAITING REVIEW  %d tool(s)\n", srv.Name, len(srv.Tools))
+		}
+		for _, t := range srv.Tools {
+			fmt.Fprintf(w, "      %-24s %s\n", t.Name, firstLine(t.Description))
+		}
+	}
+
+	if s.Pending > 0 {
+		fmt.Fprintf(w, "\n%d MCP server(s) are not being used until you approve them.\n", s.Pending)
+		fmt.Fprintln(w, "Read the tool list above, then run: joshbot mcp trust <name>")
+		fmt.Fprintln(w, "A server's tool descriptions become part of the agent's instructions, so review them as you would a script you are about to run.")
+	}
+}
+
+// firstLine keeps the list scannable: a description may be many paragraphs, and
+// the full text is available in the JSON form.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 72 {
+		s = s[:72] + "..."
+	}
+	return s
+}
+
+// Profile is one configured named profile, as `joshbot profiles list` reports
+// it.
+//
+// There is deliberately no credential field of any kind. A profile's credential
+// lives in an environment variable and this document names only the variable —
+// the point of the listing is to let an operator confirm which endpoint they
+// would dial, not to hand them the key. CredentialEnv is a variable *name*, and
+// Endpoint is a host, not a full URL with any userinfo it might carry.
+type Profile struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	// Endpoint is the API host, or "" when the provider's default is used.
+	Endpoint string `json:"endpoint,omitempty"`
+	// CredentialEnv names the environment variable holding the credential.
+	CredentialEnv string `json:"credential_env,omitempty"`
+	// CredentialSet reports whether that variable is set, without saying what
+	// it contains — the difference between "misconfigured" and "works" without
+	// disclosing anything.
+	CredentialSet bool `json:"credential_set"`
+	Disabled      bool `json:"disabled,omitempty"`
+	// Active marks the profile this run selected, if any.
+	Active bool `json:"active,omitempty"`
+	// Default marks the profile named by default_profile.
+	Default bool `json:"default,omitempty"`
+}
+
+// Profiles is what `joshbot profiles list` reports.
+type Profiles struct {
+	SchemaVersion int       `json:"schema_version"`
+	Profiles      []Profile `json:"profiles"`
+	// DefaultProfile echoes the config's default_profile, "" if unset.
+	DefaultProfile string `json:"default_profile,omitempty"`
+}
+
+// NewProfiles builds the document, sorted by name so the output is stable.
+func NewProfiles(entries []Profile, defaultProfile string) Profiles {
+	// Allocated, not nil, for the same reason as NewMCPServers: "no profiles
+	// configured" is the ordinary state and must encode as [].
+	sorted := append(make([]Profile, 0, len(entries)), entries...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	for i := range sorted {
+		sorted[i].Description = redact.String(sorted[i].Description)
+	}
+	return Profiles{SchemaVersion: SchemaVersion, Profiles: sorted, DefaultProfile: defaultProfile}
+}
+
+// RenderProfilesText writes the human form.
+func RenderProfilesText(w io.Writer, p Profiles) {
+	if len(p.Profiles) == 0 {
+		fmt.Fprintln(w, "No profiles configured.")
+		fmt.Fprintln(w, "Add a \"profiles\" block to your config to switch models with --profile.")
+		return
+	}
+
+	fmt.Fprintln(w, "Profiles:")
+	for _, pr := range p.Profiles {
+		marker := " "
+		switch {
+		case pr.Active:
+			marker = "*"
+		case pr.Default:
+			marker = "."
+		}
+		state := ""
+		if pr.Disabled {
+			state = "  (disabled)"
+		}
+		fmt.Fprintf(w, " %s %-20s %s%s\n", marker, pr.Name, pr.Model, state)
+		if pr.Description != "" {
+			fmt.Fprintf(w, "      %s\n", firstLine(pr.Description))
+		}
+		endpoint := pr.Endpoint
+		if endpoint == "" {
+			endpoint = "provider default"
+		}
+		fmt.Fprintf(w, "      provider %s   endpoint %s\n", pr.Provider, endpoint)
+		// The variable name, never its value: this listing is meant to be
+		// pasteable into a bug report.
+		//
+		// Deliberately phrased without a "name: value" separator. The text
+		// form is written through internal/redact, whose assignment rule
+		// blanks whatever follows "credential:" — which would have redacted
+		// the environment-variable name this line exists to show.
+		switch {
+		case pr.CredentialEnv == "":
+			fmt.Fprintln(w, "      credential not required")
+		case pr.CredentialSet:
+			fmt.Fprintf(w, "      credential from $%s (set)\n", pr.CredentialEnv)
+		default:
+			fmt.Fprintf(w, "      credential from $%s (NOT SET)\n", pr.CredentialEnv)
+		}
+	}
+
+	if p.DefaultProfile != "" {
+		fmt.Fprintf(w, "\nDefault profile: %s\n", p.DefaultProfile)
+	}
+	fmt.Fprintln(w, "Select one for a run with: joshbot agent --profile <name>")
+}

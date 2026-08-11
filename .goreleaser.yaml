@@ -40,9 +40,11 @@ archives:
     files:
       - README.md
       - LICENSE
-    # Include installation script in archives
+    # Include installation script in archives.
+    # NOTE: this config is not currently invoked by any workflow — releases are
+    # built by .github/workflows/release.yml. Kept for a possible migration.
     extra_files:
-      - glob: scripts/install.sh
+      - glob: install.sh
         info:
           mode: 0755
 

@@ -18,6 +18,12 @@ type ProviderInfo struct {
 	DefaultModel string
 	DisplayName  string
 	Description  string
+	// DefaultAPIBase is the endpoint the factory dials when a config supplies
+	// none. Recorded here so wizards, docs and tests read the same value the
+	// factory uses instead of each hardcoding their own copy — a duplicate in
+	// the configure wizard is how "https://api.poolside.ai/v1", a host that
+	// does not resolve, was offered to users as the default.
+	DefaultAPIBase string
 }
 
 // registry is the global provider registry.
@@ -144,6 +150,18 @@ func normalizeProviderName(name string) string {
 
 // GetDefaultModel returns the default model for a provider.
 // Returns empty string if provider not found or no default set.
+// GetDefaultAPIBaseFor returns a provider's fixed endpoint, or "" if it has
+// none (Ollama, Azure and Custom take theirs from config).
+func GetDefaultAPIBaseFor(name string) string {
+	registryLock.RLock()
+	defer registryLock.RUnlock()
+
+	if info, exists := registry[normalizeProviderName(name)]; exists {
+		return info.DefaultAPIBase
+	}
+	return ""
+}
+
 func GetDefaultModel(name string) string {
 	registryLock.RLock()
 	defer registryLock.RUnlock()
@@ -189,9 +207,10 @@ func init() {
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},
-		DefaultModel: "arcee-ai/trinity-large-preview:free",
-		DisplayName:  "OpenRouter",
-		Description:  "Many models, one API key",
+		DefaultAPIBase: "https://openrouter.ai/api/v1",
+		DefaultModel:   "openrouter/free",
+		DisplayName:    "OpenRouter",
+		Description:    "Many models, one API key",
 	})
 
 	// Register OpenAI
@@ -202,9 +221,10 @@ func init() {
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},
-		DefaultModel: "gpt-4o",
-		DisplayName:  "OpenAI",
-		Description:  "GPT-4 and more",
+		DefaultAPIBase: "https://api.openai.com/v1",
+		DefaultModel:   "gpt-4o",
+		DisplayName:    "OpenAI",
+		Description:    "GPT-4 and more",
 	})
 
 	// Register NVIDIA
@@ -215,9 +235,10 @@ func init() {
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},
-		DefaultModel: "moonshotai/kimi-k2-thinking",
-		DisplayName:  "NVIDIA NIM",
-		Description:  "Free tier available",
+		DefaultAPIBase: "https://integrate.api.nvidia.com/v1",
+		DefaultModel:   "moonshotai/kimi-k2-thinking",
+		DisplayName:    "NVIDIA NIM",
+		Description:    "Free tier available",
 	})
 
 	// Register Groq
@@ -228,9 +249,10 @@ func init() {
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},
-		DefaultModel: "llama-3.3-70b-versatile",
-		DisplayName:  "Groq",
-		Description:  "Fast inference",
+		DefaultAPIBase: "https://api.groq.com/openai/v1",
+		DefaultModel:   "llama-3.3-70b-versatile",
+		DisplayName:    "Groq",
+		Description:    "Fast inference",
 	})
 
 	// Register Ollama
@@ -257,9 +279,27 @@ func init() {
 			}
 			return NewLiteLLMProvider(cfg), nil
 		},
-		DefaultModel: "claude-sonnet-4-20250514",
-		DisplayName:  "Anthropic",
-		Description:  "Claude models",
+		DefaultAPIBase: "https://api.anthropic.com/v1",
+		DefaultModel:   "claude-sonnet-4-20250514",
+		DisplayName:    "Anthropic",
+		Description:    "Claude models",
+	})
+
+	// Register Poolside
+	RegisterProviderWithInfo("poolside", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://inference.poolside.ai/v1"
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultAPIBase: "https://inference.poolside.ai/v1",
+		// laguna-m.1 carries deprecation_date 2026-07-28; laguna-s-2.1 is the
+		// current second-generation model and has none. The "poolside/" prefix
+		// is part of the ID the API expects — see prefixesPartOfModelID.
+		DefaultModel: "poolside/laguna-s-2.1",
+		DisplayName:  "Poolside",
+		Description:  "AI for software development",
 	})
 
 	// Register Azure (requires API base, no default model)
@@ -273,6 +313,19 @@ func init() {
 		DefaultModel: "",
 		DisplayName:  "Azure OpenAI",
 		Description:  "Enterprise Azure integration",
+	})
+
+	// Register Custom (generic OpenAI-compatible)
+	RegisterProviderWithInfo("custom", ProviderInfo{
+		Factory: func(cfg Config) (Provider, error) {
+			if cfg.APIBase == "" {
+				return nil, fmt.Errorf("custom provider requires api_base to be set")
+			}
+			return NewLiteLLMProvider(cfg), nil
+		},
+		DefaultModel: "",
+		DisplayName:  "Custom OpenAI-Compatible",
+		Description:  "Generic OpenAI-compatible API endpoint",
 	})
 
 	// Keep litellm as a generic fallback

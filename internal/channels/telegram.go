@@ -3,22 +3,29 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/providers"
 	"gopkg.in/telebot.v3"
 )
+
+// TelegramMaxMessageLen is the maximum message length allowed by Telegram Bot API.
+const TelegramMaxMessageLen = 4096
 
 // TelegramChannel implements the Channel interface for Telegram.
 type TelegramChannel struct {
@@ -32,8 +39,11 @@ type TelegramChannel struct {
 	// Bot instance
 	bot *telebot.Bot
 
-	// Allowlist set for fast lookup
-	allowSet map[string]struct{}
+	// allowIDs and allowNames are the deny-by-default allowlist, partitioned by
+	// entry shape. Both empty rejects everyone. See IsAllowed for why a single
+	// set matched against every field is an authentication bypass.
+	allowIDs   map[string]struct{}
+	allowNames map[string]struct{}
 
 	// Retry configuration
 	maxRetries    int
@@ -42,17 +52,79 @@ type TelegramChannel struct {
 
 	// Polling configuration
 	pollTimeout time.Duration
+
+	// Typing keep-alive. Telegram clears a chat action after 5 seconds, so a
+	// long agent turn needs the action re-sent on a timer. One entry per chat,
+	// guarded by mu; the channel in it stops that chat's keep-alive.
+	typingStop     map[string]chan struct{}
+	typingInterval time.Duration
+	// typingMaxDuration bounds a keep-alive. Nothing calls stopTyping if the
+	// agent turn dies without producing a reply, and an uncapped goroutine
+	// would then call the Bot API every few seconds for the life of the
+	// process — burning rate limit and showing a permanent "typing…".
+	typingMaxDuration time.Duration
+
+	// download overrides the Bot API file fetch used for image attachments.
+	// Only tests set it; in production it stays nil and t.bot.File is used.
+	download func(*telebot.File) (io.ReadCloser, error)
+
+	// notifier overrides the bot for chat-action and command-menu calls.
+	// Only tests set it; in production it stays nil and the bot is used.
+	notifier telegramNotifier
+
+	// apiURL and offline point createBot at a stub Bot API. Only tests set
+	// them; empty/false means the real api.telegram.org.
+	apiURL  string
+	offline bool
 }
+
+// telegramNotifier is the slice of *telebot.Bot this channel needs for chat
+// actions and command-menu registration. It exists so both can be tested
+// without a live Telegram connection.
+type telegramNotifier interface {
+	Notify(to telebot.Recipient, action telebot.ChatAction, threadID ...int) error
+	SetCommands(opts ...interface{}) error
+}
+
+// botCommands is the command menu shown in the Telegram UI. Every entry here
+// must have a matching handler registered in setupHandlers. Keep the two in
+// step: a menu entry without a handler is silently swallowed by the
+// unknown-command fallback, and a handler without a menu entry is invisible
+// in the UI.
+var botCommands = []telebot.Command{
+	{Text: "start", Description: "Show what this bot can do"},
+	{Text: "new", Description: "Start a new session"},
+	{Text: "status", Description: "Show session status"},
+	{Text: "model", Description: "Switch model for this chat"},
+	{Text: "personality", Description: "Set a personality"},
+	{Text: "compact", Description: "Summarize older context"},
+	{Text: "help", Description: "Show the list of commands"},
+}
+
+// forwardedCommands are the slash commands whose behaviour lives in the agent
+// (the CLI and Telegram share the same handlers) and are therefore routed to
+// the bus by handleCommandForward. They must all appear in botCommands, and
+// every botCommands entry that is not handled locally (start/help/new) must
+// appear here — TestTelegramChannel_CommandMenuAndHandlersInStep pins that.
+var forwardedCommands = []string{"/status", "/model", "/personality", "/compact"}
 
 // NewTelegramChannel creates a new Telegram channel instance.
 func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *TelegramChannel {
-	// Build allowlist set for fast lookup
-	allowSet := make(map[string]struct{})
+	// Build the allowlist, partitioned by entry shape for fast lookup. An
+	// all-digits entry is a user ID and may only ever match the numeric ID —
+	// see IsAllowed.
+	allowIDs := make(map[string]struct{})
+	allowNames := make(map[string]struct{})
 	for _, a := range cfg.AllowFrom {
 		// Normalize: strip leading '@' and lowercase
 		s := normalizeUsername(a)
-		if s != "" {
-			allowSet[s] = struct{}{}
+		if s == "" {
+			continue
+		}
+		if isSnowflake(s) {
+			allowIDs[s] = struct{}{}
+		} else {
+			allowNames[s] = struct{}{}
 		}
 	}
 
@@ -61,11 +133,17 @@ func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *Telegr
 		bus:           bus,
 		cfg:           cfg,
 		stopCh:        make(chan struct{}),
-		allowSet:      allowSet,
+		allowIDs:      allowIDs,
+		allowNames:    allowNames,
 		maxRetries:    3,
 		retryDelay:    500 * time.Millisecond,
 		maxRetryDelay: 5 * time.Second,
 		pollTimeout:   60 * time.Second,
+		typingStop:    make(map[string]chan struct{}),
+		// Telegram clears a chat action after 5s; re-send just under that.
+		typingInterval: 4 * time.Second,
+		// Longer than any sane agent turn, short enough to not leak forever.
+		typingMaxDuration: 10 * time.Minute,
 	}
 }
 
@@ -80,15 +158,36 @@ func normalizeUsername(username string) string {
 }
 
 // IsAllowed checks if a user is in the allowlist.
+// Entries may be a numeric Telegram user ID, a @username, or a "First Last"
+// display name.
+//
+// An empty allowlist denies everyone. This bot hands whoever it talks to a
+// direct line into an agent loop holding the shell tool, so an unset allowlist
+// must fail closed, not open — see the startup warning in Start that names the
+// exact config key an operator has to set.
+//
+// The allowlist is partitioned by entry shape and each half is matched against
+// only the field it can legitimately name — the same rule internal/channels
+// applies on Discord, and for the same reason. Matching every entry against
+// every field let a stranger set their free-form Telegram first name to the
+// operator's numeric user ID and authenticate as them: display names are not
+// unique and are not validated, so an ID-shaped allowlist entry must never be
+// satisfied by a name.
 func (t *TelegramChannel) IsAllowed(userID int64, username, firstName, lastName string) bool {
-	// If allowlist is empty, allow everyone
-	if len(t.allowSet) == 0 {
+	if len(t.allowIDs) == 0 && len(t.allowNames) == 0 {
+		return false
+	}
+
+	// Check by numeric user ID. This is the form the README documents, and
+	// it is the only stable identifier — a user can change their username
+	// and display name at any time.
+	if _, ok := t.allowIDs[strconv.FormatInt(userID, 10)]; ok {
 		return true
 	}
 
 	// Check by username
 	if username != "" {
-		if _, ok := t.allowSet[normalizeUsername(username)]; ok {
+		if _, ok := t.allowNames[normalizeUsername(username)]; ok {
 			return true
 		}
 	}
@@ -99,7 +198,7 @@ func (t *TelegramChannel) IsAllowed(userID int64, username, firstName, lastName 
 		if lastName != "" {
 			fullName += " " + normalizeUsername(lastName)
 		}
-		if _, ok := t.allowSet[fullName]; ok {
+		if _, ok := t.allowNames[fullName]; ok {
 			return true
 		}
 	}
@@ -123,6 +222,16 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 		t.running = false
 		t.mu.Unlock()
 		return fmt.Errorf("Telegram token is not configured")
+	}
+
+	// Fail closed on an unset allowlist, but loudly: the operator has a running
+	// bot that rejects every message until they name who may use it. Say
+	// exactly what to set so this is actionable, not a silent lockout.
+	if len(t.allowIDs) == 0 && len(t.allowNames) == 0 {
+		log.Warn("Telegram allowlist is empty — every sender will be rejected. " +
+			"Set channels.telegram.allow_from in ~/.joshbot/config.json (or " +
+			"JOSHBOT_CHANNELS__TELEGRAM__ALLOW_FROM) to your numeric Telegram " +
+			"user ID before this bot can be used.")
 	}
 
 	// Create bot with polling
@@ -154,6 +263,8 @@ func (t *TelegramChannel) createBot(ctx context.Context) (*telebot.Bot, error) {
 		Token:   t.cfg.Token,
 		Poller:  &telebot.LongPoller{Timeout: t.pollTimeout},
 		Verbose: false,
+		URL:     t.apiURL,
+		Offline: t.offline,
 	}
 
 	// Add proxy if configured
@@ -175,6 +286,11 @@ func (t *TelegramChannel) createBot(ctx context.Context) (*telebot.Bot, error) {
 
 	// Set up message handlers
 	t.setupHandlers(bot)
+
+	// Publish the command menu so Telegram shows the menu button and
+	// autocompletes commands. Best effort: a failure here must not stop the
+	// bot from starting.
+	t.registerCommandsBestEffort(bot)
 
 	return bot, nil
 }
@@ -229,6 +345,10 @@ func (t *TelegramChannel) runBot(ctx context.Context, bot *telebot.Bot) {
 
 			// Set up handlers on new bot
 			t.setupHandlers(newBot)
+
+			// Rebind the loop's local bot so the next iteration restarts
+			// the new bot instead of the stale one.
+			bot = newBot
 		}
 	}
 }
@@ -293,6 +413,16 @@ func (t *TelegramChannel) setupHandlers(bot *telebot.Bot) {
 		return t.handleNew(ctx)
 	})
 
+	// Commands whose behaviour lives in the agent (shared with the CLI): the
+	// channel packages the raw text and routes it to the bus, and the agent
+	// answers on the outbound channel. The set here must mirror botCommands.
+	for _, command := range forwardedCommands {
+		cmd := command
+		bot.Handle(cmd, func(ctx telebot.Context) error {
+			return t.handleCommandForward(ctx, cmd)
+		})
+	}
+
 	// Any other message types we want to acknowledge but not process
 	bot.Handle(telebot.OnVenue, func(ctx telebot.Context) error {
 		return t.handleUnsupported(ctx, "venue")
@@ -308,12 +438,36 @@ func (t *TelegramChannel) setupHandlers(bot *telebot.Bot) {
 }
 
 // handleMessage processes incoming text messages.
-func (t *TelegramChannel) handleMessage(ctx telebot.Context) error {
+func (t *TelegramChannel) handleMessage(ctx telebot.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in telegram message handler",
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()),
+			)
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+
 	msg := ctx.Message()
+	log.Debug("handleMessage called", "sender", msg.Sender.ID)
 
 	// Check if it's a command - let specific handlers deal with it
 	if strings.HasPrefix(msg.Text, "/") {
-		// Commands are handled by their specific handlers
+		if isKnownCommand(msg.Text) {
+			// Commands are handled by their specific handlers
+			return nil
+		}
+		// An unknown command reaches OnText because no handler claimed it.
+		// Say so rather than swallowing it, but never leak the command list
+		// to someone outside the allowlist.
+		if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
+			return nil
+		}
+		_, err := ctx.Bot().Send(ctx.Sender(), unknownCommandText(msg.Text))
+		if err != nil {
+			log.Error("failed to send unknown-command reply", "error", err)
+		}
 		return nil
 	}
 
@@ -328,7 +482,7 @@ func (t *TelegramChannel) handleMessage(ctx telebot.Context) error {
 	}
 
 	// Show typing indicator
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	// Convert to InboundMessage and send to bus
 	inbound := t.convertToInboundMessage(msg)
@@ -339,6 +493,43 @@ func (t *TelegramChannel) handleMessage(ctx telebot.Context) error {
 	}
 
 	return nil
+}
+
+// commandName extracts the bare command from message text: "/new extra" and
+// "/new@joshbot" both yield "new".
+func commandName(text string) string {
+	name := strings.TrimPrefix(text, "/")
+	if i := strings.IndexAny(name, " \t\n"); i >= 0 {
+		name = name[:i]
+	}
+	if i := strings.Index(name, "@"); i >= 0 {
+		name = name[:i]
+	}
+	return strings.ToLower(name)
+}
+
+// isKnownCommand reports whether the text names a command that has its own
+// handler registered in setupHandlers.
+func isKnownCommand(text string) bool {
+	name := commandName(text)
+	for _, c := range botCommands {
+		if c.Text == name {
+			return true
+		}
+	}
+	return false
+}
+
+// unknownCommandText tells the user their command does not exist and lists the
+// ones that do.
+func unknownCommandText(text string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Unknown command: /%s\n\nAvailable commands:", commandName(text))
+	for _, c := range botCommands {
+		fmt.Fprintf(&b, "\n/%s - %s", c.Text, c.Description)
+	}
+	b.WriteString("\n\nOr just send me a message.")
+	return b.String()
 }
 
 // handleStart handles the /start command.
@@ -353,8 +544,13 @@ func (t *TelegramChannel) handleHelp(ctx telebot.Context) error {
 Welcome! I'm here to help you.
 
 Available commands:
-/help - Show this help message
+/start - Show what this bot can do
 /new - Start a new session
+/status - Show session status
+/model <name> - Switch model for this chat (add --global for all chats)
+/personality <name> - Set a personality (or /personality none to clear)
+/compact - Summarize older context now
+/help - Show this help
 
 Just send me a message and I'll respond!`
 
@@ -367,6 +563,14 @@ Just send me a message and I'll respond!`
 // handleNew handles the /new command to start a new session.
 func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
 	msg := ctx.Message()
+	log.Debug("handleNew called", "sender", msg.Sender.ID)
+
+	// The same allowlist gate handleMessage and handleCommandForward apply:
+	// /new is dispatched outside handleMessage, so it must be re-checked here
+	// or an unallowed caller could still trigger agent work.
+	if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
+		return nil
+	}
 
 	// Send new session command to bus
 	inbound := bus.InboundMessage{
@@ -391,6 +595,46 @@ func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
 	return err
 }
 
+// handleCommandForward routes a slash command to the agent through the bus.
+// The command's behaviour is owned by the agent (the CLI uses the same
+// handlers), so the channel only packages the raw text and its routing
+// metadata. Replies come back on the outbound channel.
+//
+// Unlike the unknown-command fallback, telebot routes a registered command
+// directly to its handler, so the allowlist check that lives inside
+// handleMessage is never reached here. It is repeated explicitly: a command
+// like /status or /model would otherwise disclose bot configuration to anyone
+// who can reach the bot, not just users the operator allowed.
+func (t *TelegramChannel) handleCommandForward(ctx telebot.Context, command string) error {
+	msg := ctx.Message()
+	log.Debug("forwarding command to agent", "sender", msg.Sender.ID, "command", command)
+
+	if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
+		return nil
+	}
+
+	t.startTyping(ctx.Chat())
+
+	inbound := bus.InboundMessage{
+		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
+		Content:   msg.Text,
+		Channel:   t.name,
+		Timestamp: time.Now(),
+		Metadata: map[string]any{
+			"message_id": msg.ID,
+			"chat_id":    msg.Chat.ID,
+			"username":   msg.Sender.Username,
+			"is_command": true,
+		},
+	}
+	if !t.bus.Send(inbound) {
+		log.Error("failed to send command to bus", "command", command)
+		_, err := ctx.Bot().Send(ctx.Sender(), "Sorry, I couldn't process that. Please try again.")
+		return err
+	}
+	return nil
+}
+
 // handlePhoto processes incoming photos.
 func (t *TelegramChannel) handlePhoto(ctx telebot.Context) error {
 	msg := ctx.Message()
@@ -400,13 +644,19 @@ func (t *TelegramChannel) handlePhoto(ctx telebot.Context) error {
 	}
 
 	// Show typing indicator
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	// Build content with photo info
 	photo := msg.Photo
 	content := "[Photo]"
 	if photo.Caption != "" {
 		content = fmt.Sprintf("[Photo with caption]: %s", photo.Caption)
+	}
+
+	// The download happens only after the allowlist check above.
+	img, ok := t.attachImage(ctx, photo.File, "photo", int64(photo.FileSize))
+	if !ok {
+		return nil
 	}
 
 	inbound := bus.InboundMessage{
@@ -429,8 +679,7 @@ func (t *TelegramChannel) handlePhoto(ctx telebot.Context) error {
 		},
 	}
 
-	// Download photo in background
-	go t.downloadFile(photo.File, "photo", msg.Chat.ID, msg.ID)
+	inbound.Images = []providers.Image{img}
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send photo message to bus", "error", "queue full")
@@ -447,7 +696,7 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 		return nil
 	}
 
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	voice := msg.Voice
 	content := "[Voice message]"
@@ -475,9 +724,6 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 		},
 	}
 
-	// Download voice in background
-	go t.downloadFile(voice.File, "voice", msg.Chat.ID, msg.ID)
-
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send voice message to bus", "error", "queue full")
 	}
@@ -493,12 +739,25 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 		return nil
 	}
 
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	doc := msg.Document
 	content := fmt.Sprintf("[Document: %s]", doc.FileName)
 	if doc.Caption != "" {
 		content = fmt.Sprintf("[Document: %s]\n%s", doc.FileName, doc.Caption)
+	}
+
+	// A document is only downloaded when it claims to be an image; every other
+	// document type is forwarded as metadata exactly as before. The claim is
+	// not trusted — NewImage sniffs the content — it only decides whether to
+	// spend a download at all.
+	var images []providers.Image
+	if providers.IsSupportedImageMIME(doc.MIME) {
+		img, ok := t.attachImage(ctx, doc.File, doc.FileName, int64(doc.FileSize))
+		if !ok {
+			return nil
+		}
+		images = []providers.Image{img}
 	}
 
 	inbound := bus.InboundMessage{
@@ -522,8 +781,7 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 		},
 	}
 
-	// Download document in background
-	go t.downloadFile(doc.File, "document", msg.Chat.ID, msg.ID)
+	inbound.Images = images
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send document message to bus", "error", "queue full")
@@ -540,7 +798,7 @@ func (t *TelegramChannel) handleAudio(ctx telebot.Context) error {
 		return nil
 	}
 
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	audio := msg.Audio
 	content := fmt.Sprintf("[Audio: %s]", audio.Title)
@@ -571,9 +829,6 @@ func (t *TelegramChannel) handleAudio(ctx telebot.Context) error {
 		},
 	}
 
-	// Download audio in background
-	go t.downloadFile(audio.File, "audio", msg.Chat.ID, msg.ID)
-
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send audio message to bus", "error", "queue full")
 	}
@@ -589,7 +844,7 @@ func (t *TelegramChannel) handleVideo(ctx telebot.Context) error {
 		return nil
 	}
 
-	go t.sendTyping(ctx.Sender())
+	t.startTyping(ctx.Chat())
 
 	video := msg.Video
 	content := "[Video]"
@@ -619,9 +874,6 @@ func (t *TelegramChannel) handleVideo(ctx telebot.Context) error {
 			"caption":        video.Caption,
 		},
 	}
-
-	// Download video in background
-	go t.downloadFile(video.File, "video", msg.Chat.ID, msg.ID)
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send video message to bus", "error", "queue full")
@@ -772,48 +1024,157 @@ func (t *TelegramChannel) convertToInboundMessage(msg *telebot.Message) bus.Inbo
 	}
 }
 
-// downloadFile downloads a file from Telegram and stores it locally.
-func (t *TelegramChannel) downloadFile(file telebot.File, mediaType string, chatID int64, messageID int) {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
+// startTyping shows "typing…" for a chat and keeps it alive until stopTyping
+// is called, the channel shuts down, or the process exits. Telegram clears a
+// chat action after 5 seconds, but an agent turn routinely runs far longer, so
+// a single sendChatAction leaves the user staring at an idle chat.
+// Calling it again for a chat that is already typing is a no-op.
+func (t *TelegramChannel) startTyping(recipient telebot.Recipient) {
+	key, ok := recipientKey(recipient)
+	if !ok {
 		return
 	}
 
-	// Check if file is on cloud
-	if !file.InCloud() {
-		log.Debug("file not in cloud, skipping download", "media_type", mediaType, "file_id", file.FileID)
+	t.mu.Lock()
+	notifier := t.currentNotifierLocked()
+	if notifier == nil {
+		t.mu.Unlock()
 		return
 	}
-
-	// Create filename for local storage
-	filename := fmt.Sprintf("%s_%d_%d_%s", mediaType, chatID, messageID, file.UniqueID)
-
-	err := bot.Download(&file, filename)
-	if err != nil {
-		log.Error("failed to download file", "media_type", mediaType, "error", err, "file_id", file.FileID)
+	if _, ok := t.typingStop[key]; ok {
+		t.mu.Unlock()
 		return
 	}
+	stop := make(chan struct{})
+	t.typingStop[key] = stop
+	interval := t.typingInterval
+	maxDuration := t.typingMaxDuration
+	shutdown := t.stopCh
+	t.mu.Unlock()
 
-	log.Info("downloaded file", "media_type", mediaType, "filename", filename, "chat_id", chatID, "message_id", messageID)
+	go func() {
+		notifyTyping(notifier, recipient)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		var expired <-chan time.Time
+		if maxDuration > 0 {
+			timer := time.NewTimer(maxDuration)
+			defer timer.Stop()
+			expired = timer.C
+		}
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-shutdown:
+				return
+			case <-expired:
+				// Give up rather than type at Telegram forever. Clear the map
+				// entry so a later message for this chat can start again.
+				t.clearTyping(key, stop)
+				return
+			case <-ticker.C:
+				notifyTyping(notifier, recipient)
+			}
+		}
+	}()
 }
 
-// sendTyping sends a typing indicator to the user.
-func (t *TelegramChannel) sendTyping(recipient telebot.Recipient) {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
+// stopTyping ends the keep-alive for a chat. Stopping a chat that is not
+// typing is a no-op.
+func (t *TelegramChannel) stopTyping(recipient telebot.Recipient) {
+	key, ok := recipientKey(recipient)
+	if !ok {
 		return
 	}
 
-	_, err := bot.Send(recipient, telebot.Typing)
-	if err != nil {
+	t.mu.Lock()
+	stop, ok := t.typingStop[key]
+	if ok {
+		delete(t.typingStop, key)
+	}
+	t.mu.Unlock()
+
+	if ok {
+		close(stop)
+	}
+}
+
+// clearTyping removes a chat's keep-alive entry, but only if it is still the
+// one this goroutine owns — a newer keep-alive for the same chat must not be
+// evicted by an older one expiring.
+func (t *TelegramChannel) clearTyping(key string, own chan struct{}) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if cur, ok := t.typingStop[key]; ok && cur == own {
+		delete(t.typingStop, key)
+	}
+}
+
+// recipientKey returns the map key for a recipient, reporting false when there
+// is nothing usable to key on. A nil *telebot.Chat or *telebot.User carried in
+// a non-nil interface would panic inside Recipient(), so both are screened.
+func recipientKey(recipient telebot.Recipient) (string, bool) {
+	switch r := recipient.(type) {
+	case nil:
+		return "", false
+	case *telebot.Chat:
+		if r == nil {
+			return "", false
+		}
+	case *telebot.User:
+		if r == nil {
+			return "", false
+		}
+	}
+	key := recipient.Recipient()
+	if key == "" {
+		return "", false
+	}
+	return key, true
+}
+
+// currentNotifierLocked returns the notifier to use for chat actions and the
+// command menu. Callers must hold mu.
+func (t *TelegramChannel) currentNotifierLocked() telegramNotifier {
+	if t.notifier != nil {
+		return t.notifier
+	}
+	if t.bot != nil {
+		return t.bot
+	}
+	return nil
+}
+
+func notifyTyping(notifier telegramNotifier, recipient telebot.Recipient) {
+	if err := notifier.Notify(recipient, telebot.Typing); err != nil {
 		log.Debug("failed to send typing indicator", "error", err)
 	}
+}
+
+// registerCommands publishes the command menu so Telegram shows the menu
+// button and autocompletes commands in private chats.
+func (t *TelegramChannel) registerCommands(notifier telegramNotifier) error {
+	if notifier == nil {
+		return fmt.Errorf("no bot available to register commands")
+	}
+	return notifier.SetCommands(
+		botCommands,
+		telebot.CommandScope{Type: telebot.CommandScopeAllPrivateChats},
+	)
+}
+
+// registerCommandsBestEffort registers the command menu, logging rather than
+// failing: a missing menu must never stop the bot from starting.
+func (t *TelegramChannel) registerCommandsBestEffort(notifier telegramNotifier) {
+	if err := t.registerCommands(notifier); err != nil {
+		log.Warn("failed to register Telegram command menu", "error", err)
+		return
+	}
+	log.Debug("registered Telegram command menu", "commands", len(botCommands))
 }
 
 // Stop gracefully shuts down the Telegram channel.
@@ -828,9 +1189,16 @@ func (t *TelegramChannel) Stop() error {
 	t.running = false
 	close(t.stopCh)
 
-	// Stop the bot
+	// The keep-alive goroutines also select on stopCh, so closing it is what
+	// actually stops them; dropping the entries just releases the map.
+	t.typingStop = make(map[string]chan struct{})
+
+	// Stop the bot's long poller so runBot's blocking bot.Start() call
+	// returns. bot.Close() is the Telegram Bot API "close" session-teardown
+	// RPC (for moving a bot between API servers) and never unblocks
+	// bot.Start(), which would leak the poller goroutine.
 	if t.bot != nil {
-		t.bot.Close()
+		t.bot.Stop()
 		t.bot = nil
 	}
 
@@ -839,6 +1207,7 @@ func (t *TelegramChannel) Stop() error {
 }
 
 // Send delivers an outbound message to Telegram.
+// Splits messages exceeding TelegramMaxMessageLen into multiple messages.
 func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 	t.mu.RLock()
 	bot := t.bot
@@ -850,18 +1219,12 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 
 	log.Debug("Send called", "channelID", msg.ChannelID, "metadata_chat_id", msg.Metadata["chat_id"])
 
-	// Determine recipient - ChannelID is the chat ID
 	var recipient telebot.Recipient
-
-	// First try ChannelID
 	if msg.ChannelID != "" {
 		if chatID, err := strconv.ParseInt(msg.ChannelID, 10, 64); err == nil {
 			recipient = telebot.ChatID(chatID)
-			log.Debug("Using ChannelID as recipient", "chatID", chatID)
 		}
 	}
-
-	// Fall back to metadata
 	if recipient == nil {
 		if cid, ok := msg.Metadata["chat_id"].(int64); ok {
 			recipient = telebot.ChatID(cid)
@@ -869,12 +1232,14 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 			recipient = telebot.ChatID(int64(cid))
 		}
 	}
-
 	if recipient == nil {
 		return fmt.Errorf("no valid recipient specified")
 	}
 
-	// Get parse mode from metadata
+	// The reply is on its way, so the "typing…" keep-alive for this chat has
+	// done its job.
+	t.stopTyping(recipient)
+
 	parseMode := telebot.ModeDefault
 	if pm, ok := msg.Metadata["parse_mode"].(string); ok {
 		switch strings.ToLower(pm) {
@@ -885,55 +1250,215 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		}
 	}
 
-	// Prepare send options
-	opts := &telebot.SendOptions{
-		ParseMode: parseMode,
+	// Parts after the first carry a "— Part N of M —" header. Re-split with
+	// that reserved so header+part still fits, rather than truncating the
+	// part afterwards — truncation used to chop off the closing code fence
+	// that splitMessage had just added.
+	const partHeaderOverhead = 35
+	parts := splitMessage(msg.Content, TelegramMaxMessageLen)
+	if len(parts) > 1 {
+		parts = splitMessage(msg.Content, TelegramMaxMessageLen-partHeaderOverhead)
 	}
 
-	// Handle reply_to - pass the original message for reply
-	if replyToMsg, ok := msg.Metadata["reply_to_message"].(**telebot.Message); ok && replyToMsg != nil {
-		opts.ReplyTo = *replyToMsg
-	}
-
-	// Handle reply markup (inline buttons)
-	if markup, ok := msg.Metadata["reply_markup"].(map[string]any); ok {
-		opts.ReplyMarkup = t.buildReplyMarkup(markup)
-	}
-
-	// Retry logic for sending
-	var lastErr error
-	delay := t.retryDelay
-
-	for attempt := 0; attempt < t.maxRetries; attempt++ {
-		_, err := bot.Send(recipient, msg.Content, opts)
-		if err == nil {
-			return nil
+	for i, part := range parts {
+		partOpts := telebot.SendOptions{ParseMode: parseMode}
+		if i == 0 {
+			if replyToMsg, ok := msg.Metadata["reply_to_message"].(**telebot.Message); ok && replyToMsg != nil {
+				partOpts.ReplyTo = *replyToMsg
+			}
+			if markup, ok := msg.Metadata["reply_markup"].(map[string]any); ok {
+				partOpts.ReplyMarkup = t.buildReplyMarkup(markup)
+			}
 		}
 
-		lastErr = err
-		log.Warn("failed to send message, retrying",
-			"attempt", attempt+1,
-			"max_retries", t.maxRetries,
-			"error", err,
-			"recipient", msg.ChannelID,
-		)
+		content := part
+		if i > 0 {
+			content = fmt.Sprintf("\n\n— *Part %d of %d* —\n\n", i+1, len(parts)) + part
+		}
 
-		// Check if error is retryable
-		if !isRetryable(err) {
+		var lastErr error
+		delay := t.retryDelay
+
+		for attempt := 0; attempt < t.maxRetries; attempt++ {
+			_, err := bot.Send(recipient, content, &partOpts)
+			if err == nil {
+				lastErr = nil
+				break
+			}
+
+			// Never lose a message to a formatting error: Telegram rejected
+			// the entities in this part, so retry the same content once with
+			// ParseMode cleared. Plain text always sends. Clearing partOpts
+			// (not just this attempt) means a later retry in this same loop
+			// also stays plain rather than re-triggering the same rejection.
+			if isParseEntityError(err) && partOpts.ParseMode != telebot.ModeDefault {
+				log.Warn("telegram rejected message formatting, retrying as plain text",
+					"part", i+1, "total_parts", len(parts), "error", err,
+				)
+				partOpts.ParseMode = telebot.ModeDefault
+				if _, fallbackErr := bot.Send(recipient, content, &partOpts); fallbackErr == nil {
+					lastErr = nil
+					break
+				} else {
+					err = fallbackErr
+				}
+			}
+
+			lastErr = err
+			log.Warn("failed to send message part, retrying",
+				"attempt", attempt+1, "max_retries", t.maxRetries,
+				"part", i+1, "total_parts", len(parts),
+				"error", err, "recipient", msg.ChannelID,
+			)
+			if !isRetryable(err) {
+				break
+			}
+			select {
+			case <-time.After(delay):
+				delay = time.Duration(math.Min(float64(delay*2), float64(t.maxRetryDelay)))
+			case <-t.stopCh:
+				return fmt.Errorf("stopped while retrying: %w", lastErr)
+			}
+		}
+		if lastErr != nil {
+			return fmt.Errorf("failed to send message part %d/%d after %d retries: %w",
+				i+1, len(parts), t.maxRetries, lastErr)
+		}
+
+		if i < len(parts)-1 {
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-t.stopCh:
+				return nil
+			}
+		}
+	}
+
+	return nil
+}
+
+// splitMessage splits a message into chunks of at most maxLen bytes each.
+// Avoids splitting inside markdown code blocks by closing them before the
+// split and reopening them after. Tries to split on newlines first. A
+// non-positive maxLen leaves the content unsplit.
+func splitMessage(content string, maxLen int) []string {
+	if maxLen <= 0 || len(content) <= maxLen {
+		return []string{content}
+	}
+
+	// Closing a block appends fenceClose to this part and reopening prepends
+	// fenceOpen to the next one; both have to fit inside maxLen.
+	const (
+		fenceClose = "\n```"
+		fenceOpen  = "```\n"
+	)
+
+	var parts []string
+	for len(content) > 0 {
+		if len(content) <= maxLen {
+			parts = append(parts, content)
 			break
 		}
 
-		// Wait before retry with exponential backoff
-		select {
-		case <-time.After(delay):
-			// Exponential backoff
-			delay = time.Duration(math.Min(float64(delay*2), float64(t.maxRetryDelay)))
-		case <-t.stopCh:
-			return fmt.Errorf("stopped while retrying: %w", lastErr)
+		// Reserve room for the closing fence up front. Appending it after
+		// slicing at maxLen would push the part past Telegram's hard limit,
+		// and Telegram rejects the whole send rather than truncating.
+		limit := maxLen
+		if strings.Count(content[:maxLen], "```")%2 == 1 {
+			limit = maxLen - len(fenceClose)
 		}
+		if limit < 1 {
+			limit = 1
+		}
+
+		splitAt := strings.LastIndex(content[:limit], "\n")
+		// Reopening a block prepends fenceOpen to the remainder. Splitting at
+		// or before that length would leave the remainder no shorter than it
+		// started, so the loop would never terminate. Hard split instead.
+		if splitAt <= len(fenceOpen) {
+			splitAt = limit
+		}
+		splitAt = runeBoundary(content, splitAt)
+
+		prefix := content[:splitAt]
+		suffix := content[splitAt:]
+
+		// If the prefix has an odd number of code fences, we're mid-code-block.
+		// Close the block at the end of this part and reopen at the start of the next.
+		if strings.Count(prefix, "```")%2 == 1 {
+			prefix += fenceClose
+			suffix = fenceOpen + suffix
+		}
+
+		// The remainder must always shrink and every part must carry at least
+		// one byte; anything else would hang the outbound consumer.
+		if len(suffix) >= len(content) || len(prefix) == 0 {
+			splitAt = runeBoundary(content, maxLen)
+			if splitAt == 0 {
+				splitAt = maxLen
+			}
+			prefix, suffix = content[:splitAt], content[splitAt:]
+		}
+
+		parts = append(parts, prefix)
+		content = suffix
 	}
 
-	return fmt.Errorf("failed to send message after %d retries: %w", t.maxRetries, lastErr)
+	return parts
+}
+
+// runeBoundary backs idx up to the start of a UTF-8 rune so that a hard split
+// never cuts a multibyte character in half. Telegram counts UTF-16 code
+// units, so a byte limit is always conservative — the risk here is corruption,
+// not overflow.
+func runeBoundary(s string, idx int) int {
+	if idx >= len(s) {
+		return len(s)
+	}
+	for idx > 0 && !utf8.RuneStart(s[idx]) {
+		idx--
+	}
+	return idx
+}
+
+// isParseEntityError reports whether err is Telegram rejecting a message's
+// formatting rather than some other failure. LLM output routinely contains
+// unescaped Markdown/HTML (stray `_`, `*`, unclosed backticks, `<x>`), and
+// Telegram's 400 for that case must never be treated as a generic retryable
+// or non-retryable error — see isRetryable, which has no special case for it
+// and would otherwise let the whole reply be silently dropped. Matches are
+// deliberately narrow (specific description substrings, case-insensitive),
+// never on "400" alone: other 400s exist (chat not found, message to reply
+// not found, etc.) and must not be silently downgraded to plain text.
+func isParseEntityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+
+	// Telegram prefixes entity failures with "can't parse entities:" (older
+	// API versions used "can't parse message text:"), so the first two
+	// patterns carry the weight. The rest are defensive against phrasings we
+	// have not observed and may match nothing in practice.
+	//
+	// The asymmetry justifies erring wide: missing a real formatting error
+	// loses the reply entirely, which is the bug this exists to prevent, while
+	// a false positive costs one extra plain-text attempt that either succeeds
+	// (user gets an unformatted reply instead of none) or fails and falls
+	// through to the normal retry path. Matching bare "400" would be too wide
+	// — that would swallow "chat not found" and similar real failures.
+	patterns := []string{
+		"can't parse entities",
+		"can't parse message text",
+		"unsupported start tag",
+		"unclosed",
+	}
+	for _, p := range patterns {
+		if strings.Contains(errStr, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRetryable determines if an error should trigger a retry.
@@ -947,31 +1472,33 @@ func isRetryable(err error) bool {
 		return true
 	}
 
-	// Telegram-specific errors
-	retryablePatterns := []string{
-		"too many requests",
-		"retry after",
-		"bot was blocked",
-		"user is deactivated",
+	// Transient Telegram rate limiting — retrying after a backoff is correct.
+	if strings.Contains(errStr, "too many requests") ||
+		strings.Contains(errStr, "retry after") {
+		return true
 	}
 
-	for _, pattern := range retryablePatterns {
+	// Permanent failures. "bot was blocked" and "user is deactivated" are 403s
+	// that will never succeed on retry — retrying them burns ~7.5s of backoff
+	// per outbound part inside the single consumeOutbound goroutine, delaying
+	// every other queued message behind a doomed send. A missing chat or reply
+	// target is equally permanent.
+	permanentPatterns := []string{
+		"bot was blocked",
+		"user is deactivated",
+		"message to reply",
+		"chat not found",
+	}
+	for _, pattern := range permanentPatterns {
 		if strings.Contains(errStr, pattern) {
-			return true
+			return false
 		}
 	}
 
-	// Message to chat not found - not retryable
-	if strings.Contains(errStr, "message to reply") {
-		return false
-	}
-
-	// Chat not found - not retryable
-	if strings.Contains(errStr, "chat not found") {
-		return false
-	}
-
-	// Default to retry for unknown errors
+	// Default to retry for unknown errors, but say so: an error we do not
+	// recognize being retried 3× is a signal that this classifier needs a new
+	// case, not something to swallow silently.
+	log.Debug("telegram: retrying unclassified send error", "error", errStr)
 	return true
 }
 
@@ -1055,6 +1582,15 @@ func (t *TelegramChannel) buildReplyMarkup(markup map[string]any) *telebot.Reply
 
 // consumeOutbound listens for outbound messages from the bus.
 func (t *TelegramChannel) consumeOutbound(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic in telegram outbound consumer",
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+
 	ch := t.bus.OutboundChannel()
 	for {
 		select {
@@ -1075,116 +1611,108 @@ func (t *TelegramChannel) consumeOutbound(ctx context.Context) {
 	}
 }
 
-// SendPhoto sends a photo to a recipient.
-func (t *TelegramChannel) SendPhoto(recipient telebot.Recipient, photo *telebot.Photo, caption string, opts *telebot.SendOptions) error {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
+// telegramAPIBaseURL is the Bot API endpoint ValidateToken talks to. It is a
+// package var (not a const) so tests can point validation at a fake server.
+var telegramAPIBaseURL = "https://api.telegram.org"
 
-	if bot == nil {
-		return fmt.Errorf("bot not initialized")
-	}
+// telegramTokenTimeout bounds a single getMe attempt. The transport-level TLS
+// handshake has its own ~10s timeout, so a hung connection cannot stall the
+// onboard wizard forever; this covers the whole exchange.
+const telegramTokenTimeout = 10 * time.Second
 
-	if opts == nil {
-		opts = &telebot.SendOptions{}
-	}
+// telegramTokenAttempts is how many getMe attempts a transient connectivity
+// failure (dial error, TLS handshake timeout, timeout, connection reset) gets
+// before the token is reported invalid. A single TLS hiccup is a routine event
+// on flaky networks and used to abort an otherwise working setup.
+const telegramTokenAttempts = 3
 
-	_, err := bot.Send(recipient, photo, opts)
-	return err
-}
-
-// SendDocument sends a document to a recipient.
-func (t *TelegramChannel) SendDocument(recipient telebot.Recipient, doc *telebot.Document, caption string, opts *telebot.SendOptions) error {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
-		return fmt.Errorf("bot not initialized")
-	}
-
-	if opts == nil {
-		opts = &telebot.SendOptions{}
-	}
-
-	_, err := bot.Send(recipient, doc, opts)
-	return err
-}
-
-// EditMessage edits an existing message.
-func (t *TelegramChannel) EditMessage(recipient telebot.Recipient, messageID int, text string, opts *telebot.SendOptions) error {
-	t.mu.RLock()
-	bot := t.bot
-	t.mu.RUnlock()
-
-	if bot == nil {
-		return fmt.Errorf("bot not initialized")
-	}
-
-	// Create an Editable wrapper for the message
-	editable := &editableMessage{
-		messageID: messageID,
-		chatID:    0, // Will be determined from context
-	}
-
-	_, err := bot.Edit(editable, text, opts)
-	return err
-}
-
-// editableMessage implements telebot.Editable for editing messages.
-type editableMessage struct {
-	messageID int
-	chatID    int64
-}
-
-func (e *editableMessage) MessageSig() (string, int64) {
-	return strconv.Itoa(e.messageID), e.chatID
-}
-
-// ParseMarkdown parses markdown text and returns HTML for Telegram.
-func (t *TelegramChannel) ParseMarkdown(text string) (string, error) {
-	// Simple markdown to Telegram HTML conversion
-	// Bold: **text** or *text* -> <b>text</b>
-	boldRegex := regexp.MustCompile(`\*\*(.+?)\*\*|\*(.+?)\*`)
-	text = boldRegex.ReplaceAllString(text, "<b>$1$2</b>")
-
-	// Italic: __text__ or _text_ -> <i>text</i>
-	italicRegex := regexp.MustCompile(`__(.+?)__|_(.+?)_`)
-	text = italicRegex.ReplaceAllString(text, "<i>$1$2</i>")
-
-	// Code: `code` -> <code>code</code>
-	codeRegex := regexp.MustCompile("`(.+?)`")
-	text = codeRegex.ReplaceAllString(text, "<code>$1</code>")
-
-	// Pre: ```code``` -> <pre>code</pre>
-	preRegex := regexp.MustCompile("```(.+?)```")
-	text = preRegex.ReplaceAllString(text, "<pre>$1</pre>")
-
-	// Links: [text](url) -> <a href="url">text</a>
-	linkRegex := regexp.MustCompile(`\[(.+?)\]\((.+?)\)`)
-	text = linkRegex.ReplaceAllString(text, `<a href="$2">$1</a>`)
-
-	return text, nil
-}
+// telegramTokenFormat is the documented shape of a Bot API token: a numeric bot
+// id, a colon, and a base64url secret. Validated offline so an obviously
+// malformed token fails instantly and without any network traffic.
+var telegramTokenFormat = regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]{30,}$`)
 
 // ValidateToken validates a Telegram bot token by making a getMe API call.
 // Returns nil if the token is valid, or an error describing the failure.
+// Transient connectivity failures are retried up to telegramTokenAttempts
+// times; a definite API rejection (400/401/404) is never retried.
 func ValidateToken(token string) error {
+	return validateTokenWith(token, telegramAPIBaseURL, &http.Client{Timeout: telegramTokenTimeout})
+}
+
+func validateTokenWith(token, baseURL string, client *http.Client) error {
+	if err := validateTokenFormat(token); err != nil {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= telegramTokenAttempts; attempt++ {
+		err := validateTokenAttempt(token, baseURL, client)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !errors.Is(err, ErrTelegramNetwork) || attempt == telegramTokenAttempts {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	}
+	return lastErr
+}
+
+// validateTokenFormat rejects tokens that cannot possibly be valid before any
+// network traffic leaves the machine.
+func validateTokenFormat(token string) error {
 	if token == "" {
 		return fmt.Errorf("token is empty")
 	}
+	if !telegramTokenFormat.MatchString(token) {
+		return fmt.Errorf("token is not a valid Telegram bot token (expected <numeric-id>:<secret>)")
+	}
+	return nil
+}
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+// ErrTelegramNetwork is wrapped into errors from ValidateToken when the
+// Telegram API could not be reached at all — a dial failure, TLS handshake
+// timeout, or request timeout — as opposed to a definite rejection of the
+// token. Only these failures are retried, and callers use IsNetworkError to
+// tell "check your network" apart from "check your token".
+var ErrTelegramNetwork = errors.New("telegram API unreachable")
 
-	resp, err := http.Get(url)
+// IsNetworkError reports whether err is a connectivity failure (dial error, TLS
+// handshake timeout, timeout, reset) rather than a definite rejection of the
+// token by the API.
+func IsNetworkError(err error) bool {
+	return errors.Is(err, ErrTelegramNetwork)
+}
+
+func validateTokenAttempt(token, baseURL string, client *http.Client) error {
+	reqURL := fmt.Sprintf("%s/bot%s/getMe", baseURL, token)
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect to Telegram API: %w", err)
+		return fmt.Errorf("invalid token: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// client.Do wraps a transport failure as a *url.Error whose string form
+		// embeds the full request URL — including the token, which would land
+		// verbatim in a terminal and in the setup output users paste into
+		// issues. Unwrap to the cause so the credential never escapes.
+		cause := err
+		if urlErr, ok := err.(*url.Error); ok {
+			cause = urlErr.Err
+		}
+		return fmt.Errorf("failed to connect to Telegram API: %w: %v", ErrTelegramNetwork, cause)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		// A reset or timeout after the headers arrived is still a
+		// connectivity failure and must be retried, not reported as a
+		// rejected token.
+		return fmt.Errorf("failed to read response: %w: %v", ErrTelegramNetwork, err)
 	}
 
 	var result struct {

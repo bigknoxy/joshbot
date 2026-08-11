@@ -2,11 +2,12 @@ package learning
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/log"
 
 	"github.com/bigknoxy/joshbot/internal/memory"
 	"github.com/bigknoxy/joshbot/internal/providers"
@@ -118,7 +119,7 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 
 	var summary string
 	if c.provider != nil {
-		sys := "You are a memory consolidation assistant. Extract a short list of factual one-line statements from the conversation."
+		sys := "You are a memory consolidation assistant. Extract a short list of factual one-line statements from the conversation, one per line, with no preamble or commentary. If there is nothing worth remembering, respond with nothing."
 		req := providers.ChatRequest{
 			Model: c.provider.Config().Model,
 			Messages: []providers.Message{
@@ -142,22 +143,50 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 	}
 }
 
-// saveSummary tries structured fact parsing first, falls back to raw fact.
+// saveSummary applies a deterministic content gate to the raw completion
+// before persisting anything: it is split into candidate one-line facts,
+// each of which must be non-empty, within maxFactContentLength, and not look
+// like a refusal or meta-commentary (see extractValidFacts). A completion
+// that yields no valid facts is rejected outright — logged and discarded —
+// leaving MEMORY.md unchanged, rather than being stored as a single
+// unfiltered blob.
+//
+// The consolidation prompt asks for plain one-line statements, not JSON, so
+// this no longer attempts a JSON.Unmarshal fast path: that branch was dead
+// in production (the prompt never requests JSON) and its presence implied a
+// contract that was never exercised. See GH issue #73.
 func (c *Consolidator) saveSummary(ctx context.Context, summary string) error {
-	var facts []memory.Fact
-	if err := json.Unmarshal([]byte(summary), &facts); err == nil && len(facts) > 0 {
-		return c.mem.ReconcileFacts(ctx, facts)
+	validFacts, reason := extractValidFacts(summary, maxFactContentLength, c.maxFacts)
+	if len(validFacts) == 0 {
+		log.Warn("consolidation rejected: completion failed content gate",
+			"reason", reason,
+			"preview", previewString(summary, 80))
+		return nil
 	}
 
-	fact := memory.Fact{
-		ID:         memory.FactID(memory.FactSystem, summary),
-		Category:   memory.FactSystem,
-		Content:    summary,
-		Confidence: 0.6,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+	now := time.Now()
+	facts := make([]memory.Fact, 0, len(validFacts))
+	for _, content := range validFacts {
+		facts = append(facts, memory.Fact{
+			ID:         memory.FactID(memory.FactSystem, content),
+			Category:   memory.FactSystem,
+			Content:    content,
+			Confidence: 0.6,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		})
 	}
-	return c.mem.ReconcileFacts(ctx, []memory.Fact{fact})
+	return c.mem.ReconcileFacts(ctx, facts)
+}
+
+// previewString returns s trimmed to at most n characters, for safe logging
+// of otherwise-unbounded model output.
+func previewString(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // heuristicFallback picks lines that look like facts and writes them as consolidated section.

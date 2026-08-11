@@ -1,0 +1,116 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+// Where joshbot reads and writes its configuration.
+//
+// The home directory and the config file were previously coupled by
+// convention alone: callers wanting a specific file overrode DefaultHome to
+// the file's directory, loaded "config.json" from it, and put the global back
+// afterwards. That discarded the file name the caller had asked for, and left
+// everything derived from the home — sessions, media, cron, the skills trust
+// store, and Save itself — pointing at the original location. Reading one file
+// and writing another is the kind of failure a user cannot see.
+
+// activeConfigPath is the config file in use. Empty means "derive it from
+// DefaultHome", which is the ordinary case.
+var activeConfigPath string
+
+// ConfigPath returns the config file joshbot reads and writes.
+func ConfigPath() string {
+	if activeConfigPath != "" {
+		return activeConfigPath
+	}
+	return filepath.Join(DefaultHome, "config.json")
+}
+
+// SetHome points joshbot at a different home directory, recomputing everything
+// derived from it.
+//
+// DefaultWorkspace is a package variable computed at init, so moving the home
+// without updating it leaves the workspace behind — the flag would be half
+// applied, which is worse than not applying it.
+func SetHome(dir string) {
+	DefaultHome = dir
+	DefaultWorkspace = filepath.Join(dir, "workspace")
+	activeConfigPath = ""
+}
+
+// LoadFrom loads configuration from an explicit file path.
+//
+// The file must exist: falling back to defaults would leave the caller
+// believing their file had been read. Loading also anchors the home directory
+// to the file's parent, so sessions, media, cron and the skills trust store
+// live alongside the config that selected them rather than being split across
+// two homes.
+func LoadFrom(path string) (*Config, error) {
+	if path == "" {
+		return Load()
+	}
+	if err := anchorAt(path); err != nil {
+		return nil, err
+	}
+	return Load()
+}
+
+// LoadStrictFrom is LoadFrom without the fall back to defaults. See LoadStrict.
+func LoadStrictFrom(path string) (*Config, error) {
+	if path == "" {
+		return LoadStrict()
+	}
+	if err := anchorAt(path); err != nil {
+		return nil, err
+	}
+	return LoadStrict()
+}
+
+// anchorAt validates an explicit config path and points joshbot at it.
+func anchorAt(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve config path %s: %w", path, err)
+	}
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("config file not found: %s", abs)
+		}
+		return fmt.Errorf("config file %s: %w", abs, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("config path %s is a directory; give the path to a config file", abs)
+	}
+
+	return UseConfigFile(abs)
+}
+
+// UseConfigFile anchors joshbot at an explicit config file without requiring
+// that the file already exist.
+//
+// LoadFrom insists on an existing file, because reading a path that is not
+// there and silently falling back to defaults tells the caller their file was
+// read when it was not. Onboarding is the opposite case: it is creating the
+// file. It still has to anchor first, since it inspects and backs up the home
+// directory before it writes anything — anchoring afterwards means --config
+// names one location while the backup and the rewrite hit the default home.
+func UseConfigFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve config path %s: %w", path, err)
+	}
+	if info, err := os.Stat(abs); err == nil && info.IsDir() {
+		return fmt.Errorf("config path %s is a directory; give the path to a config file", abs)
+	}
+
+	SetHome(filepath.Dir(abs))
+	activeConfigPath = abs
+	return nil
+}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,9 +18,10 @@ import (
 
 // mockProvider is a mock LLM provider for testing.
 type mockProvider struct {
-	chatFn func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error)
-	name   string
-	cfg    providers.Config
+	chatFn   func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error)
+	streamFn func(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error)
+	name     string
+	cfg      providers.Config
 }
 
 func (m *mockProvider) Chat(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
@@ -35,6 +37,9 @@ func (m *mockProvider) Chat(ctx context.Context, req providers.ChatRequest) (*pr
 }
 
 func (m *mockProvider) ChatStream(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
+	if m.streamFn != nil {
+		return m.streamFn(ctx, req)
+	}
 	ch := make(chan providers.StreamChunk)
 	close(ch)
 	return ch, nil
@@ -222,6 +227,96 @@ func TestNewAgent(t *testing.T) {
 	if agent.maxIterations != cfg.Agents.Defaults.MaxToolIterations {
 		t.Errorf("expected maxIterations %d, got %d", cfg.Agents.Defaults.MaxToolIterations, agent.maxIterations)
 	}
+}
+
+func TestGetModelName(t *testing.T) {
+	t.Run("model-centric mode uses agent model name", func(t *testing.T) {
+		cfg := &config.Config{
+			ModelsConfig: config.ModelsConfig{
+				Models: []config.ModelConfig{
+					{Name: "smart", Model: "nvidia/stepfun-ai/step-3.5-flash"},
+				},
+				Agent: config.AgentModelConfig{Model: "smart"},
+			},
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		got := agent.getModelName()
+		if got != "smart" {
+			t.Errorf("expected %q, got %q", "smart", got)
+		}
+	})
+
+	t.Run("explicit modelName overrides config", func(t *testing.T) {
+		cfg := &config.Config{
+			ModelsConfig: config.ModelsConfig{
+				Models: []config.ModelConfig{
+					{Name: "smart", Model: "nvidia/stepfun-ai/step-3.5-flash"},
+				},
+				Agent: config.AgentModelConfig{Model: "smart"},
+			},
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		agent.modelName = "custom-name"
+		got := agent.getModelName()
+		if got != "custom-name" {
+			t.Errorf("expected %q, got %q", "custom-name", got)
+		}
+	})
+
+	t.Run("legacy mode uses agents.defaults.model", func(t *testing.T) {
+		cfg := &config.Config{
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		got := agent.getModelName()
+		if got != "nvidia/stepfun-ai/step-3.5-flash" {
+			t.Errorf("expected %q, got %q", "nvidia/stepfun-ai/step-3.5-flash", got)
+		}
+	})
+}
+
+func TestGetResolvedModelName(t *testing.T) {
+	t.Run("model-centric mode resolves to actual model string", func(t *testing.T) {
+		cfg := &config.Config{
+			ModelsConfig: config.ModelsConfig{
+				Models: []config.ModelConfig{
+					{Name: "smart", Model: "nvidia/stepfun-ai/step-3.5-flash"},
+				},
+				Agent: config.AgentModelConfig{Model: "smart"},
+			},
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		got := agent.getResolvedModelName()
+		if got != "nvidia/stepfun-ai/step-3.5-flash" {
+			t.Errorf("expected %q, got %q", "nvidia/stepfun-ai/step-3.5-flash", got)
+		}
+	})
+
+	t.Run("explicit modelName overrides", func(t *testing.T) {
+		cfg := &config.Config{
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		agent.modelName = "custom-model"
+		got := agent.getResolvedModelName()
+		if got != "custom-model" {
+			t.Errorf("expected %q, got %q", "custom-model", got)
+		}
+	})
+
+	t.Run("legacy mode returns agents.defaults.model", func(t *testing.T) {
+		cfg := &config.Config{
+			Agents: config.AgentsConfig{Defaults: config.AgentDefaults{Model: "nvidia/stepfun-ai/step-3.5-flash"}},
+		}
+		agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+		got := agent.getResolvedModelName()
+		if got != "nvidia/stepfun-ai/step-3.5-flash" {
+			t.Errorf("expected %q, got %q", "nvidia/stepfun-ai/step-3.5-flash", got)
+		}
+	})
 }
 
 func TestNewAgentWithOptions(t *testing.T) {
@@ -524,10 +619,13 @@ func TestAgentProcessCommandNew(t *testing.T) {
 		t.Error("expected non-empty response")
 	}
 
-	// Verify session was deleted
-	_, err = sessions.Load(ctx, "cli:user123")
-	if err != session.ErrSessionNotFound {
-		t.Errorf("expected session to be deleted, got error: %v", err)
+	// Verify session messages were cleared but session still exists
+	loaded, err := sessions.Load(ctx, "cli:user123")
+	if err != nil {
+		t.Fatalf("expected session to still exist after /new: %v", err)
+	}
+	if len(loaded.Messages) != 0 {
+		t.Errorf("expected no messages after /new, got %d", len(loaded.Messages))
 	}
 }
 
@@ -1046,5 +1144,74 @@ func TestTruncate(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("truncate(%q, %d) = %q, expected %q", tt.input, tt.maxLen, result, tt.expected)
 		}
+	}
+}
+
+func TestSanitizeResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "strips full ctx_compress block",
+			input:    "Here is my response.\n<ctx_compress>\nuser: hello\nassistant: hi\n</ctx_compress>\nMore text.",
+			expected: "Here is my response.\n\nMore text.",
+		},
+		{
+			name:     "strips opening tag only",
+			input:    "I see you've sent me a <ctx_compress>",
+			expected: "I see you've sent me a",
+		},
+		{
+			name:     "strips closing tag only",
+			input:    "Here is the end </ctx_compress> of the summary.",
+			expected: "Here is the end  of the summary.",
+		},
+		{
+			name:     "no tags - unchanged",
+			input:    "Hello, how can I help you today?",
+			expected: "Hello, how can I help you today?",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "strips bare opening tag with newline",
+			input:    "I see you've sent me a <ctx_compress>\nwith a list of repositories",
+			expected: "I see you've sent me a \nwith a list of repositories",
+		},
+		{
+			name:     "tag in backticks - stripped leaving empty backticks",
+			input:    "You've sent me ` <ctx_compress> ` that looks weird",
+			expected: "You've sent me `  ` that looks weird",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeResponse(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeResponse(%q) = %q, expected %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSystemPromptNoConversationSummaryReference ensures the system prompt
+// does NOT prime the LLM by mentioning internal compression tags directly
+// (the "pink elephant" problem — mentioning it teaches the LLM about it).
+func TestSystemPromptNoConversationSummaryReference(t *testing.T) {
+	prompt := buildCoreIdentity()
+	if prompt == "" {
+		t.Fatal("buildCoreIdentity returned empty prompt")
+	}
+	if strings.Contains(strings.ToLower(prompt), "conversation_summary") {
+		t.Errorf("system prompt must not mention 'conversation_summary' to avoid priming the LLM: %q", prompt)
+	}
+	if strings.Contains(strings.ToLower(prompt), "ctx_compress") {
+		t.Errorf("system prompt must not mention 'ctx_compress' to avoid priming the LLM: %q", prompt)
 	}
 }

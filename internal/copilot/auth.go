@@ -15,7 +15,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/log"
 )
 
-const (
+var (
 	ClientID       = "Ov23liNV83W9jiYnzBdK"
 	DeviceCodeURL  = "https://github.com/login/device/code"
 	AccessTokenURL = "https://github.com/login/oauth/access_token"

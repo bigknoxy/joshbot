@@ -35,7 +35,8 @@ func NewRegistry() *Registry {
 		"z-ai/glm-4.5-air:free":            8192,
 		"openai/llama3.2":                  8192,
 		"meta-llama/llama-3.2-3b-instruct": 8192,
-		"arcee-ai/trinity-large-preview":   131072,
+		"openrouter/free":                  131072,
+		"nvidia/stepfun-ai/step-3.5-flash": 131072,
 	}}
 }
 
@@ -121,13 +122,72 @@ type Compressor struct {
 	Provider providers.Provider // optional
 }
 
-// CompressMessages returns a compacted string representation of messages limited by budget tokens.
+// lastNonEmptyContent returns the tail of the last message with non-empty
+// Content, truncated to maxChars. Returns false if no message has content.
+func lastNonEmptyContent(messages []providers.Message, maxChars int) (string, bool) {
+	// A negative maxChars would make the tail slice below run off the front of
+	// the string and panic. Clamp it: "no room at all" is a failed
+	// compression, not a crash.
+	if maxChars < 0 {
+		maxChars = 0
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Content != "" {
+			content := messages[i].Content
+			if len(content) > maxChars {
+				content = content[len(content)-maxChars:]
+			}
+			// A non-positive maxChars truncates the content away entirely.
+			// Reporting that as a successful fallback made CompressMessages
+			// return an empty context with a nil error — the exact silent
+			// failure this fallback exists to prevent. Report "no content"
+			// instead, so the caller gets an error it can act on.
+			if content == "" {
+				return "", false
+			}
+			return content, true
+		}
+	}
+	return "", false
+}
+
+// minPlausibleSummaryChars is the floor below which a provider-generated
+// summary is treated as degenerate — an empty completion, a refusal stub,
+// a truncated stream — rather than a genuine summary of 50+ messages of
+// conversation, and is therefore rejected in favor of the deterministic
+// fallback. This is a length heuristic only; it is deliberately not an
+// LLM-as-judge check.
+const minPlausibleSummaryChars = 15
+
+// isPlausibleSummary reports whether s, once surrounding whitespace is
+// trimmed, is non-empty and at least minChars long.
+func isPlausibleSummary(s string, minChars int) bool {
+	return len(strings.TrimSpace(s)) >= minChars
+}
+
+// CompressMessages returns a compacted string representation of messages limited by token budget.
 // It naively keeps the most recent messages until the token budget is met; if exceeded and a Provider
-// is available, it will ask the provider to summarize them.
-func (c *Compressor) CompressMessages(model string, messages []providers.Message, budget int) (string, error) {
+// is available, it will ask the provider to summarize them. ctx governs the provider call(s) and is
+// the caller's responsibility to cancel/time out; CompressMessages does not create its own background
+// context for provider requests.
+func (c *Compressor) CompressMessages(ctx context.Context, model string, messages []providers.Message, budget int) (string, error) {
+	if len(messages) == 0 {
+		return "", fmt.Errorf("no messages to compress")
+	}
+
+	// If all messages have empty content, return error early
+	allEmpty := true
+	for _, m := range messages {
+		if m.Content != "" {
+			allEmpty = false
+			break
+		}
+	}
+	if allEmpty {
+		return "", fmt.Errorf("all %d messages have empty content", len(messages))
+	}
+
 	// Heuristic: if there are many messages, prefer provider summarization when available.
-	// DEBUG LOG
-	// fmt.Printf("CompressMessages called: messages=%d budget=%d\n", len(messages), budget)
 	if c.Provider != nil && len(messages) > 50 {
 		sys := "You are a summarization assistant. Produce a concise summary that preserves important facts and decisions."
 		joinedAll := ""
@@ -143,15 +203,18 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 			},
 			MaxTokens: 200,
 		}
-		resp, err := c.Provider.Chat(context.Background(), req)
-		if err == nil && len(resp.Choices) > 0 {
+		resp, err := c.Provider.Chat(ctx, req)
+		if err == nil && len(resp.Choices) > 0 && isPlausibleSummary(resp.Choices[0].Message.Content, minPlausibleSummaryChars) {
 			return resp.Choices[0].Message.Content, nil
 		}
+		// A missing/empty/whitespace-only/implausibly-short summary (refusal,
+		// truncated stream, provider error) is a failed compression: fall
+		// through to the deterministic newest-backwards join below instead of
+		// returning an empty compressed context with a nil error.
 	}
 	// join messages from newest backwards until budget
 	var parts []string
 	tokens := 0
-	// iterate from end
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		est := TokenEstimator(m.Content)
@@ -163,6 +226,12 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 	}
 
 	joined := strings.Join(parts, "\n\n")
+	if joined == "" {
+		if content, ok := lastNonEmptyContent(messages, budget*4); ok {
+			return content, nil
+		}
+		return "", fmt.Errorf("no compressible content in %d messages", len(messages))
+	}
 	if TokenEstimator(joined) <= budget {
 		return joined, nil
 	}
@@ -178,18 +247,30 @@ func (c *Compressor) CompressMessages(model string, messages []providers.Message
 			},
 			MaxTokens: 200,
 		}
-		resp, err := c.Provider.Chat(context.Background(), req)
-		if err == nil && len(resp.Choices) > 0 {
+		resp, err := c.Provider.Chat(ctx, req)
+		if err == nil && len(resp.Choices) > 0 && isPlausibleSummary(resp.Choices[0].Message.Content, 1) {
 			return resp.Choices[0].Message.Content, nil
 		}
 	}
 
 	// fallback: truncate
 	out := joined
-	// keep approximately budget tokens worth of chars
 	maxChars := budget * 4
+	// A caller doing its own budget arithmetic can hand us a negative budget.
+	// Left unclamped, the tail slice below is out[len(out)+n:] — a panic, not
+	// a compression failure. Clamp to zero so it degrades into the "nothing
+	// fits" path, which reports an error.
+	if maxChars < 0 {
+		maxChars = 0
+	}
 	if len(out) > maxChars {
 		out = out[len(out)-maxChars:]
+	}
+	if out == "" {
+		if content, ok := lastNonEmptyContent(messages, maxChars); ok {
+			return content, nil
+		}
+		return "", fmt.Errorf("no compressible content after truncation in %d messages", len(messages))
 	}
 	return out, nil
 }

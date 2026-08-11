@@ -15,26 +15,48 @@ import (
 // ErrEmptyContent is returned when a write is attempted with no content.
 var ErrEmptyContent = errors.New("content cannot be empty")
 
+// Option configures the Manager.
+type Option func(*Manager)
+
+// WithMaxSize sets the maximum size in bytes for MEMORY.md content.
+// Content exceeding this limit will be trimmed (newest entries kept).
+func WithMaxSize(size int) Option {
+	return func(m *Manager) {
+		if size > 0 {
+			m.maxSize = size
+		}
+	}
+}
+
 // Manager provides thread-safe access to the MEMORY.md and HISTORY.md files.
 type Manager struct {
 	workspace string
 	memoryDir string
 	now       func() time.Time
 	mu        sync.RWMutex
+	maxSize   int
 }
 
 // New returns a Manager rooted inside the provided workspace directory.
-func New(workspace string) (*Manager, error) {
+// Options can be provided to configure behavior (e.g., WithMaxSize).
+func New(workspace string, opts ...Option) (*Manager, error) {
 	memoryDir := filepath.Join(workspace, "memory")
 	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create memory dir: %w", err)
 	}
 
-	return &Manager{
+	m := &Manager{
 		workspace: workspace,
 		memoryDir: memoryDir,
 		now:       time.Now,
-	}, nil
+		maxSize:   4096, // default max memory size
+	}
+
+	for _, opt := range opts {
+		opt(m)
+	}
+
+	return m, nil
 }
 
 // MemoryPath returns the location of MEMORY.md.
@@ -48,13 +70,15 @@ func (m *Manager) HistoryPath() string {
 }
 
 // LoadMemory reads MEMORY.md for inclusion in the system prompt.
+// If the content exceeds the configured maxSize, it is trimmed to fit
+// by keeping the header and the newest entries, and the trimmed result
+// is written back to disk.
 func (m *Manager) LoadMemory(ctx context.Context) (string, error) {
 	path := m.MemoryPath()
 
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	data, err := os.ReadFile(path)
+	m.mu.RUnlock()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -62,7 +86,61 @@ func (m *Manager) LoadMemory(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("read memory: %w", err)
 	}
 
-	return string(data), nil
+	content := string(data)
+	if len(content) > m.maxSize {
+		content = trimMemoryContent(content, m.maxSize)
+		// Write trimmed version back to disk under write lock
+		m.mu.Lock()
+		_ = os.WriteFile(path, []byte(content), 0o644)
+		m.mu.Unlock()
+	}
+
+	return content, nil
+}
+
+// trimMemoryContent trims content to fit within maxSize bytes.
+// It splits on "---" separators, keeps the header (before first "---"),
+// and retains the newest entries (from the end) until the limit is reached.
+// If there are no "---" separators, it truncates to maxSize.
+func trimMemoryContent(content string, maxSize int) string {
+	if len(content) <= maxSize {
+		return content
+	}
+
+	// Split on --- separators
+	separator := "\n---\n"
+	parts := strings.Split(content, separator)
+
+	if len(parts) <= 1 {
+		// No separators, just truncate to maxSize
+		return content[:maxSize]
+	}
+
+	// First part is the header (title, metadata), always keep it
+	header := parts[0]
+	entries := parts[1:]
+
+	// If even the header is over maxSize, truncate it
+	if len(header) > maxSize {
+		return header[:maxSize]
+	}
+
+	// Build result: header + as many newest entries as fit
+	var result strings.Builder
+	result.WriteString(header)
+
+	// Add entries from the end (newest) until we'd exceed maxSize
+	for i := len(entries) - 1; i >= 0; i-- {
+		candidate := result.String() + separator + entries[i]
+		if len(candidate) <= maxSize {
+			result.Reset()
+			result.WriteString(candidate)
+		} else {
+			break
+		}
+	}
+
+	return result.String()
 }
 
 // LoadHistory returns the entire HISTORY.md file. The query is currently ignored.
@@ -227,7 +305,11 @@ func (m *Manager) WriteFacts(ctx context.Context, facts []Fact) error {
 func (m *Manager) ReconcileFacts(ctx context.Context, facts []Fact) error {
 	existing, err := m.loadFactsLocked()
 	if err != nil {
-		return err
+		// Treat missing file as no existing facts
+		if !os.IsNotExist(err) {
+			return err
+		}
+		existing = nil
 	}
 
 	factMap := make(map[string]Fact, len(existing))
@@ -266,16 +348,16 @@ func (m *Manager) ReconcileFacts(ctx context.Context, facts []Fact) error {
 const defaultMemoryTemplate = `# Long-Term Memory
 
 ## User Information
-- (facts about the user will accumulate here)
+<!-- facts about the user will accumulate here -->
 
 ## Preferences
-- (preferences, likes, dislikes)
+<!-- preferences, likes, dislikes -->
 
 ## Projects & Context
-- (project details and decisions)
+<!-- project details and decisions -->
 
 ## Important Notes
-- (critical reminders the agent must never forget)
+<!-- critical reminders the agent must never forget -->
 `
 
 const defaultHistoryTemplate = `# Conversation History

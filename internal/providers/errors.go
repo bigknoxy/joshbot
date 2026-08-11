@@ -129,6 +129,8 @@ func IsFallbackError(err error, providerName string) bool {
 // isFallbackStatusCode returns true for status codes that should trigger fallback.
 func isFallbackStatusCode(statusCode int) bool {
 	switch statusCode {
+	case 410: // Gone (deprecated/removed model)
+		return true
 	case 429: // Rate limit
 		return true
 	case 500, 502, 503, 504: // Server errors

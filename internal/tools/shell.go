@@ -16,9 +16,45 @@ type ShellTool struct {
 	timeout        time.Duration
 	workspace      string
 	restrict       bool
-	denyList       []string
+	denyList       []string // Extra patterns, applied on top of the built-in rules
 	allowList      []string // If non-empty, only these commands are allowed
 	maxOutputChars int      // Maximum characters to truncate output to
+
+	// sandbox controls OS-level containment of spawned commands. See
+	// sandbox.go; SandboxOff reproduces the behaviour from before it existed.
+	sandbox      SandboxMode
+	allowNetwork bool
+	// helperPath is the binary re-executed to apply the sandbox. Defaults to
+	// this executable; tests point it at their own binary.
+	helperPath string
+
+	// approval gates execution behind a human decision. Off by default; see
+	// approval.go. The approver itself is not stored here — it rides the
+	// request context, because a struct field would be shared across the
+	// concurrent Process calls Telegram makes and would hand one user's
+	// prompt to another's turn.
+	approval ApprovalMode
+}
+
+// SetApproval turns the human-approval gate on for shell commands. The
+// approver comes from the request context (WithApprover); a request that
+// carries none is denied.
+func (t *ShellTool) SetApproval(mode ApprovalMode) {
+	if mode == "" {
+		mode = ApprovalOff
+	}
+	t.approval = mode
+}
+
+// SetSandbox enables OS-level containment for spawned commands. allowNetwork
+// permits outbound TCP, which is off by default because exfiltrating what was
+// read is the usual payoff for an attack that reaches this far.
+func (t *ShellTool) SetSandbox(mode SandboxMode, allowNetwork bool) {
+	if mode == "" {
+		mode = SandboxOff
+	}
+	t.sandbox = mode
+	t.allowNetwork = allowNetwork
 }
 
 // NewShellTool creates a new ShellTool.
@@ -26,30 +62,135 @@ func NewShellTool(timeout time.Duration, workspace string, restrict bool, allowL
 	return NewShellToolWithMaxOutput(timeout, workspace, restrict, 4000, allowList...)
 }
 
+// defaultUnsandboxedAllowlist is the allowlist a shell tool falls back to when
+// the build target has no OS-level containment at all (see
+// NewShellToolWithMaxOutput). It is deliberately restricted to commands that
+// read or inspect state and cannot, by themselves, execute an arbitrary second
+// program — no shells, no general-purpose interpreters, no download tools.
+//
+// The deny list in shell_deny.go is provably incomplete (an interpreter can be
+// made to spawn a shell, a script can be written then run), so on a platform
+// where neither Landlock nor Seatbelt can back it up, an allowlist is the only
+// boundary that is not trivially bypassable. Operators who need more configure
+// tools.shell_allow_list explicitly, or run on a platform with a sandbox.
+// Commands deliberately absent, each of which was on this list until it was
+// noticed that it launches a program of the caller's choosing: `find` (-exec sh
+// -c), `go` (go run, and go test's build directives), and `git` (git -c
+// core.pager='sh -c …', git -c alias.x='!sh …'). An operator who needs them can
+// still name them in tools.shell_allow_list, having chosen to.
+// `rg` and `sort` were removed for the same property: `rg --pre PROGRAM` runs
+// PROGRAM once per file, and `sort --compress-program=PROGRAM` execs it when
+// the sort spills to disk.
+//
+// Screening flag *values* instead of removing the binary was considered and
+// rejected: the boundary would then depend on knowing every exec-capable option
+// of every tool, across GNU/BSD/busybox variants and future releases, and a
+// boundary that has to be exhaustive to hold is not a boundary. Removal is
+// shaped like the property being enforced.
+//
+// Every remaining entry was re-audited against the criterion: none of `ls`,
+// `cat`, `pwd`, `echo`, `head`, `tail`, `wc`, `grep`, `uniq`, `diff`, `stat`,
+// `file`, `date`, `whoami`, `uname`, `hostname`, `which`, `tree`, `du`, `df` or
+// `gofmt` has an option that names a program to run. Anything added here must
+// be checked the same way; TestDefaultUnsandboxedAllowlistHasNoExecutors pins
+// the known escapes.
+var defaultUnsandboxedAllowlist = []string{
+	"ls", "cat", "pwd", "echo", "head", "tail", "wc", "grep",
+	"uniq", "diff", "stat", "file", "date", "whoami", "uname",
+	"hostname", "which", "tree", "du", "df", "gofmt",
+}
+
+// checkAllowList screens a command against the allowlist, returning an error
+// when it may not run. An empty allowlist means no allowlist and permits
+// everything (the deny list and, where available, the sandbox still apply).
+//
+// Two rules, in order. The command is passed to `sh -c` unchanged, so matching
+// only the first word is not enough: `git --version; sh -c 'echo pwned'` and
+// `echo hi; id` both begin with an allowed word and both run a second program
+// the operator never allowed. Any construct that can introduce a new command
+// word is therefore refused outright while an allowlist is in force. That is
+// blunt — `ls | wc -l` is refused too — but this list is the sole boundary on
+// platforms with no Landlock or Seatbelt, and a boundary that has to parse
+// shell grammar correctly to hold is not a boundary.
+func (t *ShellTool) checkAllowList(cmd string) error {
+	if len(t.allowList) == 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(cmd)
+
+	if construct := commandSeparator(trimmed); construct != "" {
+		return fmt.Errorf("command not allowed: %q chains a second command or redirects I/O, "+
+			"which is refused while an allowlist is in force; run one command per call", construct)
+	}
+
+	for _, allowed := range t.allowList {
+		if trimmed == allowed || strings.HasPrefix(trimmed, allowed+" ") {
+			return nil
+		}
+	}
+	return fmt.Errorf("command not in allowlist: %s", trimmed)
+}
+
+// commandSeparators are the shell constructs that start a new command word or
+// otherwise let the caller direct the command's effects somewhere the allowlist
+// never approved. `$(`, backtick and the process-substitution forms are
+// included because the shell runs their bodies too.
+//
+// Redirection belongs here even though it starts no new process. The command is
+// handed to `sh -c` unchanged, so with an allowlist of read-only tools in force
+// `echo PWNED > /etc/anything`, `echo key >> ~/.ssh/authorized_keys` and
+// `cat < /etc/passwd` all passed the first-word check and then wrote or read
+// wherever they liked — the allowlist's whole premise is that these commands
+// cannot affect state outside what they are handed, and a redirection undoes
+// that with one character. Matching `>` and `<` as substrings covers `>>`,
+// `2>`, `&>`, `<<`, `<>` and friends, as well as the process-substitution forms
+// listed separately for clarity.
+//
+// `\r` is listed because a bare carriage return terminates a command line for
+// some shells and, more practically, is how a `\n` gets smuggled past a check
+// that only knows about `\n`. `$'` is listed because $'...' ANSI-C quoting
+// expands escapes — $'\x3b' is a semicolon the substring scan would never
+// see.
+var commandSeparators = []string{
+	"$(", "<(", ">(", "$'",
+	";", "&", "|", "\n", "\r", "`",
+	">", "<",
+}
+
+// commandSeparator returns the first such construct found in cmd, or "" if
+// there is none. It does not attempt to exempt quoted occurrences: `echo ";"`
+// is refused, which costs a caller nothing and keeps the check from depending
+// on a quoting parser matching the shell's exactly.
+func commandSeparator(cmd string) string {
+	for _, sep := range commandSeparators {
+		if strings.Contains(cmd, sep) {
+			return sep
+		}
+	}
+	return ""
+}
+
 // NewShellToolWithMaxOutput creates a new ShellTool with custom max output chars.
 func NewShellToolWithMaxOutput(timeout time.Duration, workspace string, restrict bool, maxOutputChars int, allowList ...string) *ShellTool {
+	// On a platform with no OS-level containment available (anything that is
+	// not Linux/Landlock or macOS/Seatbelt), the deny list is the sole boundary
+	// and it is bypassable. When the operator has not supplied an explicit
+	// allowlist, fall back to allowlist-only rather than trusting the deny list
+	// alone. Platforms that do provide a sandbox (Linux, macOS) keep the
+	// unrestricted default; containment there is opt-in via the sandbox.
+	if len(allowList) == 0 && !SandboxAvailable() {
+		allowList = defaultUnsandboxedAllowlist
+	}
 	return &ShellTool{
 		timeout:        timeout,
 		workspace:      workspace,
 		restrict:       restrict,
-		denyList:       defaultDenyList(),
 		allowList:      allowList,
 		maxOutputChars: maxOutputChars,
-	}
-}
-
-// defaultDenyList returns the default deny list for dangerous commands.
-func defaultDenyList() []string {
-	return []string{
-		"rm -rf /",
-		"rm -rf /*",
-		"mkfs",
-		"dd if=/dev/zero",
-		":(){:|:&};:", // Fork bomb
-		">/dev/sda",
-		"chmod -R 777 /",
-		"wget .* | sh",
-		"curl .* | sh",
+		// Explicitly off: the zero value of SandboxMode is "", and while "" is
+		// treated as off everywhere it is read, initializing it here keeps a
+		// bare-constructed tool off even if a future read forgets to normalize.
+		sandbox: SandboxOff,
 	}
 }
 
@@ -60,9 +201,8 @@ func (t *ShellTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *ShellTool) Description() string {
-	desc := `Execute shell commands. Use this to run terminal commands, scripts, `
-	desc += `and interact with the system. Commands are subject to safety restrictions. `
-	desc += `Output is truncated to 4000 characters for large outputs.`
+	desc := `Execute shell commands (builds, tests, git, scripts). Safety restrictions active. `
+	desc += `Output truncated to 4000 chars.`
 	if len(t.allowList) > 0 {
 		desc += ` Only whitelisted commands are allowed.`
 	}
@@ -75,26 +215,26 @@ func (t *ShellTool) Parameters() []Parameter {
 		{
 			Name:        "command",
 			Type:        ParamString,
-			Description: "The shell command to execute",
+			Description: "Command to run",
 			Required:    true,
 		},
 		{
 			Name:        "timeout",
 			Type:        ParamInteger,
-			Description: "Timeout in seconds (default: 60)",
+			Description: "Timeout in seconds",
 			Required:    false,
 			Default:     60,
 		},
 		{
 			Name:        "working_dir",
 			Type:        ParamString,
-			Description: "Working directory for the command",
+			Description: "Working directory",
 			Required:    false,
 		},
 		{
 			Name:        "async",
 			Type:        ParamBoolean,
-			Description: "Run command asynchronously for long-running operations",
+			Description: "Run asynchronously for long operations",
 			Required:    false,
 			Default:     false,
 		},
@@ -110,18 +250,8 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	}
 
 	// Check allowlist first - if allowlist is set, only allow listed commands
-	if len(t.allowList) > 0 {
-		allowed := false
-		cmdTrimmed := strings.TrimSpace(cmd)
-		for _, allowedCmd := range t.allowList {
-			if cmdTrimmed == allowedCmd || strings.HasPrefix(cmdTrimmed, allowedCmd+" ") {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return ToolResult{Error: fmt.Errorf("command not in allowlist: %s", cmdTrimmed)}
-		}
+	if err := t.checkAllowList(cmd); err != nil {
+		return ToolResult{Error: err}
 	}
 
 	// Check for dangerous patterns
@@ -146,6 +276,14 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 		}
 	}
 
+	// Ask the human, if the gate is on. Deliberately last of the checks: a
+	// command the deny list or the allowlist would refuse anyway must not
+	// produce a prompt, or the operator is trained to approve commands that
+	// were never going to run.
+	if err := t.checkApproval(ctx, cmd, workingDir); err != nil {
+		return ToolResult{Error: err}
+	}
+
 	// Get timeout
 	timeout := t.timeout
 	if to, ok := args["timeout"].(float64); ok && to > 0 {
@@ -160,52 +298,105 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	return t.runCommand(execCtx, cmd, workingDir)
 }
 
-// isDenied checks if a command matches any deny list pattern.
+// checkApproval runs the human-approval gate, returning nil when the command
+// may proceed.
+//
+// ctx is the request context as the tool interface carries it (interface{}).
+// A value that is not a context.Context — or a nil one — is treated as an
+// unattended request and denied, rather than approved: the gate must not turn
+// off because a caller passed something unexpected.
+func (t *ShellTool) checkApproval(ctx interface{}, cmd, workingDir string) error {
+	if t.approval == ApprovalOff || t.approval == "" {
+		return nil
+	}
+
+	reqCtx, ok := ctx.(context.Context)
+	if !ok || reqCtx == nil {
+		reqCtx = context.Background()
+	}
+
+	req := ApprovalRequest{Tool: "shell", Command: cmd, WorkingDir: workingDir}
+	decision, err := ApproverFromContext(reqCtx).Approve(reqCtx, req)
+	if decision == Approve && err == nil {
+		return nil
+	}
+	if err != nil {
+		// Wrapped, not replaced: the approver's message is what says *why*
+		// (no human attached, prompt timed out, operator said no).
+		return fmt.Errorf("%w: %s", ErrDenied, strings.TrimPrefix(err.Error(), ErrDenied.Error()+": "))
+	}
+	return fmt.Errorf("%w: run it yourself, or ask the user to approve it", ErrDenied)
+}
+
+// isDenied checks whether a command is too dangerous to run, returning a
+// reason when it is. See shell_deny.go for how commands are screened.
 func (t *ShellTool) isDenied(cmd string) string {
-	cmdLower := strings.ToLower(cmd)
+	return screen(cmd, t.denyList)
+}
 
-	// Check exact matches
-	for _, pattern := range t.denyList {
-		if strings.Contains(cmdLower, strings.ToLower(pattern)) {
-			return pattern
-		}
+// buildExecCmd constructs the command to run, either directly or through the
+// platform's OS-level containment (Landlock re-exec helper on Linux, the
+// sandbox-exec Seatbelt wrapper on macOS).
+//
+// When containment is on it fails rather than falling back to an unconfined
+// run. An operator who switched the sandbox on and silently got no sandbox is
+// worse off than one who never switched it on, because they would stop
+// thinking about it.
+func (t *ShellTool) buildExecCmd(ctx context.Context, cmd, workingDir string) (*exec.Cmd, error) {
+	// "" is the zero value and means off (see sandboxPreflight); only a mode
+	// that was explicitly set to something other than off takes the sandbox path.
+	if t.sandbox == SandboxOff || t.sandbox == "" {
+		return exec.CommandContext(ctx, "sh", "-c", cmd), nil
 	}
 
-	// Additional checks
-	// Check for multiple rm -rf
-	if strings.Count(cmdLower, "rm -rf") > 1 {
-		return "multiple rm -rf"
+	if err := sandboxPreflight(t.sandbox, SandboxAvailable(), SandboxSupported()); err != nil {
+		return nil, err
 	}
 
-	// Check for piping to shell
-	if (strings.Contains(cmdLower, "| sh") || strings.Contains(cmdLower, "| bash")) &&
-		!strings.HasPrefix(cmdLower, "#") {
-		return "pipe to shell"
-	}
+	// newSandboxCommand is platform-specific: it wires up whatever containment
+	// this OS provides. It is only reached once preflight has confirmed a
+	// sandbox is available and supported here.
+	return newSandboxCommand(ctx, t, cmd, workingDir)
+}
 
-	// Check for background processes
-	if strings.Contains(cmdLower, "&") && !strings.HasPrefix(cmdLower, "#") {
-		// Allow some common background patterns
-		allowed := []string{"&>", "&>>", "2>&1", "1>&2"}
-		isAllowed := false
-		for _, a := range allowed {
-			if strings.Contains(cmdLower, a) {
-				isAllowed = true
-				break
-			}
-		}
-		if !isAllowed {
-			return "background execution"
-		}
+// sandboxWorkspace resolves which directory the sandbox confines writes to for
+// a given invocation: an explicit working dir if one was passed, else the
+// tool's configured workspace.
+func (t *ShellTool) sandboxWorkspace(workingDir string) string {
+	if workingDir != "" {
+		return workingDir
 	}
-
-	return ""
+	return t.workspace
 }
 
 // runCommand executes the command and returns the result.
 func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) ToolResult {
-	// Use shell -c to run the command
-	execCmd := exec.CommandContext(ctx, "sh", "-c", cmd)
+	execCmd, err := t.buildExecCmd(ctx, cmd, workingDir)
+	if err != nil {
+		return ToolResult{Error: err}
+	}
+
+	// Hand the child a reduced environment. A nil Env would inherit this
+	// process's, which includes every provider API key — readable with a bare
+	// `env`, without touching the filesystem and without tripping any deny-list
+	// rule. See shell_env.go.
+	//
+	// When the sandbox is active, point TMPDIR at the private scratch dir inside
+	// the workspace and create it up front. The sandbox denies the shared system
+	// temp (macOS /var/folders, /tmp), so a command that writes to $TMPDIR — go
+	// build, git, and many others do — would otherwise fail. This mirrors what
+	// the Linux re-exec helper does for itself. The scratch dir lives under the
+	// workspace, which the sandbox already grants, so no extra grant is needed.
+	if t.sandbox != SandboxOff && t.sandbox != "" {
+		if scratch := SandboxTempDir(t.sandboxWorkspace(workingDir)); scratch != "" {
+			_ = os.MkdirAll(scratch, 0o700)
+			execCmd.Env = sanitizedEnv("TMPDIR=" + scratch)
+		} else {
+			execCmd.Env = sanitizedEnv()
+		}
+	} else {
+		execCmd.Env = sanitizedEnv()
+	}
 
 	// Set working directory
 	if workingDir != "" {
@@ -362,21 +553,10 @@ func (t *ShellTool) ExecuteAsync(ctx context.Context, args map[string]any, callb
 		return ToolResult{Error: err}
 	}
 
-	// Check allowlist
-	if len(t.allowList) > 0 {
-		allowed := false
-		cmdTrimmed := strings.TrimSpace(cmd)
-		for _, allowedCmd := range t.allowList {
-			if cmdTrimmed == allowedCmd || strings.HasPrefix(cmdTrimmed, allowedCmd+" ") {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			err := fmt.Errorf("command not in allowlist: %s", cmdTrimmed)
-			callback(AsyncResult{Error: err})
-			return ToolResult{Error: err}
-		}
+	// Check allowlist — identical screening to Execute, via the same helper.
+	if err := t.checkAllowList(cmd); err != nil {
+		callback(AsyncResult{Error: err})
+		return ToolResult{Error: err}
 	}
 
 	// Check deny list
@@ -404,6 +584,14 @@ func (t *ShellTool) ExecuteAsync(ctx context.Context, args map[string]any, callb
 				return ToolResult{Error: err}
 			}
 		}
+	}
+
+	// The gate applies to the async path too. Without this an agent could get
+	// any command past it by passing async=true, which is one boolean away
+	// from no gate at all.
+	if err := t.checkApproval(ctx, cmd, workingDir); err != nil {
+		callback(AsyncResult{Error: err})
+		return ToolResult{Error: err}
 	}
 
 	// Get timeout
@@ -443,9 +631,12 @@ func (t *ShellTool) ExecuteAsync(ctx context.Context, args map[string]any, callb
 
 // ShellToolConfig holds configuration for the shell tool.
 type ShellToolConfig struct {
-	Timeout        time.Duration
-	Workspace      string
-	Restrict       bool
+	Timeout   time.Duration
+	Workspace string
+	Restrict  bool
+	// DenyList holds extra substring patterns to reject. They are matched
+	// against the normalised command in addition to the built-in structural
+	// rules, which cannot be switched off from configuration.
 	DenyList       []string
 	AllowList      []string
 	MaxOutputChars int

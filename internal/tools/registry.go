@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bigknoxy/joshbot/internal/cron"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/charmbracelet/log"
@@ -275,8 +276,18 @@ func (r *Registry) GetSchemas() []providers.Tool {
 
 // toolToProviderTool converts a Tool to a providers.Tool.
 func toolToProviderTool(tool Tool) providers.Tool {
-	schemaStr := GenerateSchema(tool.Parameters())
-	raw := json.RawMessage(schemaStr)
+	// A tool may supply a complete JSON Schema directly (e.g. MCP tools, whose
+	// server-provided inputSchema would lose nested structure if flattened into
+	// []Parameter). Prefer it when present and non-empty.
+	var raw json.RawMessage
+	if sp, ok := tool.(rawSchemaProvider); ok {
+		if s := sp.RawSchema(); len(s) > 0 {
+			raw = s
+		}
+	}
+	if raw == nil {
+		raw = json.RawMessage(GenerateSchema(tool.Parameters()))
+	}
 
 	return providers.Tool{
 		Type: "function",
@@ -329,6 +340,46 @@ func DefaultRegistry() *Registry {
 	return NewRegistry()
 }
 
+// registrySettings holds optional configuration for RegistryWithDefaults.
+type registrySettings struct {
+	sandbox            SandboxMode
+	allowNetwork       bool
+	approval           ApprovalMode
+	cronService        *cron.Service
+	cronDefaultChannel string
+}
+
+// RegistryOption adjusts optional registry behaviour. Options are used rather
+// than more positional parameters, which this constructor already has enough of.
+type RegistryOption func(*registrySettings)
+
+// WithShellSandbox turns on OS-level containment for shell commands.
+// allowNetwork permits outbound TCP from those commands.
+func WithShellSandbox(mode SandboxMode, allowNetwork bool) RegistryOption {
+	return func(s *registrySettings) {
+		s.sandbox = mode
+		s.allowNetwork = allowNetwork
+	}
+}
+
+// WithShellApproval turns on the human-approval gate for shell commands. The
+// approver itself rides the request context (WithApprover), so a turn nobody
+// is watching — cron, heartbeat — is denied rather than blocked.
+func WithShellApproval(mode ApprovalMode) RegistryOption {
+	return func(s *registrySettings) {
+		s.approval = mode
+	}
+}
+
+// WithCronService registers the cron tool against a running scheduler.
+// defaultChannel is where a reminder is delivered when the caller names none.
+func WithCronService(svc *cron.Service, defaultChannel string) RegistryOption {
+	return func(s *registrySettings) {
+		s.cronService = svc
+		s.cronDefaultChannel = defaultChannel
+	}
+}
+
 // RegistryWithDefaults creates a registry with standard tools configured.
 func RegistryWithDefaults(
 	workspace string,
@@ -339,7 +390,13 @@ func RegistryWithDefaults(
 	shellAllowList []string,
 	filesystemAllowedPaths []string,
 	skillLoader *skills.Loader,
+	opts ...RegistryOption,
 ) *Registry {
+	settings := registrySettings{sandbox: SandboxOff, approval: ApprovalOff}
+	for _, opt := range opts {
+		opt(&settings)
+	}
+
 	registry := NewRegistry()
 
 	// Filesystem tool
@@ -378,6 +435,8 @@ func RegistryWithDefaults(
 		Restrict:  restrictToWorkspace,
 		AllowList: shellAllowList,
 	})
+	shellTool.SetSandbox(settings.sandbox, settings.allowNetwork)
+	shellTool.SetApproval(settings.approval)
 	_ = registry.Register(shellTool)
 
 	// Web tool
@@ -385,6 +444,15 @@ func RegistryWithDefaults(
 		Timeout: 0, // Will default in constructor
 	})
 	_ = registry.Register(webTool)
+
+	// Register web operation aliases for LLMs that call them directly
+	webAliases := []string{"web_search", "web_fetch", "web_code", "web_company", "web_research"}
+
+	for _, aliasName := range webAliases {
+		if err := registry.Register(&webAlias{web: webTool, name: aliasName}); err != nil {
+			log.Warn("failed to register web alias", "name", aliasName, "error", err)
+		}
+	}
 
 	// Message tool (optional)
 	if messageSender != nil {
@@ -399,6 +467,14 @@ func RegistryWithDefaults(
 	if skillLoader != nil {
 		skillTool := NewSkillRegistryTool(skillLoader)
 		_ = registry.Register(skillTool)
+	}
+
+	// Cron tool (optional): only offered when a scheduler is running, so the
+	// agent is never told it can schedule something that nothing will deliver.
+	if settings.cronService != nil {
+		if err := registry.Register(NewCronTool(settings.cronService, settings.cronDefaultChannel)); err != nil {
+			log.Error("failed to register cron tool", "error", err)
+		}
 	}
 
 	return registry

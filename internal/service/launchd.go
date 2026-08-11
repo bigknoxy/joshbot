@@ -55,6 +55,32 @@ func (s *launchdManager) Name() string {
 	return "launchd"
 }
 
+// serviceID is the launchd Label, and must match the <string> under <key>Label</key>
+// in the installed plist or bootout/list can never find the job.
+func (s *launchdManager) serviceID() string {
+	return fmt.Sprintf("dev.joshbot.%s", s.config.Name)
+}
+
+// domainTarget is the launchd domain the job lives in. `bootstrap` and `bootout`
+// both require the UID here: a bare "gui" is not a domain target and launchctl
+// rejects it, so the service never starts.
+func (s *launchdManager) domainTarget() string {
+	return fmt.Sprintf("gui/%d", os.Getuid())
+}
+
+// serviceTarget is the domain-qualified job name, the argument form `bootout` takes.
+func (s *launchdManager) serviceTarget() string {
+	return fmt.Sprintf("%s/%s", s.domainTarget(), s.serviceID())
+}
+
+func (s *launchdManager) bootstrapArgs() []string {
+	return []string{"bootstrap", s.domainTarget(), s.plistPath}
+}
+
+func (s *launchdManager) bootoutArgs() []string {
+	return []string{"bootout", s.serviceTarget()}
+}
+
 func (s *launchdManager) IsInstalled() bool {
 	_, err := os.Stat(s.plistPath)
 	return err == nil
@@ -72,7 +98,9 @@ func (s *launchdManager) Install() (Result, error) {
 	}
 
 	logDir := filepath.Dir(s.logPath)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	// The service log holds conversation content; ~/Library/LaunchAgents
+	// above is a shared OS location and keeps its conventional mode.
+	if err := os.MkdirAll(logDir, 0700); err != nil {
 		return Result{}, fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
@@ -125,7 +153,7 @@ func (s *launchdManager) Uninstall() (Result, error) {
 	}
 
 	if s.isRunning() {
-		if err := exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/dev.joshbot.%s", os.Getuid(), s.config.Name)).Run(); err != nil {
+		if err := exec.Command("launchctl", s.bootoutArgs()...).Run(); err != nil {
 			return Result{}, fmt.Errorf("failed to unload service: %w", err)
 		}
 	}
@@ -145,7 +173,7 @@ func (s *launchdManager) Start() error {
 		return fmt.Errorf("service not installed")
 	}
 
-	return exec.Command("launchctl", "bootstrap", "gui", s.plistPath).Run()
+	return exec.Command("launchctl", s.bootstrapArgs()...).Run()
 }
 
 func (s *launchdManager) Stop() error {
@@ -153,7 +181,7 @@ func (s *launchdManager) Stop() error {
 		return fmt.Errorf("service not installed")
 	}
 
-	return exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/dev.joshbot.%s", os.Getuid(), s.config.Name)).Run()
+	return exec.Command("launchctl", s.bootoutArgs()...).Run()
 }
 
 func (s *launchdManager) Restart() error {
@@ -190,7 +218,7 @@ func (s *launchdManager) Status() (Status, error) {
 }
 
 func (s *launchdManager) isRunning() bool {
-	serviceID := fmt.Sprintf("dev.joshbot.%s", s.config.Name)
+	serviceID := s.serviceID()
 	out, err := exec.Command("launchctl", "list").Output()
 	if err != nil {
 		return false

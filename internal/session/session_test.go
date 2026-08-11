@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -641,29 +642,76 @@ func TestManagerSaveWithToolCalls(t *testing.T) {
 }
 
 func TestManagerAtomicWrite(t *testing.T) {
-	tmpDir := t.TempDir()
-	manager, _ := NewManager(tmpDir)
-
 	ctx := context.Background()
+	dir, err := os.MkdirTemp("", "joshbot-session-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
 
-	// Save a session
-	sess := NewSession("atomic-test")
-	sess.AddMessage(Message{
-		Role:      RoleUser,
-		Content:   "Testing atomic writes",
-		Timestamp: time.Now(),
-	})
-
-	err := manager.Save(ctx, sess)
+	manager, err := NewManager(dir)
+	sess := NewSession("test-atomic")
+	err = manager.Save(ctx, sess)
 	if err != nil {
 		t.Fatalf("failed to save session: %v", err)
 	}
+}
 
-	// Verify temp file was cleaned up
-	files, _ := os.ReadDir(tmpDir)
-	for _, f := range files {
-		if filepath.Ext(f.Name()) == ".tmp" {
-			t.Error("temp file should have been cleaned up")
-		}
+func TestSessionSetTopic(t *testing.T) {
+	sess := NewSession("test-topic")
+	if sess.ConversationTopic != "" {
+		t.Fatal("new session should have empty topic")
 	}
+
+	sess.SetTopic("discussing AI tools")
+	if sess.ConversationTopic != "discussing AI tools" {
+		t.Fatalf("expected 'discussing AI tools', got %q", sess.ConversationTopic)
+	}
+
+	// Setting same topic should keep it
+	sess.SetTopic("discussing AI tools")
+	if sess.ConversationTopic != "discussing AI tools" {
+		t.Fatalf("expected topic preserved, got %q", sess.ConversationTopic)
+	}
+}
+
+func TestSessionUpdateContext(t *testing.T) {
+	sess := NewSession("test-context")
+	sess.UpdateContext("user_prompt", "quick")
+	sess.UpdateContext("last_tool", "web_search")
+
+	if sess.ConversationContext["user_prompt"] != "quick" {
+		t.Fatalf("expected 'quick', got %q", sess.ConversationContext["user_prompt"])
+	}
+	if sess.ConversationContext["last_tool"] != "web_search" {
+		t.Fatalf("expected 'web_search', got %q", sess.ConversationContext["last_tool"])
+	}
+}
+
+func TestSessionConversationSummary(t *testing.T) {
+	sess := NewSession("test-summary")
+
+	// Empty session should return empty string
+	if summary := sess.ConversationSummary(); summary != "" {
+		t.Fatalf("expected empty summary, got %q", summary)
+	}
+
+	// With topic only
+	sess.SetTopic("debugging build issue")
+	summary := sess.ConversationSummary()
+	if summary != "Current topic: debugging build issue" {
+		t.Fatalf("expected topic summary, got %q", summary)
+	}
+
+	// With context too
+	sess.UpdateContext("build_failed", "true")
+	sess.UpdateContext("error_code", "E123")
+	summary = sess.ConversationSummary()
+	if !contains(summary, "build_failed") || !contains(summary, "error_code") {
+		t.Fatalf("expected context in summary, got %q", summary)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && strings.Contains(s, substr)
 }

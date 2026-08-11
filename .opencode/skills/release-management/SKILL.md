@@ -117,6 +117,7 @@ gh release edit v<X.Y.Z> --latest
 
 | Version | Date | Description |
 |---------|------|-------------|
+| v1.20.0 | 2026-05-19 | Configure CLI flags + model config bug fixes + configure package abstraction |
 | v1.19.0 | 2026-05-17 | Intelligent memory + skill self-creation |
 | v1.18.0 | 2026-05-17 | Code simplification + test expansion + AGENTS.md rewrite |
 | v1.17.1 | 2026-04-02 | Smoke tests + SECURITY.md + broken MCP removal |

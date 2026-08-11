@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -36,6 +37,7 @@ type LiteLLMProvider struct {
 	cfg    Config
 	client *http.Client
 	logger Logger
+	apiKey atomic.Value // stores string, thread-safe API key access
 }
 
 // NewLiteLLMProvider creates a new LiteLLM provider with the given configuration.
@@ -49,13 +51,16 @@ func NewLiteLLMProviderWithLogger(cfg Config, logger Logger) *LiteLLMProvider {
 		cfg.Timeout = 120 * time.Second
 	}
 
-	return &LiteLLMProvider{
-		cfg: cfg,
+	p := &LiteLLMProvider{
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
 		logger: logger,
 	}
+	p.apiKey.Store(cfg.APIKey)
+	p.cfg = cfg
+	p.cfg.APIKey = "" // clear so readers use atomic only
+	return p
 }
 
 // NewProviderFromResolvedModel creates a provider from a resolved model config.
@@ -71,6 +76,7 @@ func NewProviderFromResolvedModel(resolved config.ResolvedModelConfig, logger Lo
 		Model:        resolved.ModelID,
 		MaxTokens:    maxTokens,
 		ExtraHeaders: resolved.Extra,
+		ExtraBody:    resolved.ExtraBody,
 		Timeout:      120 * time.Second,
 	}
 
@@ -86,9 +92,24 @@ func (p *LiteLLMProvider) Name() string {
 	return "litellm"
 }
 
+// getAPIKey returns the current API key atomically.
+func (p *LiteLLMProvider) getAPIKey() string {
+	if v := p.apiKey.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+// SetAPIKey updates the API key atomically.
+func (p *LiteLLMProvider) SetAPIKey(key string) {
+	p.apiKey.Store(key)
+}
+
 // Config returns the current provider configuration.
 func (p *LiteLLMProvider) Config() Config {
-	return p.cfg
+	cfg := p.cfg
+	cfg.APIKey = p.getAPIKey()
+	return cfg
 }
 
 // newFallbackError creates a FallbackError for network errors.
@@ -102,12 +123,32 @@ func (p *LiteLLMProvider) newFallbackError(err error, model string) error {
 	}
 }
 
+// marshalBody marshals the request body, merging ExtraBody fields if configured.
+func (p *LiteLLMProvider) marshalBody(req ChatRequest) ([]byte, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(p.cfg.ExtraBody) == 0 {
+		return body, nil
+	}
+	var base map[string]any
+	if err := json.Unmarshal(body, &base); err != nil {
+		return nil, err
+	}
+	for k, v := range p.cfg.ExtraBody {
+		base[k] = v
+	}
+	return json.Marshal(base)
+}
+
 // Chat sends a chat request and returns a chat response.
 func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	// Use default model if not specified
 	if req.Model == "" {
 		req.Model = p.cfg.Model
 	}
+	req.Model = config.StripProviderPrefix(req.Model)
 
 	// Set defaults from config
 	if req.MaxTokens == 0 && p.cfg.MaxTokens > 0 {
@@ -138,8 +179,8 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
-	if p.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	if key := p.getAPIKey(); key != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+key)
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
@@ -193,6 +234,7 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 	if req.Model == "" {
 		req.Model = p.cfg.Model
 	}
+	req.Model = config.StripProviderPrefix(req.Model)
 
 	// Set defaults from config
 	if req.MaxTokens == 0 && p.cfg.MaxTokens > 0 {
@@ -213,7 +255,7 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 	url := strings.TrimRight(apiBase, "/") + "/chat/completions"
 
 	// Marshal the request body
-	body, err := json.Marshal(req)
+	body, err := p.marshalBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -226,8 +268,8 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
-	if p.cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	if key := p.getAPIKey(); key != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+key)
 	}
 	httpReq.Header.Set("Accept", "text/event-stream")
 
@@ -388,9 +430,13 @@ func (p *LiteLLMProvider) parseError(body []byte, statusCode int) error {
 
 // ListModels fetches available models from an OpenAI-compatible API.
 func ListModels(cfg Config) ([]string, error) {
+	// No silent default: an empty base used to fall back to OpenRouter, so a
+	// credential for some other (or unknown) provider was "checked" against
+	// openrouter.ai and reported as validated. Refusing here is what lets
+	// callers say "could not verify" instead of claiming a check they never ran.
 	apiBase := cfg.APIBase
 	if apiBase == "" {
-		apiBase = "https://openrouter.ai/api/v1"
+		return nil, fmt.Errorf("no API base URL configured")
 	}
 	url := strings.TrimRight(apiBase, "/") + "/models"
 

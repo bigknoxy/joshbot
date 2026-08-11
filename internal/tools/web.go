@@ -13,20 +13,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/log"
 )
-
-// Private IP ranges to block (SSRF protection)
-var privateIPRanges = []string{
-	"127.0.0.0/8",                 // Loopback
-	"10.0.0.0/8",                  // Private network
-	"172.16.0.0/12",               // Private network
-	"192.168.0.0/16",              // Private network
-	"169.254.169.254/32",          // AWS/GCP/Azure metadata
-	"metadata.google.internal/32", // GCP metadata
-}
 
 // Blocked hosts for SSRF protection
 var blockedHosts = map[string]bool{
@@ -146,13 +137,21 @@ func parseExaCLICrawlResult(output string) (string, error) {
 	return text, nil
 }
 
-// parseExaCLISearchResults parses the line-delimited JSON from exa-cli
+// parseExaCLISearchResults parses JSON output from exa-cli.
+// Handles both pretty-printed multi-line JSON (output of `exa search --format json`)
+// and single-line JSON per object, separated by blank lines.
 func parseExaCLISearchResults(output string) ([]SearchResult, error) {
 	var results []SearchResult
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return results, nil
+	}
+
+	// exa-cli --format json outputs pretty-printed JSON objects separated by blank lines
+	blocks := strings.Split(trimmed, "\n\n")
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block == "" {
 			continue
 		}
 		var r struct {
@@ -161,8 +160,8 @@ func parseExaCLISearchResults(output string) ([]SearchResult, error) {
 			PublishedDate string `json:"publishedDate"`
 			Text          string `json:"text"`
 		}
-		if err := json.Unmarshal([]byte(line), &r); err != nil {
-			log.Debug("Failed to parse exa-cli JSON line", "error", err, "line", line[:min(len(line), 100)])
+		if err := json.Unmarshal([]byte(block), &r); err != nil {
+			log.Debug("Failed to parse exa-cli JSON block", "error", err, "block_len", len(block))
 			continue
 		}
 		results = append(results, SearchResult{
@@ -175,7 +174,19 @@ func parseExaCLISearchResults(output string) ([]SearchResult, error) {
 	return results, nil
 }
 
-// exaSearch performs search via Exa MCP (free, no API key required)
+// exaSearch performs search via Exa MCP (free, no API key required).
+//
+// This deliberately does not go through internal/mcp. That package is a stdio
+// client: it spawns a process and speaks JSON-RPC over its pipes, while this is
+// a single HTTP POST to one hard-coded endpoint. There is no second MCP client
+// implementation here to consolidate — only the wire format is shared.
+//
+// It also sits outside the internal/mcp trust gate on purpose, and safely: this
+// call fetches *search results*, never tool definitions, so nothing it returns
+// becomes a callable tool or reaches the system prompt as instructions. Its
+// output goes into a tool result like any other web content. If this ever grows
+// into "ask the endpoint what tools it has", it must move onto internal/mcp and
+// behind the trust store first.
 func (t *WebTool) exaSearch(query string, numResults int) ([]SearchResult, error) {
 	// Build JSON-RPC request
 	req := exaSearchRequest{
@@ -273,6 +284,34 @@ type WebTool struct {
 	maxRetries      int
 	baseDelay       time.Duration
 	exaCLIAvailable bool
+	// resolveIP resolves a hostname to its addresses. It exists so tests can
+	// drive the SSRF check without depending on real DNS.
+	resolveIP func(host string) ([]net.IP, error)
+}
+
+// guardedDialControl refuses to connect to a non-public address.
+//
+// This runs after DNS resolution and immediately before the socket connects,
+// which makes it the real enforcement point: validateURLForSSRF checks a
+// hostname up front, but the transport resolves the name again when it dials,
+// so a name that answers with a public IP once and a private IP a moment later
+// (DNS rebinding) would otherwise slip past the up-front check. It also covers
+// request paths that never call validateURLForSSRF at all.
+func guardedDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("blocked connection to unparseable address %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// The dialer hands us a resolved literal. Anything else is unexpected,
+		// so fail closed rather than guess.
+		return fmt.Errorf("blocked connection to non-literal address %q", host)
+	}
+	if isBlockedIP(ip) {
+		return fmt.Errorf("blocked connection to non-public address %s", ip)
+	}
+	return nil
 }
 
 // NewWebTool creates a new WebTool.
@@ -283,9 +322,17 @@ func NewWebTool(timeout time.Duration, searchAPI string) *WebTool {
 		log.Debug("exa-cli not found, will use HTTP fallback")
 	}
 
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   guardedDialControl,
+	}).DialContext
+
 	return &WebTool{
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -294,6 +341,7 @@ func NewWebTool(timeout time.Duration, searchAPI string) *WebTool {
 		maxRetries:      3,
 		baseDelay:       1 * time.Second,
 		exaCLIAvailable: exaAvailable,
+		resolveIP:       net.LookupIP,
 	}
 }
 
@@ -304,10 +352,7 @@ func (t *WebTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *WebTool) Description() string {
-	return `Web tools for searching the internet and fetching web content. ` +
-		`Use web_search to find information, web_code for code search, ` +
-		`web_company for company research, web_research for deep research, ` +
-		`and web_fetch to retrieve specific URLs.`
+	return `Search and fetch web content. Use web_search/web_fetch/web_code aliases for common operations.`
 }
 
 // Parameters returns the parameters for the tool.
@@ -316,26 +361,26 @@ func (t *WebTool) Parameters() []Parameter {
 		{
 			Name:        "operation",
 			Type:        ParamString,
-			Description: "The operation to perform: web_search, web_code, web_company, web_research, or web_fetch",
+			Description: "Operation: web_search, web_code, web_company, web_research, web_fetch",
 			Required:    true,
 			Enum:        []string{"web_search", "web_code", "web_company", "web_research", "web_fetch"},
 		},
 		{
 			Name:        "query",
 			Type:        ParamString,
-			Description: "Search query (for web_search, web_code, web_company, web_research)",
+			Description: "Search query",
 			Required:    false,
 		},
 		{
 			Name:        "url",
 			Type:        ParamString,
-			Description: "URL to fetch (for web_fetch)",
+			Description: "URL to fetch",
 			Required:    false,
 		},
 		{
 			Name:        "max_results",
 			Type:        ParamInteger,
-			Description: "Maximum number of search results (default: 5)",
+			Description: "Max results (default: 5)",
 			Required:    false,
 			Default:     5,
 		},
@@ -650,13 +695,12 @@ func (t *WebTool) doSearch(searchURL string, maxResults int) ToolResult {
 			location := resp.Header.Get("Location")
 			if location != "" {
 				log.Debug("Following redirect", "location", location)
-				// Update request URL to redirect location
-				req.URL, err = req.URL.Parse(location)
+				redirectURL, err := t.resolveSearchRedirect(req.URL, location)
 				if err != nil {
-					return ToolResult{Error: fmt.Errorf("failed to parse redirect location: %w", err)}
+					return ToolResult{Error: err}
 				}
-				req.URL.Scheme = "https" // Force HTTPS for redirects
-				continue                 // Retry with new URL
+				req.URL = redirectURL
+				continue // Retry with new URL
 			}
 
 			// No Location header - retry after delay
@@ -890,31 +934,91 @@ func (t *WebTool) validateURLForSSRF(urlStr string) error {
 	// Check for IP addresses
 	ip := net.ParseIP(hostname)
 	if ip != nil {
-		// Check if it's a private IP
-		if isPrivateIP(ip) {
-			return fmt.Errorf("access to private IP addresses is blocked: %s", ip.String())
-		}
-		// Also block documentation/reserved ranges
-		if ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			return fmt.Errorf("access to reserved IP addresses is blocked: %s", ip.String())
+		if isBlockedIP(ip) {
+			return fmt.Errorf("access to non-public IP addresses is blocked: %s", ip.String())
 		}
 		return nil
 	}
 
-	// For hostnames, resolve and check the resolved IP
-	// Only do DNS lookup if the hostname might resolve to a private IP
+	// Names that are unambiguously internal are refused without resolving.
 	if isPotentiallyPrivateHostname(hostname) {
-		ips, err := net.LookupIP(hostname)
-		if err == nil {
-			for _, resolvedIP := range ips {
-				if isPrivateIP(resolvedIP) {
-					return fmt.Errorf("hostname %s resolves to private IP: %s", hostname, resolvedIP.String())
-				}
-			}
+		return fmt.Errorf("access to internal hostname %s is blocked", hostname)
+	}
+
+	// Every remaining hostname is resolved and checked. This must not be
+	// conditional: an attacker controls their own DNS, so the name carries no
+	// signal about where it points. A lookup that fails is treated as unsafe
+	// rather than safe — we cannot show the target is public, and a fetch we
+	// cannot resolve would fail anyway.
+	resolve := t.resolveIP
+	if resolve == nil {
+		resolve = net.LookupIP
+	}
+	ips, err := resolve(hostname)
+	if err != nil {
+		return fmt.Errorf("cannot verify %s is safe to fetch: DNS lookup failed: %w", hostname, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("cannot verify %s is safe to fetch: hostname resolved to no addresses", hostname)
+	}
+	for _, resolvedIP := range ips {
+		if isBlockedIP(resolvedIP) {
+			return fmt.Errorf("hostname %s resolves to a non-public address: %s", hostname, resolvedIP.String())
 		}
 	}
 
 	return nil
+}
+
+// resolveSearchRedirect returns the URL a search-engine redirect points to,
+// or an error if it must not be followed.
+//
+// The target is attacker-influenced — the search engine picks it, and doSearch
+// follows Location headers itself rather than letting the http client do it —
+// so it gets the same check as any other URL. Kept separate from doSearch so
+// the decision is testable without standing up a server.
+func (t *WebTool) resolveSearchRedirect(current *url.URL, location string) (*url.URL, error) {
+	next, err := current.Parse(location)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse redirect location: %w", err)
+	}
+	next.Scheme = "https" // Force HTTPS for redirects
+	if err := t.validateURLForSSRF(next.String()); err != nil {
+		return nil, fmt.Errorf("refusing to follow redirect: %w", err)
+	}
+	return next, nil
+}
+
+// isBlockedIP reports whether an address is anything other than a routable
+// public address. It is deliberately broader than isPrivateIP: the metadata
+// endpoint every cloud SSRF attack targets (169.254.169.254) is link-local,
+// not private, and was missed by the private-range check alone.
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
+		return true
+	}
+	if isPrivateIP(ip) {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 0: // 0.0.0.0/8 "this network"
+			return true
+		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127: // 100.64.0.0/10 carrier NAT
+			return true
+		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0: // 192.0.0.0/24 IETF assignments
+			return true
+		case ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19): // 198.18.0.0/15 benchmarking
+			return true
+		case ip4[0] >= 240: // 240.0.0.0/4 reserved, incl. broadcast
+			return true
+		}
+	}
+	return false
 }
 
 // isPrivateIP checks if an IP is in a private range.

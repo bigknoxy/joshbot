@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -539,5 +540,37 @@ func TestLoggerInstanceMethods(t *testing.T) {
 	child := logger.With("child", "value")
 	if child == nil {
 		t.Error("With() returned nil")
+	}
+}
+
+// The 0600 on OpenFile only applies to a file that call creates. An install
+// predating owner-only logging already has a 0644 log holding tool results and
+// message content, so every open must narrow it.
+func TestExistingLogFileIsNarrowedToOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing.log")
+	if err := os.WriteFile(path, []byte("old entry\n"), 0644); err != nil {
+		t.Fatalf("seed log file: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Pretty = false
+	cfg.File = path
+
+	logger, err := NewLogger(cfg)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer func() {
+		for _, h := range logger.handlers {
+			_ = h.Close()
+		}
+	}()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat log: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("pre-existing log left at mode %04o, want 0600", got)
 	}
 }

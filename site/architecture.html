@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>joshbot — Architecture</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏗️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0e14;
+  --bg-alt: #111820;
+  --surface: #1a2332;
+  --border: #2a3a50;
+  --amber: #ffb545;
+  --amber-dim: #c8943a;
+  --green: #7ec699;
+  --green-bright: #a8e6cf;
+  --cyan: #68c4d8;
+  --text: #d4d8e0;
+  --text-dim: #7a8a9a;
+  --text-bright: #f0f2f5;
+  --font-display: 'JetBrains Mono', monospace;
+  --font-body: 'Source Serif 4', 'Times New Roman', serif;
+  --radius: 8px;
+  --line: 1px solid var(--border);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; font-size: 16px; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(255,181,69,0.015) 2px,
+    rgba(255,181,69,0.015) 4px
+  );
+}
+
+nav {
+  position: fixed; top: 0; left: 0; right: 0;
+  z-index: 100;
+  background: rgba(10,14,20,0.92);
+  backdrop-filter: blur(12px);
+  border-bottom: var(--line);
+  padding: 0 2rem;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+nav .logo {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.1rem;
+  color: var(--amber);
+  text-decoration: none;
+  letter-spacing: -0.5px;
+}
+nav .logo span { color: var(--green); }
+nav .nav-links { display: flex; gap: 2rem; align-items: center; }
+nav .nav-links a {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  transition: color .2s;
+}
+nav .nav-links a:hover { color: var(--amber); }
+nav .nav-links .active { color: var(--amber); }
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 2rem;
+}
+
+.page-hero {
+  padding: 120px 0 60px;
+  border-bottom: var(--line);
+}
+.page-hero h1 {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 800;
+  color: var(--text-bright);
+  margin-bottom: 0.75rem;
+  letter-spacing: -2px;
+}
+.page-hero .meta {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.page-hero .meta span { color: var(--amber); }
+
+section { padding: 60px 0; border-bottom: var(--line); }
+section:last-of-type { border-bottom: none; }
+.section-label {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  color: var(--amber-dim);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 0.5rem;
+}
+section h2 {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 1.5rem;
+  letter-spacing: -0.5px;
+}
+section h3 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--cyan);
+  margin-bottom: 0.75rem;
+}
+section p { margin-bottom: 1rem; }
+section p, section li { color: var(--text); font-size: 0.95rem; line-height: 1.7; }
+section p code, li code {
+  font-family: var(--font-display);
+  font-size: 0.85em;
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--green);
+}
+section ul { padding-left: 1.25rem; margin-bottom: 1.5rem; }
+section li { margin-bottom: 0.3rem; }
+section strong { color: var(--text-bright); }
+
+.diagram-container {
+  background: var(--bg-alt);
+  border: var(--line);
+  border-radius: 12px;
+  padding: 2rem;
+  margin: 1.5rem 0;
+  overflow-x: auto;
+}
+.diagram {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  min-width: 500px;
+}
+.diagram-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  position: relative;
+  width: 100%;
+}
+.diagram-row.wrap { flex-wrap: wrap; }
+.box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  text-align: center;
+  transition: border-color .2s;
+  min-width: 100px;
+}
+.box:hover { border-color: var(--amber); }
+.box .name { color: var(--text-bright); font-weight: 600; }
+.box .desc { color: var(--text-dim); font-size: 0.65rem; margin-top: 2px; }
+.box.amber { border-color: var(--amber); }
+.box.amber .name { color: var(--amber); }
+.box.green { border-color: var(--green); }
+.box.green .name { color: var(--green); }
+.box.cyan { border-color: var(--cyan); }
+.box.cyan .name { color: var(--cyan); }
+.box.orange { border-color: #d48757; }
+.box.orange .name { color: #d48757; }
+.box.purple { border-color: #b480ce; }
+.box.purple .name { color: #b480ce; }
+.box.wide { min-width: 140px; }
+.box.full { width: 100%; max-width: 300px; }
+
+.arrow-down {
+  width: 0; height: 24px;
+  border-left: 1.5px dashed var(--text-dim);
+  margin: 0 auto;
+}
+.arrow-down.solid { border-left-style: solid; }
+.arrow-label {
+  font-family: var(--font-display);
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  text-align: center;
+  margin: 2px 0;
+}
+
+.color-key {
+  display: flex; flex-wrap: wrap; gap: 1rem;
+  margin: 1rem 0;
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+}
+.color-key .swatch {
+  display: flex; align-items: center; gap: 6px;
+}
+.color-key .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+}
+
+.pattern-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.pattern-card {
+  background: var(--bg-alt);
+  border: var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+}
+.pattern-card h4 {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--green);
+  margin-bottom: 0.4rem;
+}
+.pattern-card p { font-size: 0.85rem; color: var(--text-dim); margin: 0; }
+
+.file-tree {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  line-height: 1.8;
+  background: var(--bg-alt);
+  border: var(--line);
+  border-radius: var(--radius);
+  padding: 1.5rem 2rem;
+  margin: 1.5rem 0;
+  white-space: pre;
+  overflow-x: auto;
+}
+.file-tree .dir { color: var(--amber); }
+.file-tree .file { color: var(--text); }
+.file-tree .highlight { color: var(--green); }
+
+.flow-list { counter-reset: flow; }
+.flow-item {
+  counter-increment: flow;
+  display: flex;
+  gap: 1rem;
+  padding: 1rem 0;
+  border-bottom: var(--line);
+  align-items: flex-start;
+}
+.flow-item:last-child { border-bottom: none; }
+.flow-item .flow-num {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: var(--amber);
+  background: var(--surface);
+  border: var(--line);
+  border-radius: 6px;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.flow-item .flow-content strong { color: var(--text-bright); }
+.flow-item .flow-desc { font-size: 0.9rem; color: var(--text-dim); margin-top: 2px; }
+
+footer {
+  border-top: var(--line);
+  padding: 3rem 2rem;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+footer a { color: var(--amber); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+
+@media (max-width: 600px) {
+  nav { padding: 0 1rem; }
+  nav .nav-links a:not(.active) { display: none; }
+  .container { padding: 0 1rem; }
+  .diagram-container { padding: 1rem; }
+  .file-tree { font-size: 0.7rem; padding: 1rem; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="index.html" class="logo">josh<span>bot</span></a>
+  <div class="nav-links">
+    <a href="index.html">Home</a>
+    <a href="index.html#how">How it works</a>
+    <a href="index.html#use-cases">Use Cases</a>
+    <a href="architecture.html" class="active">Architecture</a>
+    <a href="https://github.com/bigknoxy/joshbot" target="_blank">GitHub</a>
+    <a href="https://github.com/bigknoxy/joshbot#quick-start" class="cta" style="background:var(--amber);color:var(--bg);padding:8px 18px;border-radius:var(--radius);font-weight:700;">Get Started</a>
+  </div>
+</nav>
+
+<div class="container">
+  <div class="page-hero">
+    <h1>Architecture</h1>
+    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~29,000 LOC non-test &middot; 1,284 test functions</div>
+  </div>
+
+  <section>
+    <div class="section-label">Overview</div>
+    <h2>System Architecture</h2>
+    <p>joshbot is built around a <strong>goroutine-based message bus</strong> that decouples chat channels from a ReAct agent loop. The agent is backed by a multi-provider LLM layer via OpenRouter-compatible APIs. Everything — memory, skills, tools — is file-based, making the system portable and auditable without a database.</p>
+
+    <div class="diagram-container">
+      <div class="color-key">
+        <span class="swatch"><span class="dot" style="background:var(--amber)"></span> Core</span>
+        <span class="swatch"><span class="dot" style="background:var(--green)"></span> Data</span>
+        <span class="swatch"><span class="dot" style="background:#d48757"></span> I/O</span>
+        <span class="swatch"><span class="dot" style="background:var(--cyan)"></span> LLM</span>
+        <span class="swatch"><span class="dot" style="background:#b480ce"></span> Infrastructure</span>
+      </div>
+
+      <div class="diagram">
+        <div class="diagram-row wrap">
+          <div class="box orange wide"><span class="name">CLI Channel</span><div class="desc">stdin (raw-mode line editor on a TTY)</div></div>
+          <div class="box orange wide"><span class="name">Telegram Channel</span><div class="desc">telebot long-polling</div></div>
+          <div class="box orange wide"><span class="name">Discord Channel</span><div class="desc">discordgo gateway websocket</div></div>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="arrow-label">chan InboundMessage</div>
+        <div class="box amber full"><span class="name">Message Bus</span><div class="desc">goroutine channel multiplexer</div></div>
+        <div class="arrow-down solid"></div>
+        <div class="arrow-label">routed to agent goroutine</div>
+        <div class="box amber full"><span class="name">Agent (ReAct Loop)</span><div class="desc">max 20 iterations: think → act → observe</div></div>
+        <div class="diagram-row wrap" style="margin-top: 8px;">
+          <div class="box purple"><span class="name">Tools Registry</span><div class="desc">23 built-in tools + MCP</div></div>
+          <div class="box purple"><span class="name">MCP Clients</span><div class="desc">stdio servers, namespaced</div></div>
+          <div class="box green"><span class="name">Memory System</span><div class="desc">MEMORY.md + HISTORY.md</div></div>
+          <div class="box green"><span class="name">Skills System</span><div class="desc">SKILL.md auto-discovery</div></div>
+          <div class="box cyan"><span class="name">LLM Providers</span><div class="desc">OpenRouter, Anthropic, etc.</div></div>
+        </div>
+        <div class="arrow-down"></div>
+        <div class="arrow-label">chan OutboundMessage</div>
+        <div class="box amber full"><span class="name">Message Bus</span><div class="desc">response routing back to channel</div></div>
+        <div class="arrow-down"></div>
+        <div class="diagram-row wrap">
+          <div class="box orange wide"><span class="name">CLI Output</span><div class="desc">stdout</div></div>
+          <div class="box orange wide"><span class="name">Telegram Output</span><div class="desc">bot.Send(), 4096-char split</div></div>
+          <div class="box orange wide"><span class="name">Discord Output</span><div class="desc">ChannelMessageSend(), 2000-char split</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-label">Data Flow</div>
+    <h2>Message Processing Pipeline</h2>
+    <p>Every message — from CLI, Telegram or Discord — follows the same path through the system.</p>
+
+    <div class="flow-list">
+      <div class="flow-item">
+        <div class="flow-num">1</div>
+        <div class="flow-content">
+          <strong>Channel Receives Message</strong>
+          <div class="flow-desc">CLI reads stdin. Telegram polls updates via telebot long-polling. Discord consumes message-create events over an outbound discordgo gateway websocket. All produce an <code>InboundMessage</code>.</div>
+        </div>
+      </div>
+      <div class="flow-item">
+        <div class="flow-num">2</div>
+        <div class="flow-content">
+          <strong>Bus Routes to Agent</strong>
+          <div class="flow-desc">The message bus fans <code>InboundMessage</code> into the agent goroutine via a channel. The bus handles multiplexing across channels.</div>
+        </div>
+      </div>
+      <div class="flow-item">
+        <div class="flow-num">3</div>
+        <div class="flow-content">
+          <strong>Agent Assembles Context</strong>
+          <div class="flow-desc">Identity files (IDENTITY.md, SOUL.md, USER.md, AGENTS.md) + MEMORY.md + skills summaries → system prompt. Session history loaded from JSONL files.</div>
+        </div>
+      </div>
+      <div class="flow-item">
+        <div class="flow-num">4</div>
+        <div class="flow-content">
+          <strong>ReAct Loop Begins</strong>
+          <div class="flow-desc">LLM responds with text and/or tool calls. Agent executes tools via the Registry, feeds results back as observations. Repeats up to 20 iterations.</div>
+        </div>
+      </div>
+      <div class="flow-item">
+        <div class="flow-num">5</div>
+        <div class="flow-content">
+          <strong>Memory & Skills Update</strong>
+          <div class="flow-desc">After each response, key facts are extracted into MEMORY.md. Repeated tool patterns trigger auto-skill creation via detection/extraction pipeline.</div>
+        </div>
+      </div>
+      <div class="flow-item">
+        <div class="flow-num">6</div>
+        <div class="flow-content">
+          <strong>Response Sent Back</strong>
+          <div class="flow-desc">Final response → <code>OutboundMessage</code> on bus → routed to correct channel → displayed to user.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-label">Directory Structure</div>
+    <h2>Code Map</h2>
+    <p>The project follows Go conventions with <code>cmd/</code> for the entry point and <code>internal/</code> for all implementation packages.</p>
+
+    <div class="file-tree">joshbot/
+├── <span class="dir">cmd/joshbot/</span>       <span class="highlight">← CLI entry point, service wiring (~5,920 LOC)</span>
+│   ├── main.go             entry point, flags, gateway
+│   ├── editor.go           raw-mode line editor for the interactive CLI (Tab completion, history, multiline)
+│   ├── terminal.go         ANSI key parsing + raw-mode helpers for the editor
+│   ├── skills_cmd.go       joshbot skills subcommands (list/trust/untrust)
+│   ├── sessions_cmd.go     joshbot sessions subcommands (list/show/prune/new/export)
+│   └── main_test.go, editor_test.go, utils_test.go
+├── <span class="dir">internal/</span>             <span class="highlight">← all implementation</span>
+│   ├── <span class="dir">agent/</span>              ReAct loop, context assembly, prompt caching
+│   ├── <span class="dir">memory/</span>             structured fact store (fact.go, search.go)
+│   ├── <span class="dir">skills/</span>             discovery, detection, extraction, validation, trust
+│   ├── <span class="dir">tools/</span>              23 built-in tools + registry, shell sandbox, shell env allowlist
+│   ├── <span class="dir">channels/</span>           Channel interface + Telegram and Discord implementations
+│   ├── <span class="dir">mcp/</span>                stdio MCP client + server manager (namespaced tool import)
+│   ├── <span class="dir">bus/</span>                goroutine message bus
+│   ├── <span class="dir">providers/</span>          LLM provider layer (OpenRouter, Anthropic, etc.)
+│   ├── <span class="dir">session/</span>            JSONL conversation persistence, inventory, transcript formatting
+│   ├── <span class="dir">subagent/</span>           restricted subagent runner
+│   ├── <span class="dir">cron/</span>               task scheduler
+│   ├── <span class="dir">heartbeat/</span>          proactive wake-up checker
+│   ├── <span class="dir">context/</span>            budget manager, compression
+│   ├── <span class="dir">config/</span>             JSON config, env overrides
+│   ├── <span class="dir">learning/</span>           summary extraction
+│   ├── <span class="dir">log/</span>                structured logging (charmbracelet/log)
+│   ├── <span class="dir">copilot/</span>            GitHub Copilot auth
+│   ├── <span class="dir">configure/</span>          config wizard
+│   ├── <span class="dir">service/</span>            systemd/launchd install
+│   └── <span class="dir">integration/</span>        integration tests
+├── <span class="dir">docs/</span>                documentation
+├── <span class="dir">skills/</span>              workspace skills (SKILL.md files)
+├── <span class="dir">site/</span>                <span class="highlight">← website (this page)</span>
+├── README.md
+├── AGENTS.md
+├── CLAUDE.md
+├── CHANGELOG.md
+└── VERSION</div>
+  </section>
+
+  <section>
+    <div class="section-label">Patterns</div>
+    <h2>Key Architectural Patterns</h2>
+    <p>These design decisions shape how every component works.</p>
+
+    <div class="pattern-grid">
+      <div class="pattern-card">
+        <h4>Message Bus</h4>
+        <p>Channels decoupled from agent via <code>chan InboundMessage</code> and <code>chan OutboundMessage</code>. Adding a new channel requires zero agent changes.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>ReAct Loop</h4>
+        <p>LLM → tools → reflect → repeat (max 20 iterations). Each iteration appends tool results as observations for the next LLM call.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>Plain-File Storage</h4>
+        <p>No databases. MEMORY.md, HISTORY.md, SKILL.md files. Portable, auditable, grep-able, syncs via Dropbox/git.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>Progressive Skill Loading</h4>
+        <p>Skills summarized in context; full content loaded on demand. Keeps token overhead minimal until a skill is actually invoked.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>Prompt Caching</h4>
+        <p>Static system prompt segments cached with mtime-based invalidation. Reduces file I/O on every message — critical for memory/skill files read each turn.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>Model-Centric Config</h4>
+        <p>Provider auto-detected from model prefix (claude → Anthropic, gpt → OpenAI). Fallback chains for resilience. ExtraBody support for provider-specific fields.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>Context Compression</h4>
+        <p>Conversation history summarized when approaching token limits. Budget manager tracks and enforces per-iteration costs.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>Subagent Delegation</h4>
+        <p>Parallel fan-out or sequential chain execution. Each subagent gets a focused one-turn LLM call with its own system prompt. Results merged back into the parent agent context.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>Defense in Depth for Shell</h4>
+        <p>A deny-list screens command text, an allowlisted environment strips API keys before spawn, and an opt-in OS sandbox (Linux Landlock, macOS Seatbelt) confines the filesystem and network — each layer catches what the one before it can't guarantee.</p>
+      </div>
+      <div class="pattern-card">
+        <h4>Trust-Gated Workspace Skills</h4>
+        <p>A workspace SKILL.md becomes standing system-prompt content, so it's inert until an operator runs <code>joshbot skills trust</code>. Trust is bound to a content hash and stored outside the workspace, so editing a trusted skill revokes it.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-label">Component Details</div>
+    <h2>Key Components</h2>
+
+    <h3>Agent (<code>internal/agent/</code>)</h3>
+    <p>The core ReAct loop. Each message triggers up to 20 think-act-observe iterations. System prompt is assembled from identity files + memory + skills summaries (with mtime-based caching). The agent serializes the tool schema from the Registry into the LLM's function calling format.</p>
+    <p>Slash commands dispatch on the command word and include <code>/new</code>, <code>/model [name]</code>, <code>/personality [name]</code>, <code>/compact</code>, <code>/status</code> and <code>/help</code>. <code>/model</code> and <code>/personality</code> are <strong>per-session</strong> — each <code>Session</code> carries <code>ModelOverride</code> and <code>Personality</code> persisted in its metadata sidecar, so a model or personality chosen mid-conversation survives a restart (resolution order: session override, then a global runtime override, then the config default). <code>/model ... --global</code> writes the config default for all sessions. <code>/new</code> clears both; <code>/compact</code> summarizes context on demand. These commands are forwarded from the Telegram menu too, with the same allowlist gate as a direct message.</p>
+
+    <h3>Tools (<code>internal/tools/</code>)</h3>
+    <p>23 built-in tools implement the <code>Tool</code> interface (the optional message, skill and cron tools register only when their dependency is wired). Tools discovered from configured MCP servers register alongside them under a server-scoped name, so an MCP server cannot shadow a built-in. Each declares Name, Description, Parameters, and Execute. The Registry handles discovery and execution. Tools include: filesystem (plus read/write/edit/list/glob/grep aliases), shell (deny-listed, opt-in sandbox), web fetch (SSRF-protected, aliased for search/fetch/code/company/research), memory search, skill management, config, parallel subagent, chain execution, subagent profile config, message sending, and cron (duration-based scheduled reminders).</p>
+    <p>Shell commands run with an <strong>allowlisted environment</strong> (<code>internal/childenv</code>) rather than inheriting joshbot's own process environment — provider API keys and other secrets are stripped before a command spawns, screened a second time against secret-shaped variable names. Optionally, <code>tools.shell_sandbox: "workspace"</code> confines shell commands to the workspace plus build caches and denies outbound network (<code>internal/tools/sandbox_&lt;os&gt;.go</code>): Linux uses Landlock via a re-exec helper, macOS a deny-by-default Seatbelt profile through <code>/usr/bin/sandbox-exec</code>. Outbound TCP is gated separately by <code>tools.shell_sandbox_allow_network</code>. It is off by default and fails closed — enabling it on a platform with no sandbox is a startup error, and on such platforms the shell tool defaults to allowlist-only, since the deny list alone is bypassable. The macOS profile allowlists <code>mach-lookup</code> by service name rather than granting it wholesale — a blanket grant reaches XPC services that run outside the profile and would act on the sandboxed process's behalf. Whenever an allowlist is in force, a command containing a construct that can introduce a second command word (<code>;</code>, <code>&amp;</code>, <code>|</code>, newline, backtick, <code>$(</code>, <code>&lt;(</code>, <code>&gt;(</code>) is refused outright, because first-word matching admitted <code>echo hi; id</code>. Web fetches are checked for SSRF both by hostname up front and again at dial time against the resolved IP, closing the DNS-rebinding gap between the two checks.</p>
+    <p><strong>Human approval gate.</strong> <code>tools.shell_approval</code> (<code>"off"</code> default, <code>"interactive"</code>, <code>"always"</code>) requires an explicit <code>y</code> before a shell command runs, with the whole command line and working directory shown — the arguments, not the binary, are the dangerous part. It is orthogonal to the sandbox: approval decides <em>whether</em> a command runs, the sandbox decides <em>what it can reach</em>. The <code>Approver</code> is carried on the request context (<code>tools.WithApprover</code>) rather than on the tool struct, for the same reason the progress sink is — a struct field would be shared across the concurrent <code>Process</code> calls Telegram makes and would hand one conversation's prompt to another's turn. It fails closed by construction: <code>ApproverFromContext</code> returns <code>DenyAll</code> when none is installed and <code>Deny</code> is the zero <code>Decision</code>, so cron jobs, the heartbeat scanner, the gateway and piped <code>agent -m</code> runs — none of which has a human to ask — are refused immediately rather than blocking a background goroutine or auto-approving on timeout. EOF, a context deadline, Ctrl-C and an approver that errors are all denials; <code>ExecuteAsync</code> is gated identically so <code>async=true</code> is not a bypass; and the gate runs after deny-list and allowlist screening, so a command that would be refused anyway never produces a prompt.</p>
+    <p>Anything joshbot logs or prints goes through <code>internal/redact</code> first. The log writer and <code>joshbot status</code> are wrapped, so a credential that arrives in a tool result — the model runs <code>cat config.yml</code> and the output carries an API key — never reaches the log verbatim. Vendor key shapes, <code>Authorization</code> headers (the scheme is kept, the credential replaced) and credential-shaped assignments become <code>[REDACTED]</code>, and the host home directory becomes <code>~</code>. Session files on disk are deliberately exempt: rewriting conversation content on save would mangle legitimate text and add a second way for a session to be corrupted, so data at rest relies on the <code>0600</code> mode instead.</p>
+
+    <h3>Memory System (<code>internal/memory/</code>)</h3>
+    <p>Two files: <code>MEMORY.md</code> (always in context — key facts, preferences, decisions) and <code>HISTORY.md</code> (grep-searchable event log for recall). Facts are extracted after each conversation turn by the learning module.</p>
+
+    <h3>Skills System (<code>internal/skills/</code>)</h3>
+    <p>Markdown files with YAML frontmatter in <code>workspace/skills/{name}/SKILL.md</code>. Auto-discovered on startup. Progressive loading: summary only in system prompt, full content loaded when the skill is invoked. The detection module observes tool usage patterns and auto-creates skills. Workspace skills are <strong>inert until an operator approves them</strong> with <code>joshbot skills trust</code> — approval is bound to a hash of the skill's content, stored outside the workspace, so editing an approved skill (or having something write a new one) revokes trust rather than inheriting it. Skills bundled with the release itself are exempt.</p>
+
+    <h3>Providers (<code>internal/providers/</code>)</h3>
+    <p>Multi-provider LLM support via a unified <code>Provider</code> interface. Registered providers: OpenRouter, OpenAI, NVIDIA, Groq, Ollama, Anthropic, Poolside, Azure, Custom, LiteLLM, GitHub Copilot. Provider auto-selection by model prefix. ExtraBody support for provider-specific fields (e.g., poolside's chat_template_kwargs).</p>
+    <p><strong>Images</strong> ride on <code>Message.Images</code> and are serialized at a single point: every provider, Anthropic included, is dialled through the OpenAI-compatible wire format, so one <code>Message.MarshalJSON</code> covers them all. A text-only message takes a fast path and serializes byte-identically to what it did before attachments existed; a message carrying images becomes a <code>content</code> parts array with <code>image_url</code> data URLs. Type is decided by sniffing the bytes (PNG, JPEG, GIF, WebP), never by filename or declared MIME. Limits are 5&nbsp;MB per image and 20&nbsp;MB per request. <code>SupportsVision</code> screens the request against every candidate model <em>before</em> the first network call, in both <code>Chat</code> and <code>ChatStream</code>, and fails closed on unknown models — the resulting error names the models tried and the config key to change, instead of a provider <code>400</code> arriving mid-conversation. Sessions persist an <code>ImageRef</code> (type, size, SHA-256), not the bytes: session JSONL is exempt from redaction and protected only by its <code>0600</code> mode, and re-sending stored images would re-bill them on every later turn inside the memory window. On Telegram the download happens strictly <em>after</em> the allowlist check — it carries a file id to the Bot API and confirms the bot is live — and an over-limit photo is refused from its declared size without spending the transfer.</p>
+
+    <h3>Channels (<code>internal/channels/</code>)</h3>
+    <p><code>Channel</code> is the interface; Telegram (<code>telebot</code>, long-polling) and Discord (<code>discordgo</code>, an outbound gateway websocket) implement it. Neither needs an inbound port or a public webhook URL. Both split long replies on a code-fence-aware boundary (4096 chars for Telegram, 2000 for Discord), keep a typing indicator alive for the length of an agent turn, and enforce the allowlist <strong>deny-by-default</strong>: an empty or unset <code>allow_from</code> rejects every sender and the channel logs an actionable startup warning naming the config key. The interactive CLI is not a <code>Channel</code> — it is <code>runAgentLoop</code> in <code>cmd/joshbot/main.go</code>.</p>
+    <p><strong>Enable one chat channel at a time.</strong> The bus exposes a single outbound channel that channel implementations read competitively, so Telegram and Discord running together steal each other's replies — about half of each conversation's answers are delivered to the other service, silently. Per-channel fan-out in the bus is the fix; until then <code>channels.telegram.enabled</code> and <code>channels.discord.enabled</code> should not both be true.</p>
+
+    <h3>MCP Clients (<code>internal/mcp/</code>)</h3>
+    <p><code>setupComponents</code> in <code>cmd/joshbot/main.go</code> connects the declared servers and registers their tools; the spawned processes are owned by a package-level manager reaped on exit. Model Context Protocol servers declared in <code>config.json</code> are launched as child processes and spoken to over stdio (JSON-RPC: handshake, <code>tools/list</code>, <code>tools/call</code>). Discovered tools are imported into the same registry the built-in tools live in as <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>; because no built-in carries that prefix and <code>Registry.Register</code> refuses a duplicate, an MCP server cannot shadow <code>shell</code> or any other built-in. Registration is fail-soft and bounded: a server that fails its handshake or tools/list inside 15s is logged and skipped rather than sinking the others, a single call is capped at 60s, a result is truncated at 4,000 characters and a single server message over 4&nbsp;MiB kills the connection — third-party text lands straight in the prompt, so it must not be able to exhaust the context or the heap. Server processes get the same allowlisted, credential-screened environment as shell children (<code>internal/childenv</code>), so an MCP server cannot read joshbot's provider API keys; their filesystem access is <em>not</em> sandboxed.</p>
+    <p><strong>A configured server is inert until approved.</strong> An enabled server's tools are registered only if an operator has run <code>joshbot mcp trust &lt;name&gt;</code>; approval is bound to a SHA-256 of the server's advertised tool manifest (each tool's name, description and input schema, sorted and length-prefixed) held in <code>~/.joshbot/mcp.trust</code> at mode <code>0600</code>, so a server that changes what it advertises is revoked and must be re-approved. The gate is on the manifest, not on execution: an unapproved server is still spawned and asked for <code>tools/list</code>, because that is the only way to learn what it advertises &mdash; what the store governs is whether any of it may reach the model. A nil or unreadable store means "not trusted", so the gate fails closed. Server-supplied descriptions are capped at 1,024 characters and joshbot's own prompt envelope tags (<code>&lt;memory&gt;</code>, <code>&lt;skills&gt;</code>, <code>&lt;current_time&gt;</code>, <code>&lt;conversation_context&gt;</code>, <code>&lt;personality&gt;</code>) are defanged, so a description cannot close a section joshbot opened and have its remainder read as joshbot's own instructions. <code>joshbot mcp list</code> renders each server's state and manifest &mdash; text or <code>--output json</code> &mdash; so an operator reads what they are approving first.</p>
+
+    <h3>Message Bus (<code>internal/bus/</code>)</h3>
+    <p>Goroutine-safe channel multiplexer. Inbound messages from any channel are routed to the agent goroutine. Outbound messages from the agent are routed back to the originating channel. This decoupling means channels and agent can be developed independently.</p>
+  </section>
+
+  <section>
+    <div class="section-label">Configuration</div>
+    <h2>Model-Centric Config</h2>
+    <p>Providers are auto-detected from model names. The config supports both legacy and model-centric formats.</p>
+
+    <div class="diagram-container">
+      <div class="file-tree" style="border: none; margin: 0; padding: 0; background: transparent;">{
+  "models_config": {
+    "models": [
+      { "name": "smart",  "model": "anthropic/claude-sonnet-4", "api_key": "..." },
+      { "name": "fast",   "model": "groq/llama-3.3-70b",       "api_key": "..." },
+      { "name": "code",   "model": "poolside/laguna-m.1",       "api_key": "...",
+        "extra_body": { "chat_template_kwargs": { "enable_thinking": false } } }
+    ],
+    "agent": { "model": "smart", "fallback": ["fast"] }
+  },
+  "providers": {
+    "openrouter": { "api_key_env": "MY_OPENROUTER_KEY", "enabled": true },
+    "nvidia":     { "api_key": "...", "enabled": true }
+  },
+  "channels": {
+    "telegram": { "enabled": false, "token": "", "allow_from": ["123456789"] },
+    "discord":  { "enabled": false, "token": "", "allow_from": ["123456789"] }
+  }
+}</div>
+    </div>
+    <p>A provider or model entry may carry <code>api_key_env</code> — the name of an environment variable — instead of a literal <code>api_key</code>, so the config file holds a variable name rather than a secret. Precedence is <code>JOSHBOT_PROVIDERS__&lt;NAME&gt;__API_KEY</code> &gt; <code>api_key_env</code> &gt; <code>api_key</code>, and it falls out of ordering: <code>resolveProviderCredentials</code> runs before <code>applyEnvOverrides</code> in <code>internal/config</code>. Setting both fields on one entry, or naming a variable that is not set, is a fatal load error rather than a downgrade to a config nothing can dial — that failure would otherwise resurface as a 401 mid-turn and read as a revoked key.</p>
+    <p><strong>Named profiles</strong> (<code>profiles</code> plus <code>default_profile</code>, <code>internal/config/profiles.go</code>) are named provider/model/endpoint setups selected per run with <code>--profile</code> on <code>agent</code>, <code>gateway</code> and <code>preflight</code>. Precedence is <code>--profile</code> &gt; <code>default_profile</code> &gt; nothing, and that last case is the compatibility contract: a config carrying profiles but selecting none is left completely untouched, so no existing install changes behaviour on upgrade. A selected profile is applied through the model-centric path and <em>replaces</em> the models block rather than being appended to it — a profile whose fallback was some other entry in the file would dial an endpoint the operator did not choose, which is the exact surprise switching profiles is meant to avoid. A profile cannot hold a credential: <code>api_key</code> is a field only so that writing one is a fatal load error naming <code>api_key_env</code> instead, since a profiles block is what gets pasted into an issue. Every other failure mode is a startup error rather than a provider error mid-turn — an unknown name (listing the configured ones), a <code>disabled</code> profile (its own message), an unset <code>api_key_env</code> variable (named in the error), and a post-apply <code>ResolveModelConfig</code> check so an unresolvable profile never reaches a first request. <code>joshbot profiles list</code> (text or <code>--output json</code>) reports each profile's provider, wire model ID, endpoint <em>host</em> — reduced from <code>api_base</code> so userinfo embedded in a URL cannot leak — and the name of the variable holding its credential with whether it is set, never the credential.</p>
+    <p><code>joshbot preflight</code> answers &ldquo;would joshbot start, and with what?&rdquo; without dialling anything. It is built on <code>ResolveModelConfig</code> and <code>StripProviderPrefix</code> rather than a second reading of the config, so the prefix rules (poolside keeps its prefix, every other provider has it stripped) cannot drift from what is actually sent. It reports provider, wire model ID, API host and credential <em>source</em> — never the credential — classifies failures as <code>no-default-provider</code>, <code>provider-not-enabled</code>, <code>missing-credential</code> or <code>unresolvable</code>, and exits non-zero when joshbot would not start. It loads through <code>config.LoadStrict</code>, not <code>Load</code>: <code>Load</code> warns and substitutes defaults so a broken file cannot stop the daemon starting, which is the right call for the daemon and useless for a diagnostic that would then describe a config nobody wrote.</p>
+    <p>The read-only reporting commands — <code>preflight</code>, <code>status</code>, <code>skills list</code>, <code>profiles list</code>, <code>auth status</code> and <code>configure --list</code> — take a global <code>--output text|json</code> flag. <code>text</code> is the default and is byte-for-byte the historical output; <code>json</code> emits one versioned document (<code>schema_version</code>) alone on stdout, deterministic so two runs can be diffed, with a failure reported as <code>{"schema_version":1,"error":{"code":N,"message":"..."}}</code> on the same stream. The document types and both renderers live in <code>internal/output</code>, so <code>cmd/joshbot</code> keeps only flag wiring. Redaction differs by form on purpose: text is written through <code>redact.Writer</code>, while JSON is made safe <em>before</em> encoding — the byte-stream redactor recognises <code>name: value</code> pairs anywhere, which an encoded document is built from, and rewriting it produced output no JSON parser accepts. The JSON documents therefore carry no credential fields by construction, and free-text and path fields are passed through <code>redact.String</code>/<code>redact.HomePath</code> as they are built.</p>
+    <p><code>agents.defaults.streaming</code> (default <code>false</code>) makes the ReAct loop call the provider's <code>ChatStream</code> and forward text deltas to a context-carried sink as they arrive, so the interactive CLI prints the reply while it is being generated. It activates only when a sink is attached — the interactive CLI on a real terminal — so <code>joshbot agent -m</code>, piped output and Telegram are byte-identical to the non-streaming path. The trade is deliberate: streaming forfeits the transparent provider fallback, because text already printed cannot be retried, so a mid-stream failure appends a visible <code>[stream error: ...]</code> marker rather than silently switching providers.</p>
+    <p>The interactive CLI (<code>runAgentLoop</code> in <code>cmd/joshbot/main.go</code>) swaps the plain <code>&gt; </code> prompt for a raw-mode line editor (<code>editor.go</code>/<code>terminal.go</code>) when both stdin and stdout are real terminals. It adds Tab slash-command completion, Up/Down history, Home/End/Delete editing, Alt+Enter multiline input and Ctrl+C/Ctrl+D to quit, and shows the session's current model in the prompt. A single reader goroutine lives for the editor's lifetime so it never swallows the first bytes of the next line. The editor activates only on a genuine TTY, so piped or scripted output is byte-identical to the plain prompt.</p>
+    <p>Environment variable overrides: <code>JOSHBOT_PROVIDERS__OPENROUTER__API_KEY</code> or <code>JOSHBOT_MODELS_CONFIG__AGENT__MODEL</code>. Config is validated JSON, stored at <code>~/.joshbot/config.json</code>, written with <code>0600</code> permissions since it holds live provider API keys. An explicit <code>--config &lt;file&gt;</code> flag names a specific config file, overriding the default home-directory location.</p>
+    <p>The same owner-only treatment covers everything else joshbot writes under <code>~/.joshbot/</code>: session JSONL files, their <code>.meta.json</code> sidecars and the log file are all <code>0600</code>, inside <code>0700</code> directories re-applied on every start, because a transcript routinely contains credentials, personal data and raw tool output. Session writes go through an atomic write with a per-writer temp name, so the gateway and a concurrent <code>joshbot agent -m</code> sharing the sessions directory cannot publish a torn file. A load that meets an unreadable line skips that line rather than failing the whole session — there is one session per <code>channel:senderID</code> and a fatal parse would lock that user out permanently — and preserves the original bytes at <code>&lt;session-id&gt;.jsonl.corrupt</code> for inspection.</p>
+
+    <p><code>joshbot sessions export &lt;id&gt;</code> turns a session into a Markdown transcript plus a JSON manifest for attaching to a bug report. Redaction runs before the bytes are written rather than over the finished file, so an unredacted export never exists on disk; the output is deterministic, carrying no export-time clock, so two exports of an unchanged session are byte-identical; and it does not go through the loading path, whose quarantine side effect would repair the very damage the report is capturing. The manifest records message and per-role counts, per-tool call and result tallies, the source file's size and a SHA-256 of it, and the count of unreadable lines skipped.</p>
+    <p>Sessions are inspected and cleared with <code>joshbot sessions</code> — <code>list</code>, <code>show &lt;id&gt; [--last N]</code>, <code>prune &lt;id&gt;|--older-than &lt;d&gt;</code> and <code>new &lt;id&gt;</code>. It is not a resume feature: a session is loaded automatically on every inbound message and there is exactly one per user per channel, so there is nothing to select. <code>show</code> output passes through the same redaction as the log. Destructive subcommands prompt, take <code>--force</code> for unattended use, and exit non-zero rather than block when there is no terminal.</p>
+    <p>Once a session crosses <code>agents.defaults.compaction_threshold</code> it is summarized into a single compaction record stored at index 0 of the session, so the summary is computed once rather than rebuilt on every later turn. The messages it replaces are appended to an append-only <code>&lt;session-id&gt;.history.jsonl</code> archive before they leave the live session — the agent never reads that archive back, and if the append fails the compaction is abandoned, since recomputing a summary is cheaper than destroying history. The archive is not rotated or pruned, so it grows for the life of the session.</p>
+  </section>
+</div>
+
+<footer>
+  <p>Last updated 2026-08-11</p>
+  <p>joshbot — <a href="index.html">Home</a> &middot; <a href="https://github.com/bigknoxy/joshbot">GitHub</a> &middot; MIT License</p>
+</footer>
+
+</body>
+</html>

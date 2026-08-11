@@ -2,9 +2,14 @@ package bus
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/providers"
 )
 
 // MaxQueueSize is the maximum number of messages that can be buffered in any channel.
@@ -21,6 +26,13 @@ type InboundMessage struct {
 	Channel   string         // Source channel (e.g., "telegram", "cli")
 	Timestamp time.Time      // When the message was received
 	Metadata  map[string]any // Additional context (username, chat ID, etc.)
+
+	// Images are attachments that arrived with this message, already validated
+	// and type-sniffed by whichever channel received them. They are carried as
+	// decoded bytes for the duration of the turn only: the agent attaches them
+	// to the provider request and stores a descriptor, never the bytes, in the
+	// session (see session.ImageRef).
+	Images []providers.Image
 }
 
 // OutboundMessage represents a message to be sent to a chat channel.
@@ -94,10 +106,18 @@ func (r *HandlerRegistry) GetHandlers(topic string) []MessageHandler {
 }
 
 // MessageBus handles async message routing between channels and the agent.
+//
+// The inbound/outbound channels are allocated once in the constructor and are
+// never closed or reassigned for the lifetime of the bus. This is deliberate:
+// unsynchronized senders (Send/Publish, and handler goroutines that call
+// Publish) hold a reference to these channels, so closing them on Stop would
+// open a "send on closed channel" panic window. Shutdown is cancel-only — see
+// Stop.
 type MessageBus struct {
 	inboundCh  chan InboundMessage
 	outboundCh chan OutboundMessage
 	registry   *HandlerRegistry
+	parentCtx  context.Context
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
@@ -109,25 +129,18 @@ type MessageBus struct {
 
 // NewMessageBus creates a new MessageBus with default buffer sizes.
 func NewMessageBus() *MessageBus {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &MessageBus{
-		inboundCh:        make(chan InboundMessage, MaxQueueSize),
-		outboundCh:       make(chan OutboundMessage, MaxQueueSize),
-		registry:         NewHandlerRegistry(),
-		ctx:              ctx,
-		cancel:           cancel,
-		handlerSemaphore: make(chan struct{}, MaxConcurrentHandlers),
-	}
+	return NewMessageBusWithContext(context.Background())
 }
 
 // NewMessageBusWithContext creates a new MessageBus with an external context.
 func NewMessageBusWithContext(ctx context.Context) *MessageBus {
-	ctx, cancel := context.WithCancel(ctx)
+	cctx, cancel := context.WithCancel(ctx)
 	return &MessageBus{
 		inboundCh:        make(chan InboundMessage, MaxQueueSize),
 		outboundCh:       make(chan OutboundMessage, MaxQueueSize),
 		registry:         NewHandlerRegistry(),
-		ctx:              ctx,
+		parentCtx:        ctx,
+		ctx:              cctx,
 		cancel:           cancel,
 		handlerSemaphore: make(chan struct{}, MaxConcurrentHandlers),
 	}
@@ -141,8 +154,15 @@ func (mb *MessageBus) Start() {
 		return
 	}
 	mb.started = true
+	// Derive a fresh cancellable context from the parent on every (re)start, so
+	// a bus that was previously Stopped starts clean instead of inheriting the
+	// already-cancelled context. The channels are intentionally left untouched.
+	ctx, cancel := context.WithCancel(mb.parentCtx)
+	mb.ctx, mb.cancel = ctx, cancel
 	mb.wg.Add(1)
-	go mb.processInbound(mb.ctx)
+	// Hand the goroutine the context captured here, not mb.ctx: a later Start
+	// reassigns the field, and nothing joins the goroutines of the previous run.
+	go mb.processInbound(ctx)
 	// Note: processOutbound is not started here because channel implementations
 	// (e.g., Telegram, CLI) consume outbound messages directly via OutboundChannel().
 	// The bus acts as a pub/sub broker - publishers send to outboundCh, and
@@ -236,44 +256,59 @@ func (mb *MessageBus) processInbound(ctx context.Context) {
 			for {
 				select {
 				case msg := <-mb.inboundCh:
-					mb.dispatchInbound(msg)
+					mb.dispatchInbound(ctx, msg)
 				default:
 					return
 				}
 			}
 		case msg := <-mb.inboundCh:
-			mb.dispatchInbound(msg)
+			mb.dispatchInbound(ctx, msg)
 		}
 	}
 }
 
 // dispatchToHandlers sends a message to all registered handlers for a topic.
 // Uses a semaphore to bound the number of concurrent handler executions.
-func (mb *MessageBus) dispatchToHandlers(topic string, msg InboundMessage) {
+//
+// ctx is passed explicitly rather than read from mb.ctx: Stop deliberately does
+// not wait for handler goroutines, so a subsequent Start — which reassigns
+// mb.ctx under mb.mu — would race the unlocked reads still happening in the
+// previous run's goroutines. Threading the context that this run started with
+// keeps every read of it on the goroutine's own stack.
+func (mb *MessageBus) dispatchToHandlers(ctx context.Context, topic string, msg InboundMessage) {
 	handlers := mb.registry.GetHandlers(topic)
 	for _, handler := range handlers {
 		select {
-		case <-mb.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 			// Acquire semaphore to bound concurrent handler executions
 			mb.handlerSemaphore <- struct{}{}
 			// Execute handler in a goroutine, release semaphore when done
 			go func(h MessageHandler) {
-				defer func() { <-mb.handlerSemaphore }()
-				h(mb.ctx, msg)
+				defer func() {
+					<-mb.handlerSemaphore
+					if r := recover(); r != nil {
+						log.Error("panic in message handler",
+							"topic", topic,
+							"panic", fmt.Sprintf("%v", r),
+							"stack", string(debug.Stack()),
+						)
+					}
+				}()
+				h(ctx, msg)
 			}(handler)
 		}
 	}
 }
 
 // dispatchInbound sends a message to all registered handlers for the channel.
-func (mb *MessageBus) dispatchInbound(msg InboundMessage) {
+func (mb *MessageBus) dispatchInbound(ctx context.Context, msg InboundMessage) {
 	// Dispatch to channel-specific handlers
-	mb.dispatchToHandlers(msg.Channel, msg)
+	mb.dispatchToHandlers(ctx, msg.Channel, msg)
 	// Also dispatch to "all" topic if different from channel
 	if msg.Channel != "all" {
-		mb.dispatchToHandlers("all", msg)
+		mb.dispatchToHandlers(ctx, "all", msg)
 	}
 }
 
@@ -302,27 +337,30 @@ func (mb *MessageBus) processOutbound(ctx context.Context) {
 }
 
 // Stop gracefully shuts down the message bus.
-// It cancels the context and waits for all handlers to complete.
+//
+// Shutdown is cancel-only: it cancels the context and waits for the inbound
+// processor goroutine (the only goroutine tracked by wg) to drain and exit.
+// In-flight handler goroutines are not awaited here — they are bounded by
+// handlerSemaphore and observe the cancellation through the context they were
+// handed, unwinding on their own.
+//
+// The inbound/outbound channels are deliberately NOT closed or replaced.
+// Send/Publish and handler goroutines write to them without holding mb.mu, so
+// closing them would race those writers and could panic with "send on closed
+// channel" during shutdown. Leaving the channels open makes concurrent
+// Send/Publish safe at any point, including while Stop runs.
 func (mb *MessageBus) Stop() {
 	mb.mu.Lock()
 	if !mb.started {
 		mb.mu.Unlock()
 		return
 	}
+	mb.started = false
 	mb.cancel()
 	mb.mu.Unlock()
 
-	// Wait for all goroutines to finish
+	// Wait for the inbound processor to finish draining and exit.
 	mb.wg.Wait()
-
-	// Close channels (optional, depends on usage pattern)
-	mb.mu.Lock()
-	close(mb.inboundCh)
-	close(mb.outboundCh)
-	mb.inboundCh = make(chan InboundMessage, MaxQueueSize)
-	mb.outboundCh = make(chan OutboundMessage, MaxQueueSize)
-	mb.started = false
-	mb.mu.Unlock()
 }
 
 // IsRunning returns whether the bus is currently processing messages.

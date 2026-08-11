@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -50,8 +52,7 @@ func (t *FilesystemTool) Name() string {
 
 // Description returns a description of the tool.
 func (t *FilesystemTool) Description() string {
-	return `Filesystem operations including reading, writing, editing, listing, and searching files. ` +
-		`Use this tool to interact with files and directories in the workspace.`
+	return `filesystem: read, write, edit, list, search files and directories.`
 }
 
 // Parameters returns the parameters for the tool.
@@ -60,51 +61,51 @@ func (t *FilesystemTool) Parameters() []Parameter {
 		{
 			Name:        "operation",
 			Type:        ParamString,
-			Description: "The operation to perform: read_file, write_file, edit_file, list_dir, glob, grep",
+			Description: "Operation: read_file, write_file, edit_file, list_dir, glob, grep",
 			Required:    true,
 			Enum:        []string{"read_file", "write_file", "edit_file", "list_dir", "glob", "grep"},
 		},
 		{
 			Name:        "path",
 			Type:        ParamString,
-			Description: "The file or directory path (relative to workspace if restricting)",
+			Description: "File or directory path",
 			Required:    false,
 		},
 		{
 			Name:        "content",
 			Type:        ParamString,
-			Description: "Content to write (for write_file operation)",
+			Description: "File content (write_file)",
 			Required:    false,
 		},
 		{
 			Name:        "search",
 			Type:        ParamString,
-			Description: "Search pattern (for grep or edit_file)",
+			Description: "Search pattern (grep/edit_file)",
 			Required:    false,
 		},
 		{
 			Name:        "replace",
 			Type:        ParamString,
-			Description: "Replacement text (for edit_file)",
+			Description: "Replacement text (edit_file)",
 			Required:    false,
 		},
 		{
 			Name:        "pattern",
 			Type:        ParamString,
-			Description: "Glob pattern (for glob operation)",
+			Description: "Glob pattern (glob)",
 			Required:    false,
 		},
 		{
 			Name:        "offset",
 			Type:        ParamInteger,
-			Description: "Line offset to start reading from (for read_file, 0-indexed)",
+			Description: "Line offset (read_file, 0-indexed)",
 			Required:    false,
 			Default:     0,
 		},
 		{
 			Name:        "limit",
 			Type:        ParamInteger,
-			Description: "Number of lines to read (for read_file)",
+			Description: "Line count (read_file)",
 			Required:    false,
 			Default:     100,
 		},
@@ -137,25 +138,25 @@ func (t *FilesystemTool) Execute(ctx interface{}, args map[string]any) ToolResul
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.readFile(resolvedPath, args)
+		return t.readFile(t.containmentRoot(workspace, resolvedPath), resolvedPath, args)
 	case "write_file":
 		resolvedPath, err := t.resolveRequiredPath(workspace, args)
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.writeFile(resolvedPath, args)
+		return t.writeFile(t.containmentRoot(workspace, resolvedPath), resolvedPath, args)
 	case "edit_file":
 		resolvedPath, err := t.resolveRequiredPath(workspace, args)
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.editFile(resolvedPath, args)
+		return t.editFile(t.containmentRoot(workspace, resolvedPath), resolvedPath, args)
 	case "list_dir":
 		resolvedPath, err := t.resolveRequiredPath(workspace, args)
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.listDir(resolvedPath)
+		return t.listDir(t.containmentRoot(workspace, resolvedPath), resolvedPath)
 	case "glob":
 		return t.glob(workspace, args)
 	case "grep":
@@ -176,32 +177,115 @@ func (t *FilesystemTool) resolvePath(workspace, path string) (string, error) {
 		return "", errors.New("path is required")
 	}
 
-	// If path is absolute, check restrictions
-	if filepath.IsAbs(path) {
-		cleaned := filepath.Clean(path)
-		// Check workspace restriction
-		if t.restrict && !isWithinBase(cleaned, workspace) {
-			// Check allowed paths if workspace restriction is enabled
-			if !t.isAllowedPath(cleaned) {
-				return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
-			}
-		}
-		return cleaned, nil
+	cleaned := filepath.Clean(path)
+	if !filepath.IsAbs(cleaned) {
+		cleaned = filepath.Clean(filepath.Join(workspace, path))
 	}
 
-	// Resolve relative path
-	resolved := filepath.Join(workspace, path)
-	cleaned := filepath.Clean(resolved)
+	// Resolve symlinks before the containment check so a lexically-inside path
+	// that actually points outside the workspace (ws/link -> /etc) is rejected,
+	// including a link whose target does not exist yet. The resolved path is
+	// what we return and operate on, which narrows — but does not close — the
+	// TOCTOU window: the final component can still be swapped for a symlink
+	// between here and the open, which is why writes go through writeNoFollow.
+	resolved, err := resolveSymlinks(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %s: %w", path, err)
+	}
 
-	// Check workspace restriction
-	if t.restrict && !isWithinBase(cleaned, workspace) {
-		// Check allowed paths
-		if !t.isAllowedPath(cleaned) {
+	if t.restrict {
+		// Compare against the symlink-resolved workspace too, so the workspace
+		// itself lying behind a symlink (e.g. macOS /tmp -> /private/tmp) does
+		// not spuriously fail the check.
+		base := workspace
+		if rb, berr := resolveSymlinks(filepath.Clean(workspace)); berr == nil {
+			base = rb
+		}
+		if !isWithinBase(resolved, base) && !t.isAllowedResolved(resolved) {
 			return "", fmt.Errorf("access denied: path %s is outside workspace %s", path, workspace)
 		}
 	}
 
-	return cleaned, nil
+	return resolved, nil
+}
+
+// containmentRoot picks the directory every subsequent open is walked from, for
+// an already-resolved path. Containment is only meaningful relative to a root:
+// the workspace normally, an explicitly allowed path when the operator named
+// one, and the filesystem root when restriction is off (the walk still runs,
+// refusing to traverse a symlink, which costs nothing because resolvePath has
+// already resolved the path it returned).
+//
+// Roots are compared symlink-resolved on both sides so a workspace that itself
+// lives behind a symlink (macOS /tmp -> /private/tmp) still matches.
+func (t *FilesystemTool) containmentRoot(workspace, resolved string) string {
+	if !t.restrict {
+		return string(filepath.Separator)
+	}
+
+	base := filepath.Clean(workspace)
+	if rb, err := resolveSymlinks(base); err == nil {
+		base = rb
+	}
+	if isWithinBase(resolved, base) {
+		return base
+	}
+
+	for _, allowed := range t.allowedPaths {
+		a := filepath.Clean(allowed)
+		if r, err := resolveSymlinks(a); err == nil {
+			a = r
+		}
+		if isWithinBase(resolved, a) {
+			return a
+		}
+	}
+
+	// Not inside anything we would permit. resolvePath should already have
+	// refused, but returning the workspace keeps the open contained rather than
+	// falling back to "/" if a future caller reaches here without that check.
+	return base
+}
+
+// safeReadFile reads path through the dirfd walk rooted at root, so no symlink
+// at any component — not just the last — can redirect the read outside.
+func safeReadFile(root, path string) ([]byte, error) {
+	f, err := openInRoot(root, path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// safeWriteFile writes data to path through the same walk. The leaf is opened
+// O_NOFOLLOW too, so an existing symlink there is refused rather than followed.
+func safeWriteFile(root, path string, data []byte, perm os.FileMode) error {
+	f, err := openInRoot(root, path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, werr := f.Write(data); werr != nil {
+		f.Close()
+		return werr
+	}
+	return f.Close()
+}
+
+// readDirIn lists a directory through the same walk, sorted by name to match
+// os.ReadDir's ordering.
+func readDirIn(root, path string) ([]os.DirEntry, error) {
+	f, err := openInRoot(root, path, os.O_RDONLY|openDirFlag, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
 }
 
 // isAllowedPath checks if the path is in the allowed paths list.
@@ -215,8 +299,24 @@ func (t *FilesystemTool) isAllowedPath(path string) bool {
 	return false
 }
 
+// isAllowedResolved reports whether a symlink-resolved path is within an
+// allowed path, resolving each allowed base the same way so both sides are
+// comparable (macOS /var -> /private/var, etc.).
+func (t *FilesystemTool) isAllowedResolved(path string) bool {
+	for _, allowed := range t.allowedPaths {
+		allowedClean := filepath.Clean(allowed)
+		if r, err := resolveSymlinks(allowedClean); err == nil {
+			allowedClean = r
+		}
+		if isWithinBase(path, allowedClean) || path == allowedClean {
+			return true
+		}
+	}
+	return false
+}
+
 // readFile reads a file's contents.
-func (t *FilesystemTool) readFile(path string, args map[string]any) ToolResult {
+func (t *FilesystemTool) readFile(root, path string, args map[string]any) ToolResult {
 	offset := 0
 	limit := 100
 
@@ -227,7 +327,7 @@ func (t *FilesystemTool) readFile(path string, args map[string]any) ToolResult {
 		limit = int(l)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := safeReadFile(root, path)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to read file: %w", err)}
 	}
@@ -261,16 +361,16 @@ func (t *FilesystemTool) readFile(path string, args map[string]any) ToolResult {
 }
 
 // writeFile writes content to a file.
-func (t *FilesystemTool) writeFile(path string, args map[string]any) ToolResult {
+func (t *FilesystemTool) writeFile(root, path string, args map[string]any) ToolResult {
 	content, _ := args["content"].(string)
 
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Ensure directory exists. mkdirAllIn, not os.MkdirAll: the latter resolves
+	// intermediate components through symlinks, which is exactly the escape.
+	if err := mkdirAllIn(root, filepath.Dir(path)); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := safeWriteFile(root, path, []byte(content), 0o644); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to write file: %w", err)}
 	}
 
@@ -278,7 +378,7 @@ func (t *FilesystemTool) writeFile(path string, args map[string]any) ToolResult 
 }
 
 // editFile performs search and replace on a file.
-func (t *FilesystemTool) editFile(path string, args map[string]any) ToolResult {
+func (t *FilesystemTool) editFile(root, path string, args map[string]any) ToolResult {
 	search, _ := args["search"].(string)
 	replace, _ := args["replace"].(string)
 
@@ -286,7 +386,7 @@ func (t *FilesystemTool) editFile(path string, args map[string]any) ToolResult {
 		return ToolResult{Error: errors.New("search pattern is required")}
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := safeReadFile(root, path)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to read file: %w", err)}
 	}
@@ -298,7 +398,7 @@ func (t *FilesystemTool) editFile(path string, args map[string]any) ToolResult {
 		return ToolResult{Error: errors.New("search pattern not found in file")}
 	}
 
-	if err := os.WriteFile(path, []byte(modified), 0o644); err != nil {
+	if err := safeWriteFile(root, path, []byte(modified), 0o644); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to write file: %w", err)}
 	}
 
@@ -306,8 +406,8 @@ func (t *FilesystemTool) editFile(path string, args map[string]any) ToolResult {
 }
 
 // listDir lists directory contents.
-func (t *FilesystemTool) listDir(path string) ToolResult {
-	entries, err := os.ReadDir(path)
+func (t *FilesystemTool) listDir(root, path string) ToolResult {
+	entries, err := readDirIn(root, path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return ToolResult{Error: fmt.Errorf("directory does not exist: %s", path)}
@@ -390,19 +490,28 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 	// If path is a file, search just that file
 	// If path is a directory, search all files in it
 	// If path is empty, search the entire workspace
-	searchPath := workspace
-	if path != "" {
-		resolvedPath, err := t.resolvePath(workspace, path)
-		if err != nil {
-			return ToolResult{Error: err}
-		}
-		searchPath = resolvedPath
+	// Resolve even the default, so searchPath and the containment root are
+	// expressed in the same (symlink-resolved) terms — otherwise every read below
+	// would be rejected as outside the root on a system where the workspace
+	// itself sits behind a symlink.
+	target := path
+	if target == "" {
+		target = "."
 	}
+	searchPath, err := t.resolvePath(workspace, target)
+	if err != nil {
+		return ToolResult{Error: err}
+	}
+	root := t.containmentRoot(workspace, searchPath)
 
 	var matches []string
 	var filesSearched int
 
-	err := filepath.Walk(searchPath, func(p string, info fs.FileInfo, err error) error {
+	// filepath.Walk uses Lstat, so it never descends *into* a symlinked
+	// directory; the remaining exposure was the read of each matched file, which
+	// went through os.ReadFile and would follow a symlink straight out of the
+	// workspace. Each read is now contained by the same dirfd walk.
+	werr := filepath.Walk(searchPath, func(p string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -423,7 +532,7 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 
 		filesSearched++
 
-		data, err := os.ReadFile(p)
+		data, err := safeReadFile(root, p)
 		if err != nil {
 			return nil
 		}
@@ -439,8 +548,8 @@ func (t *FilesystemTool) grep(workspace string, args map[string]any) ToolResult 
 		return nil
 	})
 
-	if err != nil {
-		return ToolResult{Error: fmt.Errorf("search failed: %w", err)}
+	if werr != nil {
+		return ToolResult{Error: fmt.Errorf("search failed: %w", werr)}
 	}
 
 	if len(matches) == 0 {

@@ -280,12 +280,24 @@ Body.`
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	skills := loader.List()
-	if len(skills) != 1 {
-		t.Fatalf("expected 1 skill, got %d", len(skills))
+	// List returns the workspace skill alongside the bundled set, which is
+	// embedded in the binary and therefore always present.
+	var found *Skill
+	bundled := 0
+	for _, sk := range loader.List() {
+		if sk.Bundled {
+			bundled++
+			continue
+		}
+		if sk.Name == "listed-skill" {
+			found = sk
+		}
 	}
-	if skills[0].Name != "listed-skill" {
-		t.Errorf("expected name 'listed-skill', got %q", skills[0].Name)
+	if found == nil {
+		t.Fatalf("created skill missing from List(): %v", loader.List())
+	}
+	if bundled == 0 {
+		t.Error("no bundled skills were discovered; they ship embedded in the binary")
 	}
 }
 

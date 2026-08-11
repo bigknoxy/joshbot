@@ -1,0 +1,172 @@
+# joshbot — Architect's Guide
+
+joshbot is a self-hosted Go personal AI assistant (~31.2K LOC non-test, 1,377 test functions across 121 test files — measured 2026-08-10). Single binary, zero runtime deps.
+
+**`AGENTS.md` (repo root) is the full agent guide** — key interfaces, code style, naming, concurrency and logging patterns, complete gotchas list. Read it before non-trivial work. This file is the quick index.
+
+## Key facts
+
+- **Go 1.24.0**, module `github.com/bigknoxy/joshbot`
+- **~19MB binary** (darwin/arm64, measured 2026-08-10)
+- **Architecture**: goroutine message bus → ReAct agent loop → multi-provider LLM
+- **Channels**: CLI (readline) + Telegram (long-polling, telebot) + Discord (gateway websocket, discordgo)
+- **Providers**: openrouter, openai, nvidia, groq, ollama, anthropic, poolside, azure, custom, litellm, github-copilot (device-flow auth via `joshbot auth github-copilot`)
+- **Config**: `~/.joshbot/config.json`, env vars with `JOSHBOT_` prefix, two formats (legacy + model-centric)
+- **Memory**: MEMORY.md (always in context) + HISTORY.md (appended event log) + fact extraction + consolidation
+- **Skills**: SKILL.md files with YAML frontmatter, auto-discovered from workspace, progressive loading
+- **Tools**: filesystem, shell (deny-listed), web (exa-cli/DuckDuckGo/MCP), message, skill_registry, memory_search, cron
+- **Sessions**: JSONL files at `~/.joshbot/sessions/`, keyed `channel:senderID`
+- **Cron**: Scheduled reminders via the `cron` tool (create/list/delete); jobs persisted as JSON at `workspace/cron/jobs.json` (see `internal/cron`)
+- **Heartbeat**: Unchecked task scanner via HEARTBEAT.md
+
+## Commands
+
+No Makefile — standard Go tooling.
+
+```bash
+go build -o joshbot ./cmd/joshbot
+go run ./cmd/joshbot agent -m "hello"        # single-message, non-interactive
+go test ./...                                # all tests
+go test -v ./internal/tools -run TestShell   # single test
+go vet ./... && gofmt -l .                   # CI gates on both
+./scripts/verify-local.sh                    # build + onboard + smoke-test heartbeat
+```
+
+## Layout
+
+`cmd/joshbot` entrypoint. Under `internal/`: `agent` (ReAct loop), `bus` (message bus),
+`channels` (channel.go = Channel interface, telegram.go, discord.go), `providers` (registry.go = provider routing keys),
+`copilot` (github-copilot device-flow auth + provider), `tools`, `memory`, `skills` (+ `skills/bundled/` = the skills embedded in the binary)
+(+ `skills/trust.go` = workspace-skill approval store), `session`, `context`, `config`,
+`configure`, `cron`, `heartbeat`, `mcp` (stdio MCP client + server manager), `subagent`, `service` (build-tagged per-OS), `learning`,
+`integration`, `log`, `redact` (credential and home-path stripping for logs and printed output).
+
+## Panel review
+
+`.claude/skills/panel-review/` runs a five-expert review (security, evals,
+experience, growth, Go systems) that debates and scores a change. Charters are in
+`references/experts.md` and are harness-portable. See the Panel Review section of
+`AGENTS.md` for how to run it.
+
+## Important gotchas
+
+- `internal/` is the source of truth. A stale `pkg/` duplicate of `bus` and `channels` was deleted in the 2026-08 audit sweep — if a doc or search result still points there, it is out of date.
+- The interactive CLI is `runAgentLoop` in `cmd/joshbot/main.go`, not a `Channel` implementation. `internal/channels` holds only the `Channel` interface and the Telegram and Discord implementations; a dead `cli.go` that implemented it was deleted in v1.42.x after misleading a bug diagnosis.
+- `agent.Agent` carries its tool-progress callback **per-request via the context** (`agent.WithSink`), not as a struct field — so concurrent `Process` calls (e.g. Telegram) never cross-deliver events. `runAgentLoop` wires it up only when stdout is a real TTY, to drive the interactive CLI's tool-call lines (`⏺ tool(args)` / `⎿ ok (1.2s)`) and "thinking..." spinner. Non-TTY detection is the `isTTY` package var in `cmd/joshbot/main.go` (type-asserts to `*os.File` + `github.com/mattn/go-isatty`), overridable in tests instead of probing a real terminal.
+- A blocking read inside a `select` with `default:` makes shutdown unobservable; `signal.Notify` also disables default termination, so a one-shot signal handler leaves the process unkillable (issue #104).
+- All CLI commands work non-interactively (agent -m, onboard --force, configure --provider --api-key, uninstall --force, etc.)
+- ExtraBody support for providers needing custom JSON body fields (poolside chat_template_kwargs, etc.)
+- Model names are routed by prefix and the prefix is stripped before sending — except for providers listed in `prefixesPartOfModelID` (`internal/config/config.go`), where the prefix is part of the real model ID. Poolside is the only one today: `poolside/laguna-s-2.1` must be sent whole, or the API answers 404.
+- Providers need `"enabled": true` in config to activate — omitting it silently disables them.
+- Env var nesting uses `__`: `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY`. Shorthand `JOSHBOT_OPENROUTER_API_KEY` still works.
+- Session key is computed from `Channel:SenderID` — there is no `SessionKey` field.
+- `internal/service/` is build-tagged (`factory_linux.go` / `factory_darwin.go` / `factory_other.go`) — all must export the same signature.
+- A Telegram send with a parse mode set fails with `400 can't parse entities` on malformed Markdown/HTML, which is routine in LLM output. `isRetryable` does not cover it, so `Send` retries that part once with `ParseMode` cleared (`isParseEntityError`). Match narrowly on the description text; matching bare `400` would downgrade `chat not found` to plain text and hide real failures.
+- Telegram hard-fails over 4096 chars; `Send` splits longer content via `splitMessage` (code-fence aware, byte-indexed).
+- Telegram clears a chat action after 5 seconds, so "typing…" needs a keep-alive: `startTyping`/`stopTyping` run one goroutine per chat re-sending every 4s, stopped by `Send` or by `stopCh`. The `botCommands` slice is the single source for both the `SetCommands` menu and the unknown-command fallback — a new `bot.Handle("/x", ...)` must be added there too.
+- Shell commands — and MCP server processes — run with an allowlisted environment (`internal/childenv`; `internal/tools/shell_env.go` keeps thin aliases), not the full parent env — no provider API keys, and anything credential-shaped by name (TOKEN, SECRET, API_KEY, etc.) is stripped even if otherwise allowlisted. A workflow relying on `GH_TOKEN`/`GITHUB_TOKEN` as an env var will not see it; use `gh auth login`'s on-disk config instead.
+- `tools.shell_sandbox` (`"off"` default, `"workspace"`) applies OS-level containment per platform: **Linux** = Landlock via a re-exec helper (`__sandbox-exec`); **macOS** = Seatbelt via `/usr/bin/sandbox-exec` (deny-by-default SBPL profile, no re-exec helper); **other** = none, so enabling is a startup error. `tools.shell_sandbox_allow_network` (off by default) gates outbound TCP when sandboxed. On platforms with no sandbox available, the shell tool defaults to allowlist-only when `tools.shell_allow_list` is unset, since the deny list alone is bypassable. Each platform's implementation is in `internal/tools/sandbox_<os>.go`.
+- **`tools.shell_approval` gates shell commands behind a human `y`** (`"off"` default, `"interactive"`, `"always"`). `ShellTool` holds only the mode; the `Approver` rides the request context (`tools.WithApprover`), like `agent.WithSink`, so concurrent Telegram turns cannot cross-deliver prompts. It fails closed structurally: `ApproverFromContext` returns `DenyAll` rather than nil when none is installed, and `Deny` is the zero `Decision` — so cron, the heartbeat, the gateway and piped `agent -m` are **denied immediately, never blocked**. `ExecuteAsync` is gated too (`async=true` would otherwise be a bypass), the gate runs *after* the deny list and allowlist so refused commands never prompt, and an unknown config value is a startup error. Only `runAgentLoop` installs one, and only when `isTTY(output)`.
+- The shell allowlist screens the **whole** command, not the first word: while an allowlist is in force, anything containing a separator (`;`, `&`, `|`, newline, `\r`, backtick, `$(`, `<(`, `>(`, `$'`) **or a redirection** (`>`, `<` — matched as substrings, so `>>`, `2>`, `&>`, `<<`, `<>` are covered) is refused. `defaultUnsandboxedAllowlist` (`internal/tools/shell.go`) contains only binaries that cannot themselves execute a second program: `find`, `go`, `git`, `rg` and `sort` are all excluded (`rg --pre PROGRAM`, `sort --compress-program=PROGRAM`). Adding an entry means meeting that criterion, not screening its flags.
+- **The filesystem tool opens every path through `internal/tools/openat.go`**, never through bare `os.ReadFile`/`os.MkdirAll`/`O_NOFOLLOW`. `O_NOFOLLOW` constrains only the last component, so a symlink swapped in at an intermediate one (`ws/sub` → `/outside`) redirected writes and reads outside the workspace. The helper wraps Go 1.24's `os.Root`, resolving each component with `openat(2)` from a root chosen by `containmentRoot`. A new filesystem operation goes through `safeReadFile`/`safeWriteFile`/`readDirIn`/`mkdirAllIn` or it is a hole.
+- Workspace skills (anything under `workspace/skills/`, as opposed to the bundled set embedded in the binary from `internal/skills/bundled/`) are inert until an operator runs `joshbot skills trust <name>`; trust is bound to a SHA-256 of the **whole skill directory tree** (all files' relative paths + content, sorted) stored in `~/.joshbot/skills.trust`, so editing, adding, or removing any file in a trusted skill dir — including a sibling script — revokes it. A legacy SKILL.md-only digest from an older joshbot no longer matches and safely revokes rather than crashing. `Loader.Create` (used by the skill_registry tool) writes but never approves. A workspace skill that reuses a bundled skill's name replaces it in the registry and is withheld until trusted — it does not silently "take over" the bundled behavior.
+- The `cron` tool takes **durations** (`30m`, `2h`, `1d`, `1h30m`), never 5-field cron expressions — `internal/cron` only knows `delay:<d>` and `every:<d>`. It is registered only when a `cron.Service` is passed via `tools.WithCronService`, so the agent is never offered a scheduler that is not running.
+- A one-shot cron job's countdown **survives a restart**: `AddJob` stores an absolute `Job.DueAt` (`due_at` in `jobs.json`), so a persisted `delay:30m` fires at the moment it was originally due, and an already-overdue job fires shortly after start instead of being dropped. Legacy jobs with no `due_at` are backfilled as due one duration from load (the old behaviour). Recurring jobs run until deleted; one-shot jobs delete themselves once they fire.
+- Session files are written through `writeFileAtomic` (`internal/session/manager.go`) at mode `0600` — never `os.WriteFile` to a fixed `<path>.tmp`. The temp name must be unique per writer (`os.CreateTemp`), because the gateway and a concurrent `agent -m` share `~/.joshbot/sessions` and the `sync.RWMutex` only guards one process. `Load` is deliberately lenient: unparseable lines are skipped, not fatal, and the original file is copied to `<session-id>.jsonl.corrupt`. Do not "fix" that back into a hard error — there is one session per `channel:senderID` and no CLI to delete one, so a fatal parse means that user is permanently broken.
+- **A compaction record is stored in the session and must stay singular**: once the history crosses `agents.defaults.compaction_threshold`, `checkAndCompactContext` summarizes it and `applyCompaction` replaces the summarized prefix with one `session.Message` carrying `Compaction: true`, always at index 0. Three rules keep it correct. The write-back happens **after** `reactLoop` returns, not inside it, because `Process` slices `sess.Messages[startSessionLen:]` for the history log and shrinking the session first would slice out of range. `buildMessages` holds the record out of the memory-window truncation — letting the window slide over it silently discards the whole earlier conversation. And the replaced messages are appended to `<session-id>.history.jsonl` via the optional `session.Archiver` interface before they leave the live session; if that append fails the compaction is abandoned, since recomputing a summary is cheaper than destroying history. Note `checkAndCompactContext` runs only **after tool execution** inside the ReAct loop, so a turn that answers without calling a tool never compacts at all — a test scripted without tool calls exercises nothing.
+- **Everything joshbot prints or logs is redacted; session files are not**: `internal/redact` wraps the log writer (`internal/log/logger.go`) and `joshbot status`, so a credential appearing in a tool result never reaches the log. Session JSONL is deliberately exempt — rewriting content on save would mangle legitimate text and add a second corruption path, so data at rest relies on the `0600` mode instead; `TestSessionContentIsStoredVerbatim` pins that boundary, and `internal/redact` documents it. Three traps if you extend the patterns. **The scheme is kept and the token is redacted, never the reverse**: an `Authorization` value is `<scheme> <credential>`, and an earlier version recognised only `Bearer|Basic`, so GitHub's own `Authorization: Token <secret>` fell through to the assignment rule, which blanked the word `Token` and published the credential after it. Both the header rule and the assignment rule now capture an optional leading scheme word and preserve it. **A name fragment must end the identifier**, apart from a plural `s` and separator-led segments (`SECRET_KEY_ID`): matching it as a bare substring rewrote `Author:`, `unauthorized:` and `secretariat:`, all routine tool output. That is also why `AUTH` is in `redact.SecretNameFragments` — which widens the shell-environment screen in `internal/tools`, sharing the list on purpose — but is excluded from the assignment rule by `assignmentFragments()`. **And the cheap gate in front of each regex must never be narrower than the regex itself** — gating on the underscored `api_key` spelling silently let `api-key: <secret>` through. All-numeric values are exempt on purpose — `Max tokens: 8192` in `joshbot status` matches TOKEN plus a plural `s`, and no detected key class is bare digits. The assignment gate is a hand-written walk (`hasAssignmentCandidate`) rather than a substring test, because Go's regexp costs ~650ms per megabyte on a case-insensitive alternation and `token`/`key`/`secret` appear constantly in ordinary prose without being assignments; the walk mirrors the regex's name part exactly, so widening one means widening the other.
+- **`joshbot sessions` is not a resume feature, and `.jsonl` alone does not identify a session**: sessions are keyed `channel:senderID` and loaded on every inbound message, so there is one per user per channel and nothing to select; the subcommands exist to inspect and clear. Two traps live here. `internal/session` now owns sidecars that also end in `.jsonl` — `.history.jsonl` (compaction archive) and `.jsonl.archive-<ns>` (reset) — so anything enumerating the sessions directory must go through `isSessionFile`, never a bare `strings.HasSuffix(name, ".jsonl")`; the compaction archive was reported as a phantom session named `<id>.history` until that was centralised. And urfave/cli v2 **stops flag parsing at the first positional argument**, so a flag written after an id is silently dropped — `prune <id> --force` declined without deleting, and `show <id> --last 2` printed the whole transcript. `parseSessionArgs` in `cmd/joshbot/sessions_cmd.go` reads those trailing flags — all three of them, including `--older-than`, whose omission made `prune <id> --older-than 30d` report an unknown flag; any new subcommand taking both an argument and a flag needs the same treatment. A third trap: an `Info` for a session that would not scan must carry the file's real mtime, because `PruneOlderThan` compares `UpdatedAt` and a zero time reads as infinitely old — a transient read error was enough to make `--older-than` delete a session of any age. Session IDs are attacker-influenced (the sender half comes from Telegram), so `ValidateSessionID` gates every path-building entry point.
+- **`go run` is detected by the go-build cache, never by `/tmp`**: `runningFromGoRun` in `cmd/joshbot/main.go` is the single source for this. Three call sites — `update`, `uninstall` and `detectRunningContext` — each carried their own `strings.Contains(exePath, "/tmp/")`, which is not a property of `go run` at all: it made a joshbot installed anywhere under `/tmp` permanently unable to update or uninstall itself, and reported the cause as `go run`. A guard like this fixed in one place is not fixed; grep for the other copies.
+- **The bundled skills are embedded in the binary, not read from disk**: `internal/skills/bundled/` is pulled in with `//go:embed` (`internal/skills/bundled.go`). It used to be the repo-root `skills/` directory found via the *relative* path `filepath.Join("skills")`, which resolves against the process working directory — so the bundled set loaded only when joshbot was run from a checkout of its own source tree, and every real installation reported "No skills found" while `trust.go` claimed they "arrive with the binary". Consequences to keep in mind: a bundled skill's `Path` is now an embed path, not a filesystem path, so its content is cached at discovery and `Delete` refuses it; `Loader.bundledDir` is empty in production and exists only so tests can substitute a fixture directory; and adding a skill means adding a directory under `internal/skills/bundled/`, which requires a rebuild to take effect.
+- **`agent.Process` reports LLM failures in band, so every non-interactive caller must translate them back**: it returns `"Error processing request: ..."` as reply *text* with a nil error, because a chat channel has to show the user something. `agent -m` exited 0 over a completely unreachable provider until `agentReplyError` (`cmd/joshbot/main.go`) turned that prefix back into an error — text mode exits 1, JSON mode sets `"is_error": true` on the result document and writes a `{"type":"error",...}` document to stderr. Any new non-interactive entry point calling `Process` needs the same translation; treating the string as a normal answer is the bug.
+- **`providers.ListModels` refuses an empty `APIBase` instead of defaulting to OpenRouter**: the old fallback to `https://openrouter.ai/api/v1` meant credential validation for *any* other or unknown provider dialled openrouter.ai and printed "✓ validated". It now errors, which is what lets `configure.ValidateProviderCredentials` report "could not verify ... no API base URL configured" for the providers with no fixed endpoint (azure, custom, litellm). Do not reintroduce the default.
+- **Enable Telegram or Discord, not both**: the bus has one outbound channel that every channel implementation reads competitively, so running both has them steal each other's replies with no error anywhere (`internal/channels/discord.go`, `consumeOutbound`). Fan-out belongs in the bus.
+- **While a shell allowlist is in force, chaining is refused**: `checkAllowList` rejects `;`, `&`, `|`, newline, backtick, `$(`, `<(`, `>(` — the command reaches `sh -c` unchanged, so first-word matching admitted `echo hi; id`. `find`, `go` and `git` are no longer in `defaultUnsandboxedAllowlist`; each runs a program of the caller's choosing.
+- **Workspace containment resolves every path component and writes with `O_NOFOLLOW`**: `EvalSymlinks` reports a dangling symlink as ENOENT like a missing file, so re-appending components lexically let `ws/evil -> /outside/x` through; and resolution alone leaves a TOCTOU window on the final component.
+- **Allowlist entries are matched by shape**: an all-digits `allow_from` entry may only match the numeric user ID, on Telegram as on Discord — display names are attacker-chosen, so the cross-field match was an authentication bypass.
+- **The macOS Seatbelt profile allowlists `mach-lookup` by service name** (`macMachServices`) — a blanket grant reaches XPC services that act outside the profile. `GOCACHE` is resolved via `go env` because macOS leaves it unset, and the workspace is created before the profile is rendered because a missing path is silently dropped from it.
+- **Restartable objects keep per-run channels off the struct**: the bus threads its run's context into its goroutines, Discord allocates a fresh latched `stopCh` per `Start`, and `mcp.Client` gives each connected process its own `doneCh`. Each of these was a real bug — a data race, a dead restarted channel plus a double-close panic, and a client permanently reporting "server stopped".
+- **`internal/heartbeat` has exactly one checkbox regex**: publishing and checking off must agree or a task re-fires forever, a task is checked off only after the bus accepts it, and `HEARTBEAT.md` is rewritten atomically.
+- **A configured MCP server is inert until its advertised manifest is approved** (`joshbot mcp trust <name>`), mirroring workspace-skill trust: `internal/mcp/trust.go` stores a SHA-256 of every advertised tool's name, description and input schema (sorted, length-prefixed) in `~/.joshbot/mcp.trust` at `0600`, so any change to what a server advertises revokes it. `registerManifest` in `internal/tools/mcp_tool.go` is the single gate and is split out of `registerOneMCPServer` so it can be tested without spawning a process. The gate is on the **manifest, not on execution** — an unapproved server is still connected and asked for `tools/list`, because that is the only way to learn what it advertises; the store governs what may reach the model. `IsTrusted` is a nil-receiver method returning false, so a caller that forgot to load a store fails closed. `sanitizeMCPDescription` defangs joshbot's prompt envelope tags in descriptions and caps them at 1024 chars; `promptEnvelopeTags` must be widened whenever a new system-prompt section is added, which `TestPromptEnvelopeTagsCoverAgentContext` enforces against the real prompt builders.
+- **MCP servers are started by `cmd/joshbot` now** (`registerMCPServers` / `closeMCPServers`), fail-soft — any doc saying "not yet wired" is stale.
+- **Images are carried as bytes on the turn, screened before the network, and never persisted**: `providers.Message.Images` is `json:"-"` and the wire form is produced by `Message.MarshalJSON`, which keeps a text-only fast path so an ordinary message serializes exactly as it did before attachments existed; images become a `content` parts array with `image_url` data URLs. Because every provider (Anthropic included) is dialled through the OpenAI-compatible serialization point, that one method covers them all — do not add a per-provider image path. Four rules hold the design together. **Content decides the type, never the name**: `providers.NewImage` sniffs the bytes, so a `.png` that is prose and a Telegram document declaring `image/png` are both refused; a declared MIME may only decide whether a download is worth spending (`providers.IsSupportedImageMIME`), never what the bytes are. **The capability gate runs before the first network call**, in `screenForImages`, from both `Chat` and `ChatStream` — `SupportsVision` fails closed on unknown models, because guessing "yes" turns a typo into a provider 400 mid-conversation while guessing "no" produces an error naming the model. **Sessions store `session.ImageRef` (type, size, SHA-256) and deliberately not the bytes**: session JSONL is exempt from redaction and relies on its `0600` mode, and stored images would be reloaded and re-billed on every later turn inside the memory window; `TestImageRefSurvivesRoundTripWithoutTheBytes` pins that boundary. **And on Telegram the download happens strictly after `IsAllowed`** — it carries a file id to the Bot API on the sender's behalf and confirms the bot is live — with an over-limit photo refused from its declared `FileSize` before any transfer and the body read through a `LimitReader` at `MaxImageBytes+1` so over-limit is distinguishable from truncated. A failed attachment ends the turn with an error in the chat; forwarding it as a text-only `[Photo]` gets a confident answer about nothing. `--image` paths on the CLI are **not** workspace-contained on purpose: containment exists to bound the model, not the operator, so `loadImageFlags` enforces only what the operator cannot see for themselves (a regular file, real image content).
+- A bundled skill that names a tool joshbot does not have fails only at runtime, as a confident-sounding error. `TestBundledSkillsOnlyReferenceRegisteredTools` in `internal/tools` catches this — it keys off the phrase ``the `x` tool``, so keep that phrasing when documenting a tool in a skill.
+
+## Website (site/)
+
+Two pages in `site/`:
+- `index.html` — Landing page (what/how/why)
+- `architecture.html` — Official architecture docs + diagrams
+
+**Both MUST stay in sync with the codebase.** Update when major features, architecture, config, or capabilities change.
+
+## HARD RULE: documentation ships with the change
+
+**Every change that alters observable behaviour updates the docs in the same PR.** Not
+a follow-up, not an issue — the same PR. A change is not done until the docs match.
+
+This applies to `*.md` and `*.html` alike:
+
+| If you change | Update |
+|---|---|
+| A CLI command, flag or its output | `README.md`, `docs/INSTALL.md` |
+| A config key, default or its semantics | `README.md`, `docs/INSTALL.md`, `site/architecture.html` |
+| A security boundary or its limits | `SECURITY.md`, `AGENTS.md` gotchas |
+| Architecture, packages, data flow | `site/architecture.html`, `CLAUDE.md` layout |
+| A capability users would notice | `README.md`, `site/index.html`, `CHANGELOG.md` |
+| A behaviour that would trip up an agent | `AGENTS.md` gotchas, `CLAUDE.md` gotchas |
+| Anything in `internal/tools/` the agent calls | the relevant `internal/skills/bundled/*/SKILL.md` |
+
+Rules that make this stick:
+
+- **Verify, do not assume.** Every documented command, flag, config key and code path
+  gets read in the source — or run — before you write it down. Config keys must match
+  the `json:`/`mapstructure:` struct tags exactly.
+- **No unverifiable numbers.** LOC, test counts, tool counts and binary sizes must be
+  measured at the time of writing or removed. A stale number is worse than none: it
+  reads as authoritative.
+- **Stale claims count as bugs.** Deleting a claim that is no longer true is as
+  important as adding one that is. Drift runs both ways.
+- **`site/*.html` is not optional.** It is the public face and it drifts fastest,
+  because nothing fails when it is wrong.
+
+Prose alone has already failed once: this file said the site MUST stay in sync while
+the site sat eight releases out of date. Treat the checklist below as the gate.
+
+## Pre-release checklist
+
+```bash
+go build ./cmd/joshbot
+go vet ./...        # CI gates on this
+gofmt -d .          # MUST be empty
+go test -race ./... # MUST pass
+# CI also fails if total coverage drops below 58%, or if cmd/joshbot or
+# internal/service fall below their per-package floors (.github/workflows/ci.yml)
+
+# LIVE prompt-behaviour eval — opt-in, never in CI (cost + flakiness).
+# Run once pre-release against the configured provider; it exercises fact
+# recall, tool selection, cron duration formatting, denied-command refusal and
+# the workspace boundary against a real model (issue #156).
+go test -tags liveeval -run TestLiveEval ./cmd/joshbot/ -v
+# Reliability knobs: JOSHBOT_EVAL_K (runs per task, pass^k), JOSHBOT_EVAL_MIN_PASS.
+```
+
+Then, before tagging — no code change ships without this:
+
+- [ ] `README.md` — commands, flags, config keys and examples match the code
+- [ ] `docs/INSTALL.md` — install path, first-run flow and command list are current
+- [ ] `site/index.html` / `site/architecture.html` — capabilities, architecture, counts
+- [ ] `SECURITY.md` — the security model matches what is actually enforced
+- [ ] `CLAUDE.md` / `AGENTS.md` — gotchas cover anything that would surprise an agent
+- [ ] `internal/skills/bundled/*/SKILL.md` — bundled skills do not instruct the agent to do something
+      the tools no longer permit
+- [ ] `./scripts/test-install.sh` passes — not in CI (it downloads real artifacts), so it only runs if you run it
+- [ ] `CHANGELOG.md` — an entry exists under `[Unreleased]`
+- [ ] `go test -tags liveeval -run TestLiveEval ./cmd/joshbot/` ran green against a
+      real provider (opt-in live prompt-behaviour eval; not run by CI)
+- [ ] Any count or size quoted anywhere was re-measured, not carried over
+
+## PR & release
+
+See `.github/PR_RULES.md`. Branch from main (never commit directly), conventional commits,
+squash & merge. Releases: push to main → **wait for CI green** → then `git tag vX.Y.Z && git push origin vX.Y.Z`.

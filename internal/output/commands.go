@@ -5,6 +5,7 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/redact"
@@ -243,4 +244,110 @@ func RenderProvidersText(w io.Writer, p Providers) {
 	}
 
 	fmt.Fprintln(w)
+}
+
+// MCPState is an MCP server's provenance state, as `joshbot mcp list` reports it.
+type MCPState string
+
+const (
+	// MCPApproved means the operator has approved exactly the tool list the
+	// server is advertising right now, so its tools are in use.
+	MCPApproved MCPState = "approved"
+	// MCPPending means the server advertises tools that have not been approved
+	// — either never, or not since it changed them. Its tools are not in use.
+	MCPPending MCPState = "pending"
+	// MCPDisabled means the server is configured but not enabled, so joshbot
+	// never spawns it.
+	MCPDisabled MCPState = "disabled"
+	// MCPUnreachable means the server could not be started or would not answer
+	// tools/list, so there is no manifest to show or approve.
+	MCPUnreachable MCPState = "unreachable"
+)
+
+// MCPTool is one tool an MCP server advertises.
+type MCPTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// MCPServer is one configured MCP server and what it advertises.
+type MCPServer struct {
+	Name    string    `json:"name"`
+	State   MCPState  `json:"state"`
+	Enabled bool      `json:"enabled"`
+	Command string    `json:"command,omitempty"`
+	Tools   []MCPTool `json:"tools,omitempty"`
+	// Error is why the manifest could not be read, when State is unreachable.
+	Error string `json:"error,omitempty"`
+}
+
+// MCPServers is what `joshbot mcp list` reports.
+type MCPServers struct {
+	SchemaVersion int         `json:"schema_version"`
+	Servers       []MCPServer `json:"servers"`
+	// Pending is the count of servers advertising an unapproved tool list. A
+	// script gating a deploy on "no unapproved MCP servers" reads this.
+	Pending int `json:"pending"`
+}
+
+// NewMCPServers builds the document, sorting by name so the output is stable.
+func NewMCPServers(entries []MCPServer) MCPServers {
+	// Allocated, not nil: a nil slice encodes as `null` and a consumer doing
+	// `for s in doc["servers"]` would break on "no servers configured", which is
+	// the ordinary first-run state rather than an error.
+	sorted := append(make([]MCPServer, 0, len(entries)), entries...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	pending := 0
+	for _, s := range sorted {
+		if s.State == MCPPending {
+			pending++
+		}
+	}
+	return MCPServers{SchemaVersion: SchemaVersion, Servers: sorted, Pending: pending}
+}
+
+// RenderMCPServersText writes the human form. Tool names and descriptions are
+// shown for a pending server in particular, because reading them is the whole
+// point of the command: an operator cannot approve a manifest they cannot see.
+func RenderMCPServersText(w io.Writer, s MCPServers) {
+	if len(s.Servers) == 0 {
+		fmt.Fprintln(w, "No MCP servers configured.")
+		return
+	}
+
+	fmt.Fprintln(w, "MCP servers:")
+	for _, srv := range s.Servers {
+		switch srv.State {
+		case MCPApproved:
+			fmt.Fprintf(w, "  %-28s approved         %d tool(s)\n", srv.Name, len(srv.Tools))
+		case MCPDisabled:
+			fmt.Fprintf(w, "  %-28s disabled\n", srv.Name)
+		case MCPUnreachable:
+			fmt.Fprintf(w, "  %-28s UNREACHABLE      %s\n", srv.Name, srv.Error)
+		default:
+			fmt.Fprintf(w, "  %-28s AWAITING REVIEW  %d tool(s)\n", srv.Name, len(srv.Tools))
+		}
+		for _, t := range srv.Tools {
+			fmt.Fprintf(w, "      %-24s %s\n", t.Name, firstLine(t.Description))
+		}
+	}
+
+	if s.Pending > 0 {
+		fmt.Fprintf(w, "\n%d MCP server(s) are not being used until you approve them.\n", s.Pending)
+		fmt.Fprintln(w, "Read the tool list above, then run: joshbot mcp trust <name>")
+		fmt.Fprintln(w, "A server's tool descriptions become part of the agent's instructions, so review them as you would a script you are about to run.")
+	}
+}
+
+// firstLine keeps the list scannable: a description may be many paragraphs, and
+// the full text is available in the JSON form.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 72 {
+		s = s[:72] + "..."
+	}
+	return s
 }

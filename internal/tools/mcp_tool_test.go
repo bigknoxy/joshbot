@@ -89,7 +89,7 @@ func TestMCPToolRawSchemaPassthrough(t *testing.T) {
 
 func TestRegisterMCPToolsNoServersReturnsNil(t *testing.T) {
 	reg := NewRegistry()
-	mgr := RegisterMCPTools(t.Context(), reg, config.MCPConfig{})
+	mgr := RegisterMCPTools(t.Context(), reg, config.MCPConfig{}, nil)
 	if mgr != nil {
 		t.Fatal("expected nil manager when no servers configured")
 	}

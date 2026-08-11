@@ -130,7 +130,38 @@ joshbot agent -m "run the tests" --output-format stream-json
 
 # Resume a prior session by the id echoed in a previous json result
 joshbot agent -m "and now lint it" --output-format json --resume <session-id>
+
+# Attach an image (repeatable; requires a vision-capable model)
+joshbot agent -m "what is in this screenshot?" --image ~/Desktop/shot.png
 ```
+
+### Images
+
+`--image <path>` attaches a picture to the message. It is repeatable, and it
+requires `-m`/`--message` — an image with no question attached has nothing to
+answer. Telegram photos and image documents are attached automatically.
+
+Three things are enforced, in this order, and all of them before any provider
+is called:
+
+- **Type is decided by content, never by name or by what the sender declared.**
+  A `.png` that is really prose is refused. Supported: PNG, JPEG, GIF, WebP.
+- **Size**: 5 MB per image, 20 MB per request.
+- **Capability**: if no configured model is known to accept images, the request
+  fails immediately with an error naming the models tried and the config key to
+  change — rather than a provider `400` mid-conversation. Unknown models are
+  treated as *not* vision-capable, so a typo produces a legible error.
+
+Sessions record that an image was sent — its type, size and SHA-256 — and not
+the bytes. Session files are exempt from redaction and are protected only by
+their `0600` mode, and re-sending stored images would re-bill them on every
+later turn in the memory window.
+
+`--image` paths are deliberately **not** workspace-contained: they come from
+the operator's own command line, not from the model, so
+`joshbot agent --image ~/Downloads/shot.png` works. What is enforced is what
+the operator cannot check for themselves — a regular file, and real image
+content.
 
 `--output-format` accepts `text` (default), `json`, or `stream-json`. The JSON
 modes are non-interactive and require `-m`/`--message`. In JSON modes stdout

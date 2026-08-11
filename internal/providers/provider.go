@@ -44,6 +44,41 @@ type Message struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	// ToolCalls is the list of tool calls made by the assistant
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// Images are attachments carried alongside Content. The field is excluded
+	// from the struct tags and handled by MarshalJSON instead, because the wire
+	// format is not "a field next to content" — an image turns content itself
+	// from a string into an array of parts.
+	Images []Image `json:"-"`
+}
+
+// MarshalJSON serialises a message in the OpenAI-compatible shape.
+//
+// A message with no images must produce byte-identical JSON to what it produced
+// before images existed: every provider joshbot talks to receives this, and a
+// stray field or a content array where a string was expected is a 400 on every
+// request rather than a visible failure here. That is why the no-image path is
+// the zero-work path — it marshals the plain struct through an alias and adds
+// nothing.
+//
+// With images, content becomes an array of parts: the text first (omitted
+// entirely when empty, since a part with an empty string is not valid), then
+// one image_url part per attachment carrying a data: URL.
+func (m Message) MarshalJSON() ([]byte, error) {
+	type wireMessage Message // alias: no MarshalJSON, so no recursion
+	if len(m.Images) == 0 {
+		return json.Marshal(wireMessage(m))
+	}
+	parts := make([]Content, 0, len(m.Images)+1)
+	if m.Content != "" {
+		parts = append(parts, Content{Type: "text", Text: m.Content})
+	}
+	for _, im := range m.Images {
+		parts = append(parts, Content{Type: "image_url", ImageURL: &ImageURL{URL: im.DataURL()}})
+	}
+	return json.Marshal(struct {
+		wireMessage
+		Content []Content `json:"content"`
+	}{wireMessage: wireMessage(m), Content: parts})
 }
 
 // ToolCall represents a tool call made by the model.

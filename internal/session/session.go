@@ -46,6 +46,31 @@ type Message struct {
 	// compaction summarizes the existing record together with everything after
 	// it and replaces it, so the count never grows.
 	Compaction bool `json:"compaction,omitempty"`
+
+	// Images records the attachments that arrived with this message.
+	//
+	// It stores descriptors, never the image bytes. The whole session file is
+	// rewritten on every turn, so persisting the bytes would rewrite megabytes
+	// per turn for the rest of the conversation — the same growth issue #125
+	// addressed for summaries — and would put user images on disk in a file the
+	// redactor deliberately does not rewrite. The consequence is deliberate and
+	// worth knowing: a reloaded session remembers that an image was sent and
+	// what it was, but cannot re-send it to the model.
+	Images []ImageRef `json:"images,omitempty"`
+}
+
+// ImageRef is the persisted record of an image attachment: enough to show what
+// was sent and to reason about it later, without the bytes.
+type ImageRef struct {
+	// Label is what the sender called it — a filename, or the channel's own
+	// description. It is untrusted text and never used to open anything.
+	Label string `json:"label,omitempty"`
+	// MIME is the type detected by sniffing the content when it arrived.
+	MIME string `json:"mime"`
+	// Bytes is the decoded size, so the record stays meaningful for limits.
+	Bytes int `json:"bytes"`
+	// SHA256 identifies the image across turns without storing it.
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // IsCompaction reports whether m is a stored compaction record.

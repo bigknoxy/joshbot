@@ -20,6 +20,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/providers"
 	"gopkg.in/telebot.v3"
 )
 
@@ -62,6 +63,10 @@ type TelegramChannel struct {
 	// would then call the Bot API every few seconds for the life of the
 	// process — burning rate limit and showing a permanent "typing…".
 	typingMaxDuration time.Duration
+
+	// download overrides the Bot API file fetch used for image attachments.
+	// Only tests set it; in production it stays nil and t.bot.File is used.
+	download func(*telebot.File) (io.ReadCloser, error)
 
 	// notifier overrides the bot for chat-action and command-menu calls.
 	// Only tests set it; in production it stays nil and the bot is used.
@@ -648,6 +653,12 @@ func (t *TelegramChannel) handlePhoto(ctx telebot.Context) error {
 		content = fmt.Sprintf("[Photo with caption]: %s", photo.Caption)
 	}
 
+	// The download happens only after the allowlist check above.
+	img, ok := t.attachImage(ctx, photo.File, "photo", int64(photo.FileSize))
+	if !ok {
+		return nil
+	}
+
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
 		Content:   content,
@@ -667,6 +678,8 @@ func (t *TelegramChannel) handlePhoto(ctx telebot.Context) error {
 			"height":         photo.Height,
 		},
 	}
+
+	inbound.Images = []providers.Image{img}
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send photo message to bus", "error", "queue full")
@@ -734,6 +747,19 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 		content = fmt.Sprintf("[Document: %s]\n%s", doc.FileName, doc.Caption)
 	}
 
+	// A document is only downloaded when it claims to be an image; every other
+	// document type is forwarded as metadata exactly as before. The claim is
+	// not trusted — NewImage sniffs the content — it only decides whether to
+	// spend a download at all.
+	var images []providers.Image
+	if providers.IsSupportedImageMIME(doc.MIME) {
+		img, ok := t.attachImage(ctx, doc.File, doc.FileName, int64(doc.FileSize))
+		if !ok {
+			return nil
+		}
+		images = []providers.Image{img}
+	}
+
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
 		Content:   content,
@@ -754,6 +780,8 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 			"caption":        doc.Caption,
 		},
 	}
+
+	inbound.Images = images
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send document message to bus", "error", "queue full")

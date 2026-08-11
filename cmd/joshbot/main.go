@@ -277,6 +277,10 @@ func newApp() *cli.App {
 						Aliases: []string{"m"},
 						Usage:   "Send a single message and exit (non-interactive mode)",
 					},
+					&cli.StringSliceFlag{
+						Name:  "image",
+						Usage: "Attach an image file to the message (repeatable; requires a vision-capable model)",
+					},
 					&cli.BoolFlag{
 						Name:  "debug",
 						Usage: "Enable debug logging",
@@ -1243,16 +1247,35 @@ func runAgent(c *cli.Context) error {
 		}
 	}()
 
+	// Attachments are read before the turn starts so a bad path fails fast,
+	// naming the path, instead of surfacing mid-conversation.
+	images, imgErr := loadImageFlags(c.StringSlice("image"))
+	if imgErr != nil {
+		err := newExitError(exitValidation, "check the --image paths", imgErr)
+		if jsonMode {
+			emitJSONError(os.Stderr, "", err)
+		}
+		return err
+	}
+	if len(images) > 0 && c.String("message") == "" {
+		err := newExitError(exitValidation, "pass -m/--message with --image",
+			fmt.Errorf("--image requires --message"))
+		if jsonMode {
+			emitJSONError(os.Stderr, "", err)
+		}
+		return err
+	}
+
 	// Non-interactive JSON modes: machine-readable single turn.
 	if jsonMode {
-		err := runAgentJSON(ctx, agentInstance, c.String("message"), format, c.String("resume"), os.Stdout, os.Stderr, messageSender)
+		err := runAgentJSON(ctx, agentInstance, c.String("message"), format, c.String("resume"), os.Stdout, os.Stderr, messageSender, images...)
 		time.Sleep(2 * time.Second) // let async callbacks drain to stderr
 		return err
 	}
 
 	// Non-interactive text mode: send single message and exit.
 	if message := c.String("message"); message != "" {
-		err := runAgentSingleMessage(ctx, agentInstance, message, c.String("resume"), os.Stdout, messageSender)
+		err := runAgentSingleMessage(ctx, agentInstance, message, c.String("resume"), os.Stdout, messageSender, images...)
 		// Wait a bit for async callbacks
 		time.Sleep(2 * time.Second)
 		return err
@@ -1765,7 +1788,7 @@ func emitJSONError(w io.Writer, sessionID string, err error) {
 //
 // It is deliberately independent of isTTY: JSON output is selected by the
 // flag, never inferred from whether stdout is a terminal.
-func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, format, resume string, stdout, stderr io.Writer, messageSender *tools.BusMessageSender) error {
+func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, format, resume string, stdout, stderr io.Writer, messageSender *tools.BusMessageSender, images ...providers.Image) error {
 	channel, sender := headlessSession(resume)
 	sessionID := channel + ":" + sender
 
@@ -1819,6 +1842,7 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 		Channel:   channel,
 		Timestamp: time.Now(),
 		Metadata:  map[string]any{"username": "user"},
+		Images:    images,
 	}
 
 	response, procErr := agentInstance.Process(fullCtx, msg)
@@ -1862,7 +1886,7 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 // runAgentSingleMessage sends a single message and prints the response. When
 // resume is non-empty it continues that prior session; otherwise it uses the
 // default headless session (cli:cli_user), preserving existing behaviour.
-func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, message, resume string, output io.Writer, messageSender *tools.BusMessageSender) error {
+func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, message, resume string, output io.Writer, messageSender *tools.BusMessageSender, images ...providers.Image) error {
 	channel, sender := headlessSession(resume)
 	// Set chat ID for CLI mode so message tools work
 	if messageSender != nil {
@@ -1877,6 +1901,7 @@ func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, me
 		Metadata: map[string]any{
 			"username": "user",
 		},
+		Images: images,
 	}
 
 	response, err := agentInstance.Process(ctx, msg)

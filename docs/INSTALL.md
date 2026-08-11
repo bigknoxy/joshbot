@@ -339,6 +339,13 @@ the agent reports LLM errors in band as reply text so chat channels can show
 them, and the CLI translates that back into a non-zero exit, with `"is_error":
 true` in the JSON result document and a `{"type":"error",…}` document on stderr.
 
+`joshbot agent -m "..." --image path.png` attaches an image. The flag is
+repeatable and requires `-m`. The type is decided by sniffing the content, not
+the extension (PNG, JPEG, GIF, WebP); limits are 5 MB per image and 20 MB per
+request; and if no configured model is known to accept images the run fails
+before any provider call, naming the models tried. Telegram photos and image
+documents are attached the same way.
+
 ---
 
 ## Configuration

@@ -94,6 +94,8 @@ joshbot status # Show configuration and status
 joshbot preflight # Check the config would work, without calling any provider
 joshbot skills list # Review workspace skills and approval state
 joshbot skills trust <name> # Approve a workspace skill after reviewing it
+joshbot mcp list    # Review MCP servers and the tools they advertise
+joshbot mcp trust <name>    # Approve an MCP server's tool manifest
 joshbot configure # Configure LLM providers and settings
 joshbot auth github-copilot # Authenticate with GitHub Copilot
 joshbot service install # Install joshbot as a system service
@@ -881,12 +883,31 @@ so a server can never shadow a built-in tool like `shell`.
 }
 ```
 
-> **Note:** declared servers are now started during component setup and their
-> tools registered; startup is fail-soft, so a server that will not start is
-> logged and skipped rather than aborting joshbot, and the processes are reaped
-> on exit. MCP child processes get the same allowlisted, credential-screened
-> environment as shell children (no provider API keys), but their **filesystem
-> access is not sandboxed**. See `SECURITY.md`.
+> **Note:** declared servers are started during component setup; startup is
+> fail-soft, so a server that will not start is logged and skipped rather than
+> aborting joshbot, and the processes are reaped on exit. MCP child processes get
+> the same allowlisted, credential-screened environment as shell children (no
+> provider API keys), but their **filesystem access is not sandboxed**. See
+> `SECURITY.md`.
+
+### Approving a server
+
+An enabled server is **inert until you approve it**, the same way a workspace
+skill is. Review what it advertises, then approve it:
+
+```bash
+joshbot mcp list                    # servers, trust state, and the tools each advertises
+joshbot --output json mcp list      # same, machine-readable
+joshbot mcp trust myserver          # approve the manifest you just read
+joshbot mcp untrust myserver        # revoke
+```
+
+Approval is bound to a hash of the server's advertised tool manifest — names,
+descriptions and input schemas — stored in `~/.joshbot/mcp.trust` (mode `0600`).
+If the server later changes anything it advertises, approval is revoked
+automatically and its tools disappear until you review and re-approve. Until
+then it contributes nothing: no tool of its is callable and no text of its
+reaches the prompt.
 
 ## Built-in Tools
 

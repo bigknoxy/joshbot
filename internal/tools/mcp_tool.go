@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -33,6 +34,65 @@ const mcpConnectTimeout = 15 * time.Second
 // third-party code returning text straight into the prompt, so an uncapped
 // result is both a context blow-up and a cost blow-up.
 const mcpMaxOutputChars = 4000
+
+// mcpMaxDescriptionChars caps one server-supplied tool description. A
+// description is prompt text the server writes directly into the model's
+// context on every single request, so an unbounded one is a permanent context
+// tax as well as an obvious place to hide a wall of injected instructions.
+const mcpMaxDescriptionChars = 1024
+
+// promptEnvelopeTags are the XML-ish tags joshbot's own system prompt uses to
+// delimit its sections (internal/agent/context.go and internal/agent/agent.go). A
+// server-supplied description containing "</skills>" would otherwise close a
+// section joshbot opened and let the rest of the description read as joshbot's
+// own instructions rather than as a tool's description.
+//
+// The list is matched narrowly, on these names only. Escaping every "<" would
+// mangle the placeholder syntax ("<path>", "<name>") that real MCP servers use
+// throughout their descriptions, for no gain: an unknown tag is inert text.
+//
+// TestPromptEnvelopeTagsCoverAgentContext pins this against the actual prompt
+// builder, so adding a section there without adding it here fails the build.
+var promptEnvelopeTags = []string{
+	"memory",
+	"skills",
+	"current_time",
+	"conversation_context",
+	"personality",
+}
+
+// sanitizeMCPDescription makes a server-supplied description safe to place in
+// the system prompt: envelope tags are defanged and the result is length
+// bounded.
+//
+// Defanging replaces the angle brackets rather than deleting the text, so an
+// operator reading `joshbot mcp list` still sees exactly what the server sent
+// and can recognise an injection attempt for what it is.
+func sanitizeMCPDescription(desc string) string {
+	for _, tag := range promptEnvelopeTags {
+		for _, form := range []string{"<" + tag + ">", "</" + tag + ">"} {
+			// Case-insensitively replace: XML tags are conventionally lower
+			// case here, but a parser-shaped injection would not bother.
+			for {
+				i := indexFold(desc, form)
+				if i < 0 {
+					break
+				}
+				desc = desc[:i] + "(" + desc[i+1:i+len(form)-1] + ")" + desc[i+len(form):]
+			}
+		}
+	}
+	if len(desc) > mcpMaxDescriptionChars {
+		desc = desc[:mcpMaxDescriptionChars] + "... (truncated)"
+	}
+	return desc
+}
+
+// indexFold is strings.Index with ASCII case folding. The tag names are ASCII
+// by construction, so a full Unicode case fold would buy nothing.
+func indexFold(s, substr string) int {
+	return strings.Index(strings.ToLower(s), strings.ToLower(substr))
+}
 
 // rawSchemaProvider lets a tool supply a JSON Schema for its parameters
 // directly, bypassing GenerateSchema. MCP tools carry a full inputSchema from
@@ -129,7 +189,11 @@ func mcpServersFromConfig(cfg config.MCPConfig) []mcp.Server {
 // A server that fails to start, handshake, or list tools is logged and skipped;
 // it never aborts registration of the others or of the built-in tools. This is
 // the lazy, fail-soft posture: MCP is additive and must never break the agent.
-func RegisterMCPTools(ctx context.Context, reg *Registry, cfg config.MCPConfig) *mcp.Manager {
+// A server whose manifest the operator has not approved is connected (that is
+// the only way to learn what it advertises) but none of its tools are
+// registered: nothing it says reaches the model. See internal/mcp/trust.go for
+// why the gate is on the manifest rather than on execution.
+func RegisterMCPTools(ctx context.Context, reg *Registry, cfg config.MCPConfig, trust *mcp.TrustStore) *mcp.Manager {
 	servers := mcpServersFromConfig(cfg)
 	if len(servers) == 0 {
 		return nil
@@ -137,14 +201,14 @@ func RegisterMCPTools(ctx context.Context, reg *Registry, cfg config.MCPConfig) 
 
 	mgr := mcp.NewManager(servers)
 	for _, client := range mgr.Clients() {
-		registerOneMCPServer(ctx, reg, client)
+		registerOneMCPServer(ctx, reg, client, trust)
 	}
 	return mgr
 }
 
 // registerOneMCPServer connects one client and registers its tools. Failures
 // are logged and swallowed so one bad server does not sink the rest.
-func registerOneMCPServer(ctx context.Context, reg *Registry, client *mcp.Client) {
+func registerOneMCPServer(ctx context.Context, reg *Registry, client *mcp.Client, trust *mcp.TrustStore) {
 	connectCtx, cancel := context.WithTimeout(ctx, mcpConnectTimeout)
 	defer cancel()
 
@@ -159,6 +223,24 @@ func registerOneMCPServer(ctx context.Context, reg *Registry, client *mcp.Client
 		return
 	}
 
+	registerManifest(reg, client, infos, trust)
+}
+
+// registerManifest applies the trust gate to one server's advertised manifest
+// and registers what survives. It is split out from registerOneMCPServer so the
+// gate can be exercised without spawning a process: the decision is a security
+// boundary and must be tested directly, not only through a live server.
+func registerManifest(reg *Registry, client *mcp.Client, infos []mcp.ToolInfo, trust *mcp.TrustStore) int {
+	// The gate. A nil store is untrusted, not trusted: a caller that forgot to
+	// load one must lose MCP tools, never gain unapproved ones.
+	if !trust.IsTrusted(client.Name(), infos) {
+		log.Warn("mcp: server is not approved, its tools are not being used",
+			"server", client.Name(),
+			"tools", len(infos),
+			"hint", fmt.Sprintf("review then run: joshbot mcp trust %s", client.Name()))
+		return 0
+	}
+
 	registered := 0
 	for _, info := range infos {
 		full := fmt.Sprintf("%s%s__%s", mcpNamespacePrefix, client.Name(), info.Name)
@@ -166,7 +248,7 @@ func registerOneMCPServer(ctx context.Context, reg *Registry, client *mcp.Client
 			client:   client,
 			toolName: info.Name,
 			fullName: full,
-			desc:     info.Description,
+			desc:     sanitizeMCPDescription(info.Description),
 			schema:   info.InputSchema,
 			timeout:  mcpCallTimeout,
 			maxChars: mcpMaxOutputChars,
@@ -181,4 +263,5 @@ func registerOneMCPServer(ctx context.Context, reg *Registry, client *mcp.Client
 		registered++
 	}
 	log.Info("mcp: registered server tools", "server", client.Name(), "count", registered)
+	return registered
 }

@@ -174,7 +174,19 @@ func parseExaCLISearchResults(output string) ([]SearchResult, error) {
 	return results, nil
 }
 
-// exaSearch performs search via Exa MCP (free, no API key required)
+// exaSearch performs search via Exa MCP (free, no API key required).
+//
+// This deliberately does not go through internal/mcp. That package is a stdio
+// client: it spawns a process and speaks JSON-RPC over its pipes, while this is
+// a single HTTP POST to one hard-coded endpoint. There is no second MCP client
+// implementation here to consolidate — only the wire format is shared.
+//
+// It also sits outside the internal/mcp trust gate on purpose, and safely: this
+// call fetches *search results*, never tool definitions, so nothing it returns
+// becomes a callable tool or reaches the system prompt as instructions. Its
+// output goes into a tool result like any other web content. If this ever grows
+// into "ask the endpoint what tools it has", it must move onto internal/mcp and
+// behind the trust store first.
 func (t *WebTool) exaSearch(query string, numResults int) ([]SearchResult, error) {
 	// Build JSON-RPC request
 	req := exaSearchRequest{

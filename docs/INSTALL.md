@@ -316,8 +316,9 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot gateway` | Start all channels (Telegram, Discord) |
 | `joshbot status` | Show configuration and status |
 | `joshbot preflight` | Check the config would work, without calling any provider (exits non-zero if it would not) |
-| `joshbot --output json <cmd>` | Machine-readable form of `preflight`, `status`, `skills list`, `auth status` and `configure --list` |
+| `joshbot --output json <cmd>` | Machine-readable form of `preflight`, `status`, `skills list`, `mcp list`, `auth status` and `configure --list` |
 | `joshbot skills list` \| `trust <name>` \| `untrust <name>` | Review and approve workspace skills |
+| `joshbot mcp list` \| `trust <name>` \| `untrust <name>` | Review and approve MCP servers' advertised tools |
 | `joshbot configure` | Configure LLM providers and settings |
 | `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` | Inspect and manage stored conversations |
 | `joshbot auth github-copilot` \| `status` | Manage OAuth authentication |

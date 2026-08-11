@@ -340,6 +340,7 @@ func newApp() *cli.App {
 					"never contacts a provider. Exits non-zero when joshbot would not start.",
 				Action: withJSONErrors(runPreflight),
 			},
+			mcpCommand(),
 			{
 				Name:  "skills",
 				Usage: "Review and approve workspace skills",
@@ -1033,8 +1034,17 @@ var (
 // on reg. It never returns an error: MCP is additive, so a server that fails to
 // start is logged and skipped inside RegisterMCPTools rather than aborting
 // startup. The resulting manager is stashed for closeMCPServers.
+// A server whose advertised tool list has not been approved contributes no
+// tools; a trust store that cannot be read is fatal to MCP registration and
+// nothing else, because the alternative — carrying on with a nil store — would
+// silently disable every server with no explanation an operator could act on.
 func registerMCPServers(ctx context.Context, reg *tools.Registry, cfg config.MCPConfig) {
-	mgr := tools.RegisterMCPTools(ctx, reg, cfg)
+	trust, err := mcp.LoadTrustStore(mcp.DefaultTrustStorePath(config.DefaultHome))
+	if err != nil {
+		log.Warn("mcp: could not read the approval store, no MCP tools will be used", "error", err)
+		return
+	}
+	mgr := tools.RegisterMCPTools(ctx, reg, cfg, trust)
 	if mgr == nil {
 		return
 	}

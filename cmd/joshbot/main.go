@@ -2572,7 +2572,13 @@ func runGateway(c *cli.Context) error {
 		// bus path runs only when nothing was streamed — the same condition
 		// the interactive CLI uses (didStream), for the same reason: several
 		// Process paths return without streaming anything.
-		if streamer.Finish(nil) {
+		// Process reports LLM failures in band, as reply text with a nil error
+		// (see agentReplyError). A turn that streamed some text and then hit one
+		// would otherwise end silently: the partial text is on screen, Finish
+		// sees nothing wrong, and the publish that would have carried the error
+		// is suppressed. Translating it back gets the reason appended to what
+		// the user is already looking at.
+		if streamer.Finish(agentReplyError(response)) {
 			log.Info("Streamed outbound message", "channel", msg.Channel, "response_len", len(response))
 			return
 		}

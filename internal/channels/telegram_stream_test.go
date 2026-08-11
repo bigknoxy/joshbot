@@ -451,3 +451,80 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestFinishReportsUndeliveredWhenTheFinalEditFails pins the delivery contract
+// the gateway relies on: a true return suppresses the bus publish, so it may
+// only be returned when the whole answer is on screen. Reporting delivery
+// because an earlier interim edit landed loses everything the user was waiting
+// for — the deleted-message and transient-400 cases both end here.
+func TestFinishReportsUndeliveredWhenTheFinalEditFails(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 555, nil)
+
+	s.Delta("partial answer")
+	if !s.Delivered() {
+		t.Fatal("first delta should have reached the chat")
+	}
+
+	// The user deleted the in-progress message, or Telegram rejected the edit.
+	// One for the delta, one for the final flush that retries it.
+	notFound := errors.New("400 Bad Request: message to edit not found")
+	ed.editErrs = []error{notFound, notFound}
+
+	s.Delta(" and the rest of it")
+	if s.Finish(nil) {
+		t.Fatal("Finish reported the answer delivered after the final edit failed; " +
+			"the gateway suppresses the bus publish on true, so the reply is lost")
+	}
+	// The interesting case is a *partial* stream, not one that never started:
+	// text is on screen, so the old `delivered && !broken` rule returned true.
+	if !s.delivered || s.broken {
+		t.Fatalf("test is not exercising a partial stream (delivered=%v broken=%v)", s.delivered, s.broken)
+	}
+}
+
+// TestRolloverFailureAfterDeliveryDoesNotRepublish is the mirror case: once
+// whole messages are on screen, a later failure must not declare the turn
+// undelivered, because the bus fallback would then repeat everything already
+// sent. Gating on s.msg == nil got this wrong — a rollover clears s.msg.
+func TestRolloverFailureAfterDeliveryDoesNotRepublish(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 666, nil)
+
+	// Land the head, then fail the Send that opens the message after it.
+	ed.sendErrs = []error{nil, errors.New("400 Bad Request: chat not found")}
+	s.Delta(strings.Repeat("x", TelegramMaxMessageLen+500))
+
+	if s.broken {
+		t.Fatal("a failure after text is already on screen marked the turn broken; " +
+			"the bus would republish the whole answer on top of what was sent")
+	}
+	if len(ed.snapshot()) < 2 {
+		t.Fatalf("test is not exercising a rollover: %d editor calls", len(ed.snapshot()))
+	}
+}
+
+// TestRolloverKeepsGenuineClosingFences pins that the remainder after a
+// rollover is the real remainder. Deriving it by trimming a closing fence off
+// the head cannot tell a fence splitOnce added from one the model wrote, so a
+// message whose split point lands right after a genuine ``` had a spurious
+// opening fence prepended — inverting fence parity for the rest of the answer.
+func TestRolloverKeepsGenuineClosingFences(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 777, nil)
+
+	// A closed code block that ends exactly at the split point, then prose.
+	body := "```\n" + strings.Repeat("c", TelegramMaxMessageLen-10) + "\n```"
+	tail := "\nplain prose after the block, not code\n"
+	s.Delta(body + tail)
+	s.Finish(nil)
+
+	last := ed.lastFor("777")
+	if strings.HasPrefix(last, "```") {
+		t.Fatalf("rollover reopened a code fence that the text had already closed; "+
+			"tail begins %q", last[:min(40, len(last))])
+	}
+	if !strings.Contains(last, "plain prose after the block") {
+		t.Fatalf("tail did not reach the chat: %q", last)
+	}
+}

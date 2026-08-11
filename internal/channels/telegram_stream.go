@@ -177,7 +177,15 @@ func (s *TelegramStreamer) Finish(procErr error) bool {
 		s.sleep(wait)
 	}
 	s.flushLocked(true)
-	return s.delivered && !s.broken
+	// The return value is a delivery contract with the gateway: true suppresses
+	// the bus publish, so it may only mean "the whole answer is in the chat".
+	// Reporting delivery because *something* landed is how a single failed final
+	// edit — a user deleting the in-progress message, one transient 400 — used
+	// to destroy the entire answer, with the fallback that exists to prevent
+	// exactly that suppressed by the same bug. A partial stream plus the bus
+	// copy is duplication; a suppressed publish after a failed final edit is
+	// loss, and loss is the worse of the two.
+	return s.delivered && !s.broken && s.shown == s.buf
 }
 
 // SetParseMode selects the formatting applied to the final edit. Interim
@@ -213,11 +221,10 @@ func (s *TelegramStreamer) flushLocked(final bool) {
 	// code-fence-aware, so a message that ends mid-fence is closed and the
 	// next one reopens it.
 	for {
-		parts := splitMessage(s.buf, TelegramMaxMessageLen)
-		if len(parts) == 1 {
+		if len(s.buf) <= TelegramMaxMessageLen {
 			break
 		}
-		head, rest := parts[0], remainderAfter(s.buf, parts[0])
+		head, rest := splitOnce(s.buf, TelegramMaxMessageLen)
 		// The buffer is only advanced once the head has actually landed:
 		// truncating it first and then failing the write would drop the tail
 		// on the floor, which is the one outcome streaming must never have.
@@ -234,25 +241,6 @@ func (s *TelegramStreamer) flushLocked(final bool) {
 	}
 
 	s.writeLocked(editor, final)
-}
-
-// remainderAfter returns what is left of buf once head has been sent as its own
-// message. The tail is carried as raw, unsplit text on purpose: re-joining
-// splitMessage's later parts would keep the fences it added for each of them,
-// and the next flush would split that again — every rollover compounding a
-// duplicated ``` until the message rendered as garbage.
-func remainderAfter(buf, head string) string {
-	const (
-		fenceClose = "\n```"
-		fenceOpen  = "```\n"
-	)
-	consumed := strings.TrimSuffix(head, fenceClose)
-	rest := buf[len(consumed):]
-	if consumed != head {
-		// The head closed a fence this text is still inside, so reopen it.
-		rest = fenceOpen + rest
-	}
-	return rest
 }
 
 // writeLocked sends or edits the current message so it displays s.buf, and
@@ -315,9 +303,13 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 		return false
 
 	default:
-		if s.msg == nil {
-			// The placeholder never landed, so nothing is on screen and the
-			// caller can still deliver the reply the ordinary way.
+		if !s.delivered {
+			// Nothing has ever reached the chat, so the caller can still deliver
+			// the reply the ordinary way. Gating this on s.msg == nil instead was
+			// wrong after a rollover: that clears s.msg while several full
+			// messages are already on screen, so a failure there declared the
+			// turn undelivered and the bus republished the whole answer on top of
+			// them.
 			s.broken = true
 			log.Warn("telegram streaming disabled for this turn", "error", err)
 			return false

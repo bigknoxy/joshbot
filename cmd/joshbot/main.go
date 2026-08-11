@@ -472,6 +472,12 @@ func newApp() *cli.App {
 						Name:   "github-copilot",
 						Usage:  "Authenticate with GitHub Copilot",
 						Action: runAuthCopilot,
+						Flags: []cli.Flag{
+							&cli.BoolFlag{
+								Name:  "force",
+								Usage: "Re-authenticate even if a token is already stored",
+							},
+						},
 					},
 					{
 						Name:   "status",
@@ -4868,9 +4874,9 @@ func runAuthCopilot(c *cli.Context) error {
 	}
 
 	token, err := copilot.LoadToken(homeDir)
-	if err == nil && token != nil && token.AccessToken != "" {
+	if err == nil && token != nil && token.AccessToken != "" && !c.Bool("force") {
 		fmt.Println("Already authenticated with GitHub Copilot.")
-		fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate.")
+		fmt.Println("Run 'joshbot auth github-copilot --force' to re-authenticate.")
 		return nil
 	}
 
@@ -4908,20 +4914,24 @@ func runAuthCopilot(c *cli.Context) error {
 	selected := promptModelSelection(models, defaultModel)
 
 	cfg, err := loadConfig("")
-	if err != nil {
+	if err != nil || cfg == nil {
+		// Saving a freshly constructed Config here would overwrite the whole
+		// file with defaults — every provider, key and setting the operator
+		// already had. A model preference is not worth that.
 		fmt.Printf("Warning: Could not load existing config: %v\n", err)
-		fmt.Println("Creating new config with GitHub Copilot settings.")
-	}
-	if cfg == nil {
-		cfg = &config.Config{Providers: make(map[string]config.ProviderConfig)}
+		fmt.Printf("Not saving the model to avoid overwriting your config. Set it with:\n")
+		fmt.Printf("  joshbot configure --provider github-copilot --model %s\n", selected)
+		return nil
 	}
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]config.ProviderConfig)
 	}
-	cfg.Providers["github-copilot"] = config.ProviderConfig{
-		Enabled: true,
-		Model:   selected,
-	}
+	// Update in place: replacing the struct would drop any other field the
+	// operator had already set on this provider.
+	pc := cfg.Providers["github-copilot"]
+	pc.Enabled = true
+	pc.Model = selected
+	cfg.Providers["github-copilot"] = pc
 
 	if err := config.Save(cfg); err != nil {
 		fmt.Printf("Warning: Could not save config: %v\n", err)

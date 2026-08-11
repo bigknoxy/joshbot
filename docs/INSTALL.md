@@ -323,7 +323,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot mcp list` \| `trust <name>` \| `untrust <name>` | Review and approve MCP servers' advertised tools |
 | `joshbot configure` | Configure LLM providers and settings |
 | `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` \| `export <id>` | Inspect, manage and export stored conversations |
-| `joshbot auth github-copilot` \| `status` | Manage OAuth authentication |
+| `joshbot auth github-copilot [--force]` \| `status` | Manage OAuth authentication |
 | `joshbot service install` \| `uninstall` \| `status` | Manage joshbot as a system service |
 | `joshbot update` | Update to the latest release |
 | `joshbot uninstall` | Remove the binary and optionally its config |
@@ -933,7 +933,7 @@ joshbot onboard
 joshbot auth github-copilot
 ```
 
-The device flow saves a token to `~/.joshbot/auth.json` and enables the `github-copilot` provider in `config.json`. If the token expires, rerun the auth command.
+The device flow saves a token to `~/.joshbot/auth.json` and enables the `github-copilot` provider in `config.json`. That token does not expire on its own — joshbot exchanges it for a short-lived Copilot API token per request and refreshes that automatically. If GitHub revoked the authorization, redo the flow with `joshbot auth github-copilot --force` (without `--force` the command reports the existing token and exits).
 
 #### "URL blocked by security policy"
 

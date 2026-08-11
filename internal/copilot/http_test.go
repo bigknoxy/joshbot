@@ -406,6 +406,8 @@ func TestCopilotProvider_Chat_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	stubExchange(t, "test-access-token")
+
 	oldURL := CopilotAPIURL
 	CopilotAPIURL = srv.URL
 	defer func() { CopilotAPIURL = oldURL }()
@@ -437,6 +439,8 @@ func TestCopilotProvider_Chat_APIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	stubExchange(t, "test-access-token")
+
 	oldURL := CopilotAPIURL
 	CopilotAPIURL = srv.URL
 	defer func() { CopilotAPIURL = oldURL }()
@@ -460,6 +464,8 @@ func TestCopilotProvider_Chat_Forbidden(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
+
+	stubExchange(t, "test-access-token")
 
 	oldURL := CopilotAPIURL
 	CopilotAPIURL = srv.URL
@@ -486,6 +492,8 @@ func TestCopilotProvider_Chat_InvalidResponseJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	stubExchange(t, "test-access-token")
+
 	oldURL := CopilotAPIURL
 	CopilotAPIURL = srv.URL
 	defer func() { CopilotAPIURL = oldURL }()
@@ -510,16 +518,21 @@ func TestListModels_Success(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]map[string]any{
-			{"id": "gpt-4o", "name": "GPT-4o"},
-			{"id": "gpt-4", "name": "GPT-4"},
+		json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "gpt-4o", "name": "GPT-4o"},
+				{"id": "gpt-4", "name": "GPT-4"},
+			},
 		})
 	}))
 	defer srv.Close()
 
-	oldURL := copilotCatalogURL
-	copilotCatalogURL = srv.URL
-	defer func() { copilotCatalogURL = oldURL }()
+	stubExchange(t, "test-token")
+
+	oldURL := CopilotAPIURL
+	CopilotAPIURL = srv.URL
+	defer func() { CopilotAPIURL = oldURL }()
 
 	models, err := ListModels("test-token")
 	if err != nil {
@@ -543,9 +556,11 @@ func TestListModels_APIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	oldURL := copilotCatalogURL
-	copilotCatalogURL = srv.URL
-	defer func() { copilotCatalogURL = oldURL }()
+	stubExchange(t, "test-token")
+
+	oldURL := CopilotAPIURL
+	CopilotAPIURL = srv.URL
+	defer func() { CopilotAPIURL = oldURL }()
 
 	_, err := ListModels("bad-token")
 	if err == nil {
@@ -563,9 +578,11 @@ func TestListModels_InvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	oldURL := copilotCatalogURL
-	copilotCatalogURL = srv.URL
-	defer func() { copilotCatalogURL = oldURL }()
+	stubExchange(t, "test-token")
+
+	oldURL := CopilotAPIURL
+	CopilotAPIURL = srv.URL
+	defer func() { CopilotAPIURL = oldURL }()
 
 	_, err := ListModels("token")
 	if err == nil {
@@ -675,6 +692,8 @@ func TestInitiateDeviceFlow_RequestCreationError(t *testing.T) {
 }
 
 func TestCopilotProvider_Chat_RequestCreationError(t *testing.T) {
+	stubExchange(t, "test-token")
+
 	// Use an invalid URL to trigger request creation error
 	oldURL := CopilotAPIURL
 	CopilotAPIURL = "http://[::1]:namedport"
@@ -692,9 +711,11 @@ func TestCopilotProvider_Chat_RequestCreationError(t *testing.T) {
 }
 
 func TestListModels_RequestCreationError(t *testing.T) {
-	oldURL := copilotCatalogURL
-	copilotCatalogURL = "http://[::1]:namedport"
-	defer func() { copilotCatalogURL = oldURL }()
+	stubExchange(t, "test-token")
+
+	oldURL := CopilotAPIURL
+	CopilotAPIURL = "http://[::1]:namedport"
+	defer func() { CopilotAPIURL = oldURL }()
 
 	_, err := ListModels("token")
 	if err == nil {

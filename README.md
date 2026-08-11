@@ -918,6 +918,15 @@ GitHub Copilot uses a device-code OAuth flow and stores its token in `~/.joshbot
 
 After auth, you can run `joshbot agent` or `joshbot gateway` normally.
 
+The stored GitHub token does not expire on its own. joshbot exchanges it for a
+short-lived Copilot API token on each request and refreshes that automatically,
+so re-authentication is only needed if you revoke the authorization on GitHub.
+To force a fresh device flow when a token is already stored:
+
+```bash
+joshbot auth github-copilot --force
+```
+
 ## Telegram Setup
 
 > **⚠️ BREAKING (unreleased):** An **empty `allow_from` now denies every sender** instead of allowing everyone. Previously a Telegram bot with no allowlist was open to the whole internet — anyone who found it got a direct line into an agent loop holding the shell tool. It now fails closed and logs a loud warning at startup naming the exact key to set. **If you relied on an empty allowlist, your bot will reject all messages until you add your numeric Telegram user ID to `channels.telegram.allow_from`.** The same fail-closed rule applies to Discord's `allow_from`.
@@ -1135,7 +1144,7 @@ joshbot/
 
 **Telegram bot not responding** — Verify `channels.telegram.enabled` is `true` and check your user ID is in `allow_from`.
 
-**GitHub Copilot not authenticated** — Run `joshbot auth github-copilot`. If it previously worked, re-run auth to refresh an expired token.
+**GitHub Copilot not authenticated** — Run `joshbot auth github-copilot`. If a token is already stored, use `joshbot auth github-copilot --force` to redo the device flow.
 
 **"URL blocked by security policy"** — `web_fetch` blocks localhost/private IPs and metadata endpoints to prevent SSRF. Use a public URL or proxy through an external service.
 

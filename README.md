@@ -32,6 +32,7 @@ joshbot is heavier on guarantees, lighter on your machine.
 - **Scriptable / Non-Interactive** - Every command runs headless; `agent -m` for one-shot, `--output-format json`/`stream-json` for machine-readable output, `--resume` to thread sessions, and a stable exit-code contract for CI
 - **Interactive CLI** - Rich terminal interface with markdown rendering
 - **Multi-Provider LLM** - OpenRouter, Anthropic, OpenAI, Groq, Poolside, DeepSeek, Gemini, NVIDIA, and more
+- **Named Profiles** - Switch model, provider and endpoint per run with `--profile`; profiles hold a credential's *variable name*, never the credential
 - **Model-Centric Config** - Simplified model configuration with provider auto-detection and fallback chains
 - **Prompt Caching** - Intelligent caching of system prompts with mtime-based invalidation for faster responses
 - **Tool Use** - File operations, shell commands, web search, scheduling, and more
@@ -484,6 +485,75 @@ Precedence, highest first:
 | `JOSHBOT_PROVIDERS__<NAME>__API_KEY` | `JOSHBOT_PROVIDERS__OPENROUTER__API_KEY=sk-...` |
 | `api_key_env` | `"api_key_env": "MY_OPENROUTER_KEY"` |
 | `api_key` | `"api_key": "sk-..."` |
+
+### Named profiles
+
+A profile is a named provider/model/endpoint setup you switch between with
+`--profile`, instead of editing the config to move between (say) a hosted model and
+a local Ollama:
+
+```json
+{
+  "default_profile": "local",
+  "profiles": {
+    "local": {
+      "provider": "ollama",
+      "model": "qwen3:8b",
+      "api_base": "http://localhost:11434/v1",
+      "description": "local dev box"
+    },
+    "cloud": {
+      "provider": "openrouter",
+      "model": "z-ai/glm-4.6",
+      "api_key_env": "MY_OPENROUTER_KEY"
+    }
+  }
+}
+```
+
+```bash
+joshbot profiles list                 # what is configured and where each would send requests
+joshbot agent --profile cloud -m hi   # one run, one profile
+joshbot gateway --profile local       # also on gateway and preflight
+```
+
+Selection precedence, highest first: `--profile`, then `default_profile`, then
+nothing. **A config that has profiles but selects neither behaves exactly as it did
+before profiles existed** — nothing about an existing install changes until you opt in.
+
+A selected profile becomes the only model for that run: it replaces the models block
+rather than being added to it, so a profile can never quietly fall back to some other
+endpoint you did not pick.
+
+A profile cannot hold a credential. `api_key` inside a profile is refused when the
+config loads, with an error pointing at `api_key_env` — a profiles block is the thing
+most likely to be pasted into an issue or committed to dotfiles. Every other way a
+profile can be wrong is a startup error too, not a provider error mid-conversation: an
+unknown name (the error lists the configured ones), a `disabled` profile (its own
+distinct message), and an `api_key_env` variable that is not set (the error names the
+variable).
+
+`joshbot profiles list` is safe to paste into a bug report. It names the variable
+holding each credential and whether it is set, never the credential, and it reduces
+`api_base` to a host so userinfo embedded in a URL cannot leak:
+
+```
+$ joshbot profiles list
+Profiles:
+ * cloud                openrouter/z-ai/glm-4.6
+      provider openrouter   endpoint provider default
+      credential from $MY_OPENROUTER_KEY (set)
+ . local                ollama/qwen3:8b
+      local dev box
+      provider ollama   endpoint localhost:11434
+      credential not required
+
+Default profile: local
+Select one for a run with: joshbot agent --profile <name>
+```
+
+`*` marks the profile this run would use, `.` the configured default. `--output json`
+works here as it does on the other reporting commands.
 
 ### Checking the config before you use it
 

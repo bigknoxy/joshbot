@@ -361,6 +361,18 @@ type Config struct {
 	// SECURITY.md). A server runs only when its Enabled flag is set.
 	MCP MCPConfig `mapstructure:"mcp" json:"mcp,omitempty" yaml:"mcp,omitempty"`
 
+	// Profiles are named endpoint/model setups selectable with --profile. See
+	// profiles.go; a profile never holds a credential.
+	Profiles map[string]Profile `mapstructure:"profiles" json:"profiles,omitempty" yaml:"profiles,omitempty"`
+	// DefaultProfile names the profile used when --profile is absent. Empty
+	// means no profile is applied and the rest of the config is used as-is.
+	DefaultProfile string `mapstructure:"default_profile" json:"default_profile,omitempty" yaml:"default_profile,omitempty"`
+
+	// activeProfile records the profile ApplyProfile installed, for status
+	// output. Unexported for the same reason as credentialSource: derived
+	// state must not round-trip through Save.
+	activeProfile string
+
 	// credentialSource records where each provider's API key came from, for
 	// `joshbot preflight`. Unexported and unserialised on purpose: it is
 	// derived state, and a round-trip through Save must not write it back.
@@ -1088,6 +1100,13 @@ func loadFileConfig(data []byte) (*Config, error) {
 	// wins and the both-fields-set check sees the operator's file rather than
 	// a key the environment supplied.
 	if err := resolveProviderCredentials(cfg); err != nil {
+		return cfg, fatalConfigError{err}
+	}
+
+	// Fatal for the same reason: a profile carrying a raw api_key, or a
+	// default_profile naming something that does not exist, must not be
+	// papered over with a default config that silently dials somewhere else.
+	if err := validateProfiles(cfg); err != nil {
 		return cfg, fatalConfigError{err}
 	}
 

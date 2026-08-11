@@ -159,6 +159,34 @@ func detectRunningContext() runningContext {
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
+// toolExecutorAdapter wraps tools.Registry to satisfy the subagent.ToolExecutor
+// interface, converting between tools.ToolResult/tools.AsyncResult and the
+// subagent's local types to avoid an import cycle.
+type toolExecutorAdapter struct {
+	registry *tools.Registry
+}
+
+func (a *toolExecutorAdapter) GetSchemas() []providers.Tool {
+	return a.registry.GetSchemas()
+}
+
+func (a *toolExecutorAdapter) ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(subagent.AsyncResult)) (subagent.ToolResult, bool) {
+	toolsResult, isAsync := a.registry.ExecuteWithContext(ctx, name, args, channel, channelID, func(ar tools.AsyncResult) {
+		if callback != nil {
+			callback(subagent.AsyncResult{
+				ToolName: ar.ToolName,
+				Args:     ar.Args,
+				Output:   ar.Output,
+				Err:      ar.Error,
+			})
+		}
+	})
+	return subagent.ToolResult{
+		Output: toolsResult.Output,
+		Error:  toolsResult.Error,
+	}, isAsync
+}
+
 func main() {
 	// The sandbox helper is handled before the CLI framework starts.
 	//
@@ -285,8 +313,13 @@ func newApp() *cli.App {
 						Name:  "debug",
 						Usage: "Enable debug logging",
 					},
-				},
-				Action: runAgent,
+					&cli.IntFlag{
+						Name:  "max-iterations",
+						Usage: "Override the ReAct loop iteration limit (default: 50)",
+						Value: 0, // 0 means use config default
+					},
+					},
+					Action: runAgent,
 			},
 			{
 				Name:  "gateway",
@@ -948,7 +981,12 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	if cfg.UseModelsConfig() {
 		agentModel = cfg.ModelsConfig.Agent.Model
 	}
-	subagentRunner := subagent.NewRunner(multiProvider, agentModel, 4096, 0.3, 60*time.Second)
+	subagentRunner := subagent.NewRunner(multiProvider, agentModel,
+		subagent.WithMaxTokens(4096),
+		subagent.WithTemperature(0.3),
+		subagent.WithTimeout(60*time.Second),
+		subagent.WithTools(&toolExecutorAdapter{registry: toolsRegistry}),
+	)
 	toolsRegistry.Register(tools.NewParallelSubagentTool(subagentRunner))
 	toolsRegistry.Register(tools.NewChainExecutionTool(subagentRunner))
 
@@ -1207,6 +1245,13 @@ func runAgent(c *cli.Context) error {
 	// Setup components
 	_, _, _, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
 	defer closeMCPServers()
+
+	// Apply --max-iterations CLI override if provided (0 means use config default)
+	if maxIter := c.Int("max-iterations"); maxIter > 0 {
+		agentInstance.SetMaxIterations(maxIter)
+		log.Info("Overriding max iterations from CLI", "max_iterations", maxIter)
+	}
+
 	if err != nil {
 		// HARD RULE: in JSON modes a setup failure must still be well-formed —
 		// a machine-readable error on stderr, not a plain-text line.

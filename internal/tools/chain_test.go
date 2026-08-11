@@ -14,13 +14,13 @@ type failCallRunner struct {
 	count   int
 }
 
-func (r *failCallRunner) Run(ctx context.Context, prompt string) (string, error) {
+func (r *failCallRunner) SimpleRun(ctx context.Context, prompt string) (string, error) {
 	idx := r.count
 	r.count++
 	if idx == r.failIdx {
 		return "", fmt.Errorf("simulated failure on call %d", idx)
 	}
-	return r.inner.Run(ctx, prompt)
+	return r.inner.SimpleRun(ctx, prompt)
 }
 
 func TestChainTool_Name(t *testing.T) {

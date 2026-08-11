@@ -24,7 +24,8 @@ const (
 	// DefaultTimeout is the default timeout for agent operations.
 	DefaultTimeout = 120 * time.Second
 	// DefaultMaxIterations is the default max iterations for ReAct loop.
-	DefaultMaxIterations = 20
+	// Increased from 20 to 50 (issue #192) to support longer reasoning chains.
+	DefaultMaxIterations = 50
 )
 
 // ToolExecutor is an interface for executing tool calls.
@@ -218,6 +219,15 @@ func WithMaxIterations(n int) Option {
 	}
 }
 
+// SetMaxIterations updates the ReAct loop iteration limit at runtime.
+// Returns the agent for chaining.
+func (a *Agent) SetMaxIterations(n int) *Agent {
+	if n > 0 {
+		a.maxIterations = n
+	}
+	return a
+}
+
 // WithTimeout sets the processing timeout.
 func WithTimeout(timeout time.Duration) Option {
 	return func(a *Agent) {
@@ -406,6 +416,12 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 		Images:    imageRefs(msg.Images),
 	}
 	sess.AddMessage(userMsg)
+
+	// Clear any existing checkpoint — a new user message starts a fresh run.
+	// /resume is handled via handleCommand before we get here (isCommand
+	// returns true for it), so reaching this point means the user typed
+	// something other than /resume.
+	sess.Checkpoint = nil
 
 	// Build messages for LLM (system + session messages)
 	messages := a.buildMessages(systemPrompt, sess)
@@ -680,9 +696,31 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		messages = a.checkAndCompactContext(ctx, messages, sess, st)
 	}
 
-	// Hit max iterations
+	// Hit max iterations — save a checkpoint so the user can resume.
+	// The session has already accumulated all messages and tool results from
+	// this run, so on /resume we just re-enter reactLoop with the existing
+	// session and a fresh message count.
 	a.logger.Warn("Hit max iterations", "max", a.maxIterations)
-	return "I've been working on this for a while. Here's what I found so far - let me know if you'd like me to continue.", nil
+
+	// Persist a checkpoint marker in the session for /resume detection.
+	if a.sessions != nil {
+		sess.Checkpoint = &session.Checkpoint{
+			Iteration:   a.maxIterations,
+			MaxIterations: a.maxIterations,
+			CreatedAt:    time.Now(),
+			UserMessage:  userMessage,
+		}
+		// Save the session so the checkpoint survives across requests.
+		if saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second); cancel != nil {
+			_ = a.sessions.Save(saveCtx, sess)
+			cancel()
+		}
+	}
+
+	resp := fmt.Sprintf("I've been working on this for a while. Here's what I found so far.\n\n"+
+		"⚠️ Hit the max iteration limit (%d).\n"+
+		"To continue, type `/resume` and I'll pick up where we left off.", a.maxIterations)
+	return resp, nil
 }
 
 // streamErrorMarker renders a mid-stream failure as text the user can see.
@@ -1287,6 +1325,7 @@ Just type normally to chat with me!`,
 /model [name] - Switch model for this session (--global for all)
 /personality [name] - Set or clear a personality
 /compact - Summarize older context now
+/resume - Continue after hitting the iteration limit
 /status - Show system status
 /help - Show this help
 
@@ -1316,6 +1355,8 @@ Just type normally to chat with me!`
 		return a.handlePersonalityCommand(ctx, msg)
 	case "compact":
 		return a.handleCompactCommand(ctx, msg)
+	case "resume":
+		return a.handleResumeCommand(ctx, msg)
 	}
 
 	return "" // Not a known command, process normally
@@ -1569,6 +1610,46 @@ func (a *Agent) handleCompactCommand(ctx context.Context, msg bus.InboundMessage
 		a.logger.Warn("Failed to save session after /compact", "error", err)
 	}
 	return fmt.Sprintf("✓ Compressed the last %d messages into a summary. The earlier conversation is archived in this session's history.", prefixLen)
+}
+
+// handleResumeCommand implements /resume. It picks up a ReAct loop that was
+// interrupted by the iteration limit, using the session's checkpoint as proof
+// that a resumed run is valid. If no checkpoint exists, it tells the user.
+func (a *Agent) handleResumeCommand(ctx context.Context, msg bus.InboundMessage) string {
+	sessionKey := getSessionKey(msg)
+	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
+	if err != nil {
+		return fmt.Sprintf("Error: Failed to load session: %v", err)
+	}
+
+	cp := sess.Checkpoint
+	if cp == nil {
+		return "No checkpoint found — there's nothing to resume. The iteration limit hasn't been hit in this session yet."
+	}
+
+	// Clear the checkpoint so a plain user message after /resume starts fresh.
+	sess.Checkpoint = nil
+	if err := a.sessions.Save(ctx, sess); err != nil {
+		a.logger.Warn("Failed to save session after clearing checkpoint", "error", err)
+	}
+
+	// Build a synthetic "continue" message and process it through the normal
+	// ReAct loop. The session already holds all the accumulated messages and
+	// tool results, so reactLoop will pick up from where it left off.
+	continueMsg := bus.InboundMessage{
+		Channel:    msg.Channel,
+		SenderID:   msg.SenderID,
+		Content:    "Please continue the task you were working on, using the context already established in this conversation.",
+		Timestamp:  msg.Timestamp,
+	}
+
+	resp, err := a.Process(ctx, continueMsg)
+	if err != nil {
+		return fmt.Sprintf("Error: resume failed: %v", err)
+	}
+
+	return fmt.Sprintf("Resuming from checkpoint (stopped at iteration %d/%d).\n\n%s",
+		cp.Iteration, cp.MaxIterations, resp)
 }
 
 // CurrentModel reports the effective model for the CLI session. The interactive

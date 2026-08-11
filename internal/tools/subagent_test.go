@@ -14,7 +14,7 @@ type mockSubagentRunner struct {
 	delay     time.Duration
 }
 
-func (m *mockSubagentRunner) Run(ctx context.Context, prompt string) (string, error) {
+func (m *mockSubagentRunner) SimpleRun(ctx context.Context, prompt string) (string, error) {
 	if m.delay > 0 {
 		select {
 		case <-time.After(m.delay):

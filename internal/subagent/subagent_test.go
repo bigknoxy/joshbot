@@ -144,8 +144,8 @@ func main() {
 func TestSubagent_500TokenTruncation_Blocker(t *testing.T) {
 	provider := &truncatingMockProvider{}
 
-	runner := NewRunner(provider, "test-model", 500, 0.3, 30*time.Second)
-	result, err := runner.Run(context.Background(), "write a Go CLI tool for GitHub stats")
+	runner := NewRunner(provider, "test-model", WithMaxTokens(500), WithTemperature(0.3), WithTimeout(30*time.Second))
+	result, err := runner.SimpleRun(context.Background(), "write a Go CLI tool for GitHub stats")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,8 +201,8 @@ func TestSubagent_MaxTokens4096Sufficient(t *testing.T) {
 func TestSubagent_4096TokensProven(t *testing.T) {
 	provider := &truncatingMockProvider{}
 
-	runner := NewRunner(provider, "test-model", 4096, 0.3, 30*time.Second)
-	result, err := runner.Run(context.Background(), "write a Go CLI tool for GitHub stats")
+	runner := NewRunner(provider, "test-model", WithMaxTokens(4096), WithTemperature(0.3), WithTimeout(30*time.Second))
+	result, err := runner.SimpleRun(context.Background(), "write a Go CLI tool for GitHub stats")
 	if err != nil {
 		t.Fatal(err)
 	}

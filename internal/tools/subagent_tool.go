@@ -12,7 +12,7 @@ import (
 
 // SubagentRunner is the interface for running a subagent task.
 type SubagentRunner interface {
-	Run(ctx context.Context, prompt string) (string, error)
+	SimpleRun(ctx context.Context, prompt string) (string, error)
 }
 
 // subagentTask represents a single parallel task.
@@ -154,7 +154,7 @@ func (t *ParallelSubagentTool) Execute(ctx interface{}, args map[string]any) Too
 			default:
 			}
 
-			output, err := runner.Run(cctx, st.Prompt)
+			output, err := runner.SimpleRun(cctx, st.Prompt)
 			results <- subagentResult{index: idx, desc: st.Description, output: output, err: err}
 		}(i, task)
 	}

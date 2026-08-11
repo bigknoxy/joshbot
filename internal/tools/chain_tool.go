@@ -192,7 +192,7 @@ func (t *ChainExecutionTool) Execute(ctx interface{}, args map[string]any) ToolR
 
 		log.Debug("Chain step executing", "step", i+1, "description", desc)
 
-		output, err := t.runner.Run(cctx, fullPrompt)
+		output, err := t.runner.SimpleRun(cctx, fullPrompt)
 		if err != nil {
 			log.Warn("Chain step failed", "step", i+1, "error", err)
 			results = append(results, chainResult{

@@ -72,7 +72,8 @@ const (
 	// DefaultTemperature is the default temperature for LLM responses.
 	DefaultTemperature = 0.7
 	// DefaultMaxToolIterations is the default max tool iterations in ReAct loop.
-	DefaultMaxToolIterations = 20
+	// Increased from 20 to 50 (issue #192) to support longer reasoning chains.
+	DefaultMaxToolIterations = 50
 	// DefaultMemoryWindow is the default memory window size.
 	DefaultMemoryWindow = 50
 	// DefaultCompactionThreshold is the default threshold for proactive context compaction.

@@ -469,16 +469,25 @@ func (dm *DreamManager) Consolidate(ctx context.Context) ([]DreamConsolidated, e
 	vs := dm.config.vectorStore
 	dm.config.mu.RUnlock()
 
-	// Embed all records and upsert to vector store
+	// Embed all records and upsert to vector store.
+	// Cache embeddings so the clustering pass doesn't re-compute them.
+	embeddings := make([]Embedding, len(records))
+	recordByID := make(map[string]DreamRecord, len(records))
 	for i, rec := range records {
-		vec := emb.Transform(records[i].Content)
+		vec := emb.Transform(rec.Content)
+		embeddings[i] = vec
+		recordByID[rec.ID] = rec
 		meta := map[string]any{
 			"type":       string(rec.Type),
 			"trace_id":   rec.TraceID,
 			"importance": rec.Importance,
 			"tags":       rec.Tags,
 		}
-		_ = vs.Upsert(rec.ID, vec, meta)
+		if err := vs.Upsert(rec.ID, vec, meta); err != nil {
+			// Non-fatal: the vector store is best-effort. A failed upsert
+			// means the record won't appear in similarity search, but
+			// consolidation continues with whatever succeeded.
+		}
 	}
 
 	// Simple clustering: for each record, find similar records (cosine > 0.7)
@@ -490,7 +499,8 @@ func (dm *DreamManager) Consolidate(ctx context.Context) ([]DreamConsolidated, e
 			continue
 		}
 
-		queryVec := emb.Transform(rec.Content)
+		// Reuse cached embedding instead of recomputing.
+		queryVec := embeddings[i]
 		results, _ := vs.Search(queryVec, 10)
 
 		cluster := []DreamRecord{rec}
@@ -499,18 +509,14 @@ func (dm *DreamManager) Consolidate(ctx context.Context) ([]DreamConsolidated, e
 			if sr.Score < 0.7 || seen[sr.ID] {
 				continue
 			}
-			for _, r2 := range records {
-				if r2.ID == sr.ID {
-					cluster = append(cluster, r2)
-					seen[r2.ID] = true
-					break
-				}
+			if r2, ok := recordByID[sr.ID]; ok {
+				cluster = append(cluster, r2)
+				seen[r2.ID] = true
 			}
 		}
 
 		consolidated := dm.summarizeCluster(cluster)
 		consolidations = append(consolidations, consolidated)
-		_ = i // suppress unused
 	}
 
 	return consolidations, nil

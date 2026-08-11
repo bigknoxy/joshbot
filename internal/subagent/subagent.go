@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/log"
@@ -283,18 +284,18 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 	var iterations int
 	var timedOut bool
 
+	// Get tool schemas once — they don't change mid-run.
+	var toolSchemas []providers.Tool
+	if r.tools != nil {
+		toolSchemas = r.tools.GetSchemas()
+	}
+
 	for i := 0; i < cfg.MaxIter; i++ {
 		iterations = i + 1
 
 		if runCtx.Err() != nil {
 			timedOut = true
 			break
-		}
-
-		// Get tool schemas
-		var toolSchemas []providers.Tool
-		if r.tools != nil {
-			toolSchemas = r.tools.GetSchemas()
 		}
 
 		req := providers.ChatRequest{
@@ -508,7 +509,7 @@ func summarizeArgs(args map[string]any) string {
 	for k, v := range args {
 		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
 	}
-	return fmt.Sprintf("%v", parts)
+	return strings.Join(parts, ", ")
 }
 
 // LegacyRunner is the old single-call runner kept for backward compatibility.

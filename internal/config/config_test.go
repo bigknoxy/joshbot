@@ -379,7 +379,7 @@ func TestConfigString(t *testing.T) {
 	cfg := Defaults()
 	str := cfg.String()
 
-	expected := "Config{SchemaVersion: 4, Model: openrouter/free, LogLevel: info, Gateway: 0.0.0.0:18790}"
+	expected := "Config{SchemaVersion: 5, Model: openrouter/free, LogLevel: info, Gateway: 0.0.0.0:18790}"
 	if str != expected {
 		t.Errorf("String() = %v, want %v", str, expected)
 	}
@@ -1078,8 +1078,8 @@ func TestToolsEnvOverrides(t *testing.T) {
 }
 
 func TestSchemaVersion(t *testing.T) {
-	if CurrentSchemaVersion != 4 {
-		t.Errorf("expected schema version 4, got %d", CurrentSchemaVersion)
+	if CurrentSchemaVersion != 5 {
+		t.Errorf("expected schema version 5, got %d", CurrentSchemaVersion)
 	}
 }
 
@@ -1149,5 +1149,43 @@ func TestAllowFromEnvOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Channels.Telegram.AllowFrom, []string{"@bob"}) {
 		t.Errorf("telegram allow_from = %#v, want [@bob]", cfg.Channels.Telegram.AllowFrom)
+	}
+}
+
+// TestStreamingDefaultsOnAndSurvivesOptOut covers the #119 flip. The interesting
+// case is the upgrade: agents.defaults.streaming has no omitempty, so every
+// config saved by a v1.47.x — where it was an opt-in defaulting to false —
+// carries "streaming": false whether the operator ever saw the key or not.
+// Honouring that would ship the new default to nobody, so the v5 migration
+// resets it once; from v5 on an explicit false is respected.
+func TestStreamingDefaultsOnAndSurvivesOptOut(t *testing.T) {
+	if !Defaults().Agents.Defaults.Streaming {
+		t.Fatal("streaming should default to on")
+	}
+
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"absent key defaults on", `{"schema_version": 5, "agents": {"defaults": {}}}`, true},
+		{"explicit opt-out is respected", `{"schema_version": 5, "agents": {"defaults": {"streaming": false}}}`, false},
+		{"pre-v5 false is serializer noise, not intent", `{"schema_version": 4, "agents": {"defaults": {"streaming": false}}}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			if err := parseConfigFromFile([]byte(tc.raw), cfg); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if cfg.SchemaVersion < CurrentSchemaVersion {
+				if err := migrateConfig(cfg, []byte(tc.raw)); err != nil {
+					t.Fatalf("migrate: %v", err)
+				}
+			}
+			if got := cfg.Agents.Defaults.Streaming; got != tc.want {
+				t.Errorf("streaming = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

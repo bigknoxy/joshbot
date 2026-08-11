@@ -75,6 +75,8 @@ const (
 	DefaultMaxToolIterations = 20
 	// DefaultMemoryWindow is the default memory window size.
 	DefaultMemoryWindow = 50
+	// DefaultStreaming is the default for agents.defaults.streaming.
+	DefaultStreaming = true
 	// DefaultCompactionThreshold is the default threshold for proactive context compaction.
 	DefaultCompactionThreshold = 0.7
 	// DefaultToolOutputMaxChars is the default max characters for tool output truncation.
@@ -82,7 +84,7 @@ const (
 	// DefaultMaxMemorySize is the default maximum bytes for MEMORY.md content loaded into context.
 	DefaultMaxMemorySize = 4096
 	// CurrentSchemaVersion is the current config schema version.
-	CurrentSchemaVersion = 4
+	CurrentSchemaVersion = 5
 )
 
 // DefaultHome is the default joshbot home directory.
@@ -126,7 +128,8 @@ type AgentDefaults struct {
 	CompactionThreshold float64 `mapstructure:"compaction_threshold" json:"compaction_threshold" yaml:"compaction_threshold"`
 	MaxMemorySize       int     `mapstructure:"max_memory_size" json:"max_memory_size" yaml:"max_memory_size"`
 	// Streaming enables incremental text delivery via ChatStream when a
-	// stream sink is attached to the request context. Default false.
+	// stream sink is attached to the request context. Default true; set it to
+	// false in the config file to restore whole-reply delivery.
 	Streaming bool `mapstructure:"streaming" json:"streaming" yaml:"streaming"`
 }
 
@@ -728,6 +731,7 @@ func Defaults() *Config {
 				MemoryWindow:        DefaultMemoryWindow,
 				CompactionThreshold: DefaultCompactionThreshold,
 				MaxMemorySize:       DefaultMaxMemorySize,
+				Streaming:           DefaultStreaming,
 			},
 		},
 		Channels: ChannelsConfig{
@@ -1393,6 +1397,23 @@ func migrateConfig(cfg *Config, rawJSON []byte) error {
 		}
 		logger.Info("Migrated config to v4: provider enabled flags")
 		cfg.SchemaVersion = 4
+	}
+
+	// Migration from v4 to v5
+	if cfg.SchemaVersion < 5 {
+		// streaming flipped from opt-in to on by default. A stored false cannot
+		// be taken at face value here: the field has no omitempty, so every
+		// config any v1.47.x wrote — onboard, configure, any save at all —
+		// carries "streaming": false whether or not the operator ever saw the
+		// key, and honouring that would ship the new default to nobody. The
+		// window in which someone could have disabled it deliberately is one
+		// patch release of an opt-in feature, so the flag is reset to the
+		// default once, here, and respected from v5 on.
+		if !cfg.Agents.Defaults.Streaming {
+			cfg.Agents.Defaults.Streaming = DefaultStreaming
+			logger.Info("Migrated config to v5: streaming is now on by default (set agents.defaults.streaming to false to opt out)")
+		}
+		cfg.SchemaVersion = 5
 	}
 
 	return nil

@@ -261,6 +261,7 @@ func newApp() *cli.App {
 						Name:  "model",
 						Usage: "Model to use (overrides config)",
 					},
+					profileFlag(),
 					&cli.StringFlag{
 						Name:  "output-format",
 						Usage: "Output format: text, json, or stream-json (json modes are non-interactive and require --message)",
@@ -287,6 +288,7 @@ func newApp() *cli.App {
 				Name:  "gateway",
 				Usage: "Start joshbot gateway (Telegram + all channels)",
 				Flags: []cli.Flag{
+					profileFlag(),
 					&cli.BoolFlag{
 						Name:  "debug",
 						Usage: "Enable debug logging",
@@ -338,9 +340,11 @@ func newApp() *cli.App {
 					"provider, the exact model ID sent on the wire, the API host, and whether a\n" +
 					"credential is present and where it came from. Never prints the credential and\n" +
 					"never contacts a provider. Exits non-zero when joshbot would not start.",
+				Flags:  []cli.Flag{profileFlag()},
 				Action: withJSONErrors(runPreflight),
 			},
 			mcpCommand(),
+			profilesCommand(),
 			{
 				Name:  "skills",
 				Usage: "Review and approve workspace skills",
@@ -1128,6 +1132,10 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, done 
 func runAgent(c *cli.Context) error {
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
+		return err
+	}
+	// Before any component is built, so a bad --profile is a startup error.
+	if err := applyProfile(c, cfg); err != nil {
 		return err
 	}
 
@@ -2403,6 +2411,9 @@ func runUninstall(c *cli.Context) error {
 func runGateway(c *cli.Context) error {
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
+		return err
+	}
+	if err := applyProfile(c, cfg); err != nil {
 		return err
 	}
 
@@ -3685,6 +3696,17 @@ func runPreflight(c *cli.Context) error {
 	configErr := ""
 	if loadErr != nil {
 		configErr = loadErr.Error()
+	}
+	// A profile failure is reported through the document rather than returned,
+	// because describing why the run would not start is exactly this command's
+	// job — returning here would print a bare error and no report at all. Only
+	// attempted when the config itself loaded; applying a profile on top of a
+	// broken config would report the profile as the cause of a problem it did
+	// not create.
+	if loadErr == nil {
+		if err := applyProfile(c, cfg); err != nil && configErr == "" {
+			configErr = err.Error()
+		}
 	}
 	// NewPreflight redacts the free-text fields as it builds the document, so
 	// this output is safe to paste into an issue in either format.

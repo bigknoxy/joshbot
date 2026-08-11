@@ -583,6 +583,11 @@ footer a:hover { text-decoration: underline; }
       <p>Chat from anywhere via Telegram or Discord. Full skill and memory access from your phone. Telegram uses long-polling, Discord an outbound gateway websocket — no webhooks or inbound ports either way. Both channels fail closed — an empty allowlist rejects everyone. Enable one at a time: the bus has a single outbound channel that both read competitively, so running them together has them steal each other's replies.</p>
     </div>
     <div class="case-card">
+      <div class="icon">🔀</div>
+      <h3>Named Profiles</h3>
+      <p>Define profiles for a hosted model and your local Ollama, then pick one per run with <code>--profile</code> — on <code>agent</code>, <code>gateway</code> and <code>preflight</code>. A profile stores the <em>name</em> of the environment variable holding its key, never the key, and a typo, a disabled profile or an unset variable stops the run at startup instead of surfacing as a 401 mid-conversation. <code>joshbot profiles list</code> shows what each would dial and is safe to paste into a bug report.</p>
+    </div>
+    <div class="case-card">
       <div class="icon">📜</div>
       <h3>Scriptable &amp; Agent-Testable</h3>
       <p>Every command runs non-interactively. Pipe one message with <code>agent -m</code>, get machine-readable output with <code>--output-format json</code> or NDJSON with <code>stream-json</code>, and thread turns with <code>--resume</code>. Meaningful exit codes make it safe to gate CI on.</p>

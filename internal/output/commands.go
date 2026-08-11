@@ -351,3 +351,104 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// Profile is one configured named profile, as `joshbot profiles list` reports
+// it.
+//
+// There is deliberately no credential field of any kind. A profile's credential
+// lives in an environment variable and this document names only the variable —
+// the point of the listing is to let an operator confirm which endpoint they
+// would dial, not to hand them the key. CredentialEnv is a variable *name*, and
+// Endpoint is a host, not a full URL with any userinfo it might carry.
+type Profile struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	// Endpoint is the API host, or "" when the provider's default is used.
+	Endpoint string `json:"endpoint,omitempty"`
+	// CredentialEnv names the environment variable holding the credential.
+	CredentialEnv string `json:"credential_env,omitempty"`
+	// CredentialSet reports whether that variable is set, without saying what
+	// it contains — the difference between "misconfigured" and "works" without
+	// disclosing anything.
+	CredentialSet bool `json:"credential_set"`
+	Disabled      bool `json:"disabled,omitempty"`
+	// Active marks the profile this run selected, if any.
+	Active bool `json:"active,omitempty"`
+	// Default marks the profile named by default_profile.
+	Default bool `json:"default,omitempty"`
+}
+
+// Profiles is what `joshbot profiles list` reports.
+type Profiles struct {
+	SchemaVersion int       `json:"schema_version"`
+	Profiles      []Profile `json:"profiles"`
+	// DefaultProfile echoes the config's default_profile, "" if unset.
+	DefaultProfile string `json:"default_profile,omitempty"`
+}
+
+// NewProfiles builds the document, sorted by name so the output is stable.
+func NewProfiles(entries []Profile, defaultProfile string) Profiles {
+	// Allocated, not nil, for the same reason as NewMCPServers: "no profiles
+	// configured" is the ordinary state and must encode as [].
+	sorted := append(make([]Profile, 0, len(entries)), entries...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	for i := range sorted {
+		sorted[i].Description = redact.String(sorted[i].Description)
+	}
+	return Profiles{SchemaVersion: SchemaVersion, Profiles: sorted, DefaultProfile: defaultProfile}
+}
+
+// RenderProfilesText writes the human form.
+func RenderProfilesText(w io.Writer, p Profiles) {
+	if len(p.Profiles) == 0 {
+		fmt.Fprintln(w, "No profiles configured.")
+		fmt.Fprintln(w, "Add a \"profiles\" block to your config to switch models with --profile.")
+		return
+	}
+
+	fmt.Fprintln(w, "Profiles:")
+	for _, pr := range p.Profiles {
+		marker := " "
+		switch {
+		case pr.Active:
+			marker = "*"
+		case pr.Default:
+			marker = "."
+		}
+		state := ""
+		if pr.Disabled {
+			state = "  (disabled)"
+		}
+		fmt.Fprintf(w, " %s %-20s %s%s\n", marker, pr.Name, pr.Model, state)
+		if pr.Description != "" {
+			fmt.Fprintf(w, "      %s\n", firstLine(pr.Description))
+		}
+		endpoint := pr.Endpoint
+		if endpoint == "" {
+			endpoint = "provider default"
+		}
+		fmt.Fprintf(w, "      provider %s   endpoint %s\n", pr.Provider, endpoint)
+		// The variable name, never its value: this listing is meant to be
+		// pasteable into a bug report.
+		//
+		// Deliberately phrased without a "name: value" separator. The text
+		// form is written through internal/redact, whose assignment rule
+		// blanks whatever follows "credential:" — which would have redacted
+		// the environment-variable name this line exists to show.
+		switch {
+		case pr.CredentialEnv == "":
+			fmt.Fprintln(w, "      credential not required")
+		case pr.CredentialSet:
+			fmt.Fprintf(w, "      credential from $%s (set)\n", pr.CredentialEnv)
+		default:
+			fmt.Fprintf(w, "      credential from $%s (NOT SET)\n", pr.CredentialEnv)
+		}
+	}
+
+	if p.DefaultProfile != "" {
+		fmt.Fprintf(w, "\nDefault profile: %s\n", p.DefaultProfile)
+	}
+	fmt.Fprintln(w, "Select one for a run with: joshbot agent --profile <name>")
+}

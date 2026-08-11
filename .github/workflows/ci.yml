@@ -167,6 +167,46 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
+  changelog-guard:
+    # Release history in CHANGELOG.md is append-only, and git will not tell you
+    # when a branch violates that: three branches cut from a pre-release main
+    # each carried a diff deleting the `## [1.41.0]` heading, and every one of
+    # them merged cleanly and passed CI. Squashing any would have un-released a
+    # version in the docs while the tag stayed. See internal/relguard. (#120)
+    #
+    # Pull requests only — on a push to main there is no branch to compare
+    # against, and main is by definition the state the guard measures from.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # The guard compares against the base branch's tip and its newest tag,
+          # so the default single-commit, tagless checkout is not enough.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Check CHANGELOG.md against the base branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "${BASE_REF}" --tags
+          # The comparison is against the base branch's *tip*, not the merge
+          # base: the tip is what a squash-merge lands on, so a line present
+          # there and absent here is a line this merge removes.
+          git show "origin/${BASE_REF}:CHANGELOG.md" > base-CHANGELOG.md
+          TAG=$(git describe --tags --abbrev=0 "origin/${BASE_REF}" 2>/dev/null || echo "")
+          echo "Base branch ${BASE_REF}, newest tag: ${TAG:-<none>}"
+          go run ./cmd/relguard -base base-CHANGELOG.md -head CHANGELOG.md -tag "${TAG}"
+
   docker-build:
     # The image was only ever built during a release, so a Dockerfile that no
     # longer matched the tree failed after the tag was already pushed: deleting

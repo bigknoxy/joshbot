@@ -100,7 +100,7 @@ func TestDocumentedCommandsExist(t *testing.T) {
 // silently reports an unknown flag or drops it. Pin the set so that addition
 // has to be deliberate.
 func TestSessionsSubcommandFlagsAreKnownToTheTrailingParser(t *testing.T) {
-	known := map[string]bool{"force": true, "last": true, "older-than": true}
+	known := map[string]bool{"force": true, "last": true, "older-than": true, "out": true}
 
 	var sessions *cli.Command
 	for _, c := range newApp().Commands {

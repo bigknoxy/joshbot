@@ -204,6 +204,13 @@ func runApp() error {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
 
+	return newApp().Run(os.Args)
+}
+
+// newApp builds the CLI. It is separate from runApp so the command surface —
+// every command's flags, actions and help text — can be inspected without
+// initialising the logger or reading os.Args.
+func newApp() *cli.App {
 	app := &cli.App{
 		Name:                 "joshbot",
 		Version:              Version,
@@ -484,7 +491,7 @@ func runApp() error {
 		},
 	}
 
-	return app.Run(os.Args)
+	return app
 }
 
 // explicitConfigPath reports the path the user actually chose with --config,

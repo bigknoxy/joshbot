@@ -138,7 +138,7 @@ go build ./cmd/joshbot
 go vet ./...        # CI gates on this
 gofmt -d .          # MUST be empty
 go test -race ./... # MUST pass
-# CI also fails if total coverage drops below 45%, or if cmd/joshbot or
+# CI also fails if total coverage drops below 58%, or if cmd/joshbot or
 # internal/service fall below their per-package floors (.github/workflows/ci.yml)
 
 # LIVE prompt-behaviour eval — opt-in, never in CI (cost + flakiness).

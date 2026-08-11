@@ -278,6 +278,11 @@ func TestUnknownModelIsNotVisionCapable(t *testing.T) {
 	for _, spec := range []string{
 		"gpt-4o", "openai/gpt-4o", "openrouter/openai/gpt-4o",
 		"anthropic/claude-sonnet-4-20250514", "ollama/llava:13b", "google/gemini-2.5-pro",
+		// Ollama spells its own vision tags without the vendor's hyphens, and a
+		// list carrying only the hyphenated spellings refused every locally
+		// hosted vision model as text-only. Found by dogfooding, not by a test —
+		// hence these.
+		"ollama/qwen2.5vl:3b", "ollama/llama3.2-vision:11b", "ollama/qwen3-vl:4b",
 	} {
 		if !SupportsVision(spec) {
 			t.Fatalf("%q is documented as vision-capable but was not recognised", spec)

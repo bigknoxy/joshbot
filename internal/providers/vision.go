@@ -30,8 +30,15 @@ var visionModelSubstrings = []string{
 	"pixtral",
 	// Qwen
 	"qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
-	// Ollama-hosted vision models
+	// Ollama-hosted vision models. The unhyphenated spellings are not
+	// duplicates: Ollama's own library tags are `llama3.2-vision` and
+	// `qwen2.5vl`, neither of which contains the hyphenated vendor spelling
+	// above, so without these an `ollama/qwen2.5vl:3b` was refused as text-only.
+	// Model names have to be matched as the provider actually spells them, and
+	// each entry here was checked against ollama.com/library rather than guessed
+	// — a plausible-looking `qwen3vl` does not exist (the tag is `qwen3-vl`).
 	"llava", "bakllava", "moondream", "minicpm-v",
+	"llama3.2-vision", "qwen2.5vl", "granite3.2-vision",
 }
 
 // SupportsVision reports whether a model spec is known to accept images.

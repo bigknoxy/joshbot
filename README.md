@@ -786,9 +786,14 @@ config formats.
 
 Two limits are worth knowing before turning it on:
 
-- It only takes effect in the **interactive CLI on a real terminal**. `joshbot
-  agent -m`, piped output and the Telegram channel are unaffected, so scripted
-  output stays byte-identical.
+- It takes effect in the **interactive CLI on a real terminal** and on
+  **Telegram**. `joshbot agent -m` and piped output are unaffected, so scripted
+  output stays byte-identical. On Telegram the reply is sent once and then
+  edited in place at most every 3 seconds; heartbeat turns never stream. A
+  reply that grows past Telegram's 4096-byte limit rolls over into a new
+  message, splitting on code-fence boundaries. Message formatting (Markdown) is
+  applied only on the final edit — interim edits are sent as plain text, so a
+  half-written code fence can never fail with `can't parse entities`.
 - Streaming gives up the non-streaming path's **transparent provider fallback**.
   Once the first token has been printed it cannot be unprinted, so a failure
   part-way through appends a visible `[stream error: ...]` marker to the reply

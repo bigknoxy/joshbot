@@ -68,6 +68,13 @@ type TelegramChannel struct {
 	// Only tests set it; in production it stays nil and t.bot.File is used.
 	download func(*telebot.File) (io.ReadCloser, error)
 
+	// editor overrides the bot for streaming sends and edits, and
+	// streamEditInterval overrides the minimum gap between two edits of the
+	// same streamed message. Only tests set either; in production the bot and
+	// defaultStreamInterval are used.
+	editor             telegramEditor
+	streamEditInterval time.Duration
+
 	// notifier overrides the bot for chat-action and command-menu calls.
 	// Only tests set it; in production it stays nil and the bot is used.
 	notifier telegramNotifier

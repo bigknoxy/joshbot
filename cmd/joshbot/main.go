@@ -2476,6 +2476,16 @@ func runGateway(c *cli.Context) error {
 	// Start message bus
 	msgBus.Start()
 
+	// The Telegram channel is created before the subscription that uses it,
+	// not after: the bus handler runs on its own goroutine, and assigning to a
+	// variable it has already captured is a data race even though no message
+	// can arrive before Start.
+	var tgChannel *channels.TelegramChannel
+	if cfg.Channels.Telegram.Enabled && cfg.Channels.Telegram.Token != "" {
+		tgChannel = channels.NewTelegramChannel(msgBus, &cfg.Channels.Telegram)
+	}
+	streaming := cfg.Agents.Defaults.Streaming
+
 	// Subscribe agent to all channels
 	msgBus.Subscribe("all", func(ctx context.Context, msg bus.InboundMessage) {
 		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)
@@ -2504,9 +2514,36 @@ func runGateway(c *cli.Context) error {
 			"channel", msg.Channel,
 			"content", msg.Content,
 		)
-		response, err := agentInstance.Process(ctx, msg)
+		// Stream the reply into the chat when streaming is on, editing one
+		// message as text arrives instead of waiting for the whole turn.
+		//
+		// The streamer is per-request and rides the context, like the
+		// tool-progress sink: the handler runs concurrently for every chat,
+		// and a shared streamer would edit one conversation's message with
+		// another's text. Heartbeat turns are excluded because their reply is
+		// suppressed when nothing needs attention — streaming one would put
+		// "HEARTBEAT_OK" in the chat, which is the exact output the
+		// suppression exists to hide.
+		procCtx := ctx
+		var streamer *channels.TelegramStreamer
+		if streaming && tgChannel != nil && msg.Channel == "telegram" && msg.SenderID != "heartbeat" {
+			if streamer = tgChannel.NewStreamer(getChannelID(msg)); streamer != nil {
+				procCtx = agent.WithStreamSink(procCtx, func(e agent.StreamEvent) {
+					streamer.Delta(e.Delta)
+				})
+			}
+		}
+
+		response, err := agentInstance.Process(procCtx, msg)
 		if err != nil {
 			log.Error("Agent error", "error", err)
+			// Partial text is already in the chat, so the error belongs on the
+			// end of it rather than in a second message contradicting the
+			// first. Finish reports false when nothing was delivered, and the
+			// ordinary error reply is sent instead.
+			if streamer.Finish(err) {
+				return
+			}
 			// Send error response
 			outbound := bus.OutboundMessage{
 				Content:   fmt.Sprintf("Error: %v", err),
@@ -2530,6 +2567,16 @@ func runGateway(c *cli.Context) error {
 			}
 		}
 
+		// The streamed message is the reply. Publishing it again would post
+		// the whole answer a second time under the incremental one, so the
+		// bus path runs only when nothing was streamed — the same condition
+		// the interactive CLI uses (didStream), for the same reason: several
+		// Process paths return without streaming anything.
+		if streamer.Finish(nil) {
+			log.Info("Streamed outbound message", "channel", msg.Channel, "response_len", len(response))
+			return
+		}
+
 		// Send response back to the appropriate channel
 		channelID := getChannelID(msg)
 		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
@@ -2544,9 +2591,7 @@ func runGateway(c *cli.Context) error {
 	})
 
 	// Start Telegram channel if enabled
-	var tgChannel *channels.TelegramChannel
-	if cfg.Channels.Telegram.Enabled && cfg.Channels.Telegram.Token != "" {
-		tgChannel = channels.NewTelegramChannel(msgBus, &cfg.Channels.Telegram)
+	if tgChannel != nil {
 		if err := tgChannel.Start(ctx); err != nil {
 			log.Error("Failed to start Telegram channel", "error", err)
 		} else {

@@ -761,8 +761,9 @@ workspace/
 ### Streaming Responses
 
 `agents.defaults.streaming` (default `false`) prints the reply as it arrives
-rather than after the turn completes. It applies only to the interactive CLI on
-a real terminal — `joshbot agent -m` and piped output are unchanged — and it
+rather than after the turn completes. It applies to the interactive CLI on a
+real terminal and to Telegram, where the reply message is edited in place at
+most every 3 seconds — `joshbot agent -m` and piped output are unchanged — and it
 trades away the non-streaming path's transparent provider fallback: once text
 has been printed it cannot be retried against another provider, so a mid-stream
 failure appends a visible `[stream error: ...]` marker instead.

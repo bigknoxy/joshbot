@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Longer ReAct reasoning chains with `/resume`** (#192). The default iteration limit rose from 20 to 50 (`agents.defaults.max_tool_iterations`), and `joshbot agent --max-iterations N` overrides it per run. When a turn hits the limit the agent now saves a checkpoint into the session and tells the user to type `/resume` to pick up where it left off — the accumulated messages and tool results are already in the session, so a resumed run re-enters the loop with the existing context rather than starting over. The checkpoint is persisted in the session's meta sidecar, so it survives a restart, and it is cleared on the next plain message or `/new`. `/resume` is wired into the Telegram command menu alongside the other agent commands.
+- **Dream memory: two-stage consolidation** (#193). An opt-in (`WithDreamEnabled`, disabled by default) memory system that records raw thoughts/actions/results to `dream_raw.log` (Stage 1) and consolidates them into higher-level insights via TF-IDF embeddings and cosine-similarity clustering (Stage 2). Consolidated insights are persisted to `dream_consolidated.jsonl` so they survive a restart, and can be promoted to structured facts in `MEMORY.md` (`PromoteToFacts`). `SearchSimilarMemories` returns the insights most relevant to a query. Zero external dependencies — the embedder and in-memory vector store are implemented in `internal/memory`.
+- **Subagents run a full ReAct loop with tool access** (#194). `internal/subagent` now runs a bounded ReAct loop (model → tools → reflect → repeat) instead of a single chat turn, with process isolation (a fresh message list per run, no session leaks), streaming via a `StreamSink`, and leaf vs orchestrator roles that constrain whether a subagent can spawn children. Model, max tokens, temperature and timeout are configurable per run. The `parallel_subagent` and `chain_execution` tools use it, and async tools now deliver their real result to the subagent rather than a "started in background" placeholder.
+- **`deepseek` and `gemini` added to the guided provider setup** (#195). Both are offered by `joshbot configure` and resolve their default API base URL (gemini at `v1beta`), so onboarding them no longer requires typing an endpoint by hand.
+
 ## [1.48.0] - 2026-08-11
 
 ### Added

@@ -4982,6 +4982,17 @@ func runServiceStatus(c *cli.Context) error {
 	return nil
 }
 
+// The device flow cannot run under test: it prints a user code, opens a
+// browser and polls GitHub until a human approves. Nor can the model list,
+// which needs a live Copilot token. Both are package vars so tests can drive
+// runAuthCopilot's own branching — the already-authenticated short circuit,
+// --force, and the "authenticated but the model list failed" path, which must
+// still succeed because the token is already on disk.
+var (
+	copilotRunDeviceFlow = copilot.RunDeviceFlow
+	copilotListModels    = copilot.ListModels
+)
+
 func runAuthCopilot(c *cli.Context) error {
 	homeDir, err := copilot.GetHomeDir()
 	if err != nil {
@@ -4999,7 +5010,7 @@ func runAuthCopilot(c *cli.Context) error {
 	fmt.Println()
 
 	ctx := context.Background()
-	token, err = copilot.RunDeviceFlow(ctx)
+	token, err = copilotRunDeviceFlow(ctx)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
@@ -5012,7 +5023,7 @@ func runAuthCopilot(c *cli.Context) error {
 	fmt.Println("Successfully authenticated with GitHub Copilot!")
 
 	fmt.Println("\nFetching available models...")
-	models, err := copilot.ListModels(token.AccessToken)
+	models, err := copilotListModels(token.AccessToken)
 	if err != nil {
 		fmt.Printf("Could not fetch models: %v\n", err)
 		fmt.Println("You can configure models later with 'joshbot configure'.")

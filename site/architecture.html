@@ -509,7 +509,7 @@ footer a:hover { text-decoration: underline; }
       </div>
       <div class="pattern-card">
         <h4>Subagent Delegation</h4>
-        <p>Parallel fan-out, sequential chain execution, or hierarchical delegation. Each subagent runs an isolated ReAct loop with tool access and its own system prompt. An orchestrator subagent can spawn child subagents via <code>delegate_subagent</code> (leaf or orchestrator, optional per-task model override); nesting depth is bounded (<code>agents.defaults.subagent_max_depth</code>, default 2) so a recursive chain cannot grow unbounded, and a leaf subagent is not offered the subagent-spawning tools. Results merged back into the parent agent context.</p>
+        <p>Parallel fan-out, sequential chain execution, or hierarchical delegation. Each subagent runs an isolated ReAct loop with tool access and its own system prompt. An orchestrator subagent can spawn child subagents via <code>delegate_subagent</code> (leaf or orchestrator, optional per-task model override); nesting depth is bounded (<code>agents.defaults.subagent_max_depth</code>, default 2) so a recursive chain cannot grow unbounded, and a leaf subagent is not offered the subagent-spawning tools. A run can be constrained to a JSON output schema (required keys, optional per-key types) — a mismatch gets one repair round-trip and then errors rather than returning prose as success — and <code>RunBackground</code> returns a handle with cancel, wait and a once-only completion callback for work that outlives the turn that started it. Results merged back into the parent agent context.</p>
       </div>
       <div class="pattern-card">
         <h4>Defense in Depth for Shell</h4>

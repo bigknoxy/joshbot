@@ -141,6 +141,11 @@ type Config struct {
 	// 0 means the DefaultMaxDepth. A delegate_subagent call that would exceed
 	// it is refused.
 	MaxDepth int
+	// OutputSchema, when set, constrains the final answer to a JSON object
+	// with the named keys. The run gets exactly one repair round-trip and
+	// then errors, rather than returning prose to a caller that asked for
+	// fields.
+	OutputSchema *OutputSchema
 }
 
 // StreamSink receives streaming text deltas and tool progress events from a subagent.
@@ -369,9 +374,12 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 	// Build the isolated system prompt based on role.
 	sysPrompt := r.buildSystemPrompt(cfg.Role, cfg.MaxIter, cfg.MaxDepth)
 
+	// The schema instruction rides the user turn rather than the system
+	// prompt: a model that has to be told the shape is more reliable when the
+	// shape sits next to the task it applies to.
 	messages := []providers.Message{
 		{Role: providers.RoleSystem, Content: sysPrompt},
-		{Role: providers.RoleUser, Content: prompt},
+		{Role: providers.RoleUser, Content: prompt + cfg.OutputSchema.Describe()},
 	}
 
 	// Apply timeout from config (in addition to any caller-provided context),
@@ -397,7 +405,12 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 		toolSchemas = filterSchemasByRole(r.tools.GetSchemas(), cfg.Role)
 	}
 
-	for i := 0; i < cfg.MaxIter; i++ {
+	// repairBudget buys the schema repair its own turn instead of spending one
+	// of the caller's iterations — a MaxIter of 1 would otherwise make the
+	// repair impossible and every schema'd run a failure.
+	repairBudget := 0
+
+	for i := 0; i < cfg.MaxIter+repairBudget; i++ {
 		iterations = i + 1
 
 		if runCtx.Err() != nil {
@@ -453,6 +466,23 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 			content := assistantMsg.Content
 			if content == "" {
 				content = "Subagent completed with no output."
+			}
+			if verr := cfg.OutputSchema.Validate(content); verr != nil {
+				// One repair round-trip, then fail. Returning prose here would
+				// repeat the `agent -m` anti-pattern: success reported over
+				// work the caller cannot use.
+				if repairBudget > 0 {
+					return nil, fmt.Errorf("subagent output does not match the requested schema: %w", verr)
+				}
+				repairBudget = 1
+				messages = append(messages,
+					assistantMsg,
+					providers.Message{
+						Role:    providers.RoleUser,
+						Content: fmt.Sprintf("That response did not match the required schema: %v.%s", verr, cfg.OutputSchema.Describe()),
+					},
+				)
+				continue
 			}
 			return &SubResult{
 				Output:     content,
@@ -567,6 +597,11 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 
 	if timedOut {
 		lastMsg += fmt.Sprintf("\n\n[Subagent timed out or hit iteration limit (%d)]", cfg.MaxIter)
+	} else if verr := cfg.OutputSchema.Validate(lastMsg); verr != nil {
+		// The loop ended without a clean final answer. A timed-out run still
+		// returns its partial text (the caller sees TimedOut and decides), but
+		// otherwise unschema'd output must not be handed back as success.
+		return nil, fmt.Errorf("subagent output does not match the requested schema: %w", verr)
 	}
 
 	return &SubResult{

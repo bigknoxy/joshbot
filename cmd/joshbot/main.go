@@ -988,27 +988,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 	}
 
-	go func() {
-		for result := range asyncCallbackCh {
-			var msg string
-			if result.Error != nil {
-				msg = fmt.Sprintf("❌ Background task failed (%s): %v", result.ToolName, result.Error)
-			} else {
-				output := result.Output
-				if len(output) > 2000 {
-					output = output[:2000] + "... (truncated)"
-				}
-				msg = fmt.Sprintf("✅ Background task completed (%s):\n%s", result.ToolName, output)
-			}
-
-			// Publish to message bus for gateway mode
-			msgBus.Publish(bus.OutboundMessage{
-				Channel:   result.Channel,
-				ChannelID: result.ChatID,
-				Content:   msg,
-			})
-		}
-	}()
+	go publishAsyncResults(asyncCallbackCh, msgBus)
 
 	// Create skill self-creation components (Milestone 2)
 	skillDetector := skills.NewSkillDetector()
@@ -1070,6 +1050,41 @@ var (
 // tools; a trust store that cannot be read is fatal to MCP registration and
 // nothing else, because the alternative — carrying on with a nil store — would
 // silently disable every server with no explanation an operator could act on.
+// asyncMaxOutput caps how much of a background task's output is repeated back
+// to the user. Telegram hard-fails over 4096 bytes and the notification is
+// unsolicited, so a long build log has to be cut rather than sent whole.
+const asyncMaxOutput = 2000
+
+// asyncResultMessage renders the notification for a finished background task.
+// A failed task must say so — an error rendered as a success line is a task the
+// user believes completed — and an over-long output must be visibly truncated
+// rather than silently cut, or the user reads a half-sentence as the whole
+// answer.
+func asyncResultMessage(result tools.AsyncResult) string {
+	if result.Error != nil {
+		return fmt.Sprintf("❌ Background task failed (%s): %v", result.ToolName, result.Error)
+	}
+	output := result.Output
+	if len(output) > asyncMaxOutput {
+		output = output[:asyncMaxOutput] + "... (truncated)"
+	}
+	return fmt.Sprintf("✅ Background task completed (%s):\n%s", result.ToolName, output)
+}
+
+// publishAsyncResults forwards finished background tasks to the bus until the
+// channel closes. The result carries the channel and chat it belongs to, and it
+// has to be routed back to that one: a notification published against the wrong
+// chat is delivered to a user who never started the task.
+func publishAsyncResults(ch <-chan tools.AsyncResult, msgBus *bus.MessageBus) {
+	for result := range ch {
+		msgBus.Publish(bus.OutboundMessage{
+			Channel:   result.Channel,
+			ChannelID: result.ChatID,
+			Content:   asyncResultMessage(result),
+		})
+	}
+}
+
 func registerMCPServers(ctx context.Context, reg *tools.Registry, cfg config.MCPConfig) {
 	trust, err := mcp.LoadTrustStore(mcp.DefaultTrustStorePath(config.DefaultHome))
 	if err != nil {

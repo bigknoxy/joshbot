@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Test coverage raised from 78.3% to 81.4%** (#216), with the CI total floor
+  moved 70% -> 78% and the `cmd/joshbot` per-package floor 58% -> 66%. Measured
+  on darwin/arm64: `cmd/relguard` 52.6% -> 100%, `internal/agent` 75.5% -> 91.1%,
+  `internal/copilot` 77.3% -> 87.5%, `internal/learning` 72.6% -> 86.7%,
+  `internal/session` 75.0% -> 81.9%, `internal/providers` 73.1% -> 76.9%,
+  `internal/config` 77.4% -> 79.3%. Every new test was proved by mutating the
+  production code it covers and confirming it goes red, then restoring it.
+
 ## [1.49.0] - 2026-08-12
 
 ### Added

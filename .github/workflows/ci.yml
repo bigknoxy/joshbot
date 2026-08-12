@@ -74,6 +74,18 @@ jobs:
         # have been deleted with CI still passing, which is the failure mode
         # this check exists to prevent.
         #
+        # cmd/joshbot measured 85.0% on darwin/arm64 on 2026-08-12 (issue #221)
+        # and its floor below is set from that. The remainder is not reachable
+        # from a test binary and is deliberately left uncovered:
+        #   - runGateway — blocks on a signal after starting live channels
+        #   - the pty-only branch of runAgentLoop — needs a real terminal
+        #   - the Docker branch of runUpdate — gated on os.Stat("/.dockerenv"),
+        #     no injection seam
+        #   - the cross-filesystem rename->copy fallback in the installer
+        #   - promptCronStartupFallback — returns immediately off linux
+        #   - main/runApp — the process entrypoint itself
+        # Anything outside that list that is uncovered is a gap, not a limit.
+        #
         # Last measured 2026-08-12 (issue #216): cmd/joshbot 70.4%, cmd/relguard
         # 100%, internal/agent 91.1%, internal/copilot 87.5%, total 81.4%, all
         # on darwin/arm64. The floors below keep the usual margin for the
@@ -104,7 +116,7 @@ jobs:
               exit 1
             fi
           }
-          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 66
+          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 83
           check_pkg "github.com/bigknoxy/joshbot/internal/service" 40
           echo "PASS: all per-package coverage floors met"
 

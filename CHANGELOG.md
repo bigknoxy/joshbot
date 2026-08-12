@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `joshbot onboard` over an existing install now treats a bare Enter at the
+  "Existing Installation Found" menu as choice 1, the option the menu itself
+  labels `(default: 1)`. Empty input fell through to choice 2 and moved the
+  whole `~/.joshbot` — config, workspace and memory — aside into a backup
+  directory, so accepting the printed default did the opposite of what it said.
 - `agent --output-format json|stream-json` with no `-m/--message` now writes a
   `{"type":"error",...}` document to stderr like every other JSON-mode failure
   (#220). It previously returned bare, leaving a wrapper with a non-zero exit

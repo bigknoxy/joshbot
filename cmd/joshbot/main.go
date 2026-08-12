@@ -2906,7 +2906,11 @@ func runOnboard(c *cli.Context) error {
 			fmt.Scanln(&choice)
 			fmt.Println()
 
-			if choice == "1" {
+			// The menu says "(default: 1)", so a bare Enter — which Scanln
+			// leaves as an empty string — must keep the data. It used to fall
+			// through to the else and move the whole install aside, which is
+			// the one outcome the operator was told they were declining.
+			if choice := strings.TrimSpace(choice); choice == "" || choice == "1" {
 				// Keep existing data: load config and run prompts with defaults
 				skipFileCreation = true
 				var err error

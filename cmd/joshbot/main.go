@@ -585,64 +585,16 @@ func loadConfig(cfgPath string) (*config.Config, error) {
 }
 
 // setupComponents initializes all required components.
-func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, error) {
-	// Ensure directories exist
-	if err := cfg.EnsureDirs(); err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
-	}
-
-	// Initialize memory manager
-	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace, memory.WithMaxSize(cfg.Agents.Defaults.MaxMemorySize))
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
-	}
-	if err := memoryManager.Initialize(context.Background()); err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
-	}
-
-	// Initialize skills loader
-	skillsLoader, err := skills.NewLoader(cfg.Agents.Defaults.Workspace)
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
-	}
-	// Workspace skills become part of the agent's standing instructions, so
-	// they are gated on operator approval. See internal/skills/trust.go.
-	skillsTrust, err := skills.LoadTrustStore(skills.DefaultTrustStorePath(config.DefaultHome))
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to load skills trust store: %w", err)
-	}
-	skillsLoader.SetTrustStore(skillsTrust)
-
-	// Discover skills now so agent has summaries available
-	_ = skillsLoader.Discover()
-
-	// Withheld skills must be announced. An operator who upgraded and found
-	// their skills quietly stopped working would reasonably call that a bug.
-	if pending := skillsLoader.Untrusted(); len(pending) > 0 {
-		names := make([]string, 0, len(pending))
-		for _, sk := range pending {
-			names = append(names, sk.Name)
-		}
-		log.Warn("Skills are awaiting review and are not in use",
-			"skills", strings.Join(names, ", "),
-			"approve_with", "joshbot skills trust <name>  (or --all)")
-	}
-
-	// Initialize message bus
-	msgBus := bus.NewMessageBus()
-
-	// Create BusMessageSender for tools that need to send messages
-	messageSender := tools.NewBusMessageSender(msgBus)
-
-	// Get logger
-	logger := log.Get()
-
-	// Create MultiProvider
-	multiProvider := providers.NewMultiProvider(providers.MultiProviderConfig{
-		DefaultProvider: cfg.ProviderDefaults.Default,
-		Logger:          &providers.DefaultLogger{},
-	})
-
+// registerProviders populates mp from cfg: the model-centric list when one is
+// configured, the legacy provider map otherwise.
+//
+// It is a function rather than inline in setupComponents because the configure
+// tool's hot reload has to do exactly the same thing. That reload used to carry
+// its own copy which reconstructed only openrouter and nvidia, so a config
+// change made through the agent silently dropped groq, poolside, ollama,
+// github-copilot and custom from the running process until the next restart —
+// with no error anywhere, because Clear() had already removed them.
+func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvider) error {
 	// Check if using new model-centric config
 	if cfg.UseModelsConfig() {
 		// Use new model-centric configuration
@@ -662,7 +614,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 
 		if len(resolvedModels) == 0 {
-			return nil, nil, nil, nil, nil, nil, fmt.Errorf("no models configured")
+			return fmt.Errorf("no models configured")
 		}
 	} else {
 		// Use legacy provider configuration
@@ -848,8 +800,72 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		// the first time Chat() is called. Distinguishes an empty config from
 		// providers present but none enabled (issue #71).
 		if len(multiProvider.GetProviderNames()) == 0 {
-			return nil, nil, nil, nil, nil, nil, noProvidersRegisteredError(cfg.Providers)
+			return noProvidersRegisteredError(cfg.Providers)
 		}
+	}
+	return nil
+}
+
+func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, error) {
+	// Ensure directories exist
+	if err := cfg.EnsureDirs(); err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
+	}
+
+	// Initialize memory manager
+	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace, memory.WithMaxSize(cfg.Agents.Defaults.MaxMemorySize))
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
+	}
+	if err := memoryManager.Initialize(context.Background()); err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
+	}
+
+	// Initialize skills loader
+	skillsLoader, err := skills.NewLoader(cfg.Agents.Defaults.Workspace)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
+	}
+	// Workspace skills become part of the agent's standing instructions, so
+	// they are gated on operator approval. See internal/skills/trust.go.
+	skillsTrust, err := skills.LoadTrustStore(skills.DefaultTrustStorePath(config.DefaultHome))
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to load skills trust store: %w", err)
+	}
+	skillsLoader.SetTrustStore(skillsTrust)
+
+	// Discover skills now so agent has summaries available
+	_ = skillsLoader.Discover()
+
+	// Withheld skills must be announced. An operator who upgraded and found
+	// their skills quietly stopped working would reasonably call that a bug.
+	if pending := skillsLoader.Untrusted(); len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for _, sk := range pending {
+			names = append(names, sk.Name)
+		}
+		log.Warn("Skills are awaiting review and are not in use",
+			"skills", strings.Join(names, ", "),
+			"approve_with", "joshbot skills trust <name>  (or --all)")
+	}
+
+	// Initialize message bus
+	msgBus := bus.NewMessageBus()
+
+	// Create BusMessageSender for tools that need to send messages
+	messageSender := tools.NewBusMessageSender(msgBus)
+
+	// Get logger
+	logger := log.Get()
+
+	// Create MultiProvider
+	multiProvider := providers.NewMultiProvider(providers.MultiProviderConfig{
+		DefaultProvider: cfg.ProviderDefaults.Default,
+		Logger:          &providers.DefaultLogger{},
+	})
+
+	if err := registerProviders(cfg, multiProvider); err != nil {
+		return nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Initialize session manager
@@ -935,46 +951,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	// Create function to reload providers from config (for config tool hot-reload)
 	reloadProviders := func() error {
 		multiProvider.Clear()
-		if cfg.UseModelsConfig() {
-			resolvedModels := cfg.GetAllModelConfigs()
-			for i, resolved := range resolvedModels {
-				llmProvider := providers.NewProviderFromResolvedModel(resolved, &providers.DefaultLogger{})
-				var provider providers.Provider = llmProvider
-				if len(resolved.APIKeys) > 1 {
-					pool := providers.NewAPIKeyPool(resolved.APIKeys, 24*time.Hour, 3)
-					provider = providers.NewKeyRotatingProvider(llmProvider, pool)
-				}
-				multiProvider.Register(resolved.Name, provider, resolved.ModelID, i, true)
-			}
-		} else {
-			if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" && p.Enabled {
-				openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
-					APIKey: p.APIKey, APIBase: p.APIBase, ExtraHeaders: p.ExtraHeaders,
-					Model: cfg.Agents.Defaults.Model, MaxTokens: cfg.Agents.Defaults.MaxTokens,
-					Temperature: cfg.Agents.Defaults.Temperature,
-				})
-				if err != nil {
-					log.Warn("Failed to create OpenRouter provider", "error", err)
-				} else {
-					multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0, p.Enabled)
-				}
-			}
-			if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
-				nvidiaProvider, err := providers.GetProvider("nvidia", providers.Config{
-					APIKey: p.APIKey, APIBase: p.APIBase, ExtraHeaders: p.ExtraHeaders, Model: p.Model,
-				})
-				if err != nil {
-					log.Warn("Failed to create NVIDIA provider", "error", err)
-				} else {
-					model := p.Model
-					if model == "" {
-						model = cfg.Agents.Defaults.Model
-					}
-					multiProvider.Register("nvidia", nvidiaProvider, model, 1, p.Enabled)
-				}
-			}
-		}
-		return nil
+		return registerProviders(cfg, multiProvider)
 	}
 
 	// Register config tool

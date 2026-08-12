@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.49.0] - 2026-08-12
+
 ### Added
 - **Longer ReAct reasoning chains with `/resume`** (#192). The default iteration limit rose from 20 to 50 (`agents.defaults.max_tool_iterations`), and `joshbot agent --max-iterations N` overrides it per run. When a turn hits the limit the agent now saves a checkpoint into the session and tells the user to type `/resume` to pick up where it left off — the accumulated messages and tool results are already in the session, so a resumed run re-enters the loop with the existing context rather than starting over. The checkpoint is persisted in the session's meta sidecar, so it survives a restart, and it is cleared on the next plain message or `/new`. `/resume` is wired into the Telegram command menu alongside the other agent commands.
 - **Dream memory: two-stage consolidation** (#193). An opt-in (`WithDreamEnabled`, disabled by default) memory system that records raw thoughts/actions/results to `dream_raw.log` (Stage 1) and consolidates them into higher-level insights via TF-IDF embeddings and cosine-similarity clustering (Stage 2). Consolidated insights are persisted to `dream_consolidated.jsonl` so they survive a restart, and can be promoted to structured facts in `MEMORY.md` (`PromoteToFacts`). `SearchSimilarMemories` returns the insights most relevant to a query. Zero external dependencies — the embedder and in-memory vector store are implemented in `internal/memory`.

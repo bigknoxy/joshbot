@@ -2528,6 +2528,149 @@ func runUninstall(c *cli.Context) error {
 }
 
 // runGateway executes the gateway (Telegram + channels) mode.
+// gatewayStreamer is the part of *channels.TelegramStreamer the gateway
+// handler uses. It is an interface so the suppression rule below — the one
+// that decides whether the bus copy of a reply is sent — can be tested without
+// a Telegram bot.
+type gatewayStreamer interface {
+	Delta(text string)
+	Finish(procErr error) bool
+}
+
+// noStreamer stands in when the turn is not being streamed. Finish reporting
+// false is what routes the reply back through the bus.
+type noStreamer struct{}
+
+func (noStreamer) Delta(string)      {}
+func (noStreamer) Finish(error) bool { return false }
+
+// gatewayDeps is everything gatewayHandler needs from the running gateway.
+// Pulling them out as functions is what makes the handler testable at all:
+// the real ones are a message bus, an agent and a Telegram bot, none of which
+// a unit test can stand up.
+type gatewayDeps struct {
+	publish   func(bus.OutboundMessage) bool
+	process   func(context.Context, bus.InboundMessage) (string, error)
+	setChatID func(channel, chatID string)
+	// newStreamer returns nil when this turn must not be streamed.
+	newStreamer func(msg bus.InboundMessage) gatewayStreamer
+}
+
+// gatewayHandler is the bus subscription runGateway installs: one inbound
+// message in, at most one outbound message out. It is separated from
+// runGateway because runGateway cannot be run in a test — it dials providers,
+// opens a Telegram long poll and blocks on a signal — while every rule that
+// decides what the user actually sees lives here.
+func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
+	return func(ctx context.Context, msg bus.InboundMessage) {
+		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in agent handler",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+				outbound := bus.OutboundMessage{
+					Content:   "I encountered an internal error while processing your request. Please try again.",
+					Channel:   msg.Channel,
+					ChannelID: getChannelID(msg),
+					Timestamp: time.Now(),
+				}
+				d.publish(outbound)
+			}
+		}()
+
+		// Store the chat ID for this channel to enable proactive messaging
+		d.setChatID(msg.Channel, getChannelID(msg))
+
+		log.Debug("Processing message",
+			"channel", msg.Channel,
+			"content", msg.Content,
+		)
+		// Stream the reply into the chat when streaming is on, editing one
+		// message as text arrives instead of waiting for the whole turn.
+		//
+		// The streamer is per-request and rides the context, like the
+		// tool-progress sink: the handler runs concurrently for every chat,
+		// and a shared streamer would edit one conversation's message with
+		// another's text. Heartbeat turns are excluded because their reply is
+		// suppressed when nothing needs attention — streaming one would put
+		// "HEARTBEAT_OK" in the chat, which is the exact output the
+		// suppression exists to hide.
+		procCtx := ctx
+		// noStreamer, not a nil interface: Finish must return false rather
+		// than panic when this turn is not streamed.
+		var streamer gatewayStreamer = noStreamer{}
+		if s := d.newStreamer(msg); s != nil {
+			streamer = s
+			procCtx = agent.WithStreamSink(procCtx, func(e agent.StreamEvent) {
+				streamer.Delta(e.Delta)
+			})
+		}
+
+		response, err := d.process(procCtx, msg)
+		if err != nil {
+			log.Error("Agent error", "error", err)
+			// Partial text is already in the chat, so the error belongs on the
+			// end of it rather than in a second message contradicting the
+			// first. Finish reports false when nothing was delivered, and the
+			// ordinary error reply is sent instead.
+			if streamer.Finish(err) {
+				return
+			}
+			// Send error response
+			outbound := bus.OutboundMessage{
+				Content:   fmt.Sprintf("Error: %v", err),
+				Channel:   msg.Channel,
+				ChannelID: getChannelID(msg),
+				Timestamp: time.Now(),
+			}
+			d.publish(outbound)
+			return
+		}
+
+		// Heartbeat messages are proactive background checks: when the agent
+		// decides nothing needs the user's attention it replies HEARTBEAT_OK (see
+		// the heartbeat completion contract), and that reply is suppressed rather
+		// than delivered to the chat. An empty reply is treated the same way.
+		if msg.SenderID == "heartbeat" {
+			trimmed := strings.TrimSpace(response)
+			if trimmed == "" || strings.HasPrefix(strings.ToUpper(trimmed), "HEARTBEAT_OK") {
+				log.Debug("Heartbeat produced no actionable output; suppressing reply", "task", msg.Content)
+				return
+			}
+		}
+
+		// The streamed message is the reply. Publishing it again would post
+		// the whole answer a second time under the incremental one, so the
+		// bus path runs only when nothing was streamed — the same condition
+		// the interactive CLI uses (didStream), for the same reason: several
+		// Process paths return without streaming anything.
+		// Process reports LLM failures in band, as reply text with a nil error
+		// (see agentReplyError). A turn that streamed some text and then hit one
+		// would otherwise end silently: the partial text is on screen, Finish
+		// sees nothing wrong, and the publish that would have carried the error
+		// is suppressed. Translating it back gets the reason appended to what
+		// the user is already looking at.
+		if streamer.Finish(agentReplyError(response)) {
+			log.Info("Streamed outbound message", "channel", msg.Channel, "response_len", len(response))
+			return
+		}
+
+		// Send response back to the appropriate channel
+		channelID := getChannelID(msg)
+		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
+		outbound := bus.OutboundMessage{
+			Content:   response,
+			Channel:   msg.Channel,
+			ChannelID: channelID,
+			SenderID:  msg.SenderID,
+			Timestamp: time.Now(),
+		}
+		d.publish(outbound)
+	}
+}
+
 func runGateway(c *cli.Context) error {
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
@@ -2581,115 +2724,30 @@ func runGateway(c *cli.Context) error {
 	}
 	streaming := cfg.Agents.Defaults.Streaming
 
-	// Subscribe agent to all channels
-	msgBus.Subscribe("all", func(ctx context.Context, msg bus.InboundMessage) {
-		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("panic in agent handler",
-					"panic", fmt.Sprintf("%v", r),
-					"stack", string(debug.Stack()),
-				)
-				outbound := bus.OutboundMessage{
-					Content:   "I encountered an internal error while processing your request. Please try again.",
-					Channel:   msg.Channel,
-					ChannelID: getChannelID(msg),
-					Timestamp: time.Now(),
-				}
-				msgBus.Publish(outbound)
+	// Subscribe agent to all channels. The handler itself is gatewayHandler,
+	// which is where every decision worth testing lives; runGateway only owns
+	// the network and process lifecycle around it.
+	msgBus.Subscribe("all", gatewayHandler(gatewayDeps{
+		publish: msgBus.Publish,
+		process: agentInstance.Process,
+		setChatID: func(channel, chatID string) {
+			if sender != nil {
+				sender.SetChatID(channel, chatID)
 			}
-		}()
-
-		// Store the chat ID for this channel to enable proactive messaging
-		if sender != nil {
-			sender.SetChatID(msg.Channel, getChannelID(msg))
-		}
-
-		log.Debug("Processing message",
-			"channel", msg.Channel,
-			"content", msg.Content,
-		)
-		// Stream the reply into the chat when streaming is on, editing one
-		// message as text arrives instead of waiting for the whole turn.
-		//
-		// The streamer is per-request and rides the context, like the
-		// tool-progress sink: the handler runs concurrently for every chat,
-		// and a shared streamer would edit one conversation's message with
-		// another's text. Heartbeat turns are excluded because their reply is
-		// suppressed when nothing needs attention — streaming one would put
-		// "HEARTBEAT_OK" in the chat, which is the exact output the
-		// suppression exists to hide.
-		procCtx := ctx
-		var streamer *channels.TelegramStreamer
-		if streaming && tgChannel != nil && msg.Channel == "telegram" && msg.SenderID != "heartbeat" {
-			if streamer = tgChannel.NewStreamer(getChannelID(msg)); streamer != nil {
-				procCtx = agent.WithStreamSink(procCtx, func(e agent.StreamEvent) {
-					streamer.Delta(e.Delta)
-				})
+		},
+		newStreamer: func(msg bus.InboundMessage) gatewayStreamer {
+			if !streaming || tgChannel == nil || msg.Channel != "telegram" || msg.SenderID == "heartbeat" {
+				return nil
 			}
-		}
-
-		response, err := agentInstance.Process(procCtx, msg)
-		if err != nil {
-			log.Error("Agent error", "error", err)
-			// Partial text is already in the chat, so the error belongs on the
-			// end of it rather than in a second message contradicting the
-			// first. Finish reports false when nothing was delivered, and the
-			// ordinary error reply is sent instead.
-			if streamer.Finish(err) {
-				return
+			// A typed nil must not be returned as a non-nil interface: the
+			// handler tests the interface, not the pointer.
+			s := tgChannel.NewStreamer(getChannelID(msg))
+			if s == nil {
+				return nil
 			}
-			// Send error response
-			outbound := bus.OutboundMessage{
-				Content:   fmt.Sprintf("Error: %v", err),
-				Channel:   msg.Channel,
-				ChannelID: getChannelID(msg),
-				Timestamp: time.Now(),
-			}
-			msgBus.Publish(outbound)
-			return
-		}
-
-		// Heartbeat messages are proactive background checks: when the agent
-		// decides nothing needs the user's attention it replies HEARTBEAT_OK (see
-		// the heartbeat completion contract), and that reply is suppressed rather
-		// than delivered to the chat. An empty reply is treated the same way.
-		if msg.SenderID == "heartbeat" {
-			trimmed := strings.TrimSpace(response)
-			if trimmed == "" || strings.HasPrefix(strings.ToUpper(trimmed), "HEARTBEAT_OK") {
-				log.Debug("Heartbeat produced no actionable output; suppressing reply", "task", msg.Content)
-				return
-			}
-		}
-
-		// The streamed message is the reply. Publishing it again would post
-		// the whole answer a second time under the incremental one, so the
-		// bus path runs only when nothing was streamed — the same condition
-		// the interactive CLI uses (didStream), for the same reason: several
-		// Process paths return without streaming anything.
-		// Process reports LLM failures in band, as reply text with a nil error
-		// (see agentReplyError). A turn that streamed some text and then hit one
-		// would otherwise end silently: the partial text is on screen, Finish
-		// sees nothing wrong, and the publish that would have carried the error
-		// is suppressed. Translating it back gets the reason appended to what
-		// the user is already looking at.
-		if streamer.Finish(agentReplyError(response)) {
-			log.Info("Streamed outbound message", "channel", msg.Channel, "response_len", len(response))
-			return
-		}
-
-		// Send response back to the appropriate channel
-		channelID := getChannelID(msg)
-		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
-		outbound := bus.OutboundMessage{
-			Content:   response,
-			Channel:   msg.Channel,
-			ChannelID: channelID,
-			SenderID:  msg.SenderID,
-			Timestamp: time.Now(),
-		}
-		msgBus.Publish(outbound)
-	})
+			return s
+		},
+	}))
 
 	// Start Telegram channel if enabled
 	if tgChannel != nil {
@@ -2738,15 +2796,6 @@ func runGateway(c *cli.Context) error {
 
 	log.Info("Gateway stopped")
 	return nil
-}
-
-// sendTelegramMessage is a stub for sending Telegram messages.
-func sendTelegramMessage(msg bus.OutboundMessage) {
-	// This would use the Telegram API in production
-	log.Debug("Telegram message",
-		"content", msg.Content,
-		"chat_id", msg.ChannelID,
-	)
 }
 
 // getChannelID extracts the chat ID from message metadata.

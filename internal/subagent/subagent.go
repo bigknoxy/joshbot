@@ -213,15 +213,6 @@ func WithStreaming(sink StreamSink) OptFunc {
 	}
 }
 
-// WithLogger injects a logger.
-func WithLogger(l *log.Logger) OptFunc {
-	return func(r *Runner) {
-		if l != nil {
-			r.logger = l
-		}
-	}
-}
-
 // WithMaxTokens sets the default max output tokens for subagent responses.
 func WithMaxTokens(n int) OptFunc {
 	return func(r *Runner) {
@@ -236,15 +227,6 @@ func WithTemperature(t float64) OptFunc {
 	return func(r *Runner) {
 		if t > 0 {
 			r.temperature = t
-		}
-	}
-}
-
-// WithMaxIter sets the default max iterations for subagent ReAct loops.
-func WithMaxIter(n int) OptFunc {
-	return func(r *Runner) {
-		if n > 0 {
-			r.maxIter = n
 		}
 	}
 }
@@ -610,18 +592,6 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 		Iterations: iterations,
 		TimedOut:   timedOut,
 	}, nil
-}
-
-// RunLeaf is a convenience method for running a leaf-role subagent.
-func (r *Runner) RunLeaf(ctx context.Context, prompt string, cfg Config, onProgress ProgressFunc) (*SubResult, error) {
-	cfg.Role = RoleLeaf
-	return r.RunWithProgress(ctx, prompt, cfg, onProgress)
-}
-
-// RunOrchestrator is a convenience method for running an orchestrator subagent.
-func (r *Runner) RunOrchestrator(ctx context.Context, prompt string, cfg Config, onProgress ProgressFunc) (*SubResult, error) {
-	cfg.Role = RoleOrchestrator
-	return r.RunWithProgress(ctx, prompt, cfg, onProgress)
 }
 
 // buildSystemPrompt constructs the system prompt based on the subagent's role.

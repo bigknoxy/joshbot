@@ -168,6 +168,49 @@ func TestRegisterProvidersRejectsAModelCentricConfigWithNoUsableModels(t *testin
 	}
 }
 
+// ollama is the one provider that legitimately has no API key, and the gate
+// for it is the only one written without an api_key check. A stray key check
+// there would lock out every local-only install — the case joshbot is most
+// often recommended for — with no error, just an assistant that has no model.
+func TestRegisterProvidersRegistersKeylessOllama(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"ollama": {APIKey: "", Enabled: true},
+	})
+	m := mp("ollama")
+
+	if err := registerProviders(cfg, m); err != nil {
+		t.Fatalf("registerProviders: %v", err)
+	}
+	if !m.HasProvider("ollama") {
+		t.Error("ollama needs no api_key and must register without one")
+	}
+}
+
+// An enabled github-copilot with no stored token has to be skipped softly: the
+// credential lives outside config.json, so this is the state every operator is
+// in between editing config and running `joshbot auth github-copilot`. Failing
+// the whole registration there would take the gateway down over a provider the
+// operator has not finished setting up, and the working providers with it.
+func TestRegisterProvidersSkipsUnauthenticatedCopilot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"openrouter":     {APIKey: "sk-live", Enabled: true},
+		"github-copilot": {Enabled: true},
+	})
+	m := mp("openrouter")
+
+	if err := registerProviders(cfg, m); err != nil {
+		t.Fatalf("an unauthenticated copilot took down registration: %v", err)
+	}
+	if m.HasProvider("github-copilot") {
+		t.Error("github-copilot has no token and must not be registered")
+	}
+	if !m.HasProvider("openrouter") {
+		t.Error("the configured openrouter provider was lost with copilot")
+	}
+}
+
 // The model-centric path registers by nickname, and the nickname is what
 // `--model` and `joshbot models` resolve against. Registering under the model
 // id instead would make every configured nickname unresolvable.

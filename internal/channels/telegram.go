@@ -98,6 +98,7 @@ var botCommands = []telebot.Command{
 	{Text: "model", Description: "Switch model for this chat"},
 	{Text: "personality", Description: "Set a personality"},
 	{Text: "compact", Description: "Summarize older context"},
+	{Text: "resume", Description: "Continue after hitting the iteration limit"},
 	{Text: "help", Description: "Show the list of commands"},
 }
 
@@ -106,7 +107,7 @@ var botCommands = []telebot.Command{
 // the bus by handleCommandForward. They must all appear in botCommands, and
 // every botCommands entry that is not handled locally (start/help/new) must
 // appear here — TestTelegramChannel_CommandMenuAndHandlersInStep pins that.
-var forwardedCommands = []string{"/status", "/model", "/personality", "/compact"}
+var forwardedCommands = []string{"/status", "/model", "/personality", "/compact", "/resume"}
 
 // NewTelegramChannel creates a new Telegram channel instance.
 func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *TelegramChannel {
@@ -550,6 +551,7 @@ Available commands:
 /model <name> - Switch model for this chat (add --global for all chats)
 /personality <name> - Set a personality (or /personality none to clear)
 /compact - Summarize older context now
+/resume - Continue after hitting the iteration limit
 /help - Show this help
 
 Just send me a message and I'll respond!`

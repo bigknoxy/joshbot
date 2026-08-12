@@ -933,6 +933,29 @@ func TestAgentMaxIterations(t *testing.T) {
 	}
 }
 
+// SetMaxIterations must update the limit and MaxIterations must report it, so
+// the --max-iterations CLI override has a verifiable effect.
+func TestSetMaxIterationsAndGetter(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+
+	if got := agent.MaxIterations(); got != cfg.Agents.Defaults.MaxToolIterations {
+		t.Fatalf("MaxIterations() = %d, want default %d", got, cfg.Agents.Defaults.MaxToolIterations)
+	}
+
+	agent.SetMaxIterations(7)
+	if got := agent.MaxIterations(); got != 7 {
+		t.Errorf("MaxIterations() after SetMaxIterations(7) = %d, want 7", got)
+	}
+
+	// A non-positive value must be ignored (SetMaxIterations guards n > 0).
+	agent.SetMaxIterations(0)
+	if got := agent.MaxIterations(); got != 7 {
+		t.Errorf("MaxIterations() after SetMaxIterations(0) = %d, want 7 (unchanged)", got)
+	}
+}
+
 func TestBuildSystemPrompt(t *testing.T) {
 	InvalidatePromptCache()
 

@@ -1174,6 +1174,19 @@ func setupGracefulShutdown(ctx context.Context, cancel context.CancelFunc, done 
 }
 
 // runAgent executes the agent (interactive CLI) mode.
+// applyMaxIterationsOverride applies the --max-iterations CLI override to the
+// agent. It is nil-safe: runAgent calls it only after setupComponents has
+// succeeded, but a nil agent must not panic — a setup failure is reported as
+// an error, not a crash.
+func applyMaxIterationsOverride(agentInstance *agent.Agent, maxIter int) {
+	if agentInstance == nil {
+		log.Warn("Cannot apply --max-iterations: agent not initialized")
+		return
+	}
+	agentInstance.SetMaxIterations(maxIter)
+	log.Info("Overriding max iterations from CLI", "max_iterations", maxIter)
+}
+
 func runAgent(c *cli.Context) error {
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
@@ -1248,13 +1261,6 @@ func runAgent(c *cli.Context) error {
 	// Setup components
 	_, _, _, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
 	defer closeMCPServers()
-
-	// Apply --max-iterations CLI override if provided (0 means use config default)
-	if maxIter := c.Int("max-iterations"); maxIter > 0 {
-		agentInstance.SetMaxIterations(maxIter)
-		log.Info("Overriding max iterations from CLI", "max_iterations", maxIter)
-	}
-
 	if err != nil {
 		// HARD RULE: in JSON modes a setup failure must still be well-formed —
 		// a machine-readable error on stderr, not a plain-text line.
@@ -1264,10 +1270,16 @@ func runAgent(c *cli.Context) error {
 		return err
 	}
 
+	// Apply --max-iterations CLI override if provided (0 means use config
+	// default). This runs only after setupComponents succeeded, so
+	// agentInstance is guaranteed non-nil.
+	if maxIter := c.Int("max-iterations"); maxIter > 0 {
+		applyMaxIterationsOverride(agentInstance, maxIter)
+	}
+
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
 	// Start async callback printer for CLI mode. In JSON modes stdout is
 	// reserved for data, so background-task notices go to stderr instead.
 	asyncOut := io.Writer(os.Stdout)

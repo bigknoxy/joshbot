@@ -429,13 +429,30 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 				r.streamSink.OnToolStart(tc.Function.Name, args)
 			}
 
-			// Execute the tool
+			// Execute the tool. Async tools return a "started in background"
+			// placeholder immediately and deliver the real result through the
+			// callback. The subagent must not feed the placeholder to the model
+			// as if it were the final answer, so when a tool is async we wait
+			// for the callback to deliver the real result.
 			toolStart := time.Now()
-			result, _ := r.tools.ExecuteWithContext(runCtx, tc.Function.Name, args, "subagent", "", func(ar AsyncResult) {
+			asyncCh := make(chan AsyncResult, 1)
+			result, isAsync := r.tools.ExecuteWithContext(runCtx, tc.Function.Name, args, "subagent", "", func(ar AsyncResult) {
 				if asyncCallback != nil {
 					asyncCallback(ar)
 				}
+				select {
+				case asyncCh <- ar:
+				default:
+				}
 			})
+			if isAsync {
+				select {
+				case ar := <-asyncCh:
+					result = ToolResult{Output: ar.Output, Error: ar.Error}
+				case <-runCtx.Done():
+					result = ToolResult{Error: runCtx.Err()}
+				}
+			}
 			elapsed := time.Since(toolStart)
 
 			// Build tool result message

@@ -475,6 +475,8 @@ func TestGetDefaultAPIBase_AllSupported(t *testing.T) {
 		"ollama":     "http://localhost:11434/v1",
 		"anthropic":  "https://api.anthropic.com/v1",
 		"poolside":   "https://inference.poolside.ai/v1",
+		"deepseek":   "https://api.deepseek.com/v1",
+		"gemini":     "https://generativelanguage.googleapis.com/v1beta",
 	}
 	for name, exp := range want {
 		if got := getDefaultAPIBase(name); got != exp {

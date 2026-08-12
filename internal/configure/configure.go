@@ -208,7 +208,7 @@ func getDefaultAPIBase(name string) string {
 // with a model prefix to their direct API endpoints.
 var modelPathAPIBase = map[string]string{
 	"deepseek": "https://api.deepseek.com/v1",
-	"gemini":   "https://generativelanguage.googleapis.com/v1",
+	"gemini":   "https://generativelanguage.googleapis.com/v1beta",
 	"ollama":   "http://localhost:11434/v1",
 }
 

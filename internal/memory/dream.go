@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -520,8 +519,16 @@ func (dm *DreamManager) Consolidate(ctx context.Context) ([]DreamConsolidated, e
 	}
 
 	// Truncate the raw log after successful consolidation to prevent unbounded
-	// growth. The consolidated insights in the vector store replace the raw data.
+	// growth. The consolidated insights are persisted to the durable log, which
+	// replaces the raw data.
 	if len(consolidations) > 0 {
+		// Persist the consolidated insights first so a crash between the two
+		// steps cannot lose the work: the raw log is only cleared once the
+		// consolidated form is safely on disk.
+		if err := dm.saveConsolidated(consolidations); err != nil {
+			// Non-fatal: keep the raw log so the next consolidation can retry.
+			return consolidations, nil
+		}
 		if err := dm.ClearRawRecords(); err != nil {
 			// Non-fatal: consolidation succeeded, we just couldn't trim the log.
 			// Next consolidation will re-process these records.
@@ -594,6 +601,59 @@ func (dm *DreamManager) loadRawRecords() ([]DreamRecord, error) {
 	return records, nil
 }
 
+// consolidatedPath returns the path of the durable consolidated-insights log.
+func (dm *DreamManager) consolidatedPath() string {
+	return filepath.Join(dm.memoryDir, "dream_consolidated.jsonl")
+}
+
+// saveConsolidated appends consolidated insights to the durable log. Unlike
+// the in-memory vector store, this survives a restart, so a consolidation is
+// not lost when the process exits.
+func (dm *DreamManager) saveConsolidated(consolidations []DreamConsolidated) error {
+	if len(consolidations) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(dm.consolidatedPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open consolidated log: %w", err)
+	}
+	defer f.Close()
+	for _, c := range consolidations {
+		data, err := json.Marshal(c)
+		if err != nil {
+			return fmt.Errorf("encode consolidated insight: %w", err)
+		}
+		if _, err := f.WriteString(string(data) + "\n"); err != nil {
+			return fmt.Errorf("write consolidated log: %w", err)
+		}
+	}
+	return nil
+}
+
+// loadConsolidated reads all consolidated insights from the durable log.
+func (dm *DreamManager) loadConsolidated() ([]DreamConsolidated, error) {
+	data, err := os.ReadFile(dm.consolidatedPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []DreamConsolidated
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var c DreamConsolidated
+		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			continue // skip malformed
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 // PromoteToFacts converts DreamConsolidated insights into structured Facts.
 func (dm *DreamManager) PromoteToFacts(consolidations []DreamConsolidated) []Fact {
 	facts := make([]Fact, 0, len(consolidations))
@@ -646,33 +706,59 @@ func (dm *DreamManager) SearchSimilar(ctx context.Context, query string, k int) 
 	dm.config.mu.RLock()
 	enabled := dm.config.enabled
 	emb := dm.config.embedder
-	vs := dm.config.vectorStore
 	dm.config.mu.RUnlock()
 
-	if !enabled || vs == nil {
+	if !enabled {
 		return nil, nil
 	}
 
-	vec := emb.Transform(query)
-	results, err := vs.Search(vec, k)
+	// Search over the durable consolidated insights, not the in-memory vector
+	// store. The vector store is rebuilt per Consolidate call and holds raw
+	// records with metadata that never carried the insight text; the durable
+	// log is what survives a restart and is what /resume-style lookups need.
+	consolidated, err := dm.loadConsolidated()
 	if err != nil {
 		return nil, err
 	}
+	if len(consolidated) == 0 {
+		return nil, nil
+	}
 
-	out := make([]DreamConsolidated, 0, len(results))
-	for _, sr := range results {
-		insight, _ := sr.Metadata["insight"].(string)
-		out = append(out, DreamConsolidated{
-			ID:         sr.ID,
-			Insight:    insight,
-			Tags:       toStringSlice(sr.Metadata["tags"]),
-			Confidence: toFloat64FromAny(sr.Metadata["confidence"]),
-		})
+	// Build a TF-IDF model over the consolidated insights so the query and the
+	// stored insights share a vocabulary.
+	corpus := make([]string, len(consolidated))
+	for i, c := range consolidated {
+		corpus[i] = c.Insight
+	}
+	emb.Fit(corpus)
+	queryVec := emb.Transform(query)
+
+	type scored struct {
+		c     DreamConsolidated
+		score float64
+	}
+	results := make([]scored, 0, len(consolidated))
+	normQ := cosineNorm(queryVec)
+	for _, c := range consolidated {
+		vec := emb.Transform(c.Insight)
+		if len(vec) != len(queryVec) {
+			continue
+		}
+		results = append(results, scored{c, cosineSimilarity(queryVec, vec, normQ)})
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
+
+	if k > len(results) {
+		k = len(results)
+	}
+	out := make([]DreamConsolidated, 0, k)
+	for i := 0; i < k; i++ {
+		out = append(out, results[i].c)
 	}
 	return out, nil
 }
 
-// Clear clears all Dream data: raw log and vector store.
+// Clear clears all Dream data: raw log, consolidated insights, and vector store.
 func (dm *DreamManager) Clear() error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
@@ -682,9 +768,13 @@ func (dm *DreamManager) Clear() error {
 	dm.config.embedder = NewTFIDFEmbedder()
 	dm.config.mu.Unlock()
 
-	path := filepath.Join(dm.memoryDir, "dream_raw.log")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, path := range []string{
+		filepath.Join(dm.memoryDir, "dream_raw.log"),
+		filepath.Join(dm.memoryDir, "dream_consolidated.jsonl"),
+	} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }
@@ -748,38 +838,4 @@ func deduplicateStrings(in []string) []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-func toStringSlice(v any) []string {
-	if v == nil {
-		return nil
-	}
-	switch t := v.(type) {
-	case []string:
-		return t
-	case []any:
-		out := make([]string, 0, len(t))
-		for _, item := range t {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
-	return nil
-}
-
-func toFloat64FromAny(v any) float64 {
-	switch t := v.(type) {
-	case float64:
-		return t
-	case float32:
-		return float64(t)
-	case int:
-		return float64(t)
-	case string:
-		f, _ := strconv.ParseFloat(t, 64)
-		return f
-	}
-	return 0
 }

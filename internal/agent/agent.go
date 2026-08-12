@@ -228,6 +228,11 @@ func (a *Agent) SetMaxIterations(n int) *Agent {
 	return a
 }
 
+// MaxIterations returns the current ReAct loop iteration limit.
+func (a *Agent) MaxIterations() int {
+	return a.maxIterations
+}
+
 // WithTimeout sets the processing timeout.
 func WithTimeout(timeout time.Duration) Option {
 	return func(a *Agent) {
@@ -711,10 +716,9 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			UserMessage:   userMessage,
 		}
 		// Save the session so the checkpoint survives across requests.
-		if saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second); cancel != nil {
-			_ = a.sessions.Save(saveCtx, sess)
-			cancel()
-		}
+		saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = a.sessions.Save(saveCtx, sess)
+		cancel()
 	}
 
 	resp := fmt.Sprintf("I've been working on this for a while. Here's what I found so far.\n\n"+
@@ -1616,6 +1620,9 @@ func (a *Agent) handleCompactCommand(ctx context.Context, msg bus.InboundMessage
 // interrupted by the iteration limit, using the session's checkpoint as proof
 // that a resumed run is valid. If no checkpoint exists, it tells the user.
 func (a *Agent) handleResumeCommand(ctx context.Context, msg bus.InboundMessage) string {
+	if a.sessions == nil {
+		return "Error: session manager not initialized; cannot resume."
+	}
 	sessionKey := getSessionKey(msg)
 	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
 	if err != nil {

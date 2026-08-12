@@ -298,14 +298,6 @@ func TestDreamManager_SimilarityClustering(t *testing.T) {
 	}
 }
 
-// Helper for min
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func TestDreamManager_Persistence(t *testing.T) {
 	dir := t.TempDir()
 	dm := NewDreamManager(dir, WithDreamEnabled())
@@ -345,5 +337,106 @@ func TestDreamManager_TimestampDefaults(t *testing.T) {
 	}
 	if records[0].Timestamp.Before(before) || records[0].Timestamp.After(after) {
 		t.Errorf("timestamp %v not between %v and %v", records[0].Timestamp, before, after)
+	}
+}
+
+// SearchSimilar must return the actual insight text, not an empty string. The
+// original implementation read metadata keys ("insight"/"confidence") that were
+// never written, so every result had an empty Insight and Confidence 0.
+func TestDreamManager_SearchSimilarReturnsInsightText(t *testing.T) {
+	dir := t.TempDir()
+	dm := NewDreamManager(dir, WithDreamEnabled())
+	ctx := context.Background()
+
+	_ = dm.Record(ctx, DreamRecord{Type: DreamThought, Content: "user prefers vim editor for coding", Importance: 0.8, Tags: []string{"preference"}})
+	_ = dm.Record(ctx, DreamRecord{Type: DreamThought, Content: "user likes vim keybindings in IDE", Importance: 0.7, Tags: []string{"preference"}})
+
+	consolidations, err := dm.Consolidate(ctx)
+	if err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+	if len(consolidations) == 0 {
+		t.Fatal("expected at least one consolidation")
+	}
+
+	results, err := dm.SearchSimilar(ctx, "vim editor", 5)
+	if err != nil {
+		t.Fatalf("SearchSimilar: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected search results for 'vim editor'")
+	}
+	for _, r := range results {
+		if r.Insight == "" {
+			t.Errorf("SearchSimilar returned an empty Insight; the insight text must be present")
+		}
+		if r.Confidence <= 0 {
+			t.Errorf("SearchSimilar returned Confidence %v; want > 0", r.Confidence)
+		}
+	}
+}
+
+// Consolidated insights must survive a restart. The original implementation
+// kept them only in an in-memory vector store and cleared the raw log after
+// consolidation, so a restart lost everything.
+func TestDreamManager_ConsolidatedInsightsPersistAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	dm := NewDreamManager(dir, WithDreamEnabled())
+	ctx := context.Background()
+
+	_ = dm.Record(ctx, DreamRecord{Type: DreamThought, Content: "user prefers vim editor for coding", Importance: 0.8, Tags: []string{"preference"}})
+	_ = dm.Record(ctx, DreamRecord{Type: DreamThought, Content: "user likes vim keybindings in IDE", Importance: 0.7, Tags: []string{"preference"}})
+
+	consolidations, err := dm.Consolidate(ctx)
+	if err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+	if len(consolidations) == 0 {
+		t.Fatal("expected at least one consolidation")
+	}
+
+	// The raw log is cleared after consolidation; the durable consolidated log
+	// must now hold the insights.
+	if dm.CountRawRecords() != 0 {
+		t.Fatalf("expected raw log cleared after consolidation, got %d records", dm.CountRawRecords())
+	}
+	if _, err := os.Stat(dm.consolidatedPath()); err != nil {
+		t.Fatalf("expected consolidated log to exist after consolidation: %v", err)
+	}
+
+	// A fresh DreamManager over the same dir (a restart) must still find the
+	// insights via SearchSimilar.
+	dm2 := NewDreamManager(dir, WithDreamEnabled())
+	results, err := dm2.SearchSimilar(ctx, "vim editor", 5)
+	if err != nil {
+		t.Fatalf("SearchSimilar after restart: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected search results after restart; consolidated insights were lost")
+	}
+	if results[0].Insight == "" {
+		t.Error("restored insight has empty text")
+	}
+}
+
+// Clear must remove the durable consolidated log too, not just the raw log.
+func TestDreamManager_ClearRemovesConsolidatedLog(t *testing.T) {
+	dir := t.TempDir()
+	dm := NewDreamManager(dir, WithDreamEnabled())
+	ctx := context.Background()
+
+	_ = dm.Record(ctx, DreamRecord{Type: DreamThought, Content: "user prefers vim editor", Importance: 0.8})
+	if _, err := dm.Consolidate(ctx); err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+	if _, err := os.Stat(dm.consolidatedPath()); err != nil {
+		t.Fatalf("expected consolidated log to exist: %v", err)
+	}
+
+	if err := dm.Clear(); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if _, err := os.Stat(dm.consolidatedPath()); !os.IsNotExist(err) {
+		t.Errorf("consolidated log still exists after Clear (err=%v); want IsNotExist", err)
 	}
 }

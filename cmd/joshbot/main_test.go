@@ -546,3 +546,10 @@ func TestStreamedFlagIsPerTurnNotPerConfig(t *testing.T) {
 		t.Error("didStream() carried over from the previous turn; this turn's answer would be swallowed")
 	}
 }
+
+// applyMaxIterationsOverride must not panic when the agent is nil. runAgent
+// calls it only after setupComponents succeeds, but a setup failure must be
+// reported as an error, not crash the process with a nil dereference.
+func TestApplyMaxIterationsOverride_NilAgentDoesNotPanic(t *testing.T) {
+	applyMaxIterationsOverride(nil, 50)
+}

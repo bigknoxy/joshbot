@@ -220,3 +220,101 @@ func TestSubagent_4096TokensProven(t *testing.T) {
 	}
 	t.Log("FIX CONFIRMED: 4096-token limit preserves full Go CLI output")
 }
+
+// asyncToolExecutor is a ToolExecutor whose ExecuteWithContext always reports
+// an async tool and delivers the real result through the callback.
+type asyncToolExecutor struct {
+	delivered string
+}
+
+func (a *asyncToolExecutor) GetSchemas() []providers.Tool { return nil }
+
+func (a *asyncToolExecutor) ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(AsyncResult)) (ToolResult, bool) {
+	// Simulate an async tool: return the "started in background" placeholder
+	// and deliver the real result asynchronously.
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+		callback(AsyncResult{ToolName: name, Output: a.delivered})
+	}()
+	return ToolResult{Output: "Started in background (ID: abc123)."}, true
+}
+
+// A subagent must not feed an async tool's "started in background" placeholder
+// to the model as if it were the final answer. The real result arrives through
+// the callback, and the subagent must wait for it.
+func TestSubagent_AsyncToolWaitsForRealResult(t *testing.T) {
+	provider := &scriptedToolProvider{
+		turns: []scriptedToolTurn{
+			// First turn: request the async tool.
+			{toolCalls: []providers.ToolCall{{ID: "call_1", Type: "function", Function: providers.FunctionCall{Name: "async_tool", Arguments: `{}`}}}},
+			// Second turn: no tool calls — the subagent is done.
+			{content: "The async tool returned: REAL_RESULT"},
+		},
+	}
+	exec := &asyncToolExecutor{delivered: "REAL_RESULT"}
+	runner := NewRunner(provider, "test-model", WithTools(exec))
+
+	res, err := runner.Run(context.Background(), "run the async tool", Config{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Output, "REAL_RESULT") {
+		t.Errorf("subagent output %q does not contain the real async result; the placeholder was likely fed to the model", res.Output)
+	}
+
+	// The tool result that reached the model must be the real result, not the
+	// "started in background" placeholder.
+	if !strings.Contains(provider.lastToolContent, "REAL_RESULT") {
+		t.Errorf("tool result fed to the model was %q; want the real async result, not the placeholder", provider.lastToolContent)
+	}
+	if strings.Contains(provider.lastToolContent, "Started in background") {
+		t.Errorf("placeholder was fed to the model: %q", provider.lastToolContent)
+	}
+}
+
+// scriptedToolProvider replays a fixed sequence of model turns and records the
+// last tool-result message it was sent.
+type scriptedToolProvider struct {
+	turns           []scriptedToolTurn
+	idx             int
+	lastToolContent string
+}
+
+type scriptedToolTurn struct {
+	content   string
+	toolCalls []providers.ToolCall
+}
+
+func (p *scriptedToolProvider) Chat(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+	// Record the most recent tool-result message content, if any.
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == providers.RoleTool {
+			p.lastToolContent = req.Messages[i].Content
+			break
+		}
+	}
+	if p.idx >= len(p.turns) {
+		return &providers.ChatResponse{Choices: []providers.Choice{{Message: providers.Message{Content: "done"}}}}, nil
+	}
+	turn := p.turns[p.idx]
+	p.idx++
+	return &providers.ChatResponse{
+		Choices: []providers.Choice{{Message: providers.Message{Content: turn.content, ToolCalls: turn.toolCalls}}},
+	}, nil
+}
+
+func (p *scriptedToolProvider) ChatStream(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (p *scriptedToolProvider) Transcribe(ctx context.Context, audioData []byte, prompt string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+func (p *scriptedToolProvider) Name() string { return "scripted-tool" }
+
+func (p *scriptedToolProvider) Config() providers.Config { return providers.DefaultConfig() }

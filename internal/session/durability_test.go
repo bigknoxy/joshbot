@@ -82,6 +82,73 @@ func TestMetaSidecarRoundTripsModelAndPersonality(t *testing.T) {
 	}
 }
 
+// A Checkpoint must survive a Save/Load round-trip: /resume depends on the
+// checkpoint being present after a restart, so it must ride the meta sidecar
+// like ModelOverride and Personality rather than living only in memory.
+func TestMetaSidecarRoundTripsCheckpoint(t *testing.T) {
+	m := newTestManager(t)
+	id := "meta-checkpoint"
+
+	sess := NewSession(id)
+	sess.AddMessage(Message{Role: RoleUser, Content: "hi", Timestamp: time.Now().UTC()})
+	sess.Checkpoint = &Checkpoint{
+		Iteration:     42,
+		MaxIterations: 50,
+		CreatedAt:     time.Now().UTC(),
+		UserMessage:   "do something repeatedly",
+	}
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := m.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Checkpoint == nil {
+		t.Fatal("Checkpoint did not survive Save/Load round-trip")
+	}
+	if got.Checkpoint.Iteration != 42 || got.Checkpoint.MaxIterations != 50 {
+		t.Errorf("Checkpoint = %+v, want Iteration=42 MaxIterations=50", got.Checkpoint)
+	}
+	if got.Checkpoint.UserMessage != "do something repeatedly" {
+		t.Errorf("Checkpoint.UserMessage = %q, want %q", got.Checkpoint.UserMessage, "do something repeatedly")
+	}
+}
+
+// Clearing the checkpoint must remove the sidecar, not leave a stale one
+// behind: /resume clears it, and a leftover sidecar would re-inject a stale
+// checkpoint on the next Load.
+func TestMetaSidecarRemovedWhenCheckpointCleared(t *testing.T) {
+	m := newTestManager(t)
+	id := "meta-checkpoint-clear"
+
+	sess := NewSession(id)
+	sess.AddMessage(Message{Role: RoleUser, Content: "hi", Timestamp: time.Now().UTC()})
+	sess.Checkpoint = &Checkpoint{Iteration: 5, MaxIterations: 50, CreatedAt: time.Now().UTC()}
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save (set): %v", err)
+	}
+	if _, err := os.Stat(m.metadataFilePath(id)); err != nil {
+		t.Fatalf("expected sidecar to exist after set: %v", err)
+	}
+
+	sess.Checkpoint = nil
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save (clear): %v", err)
+	}
+	if _, err := os.Stat(m.metadataFilePath(id)); !os.IsNotExist(err) {
+		t.Errorf("sidecar still exists after clear (err=%v); want IsNotExist", err)
+	}
+	got, err := m.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Checkpoint != nil {
+		t.Errorf("stale checkpoint survived clear: %+v", got.Checkpoint)
+	}
+}
+
 // Clearing both fields must remove the sidecar, not leave a stale one behind:
 // /personality none or /new clears them, and a leftover sidecar would re-inject
 // the cleared value on the next Load.

@@ -168,3 +168,69 @@ func TestCheckpointSavedOnIterationLimit(t *testing.T) {
 		t.Errorf("expected MaxIterations=2, got %d", sess.Checkpoint.MaxIterations)
 	}
 }
+
+// TestResumeCommand_RealSessionManager proves the checkpoint survives a real
+// Save/Load round-trip through the on-disk session manager, not just the
+// in-memory mock. This is the regression that made /resume non-functional in
+// production: the checkpoint was set in memory but never persisted, so a real
+// Load always returned nil and /resume always said "No checkpoint found".
+func TestResumeCommand_RealSessionManager(t *testing.T) {
+	InvalidatePromptCache()
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+
+	// A provider that returns tool calls every turn — the loop hits the
+	// iteration limit because it never gets a "no tool calls" response.
+	tc := providers.ToolCall{
+		ID:   "tc_1",
+		Type: "function",
+		Function: providers.FunctionCall{
+			Name:      "shell",
+			Arguments: `{"command":"echo test"}`,
+		},
+	}
+	provider := &scriptedProvider{
+		turns: []scriptedTurn{
+			{toolCalls: []providers.ToolCall{tc}},
+			{toolCalls: []providers.ToolCall{tc}},
+			{toolCalls: []providers.ToolCall{tc}},
+		},
+	}
+
+	sm, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	agent := NewAgent(cfg, provider, &mockToolExecutor{}, sm, newMockLogger())
+	agent.SetMaxIterations(2)
+
+	msg := bus.InboundMessage{
+		SenderID:  "user",
+		Channel:   "cli",
+		Content:   "do something repeatedly",
+		Timestamp: time.Now(),
+	}
+	if _, err := agent.Process(context.Background(), msg); err != nil {
+		t.Fatalf("Process returned %v", err)
+	}
+
+	// The checkpoint must be on disk now — a fresh Load (as a restart would
+	// do) must see it.
+	sess, err := sm.Load(context.Background(), "cli:user")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sess.Checkpoint == nil {
+		t.Fatal("checkpoint did not survive a real Save/Load round-trip; /resume is broken")
+	}
+
+	// Now /resume must actually resume, not report "no checkpoint".
+	provider.turns = []scriptedTurn{{content: "Task continued successfully."}}
+	resp, err := agent.Process(context.Background(), cmdMsg("/resume"))
+	if err != nil {
+		t.Fatalf("Process(/resume) returned %v", err)
+	}
+	if !strings.Contains(resp, "Resuming from checkpoint") {
+		t.Errorf("expected 'Resuming from checkpoint' in response, got: %s", resp)
+	}
+}

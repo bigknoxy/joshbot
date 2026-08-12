@@ -1222,8 +1222,15 @@ func runAgent(c *cli.Context) error {
 	if jsonMode {
 		log.Get().Logger.SetOutput(os.Stderr)
 		if c.String("message") == "" {
-			return newExitError(exitValidation, "json output modes are non-interactive; pass -m/--message",
+			// Every other JSON-mode failure writes a {"type":"error",...}
+			// document to stderr. Returning bare here left a wrapper with a
+			// non-zero exit and an empty error channel, indistinguishable
+			// from a crash, and inconsistent with the sibling --image path
+			// two blocks down (issue #220).
+			err := newExitError(exitValidation, "json output modes are non-interactive; pass -m/--message",
 				fmt.Errorf("--output-format %s requires --message", format))
+			emitJSONError(os.Stderr, "", err)
+			return err
 		}
 	}
 

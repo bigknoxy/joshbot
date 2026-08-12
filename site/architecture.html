@@ -361,7 +361,7 @@ footer a:hover { text-decoration: underline; }
         <div class="diagram-row wrap" style="margin-top: 8px;">
           <div class="box purple"><span class="name">Tools Registry</span><div class="desc">23 built-in tools + MCP</div></div>
           <div class="box purple"><span class="name">MCP Clients</span><div class="desc">stdio servers, namespaced</div></div>
-          <div class="box green"><span class="name">Memory System</span><div class="desc">MEMORY.md + HISTORY.md</div></div>
+          <div class="box green"><span class="name">Memory System</span><div class="desc">MEMORY.md + HISTORY.md + optional Dream</div></div>
           <div class="box green"><span class="name">Skills System</span><div class="desc">SKILL.md auto-discovery</div></div>
           <div class="box cyan"><span class="name">LLM Providers</span><div class="desc">OpenRouter, Anthropic, etc.</div></div>
         </div>
@@ -538,6 +538,7 @@ footer a:hover { text-decoration: underline; }
 
     <h3>Memory System (<code>internal/memory/</code>)</h3>
     <p>Two files: <code>MEMORY.md</code> (always in context — key facts, preferences, decisions) and <code>HISTORY.md</code> (grep-searchable event log for recall). Facts are extracted after each conversation turn by the learning module.</p>
+    <p><strong>Dream</strong> is an optional second track, off unless <code>agents.defaults.dream_mode</code> is <code>"record"</code> or <code>"full"</code>. Stage 1 rides on the history append and writes each turn to <code>dream_raw.log</code>; Stage 2 fits a TF-IDF embedding in-process, clusters the records by cosine similarity, and appends durable insights to <code>dream_consolidated.jsonl</code> before clearing the raw log — persist first, so a crash costs a re-run rather than the records. Embeddings are local: there is no embedding API and no new dependency. Insight confidence decays with a 30-day half-life, applied both when promoting an insight to a fact and when ranking a similarity search, so a stale cluster loses to a fresh fact instead of outranking it indefinitely. Search reads the consolidated file rather than the in-memory vector store, so insights survive a restart. The mode is a string rather than a bool on purpose: joshbot's config bools have no <code>omitempty</code> and are serialized into every saved config, so a bool default can never be flipped without a schema migration. <code>joshbot memory status</code> and <code>joshbot memory consolidate</code> are the operator's view of it; without them a configured mode would be indistinguishable from a no-op.</p>
 
     <h3>Skills System (<code>internal/skills/</code>)</h3>
     <p>Markdown files with YAML frontmatter in <code>workspace/skills/{name}/SKILL.md</code>. Auto-discovered on startup. Progressive loading: summary only in system prompt, full content loaded when the skill is invoked. The detection module observes tool usage patterns and auto-creates skills. Workspace skills are <strong>inert until an operator approves them</strong> with <code>joshbot skills trust</code> — approval is bound to a hash of the skill's content, stored outside the workspace, so editing an approved skill (or having something write a new one) revokes trust rather than inheriting it. Skills bundled with the release itself are exempt.</p>
@@ -600,7 +601,7 @@ footer a:hover { text-decoration: underline; }
 </div>
 
 <footer>
-  <p>Last updated 2026-08-11</p>
+  <p>Last updated 2026-08-12</p>
   <p>joshbot — <a href="index.html">Home</a> &middot; <a href="https://github.com/bigknoxy/joshbot">GitHub</a> &middot; MIT License</p>
 </footer>
 

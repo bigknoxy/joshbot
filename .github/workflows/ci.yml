@@ -49,11 +49,11 @@ jobs:
         run: |
           TOTAL=$(go tool cover -func=coverage.out | grep 'total:' | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${TOTAL}%"
-          if [ "$(echo "${TOTAL} < 78" | bc -l)" = "1" ]; then
-            echo "FAIL: Total coverage ${TOTAL}% is below 78% threshold"
+          if [ "$(echo "${TOTAL} < 84" | bc -l)" = "1" ]; then
+            echo "FAIL: Total coverage ${TOTAL}% is below 84% threshold"
             exit 1
           fi
-          echo "PASS: Total coverage ${TOTAL}% meets 78% threshold"
+          echo "PASS: Total coverage ${TOTAL}% meets 84% threshold"
 
       - name: Check per-package coverage floors
         # The total floor alone lets a well-covered package launder a blind
@@ -116,7 +116,7 @@ jobs:
               exit 1
             fi
           }
-          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 83
+          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 84
           check_pkg "github.com/bigknoxy/joshbot/internal/service" 40
           echo "PASS: all per-package coverage floors met"
 

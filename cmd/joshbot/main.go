@@ -418,6 +418,7 @@ func newApp() *cli.App {
 				},
 			},
 			sessionsCommand(),
+			memoryCommand(),
 			{
 				Name:    "configure",
 				Aliases: []string{"config"},
@@ -813,7 +814,18 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	}
 
 	// Initialize memory manager
-	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace, memory.WithMaxSize(cfg.Agents.Defaults.MaxMemorySize))
+	memOpts := []memory.Option{memory.WithMaxSize(cfg.Agents.Defaults.MaxMemorySize)}
+	// Dream consolidation is off unless the operator asks for it. An unknown
+	// mode is a startup error, not a silent fallback — Validate rejects it
+	// first, so reaching this error means the config was bypassed.
+	dreamMode, err := memory.ParseDreamMode(cfg.Agents.Defaults.DreamMode)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("agents.defaults.dream_mode: %w", err)
+	}
+	if dreamMode != memory.DreamOff {
+		memOpts = append(memOpts, memory.WithDream(memory.WithDreamMode(dreamMode)))
+	}
+	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace, memOpts...)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
 	}

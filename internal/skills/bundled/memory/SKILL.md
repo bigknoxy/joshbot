@@ -23,6 +23,15 @@ You have a two-file memory system for maintaining context across conversations:
 - For extracted long-term facts (as opposed to raw history text), prefer the `memory_search` tool — it searches structured facts by relevance rather than literal text match
 - Each entry is 2-5 sentences with timestamp `[YYYY-MM-DD HH:MM]`
 
+## Consolidated insights (Dream)
+
+If the operator has enabled Dream (`agents.defaults.dream_mode`), the
+`memory_search` tool also returns clustered insights drawn from past turns,
+marked `consolidated` with a confidence percentage. Treat them as weaker
+evidence than a stored fact: confidence decays with age, and an insight is a
+summary of several turns rather than something the user stated. Nothing extra
+is needed to use them — they arrive in the same `memory_search` output.
+
 ## Best Practices
 1. When you learn something important about the user, update MEMORY.md immediately
 2. When the user references something from the past, search HISTORY.md

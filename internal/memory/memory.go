@@ -224,6 +224,15 @@ func (m *Manager) AppendHistory(ctx context.Context, entry string) error {
 		return fmt.Errorf("append history: %w", err)
 	}
 
+	// Stage 1 of Dream consolidation rides on the history append rather than on
+	// a separate hook in the ReAct loop: the agent already records one entry per
+	// turn here, and a second recording point would drift out of step with it.
+	// A failed record is not a failed append — the history file is the durable
+	// record and the raw dream log is derived from it.
+	if m.dream != nil {
+		_ = m.dream.Record(ctx, DreamRecord{Type: DreamThought, Content: entry})
+	}
+
 	return nil
 }
 

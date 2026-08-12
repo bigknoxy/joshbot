@@ -68,6 +68,13 @@ type TelegramChannel struct {
 	// Only tests set it; in production it stays nil and t.bot.File is used.
 	download func(*telebot.File) (io.ReadCloser, error)
 
+	// editor overrides the bot for streaming sends and edits, and
+	// streamEditInterval overrides the minimum gap between two edits of the
+	// same streamed message. Only tests set either; in production the bot and
+	// defaultStreamInterval are used.
+	editor             telegramEditor
+	streamEditInterval time.Duration
+
 	// notifier overrides the bot for chat-action and command-menu calls.
 	// Only tests set it; in production it stays nil and the bot is used.
 	notifier telegramNotifier
@@ -1348,13 +1355,6 @@ func splitMessage(content string, maxLen int) []string {
 		return []string{content}
 	}
 
-	// Closing a block appends fenceClose to this part and reopening prepends
-	// fenceOpen to the next one; both have to fit inside maxLen.
-	const (
-		fenceClose = "\n```"
-		fenceOpen  = "```\n"
-	)
-
 	var parts []string
 	for len(content) > 0 {
 		if len(content) <= maxLen {
@@ -1362,6 +1362,29 @@ func splitMessage(content string, maxLen int) []string {
 			break
 		}
 
+		prefix, suffix := splitOnce(content, maxLen)
+		parts = append(parts, prefix)
+		content = suffix
+	}
+
+	return parts
+}
+
+// splitOnce cuts one part of at most maxLen bytes off the front of content and
+// returns it with the exact remainder. Callers that need both halves must use
+// this rather than re-deriving the remainder from the part: the fence
+// bookkeeping is lossy in that direction, since a part genuinely ending in a
+// closing fence is indistinguishable from one this function closed.
+// content must be longer than maxLen.
+func splitOnce(content string, maxLen int) (string, string) {
+	// Closing a block appends fenceClose to this part and reopening prepends
+	// fenceOpen to the next one; both have to fit inside maxLen.
+	const (
+		fenceClose = "\n```"
+		fenceOpen  = "```\n"
+	)
+
+	{
 		// Reserve room for the closing fence up front. Appending it after
 		// slicing at maxLen would push the part past Telegram's hard limit,
 		// and Telegram rejects the whole send rather than truncating.
@@ -1402,11 +1425,8 @@ func splitMessage(content string, maxLen int) []string {
 			prefix, suffix = content[:splitAt], content[splitAt:]
 		}
 
-		parts = append(parts, prefix)
-		content = suffix
+		return prefix, suffix
 	}
-
-	return parts
 }
 
 // runeBoundary backs idx up to the start of a UTF-8 rune so that a hard split

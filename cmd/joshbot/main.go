@@ -508,6 +508,12 @@ func newApp() *cli.App {
 						Name:   "github-copilot",
 						Usage:  "Authenticate with GitHub Copilot",
 						Action: runAuthCopilot,
+						Flags: []cli.Flag{
+							&cli.BoolFlag{
+								Name:  "force",
+								Usage: "Re-authenticate even if a token is already stored",
+							},
+						},
 					},
 					{
 						Name:   "status",
@@ -2536,6 +2542,16 @@ func runGateway(c *cli.Context) error {
 	// Start message bus
 	msgBus.Start()
 
+	// The Telegram channel is created before the subscription that uses it,
+	// not after: the bus handler runs on its own goroutine, and assigning to a
+	// variable it has already captured is a data race even though no message
+	// can arrive before Start.
+	var tgChannel *channels.TelegramChannel
+	if cfg.Channels.Telegram.Enabled && cfg.Channels.Telegram.Token != "" {
+		tgChannel = channels.NewTelegramChannel(msgBus, &cfg.Channels.Telegram)
+	}
+	streaming := cfg.Agents.Defaults.Streaming
+
 	// Subscribe agent to all channels
 	msgBus.Subscribe("all", func(ctx context.Context, msg bus.InboundMessage) {
 		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)
@@ -2564,9 +2580,36 @@ func runGateway(c *cli.Context) error {
 			"channel", msg.Channel,
 			"content", msg.Content,
 		)
-		response, err := agentInstance.Process(ctx, msg)
+		// Stream the reply into the chat when streaming is on, editing one
+		// message as text arrives instead of waiting for the whole turn.
+		//
+		// The streamer is per-request and rides the context, like the
+		// tool-progress sink: the handler runs concurrently for every chat,
+		// and a shared streamer would edit one conversation's message with
+		// another's text. Heartbeat turns are excluded because their reply is
+		// suppressed when nothing needs attention — streaming one would put
+		// "HEARTBEAT_OK" in the chat, which is the exact output the
+		// suppression exists to hide.
+		procCtx := ctx
+		var streamer *channels.TelegramStreamer
+		if streaming && tgChannel != nil && msg.Channel == "telegram" && msg.SenderID != "heartbeat" {
+			if streamer = tgChannel.NewStreamer(getChannelID(msg)); streamer != nil {
+				procCtx = agent.WithStreamSink(procCtx, func(e agent.StreamEvent) {
+					streamer.Delta(e.Delta)
+				})
+			}
+		}
+
+		response, err := agentInstance.Process(procCtx, msg)
 		if err != nil {
 			log.Error("Agent error", "error", err)
+			// Partial text is already in the chat, so the error belongs on the
+			// end of it rather than in a second message contradicting the
+			// first. Finish reports false when nothing was delivered, and the
+			// ordinary error reply is sent instead.
+			if streamer.Finish(err) {
+				return
+			}
 			// Send error response
 			outbound := bus.OutboundMessage{
 				Content:   fmt.Sprintf("Error: %v", err),
@@ -2590,6 +2633,22 @@ func runGateway(c *cli.Context) error {
 			}
 		}
 
+		// The streamed message is the reply. Publishing it again would post
+		// the whole answer a second time under the incremental one, so the
+		// bus path runs only when nothing was streamed — the same condition
+		// the interactive CLI uses (didStream), for the same reason: several
+		// Process paths return without streaming anything.
+		// Process reports LLM failures in band, as reply text with a nil error
+		// (see agentReplyError). A turn that streamed some text and then hit one
+		// would otherwise end silently: the partial text is on screen, Finish
+		// sees nothing wrong, and the publish that would have carried the error
+		// is suppressed. Translating it back gets the reason appended to what
+		// the user is already looking at.
+		if streamer.Finish(agentReplyError(response)) {
+			log.Info("Streamed outbound message", "channel", msg.Channel, "response_len", len(response))
+			return
+		}
+
 		// Send response back to the appropriate channel
 		channelID := getChannelID(msg)
 		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
@@ -2604,9 +2663,7 @@ func runGateway(c *cli.Context) error {
 	})
 
 	// Start Telegram channel if enabled
-	var tgChannel *channels.TelegramChannel
-	if cfg.Channels.Telegram.Enabled && cfg.Channels.Telegram.Token != "" {
-		tgChannel = channels.NewTelegramChannel(msgBus, &cfg.Channels.Telegram)
+	if tgChannel != nil {
 		if err := tgChannel.Start(ctx); err != nil {
 			log.Error("Failed to start Telegram channel", "error", err)
 		} else {
@@ -4877,9 +4934,9 @@ func runAuthCopilot(c *cli.Context) error {
 	}
 
 	token, err := copilot.LoadToken(homeDir)
-	if err == nil && token != nil && token.AccessToken != "" {
+	if err == nil && token != nil && token.AccessToken != "" && !c.Bool("force") {
 		fmt.Println("Already authenticated with GitHub Copilot.")
-		fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate.")
+		fmt.Println("Run 'joshbot auth github-copilot --force' to re-authenticate.")
 		return nil
 	}
 
@@ -4916,30 +4973,52 @@ func runAuthCopilot(c *cli.Context) error {
 	fmt.Println("\nSelect a model:")
 	selected := promptModelSelection(models, defaultModel)
 
-	cfg, err := loadConfig("")
+	saveCopilotModel(selected)
+
+	fmt.Println("You can now use 'joshbot agent' with GitHub Copilot.")
+	return nil
+}
+
+// saveCopilotModel records the chosen model on the github-copilot provider,
+// refusing to write at all when the existing config file cannot be read. It
+// reports whether the config was saved.
+func saveCopilotModel(selected string) bool {
+	// LoadStrict, not loadConfig: config.Load answers an unreadable or
+	// unparseable file with Defaults() and a *nil* error, so saving what it
+	// returned would replace every provider, key and setting the operator had
+	// with defaults. A model preference is not worth that.
+	cfg, err := config.LoadStrict()
 	if err != nil {
-		fmt.Printf("Warning: Could not load existing config: %v\n", err)
-		fmt.Println("Creating new config with GitHub Copilot settings.")
+		if _, statErr := os.Stat(config.ConfigPath()); statErr == nil {
+			// The file is there and unusable. Anything written now is a
+			// destructive overwrite of content we could not read.
+			fmt.Printf("Warning: existing config could not be read: %v\n", err)
+			fmt.Printf("Not saving the model, to avoid overwriting it. Fix the file, then run:\n")
+			fmt.Printf("  joshbot configure --provider github-copilot --model %s\n", selected)
+			return false
+		}
+		// No config file yet — nothing to destroy.
+		fmt.Println("No config file yet; creating one with your GitHub Copilot settings.")
 	}
 	if cfg == nil {
-		cfg = &config.Config{Providers: make(map[string]config.ProviderConfig)}
+		cfg = config.Defaults()
 	}
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]config.ProviderConfig)
 	}
-	cfg.Providers["github-copilot"] = config.ProviderConfig{
-		Enabled: true,
-		Model:   selected,
-	}
+	// Update in place: replacing the struct would drop any other field the
+	// operator had already set on this provider.
+	pc := cfg.Providers["github-copilot"]
+	pc.Enabled = true
+	pc.Model = selected
+	cfg.Providers["github-copilot"] = pc
 
 	if err := config.Save(cfg); err != nil {
 		fmt.Printf("Warning: Could not save config: %v\n", err)
-	} else {
-		fmt.Printf("\nModel '%s' saved to config.\n", selected)
+		return false
 	}
-
-	fmt.Println("You can now use 'joshbot agent' with GitHub Copilot.")
-	return nil
+	fmt.Printf("\nModel '%s' saved to config.\n", selected)
+	return true
 }
 
 func runAuthStatus(c *cli.Context) error {

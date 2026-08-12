@@ -108,11 +108,13 @@ func (r *osKeyReader) peekByte() (byte, error) {
 		if res.err != nil {
 			return 0, res.err
 		}
-		r.mu.Lock()
-		b := r.pending[0]
-		r.pending = r.pending[1:]
-		r.mu.Unlock()
-		return b, nil
+		// The byte stays in pending: this is a peek, and every caller
+		// (readEscape, readCSI) consumes it explicitly with readByte
+		// afterwards. Popping it here made peekByte consume on a fresh read
+		// but not on a buffered one, so readCSI's "consume '['" ate the final
+		// byte of the sequence instead and every arrow key blocked waiting for
+		// the next keystroke.
+		return res.b, nil
 	case <-time.After(readTimeout):
 		return 0, errTimeout
 	}

@@ -678,7 +678,7 @@ For backward compatibility, the old format still works:
       "temperature": 0.7,
       "max_tool_iterations": 20,
       "memory_window": 50,
-      "streaming": false
+      "streaming": true
     }
   },
   "channels": {
@@ -777,18 +777,29 @@ leave you believing commands are gated when they are not.
 ### Streaming Responses
 
 `agents.defaults.streaming` prints the assistant's reply as it arrives instead of
-after the whole turn completes. It is **off by default** and applies to both
-config formats.
+after the whole turn completes. It is **on by default** since v1.48.0 and applies
+to both config formats. To restore whole-reply delivery:
 
 ```json
-"agents": { "defaults": { "streaming": true } }
+"agents": { "defaults": { "streaming": false } }
 ```
+
+Upgrading from v1.47.x flips it on even though your saved config already contains
+`"streaming": false` — the field has no `omitempty`, so every config written by
+those versions carries that value whether or not you ever set it. The schema v4→v5
+migration therefore resets it once, and logs that it did. Set it to `false` after
+upgrading and it stays off.
 
 Two limits are worth knowing before turning it on:
 
-- It only takes effect in the **interactive CLI on a real terminal**. `joshbot
-  agent -m`, piped output and the Telegram channel are unaffected, so scripted
-  output stays byte-identical.
+- It takes effect in the **interactive CLI on a real terminal** and on
+  **Telegram**. `joshbot agent -m` and piped output are unaffected, so scripted
+  output stays byte-identical. On Telegram the reply is sent once and then
+  edited in place at most every 3 seconds; heartbeat turns never stream. A
+  reply that grows past Telegram's 4096-byte limit rolls over into a new
+  message, splitting on code-fence boundaries. Message formatting (Markdown) is
+  applied only on the final edit — interim edits are sent as plain text, so a
+  half-written code fence can never fail with `can't parse entities`.
 - Streaming gives up the non-streaming path's **transparent provider fallback**.
   Once the first token has been printed it cannot be unprinted, so a failure
   part-way through appends a visible `[stream error: ...]` marker to the reply
@@ -906,6 +917,15 @@ GitHub Copilot uses a device-code OAuth flow and stores its token in `~/.joshbot
 3. When prompted, choose a model (saved to `config.json` with `enabled: true`).
 
 After auth, you can run `joshbot agent` or `joshbot gateway` normally.
+
+The stored GitHub token does not expire on its own. joshbot exchanges it for a
+short-lived Copilot API token on each request and refreshes that automatically,
+so re-authentication is only needed if you revoke the authorization on GitHub.
+To force a fresh device flow when a token is already stored:
+
+```bash
+joshbot auth github-copilot --force
+```
 
 ## Telegram Setup
 
@@ -1124,7 +1144,7 @@ joshbot/
 
 **Telegram bot not responding** — Verify `channels.telegram.enabled` is `true` and check your user ID is in `allow_from`.
 
-**GitHub Copilot not authenticated** — Run `joshbot auth github-copilot`. If it previously worked, re-run auth to refresh an expired token.
+**GitHub Copilot not authenticated** — Run `joshbot auth github-copilot`. If a token is already stored, use `joshbot auth github-copilot --force` to redo the device flow.
 
 **"URL blocked by security policy"** — `web_fetch` blocks localhost/private IPs and metadata endpoints to prevent SSRF. Use a public URL or proxy through an external service.
 

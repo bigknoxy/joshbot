@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -525,6 +526,14 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		var err error
 		if streaming {
 			resp, err = a.streamChat(ctx, req, sink)
+			// A provider with no streaming endpoint (github-copilot today)
+			// must not fail the turn: streaming is on by default, so erroring
+			// here would break every interactive message on that provider.
+			// The fallback is safe because the stream never opened, so nothing
+			// has been delivered to the sink yet.
+			if errors.Is(err, providers.ErrStreamingUnsupported) {
+				resp, err = a.provider.Chat(ctx, req)
+			}
 		} else {
 			resp, err = a.provider.Chat(ctx, req)
 		}

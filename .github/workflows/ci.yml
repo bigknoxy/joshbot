@@ -74,8 +74,8 @@ jobs:
         # have been deleted with CI still passing, which is the failure mode
         # this check exists to prevent.
         #
-        # Last measured 2026-08-12 (issue #216): cmd/joshbot 70.6%, cmd/relguard
-        # 100%, internal/agent 91.1%, internal/copilot 87.5%, total 81.7%, all
+        # Last measured 2026-08-12 (issue #216): cmd/joshbot 70.4%, cmd/relguard
+        # 100%, internal/agent 91.1%, internal/copilot 87.5%, total 81.4%, all
         # on darwin/arm64. The floors below keep the usual margin for the
         # linux/darwin gap rather than tracking those numbers exactly.
         #

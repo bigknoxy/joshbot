@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -191,5 +192,82 @@ func TestUpdateRestartsTheServiceInsteadOfExecing(t *testing.T) {
 	}
 	if len(*execArgs) != 0 {
 		t.Errorf("a service install was exec'd over instead of restarted: %v", *execArgs)
+	}
+}
+
+// The binary is already replaced by the time the restart runs, so a restart
+// that fails leaves the daemon executing the old image from an inode nothing
+// points at any more. Reporting that as a clean update is how an operator
+// concludes an update did not take and runs it again, forever. It must say so
+// and say what to run, while still exiting 0 — the update itself did succeed.
+func TestUpdateReportsAServiceRestartItCouldNotDo(t *testing.T) {
+	withVersion(t, "v1.0.0")
+	bin := installedBinary(t, "old-binary")
+	svc := &stubManager{
+		installed:  true,
+		status:     service.Status{Running: true},
+		restartErr: errors.New("launchctl refused"),
+	}
+	withServiceManager(t, svc, nil)
+	withReleaseAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9"}`))
+	})
+	withDownloadBase(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("new-binary"))
+	})
+	execArgs := withExecSelf(t)
+
+	out, code := runCLI(t, "update")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; the update itself succeeded\n%s", code, out)
+	}
+	if !strings.Contains(out, "Could not restart service") {
+		t.Errorf("a failed restart was not reported:\n%s", out)
+	}
+	if !strings.Contains(out, "restart") || !strings.Contains(out, "joshbot") {
+		t.Errorf("the operator was not told how to restart it themselves:\n%s", out)
+	}
+	// Falling through to exec after a failed service restart is worse than
+	// stopping: it puts an unsupervised copy alongside the daemon.
+	if len(*execArgs) != 0 {
+		t.Errorf("a service install was exec'd after the restart failed: %v", *execArgs)
+	}
+	if got, _ := os.ReadFile(bin); string(got) != "new-binary" {
+		t.Errorf("binary content = %q, want the update to have landed anyway", got)
+	}
+}
+
+// exec is the last statement of an interactive update and normally never
+// returns. When it does, the process is still the old image with a new binary
+// on disk, so the operator has to be told to restart by hand. Silence here
+// looks exactly like a successful in-place restart.
+func TestUpdateWarnsWhenItCannotRestartItself(t *testing.T) {
+	withVersion(t, "v1.0.0")
+	installedBinary(t, "old-binary")
+	withServiceManager(t, &stubManager{}, nil)
+	withReleaseAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9"}`))
+	})
+	withDownloadBase(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("new-binary"))
+	})
+	prev := execSelf
+	execSelf = func(argv0 string, argv []string, envv []string) error {
+		return errors.New("exec format error")
+	}
+	t.Cleanup(func() { execSelf = prev })
+
+	out, code := runCLI(t, "update")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0\n%s", code, out)
+	}
+	if !strings.Contains(out, "Could not auto-restart") {
+		t.Errorf("a failed exec was swallowed:\n%s", out)
+	}
+	if !strings.Contains(out, "exec format error") {
+		t.Errorf("the underlying reason was dropped:\n%s", out)
+	}
+	if !strings.Contains(out, "restart joshbot manually") {
+		t.Errorf("the operator was not told to restart it themselves:\n%s", out)
 	}
 }

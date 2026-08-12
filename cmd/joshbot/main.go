@@ -2713,7 +2713,7 @@ func runGateway(c *cli.Context) error {
 			}
 		},
 		newStreamer: func(msg bus.InboundMessage) gatewayStreamer {
-			if !streaming || tgChannel == nil || msg.Channel != "telegram" || msg.SenderID == "heartbeat" {
+			if !shouldStream(streaming, tgChannel != nil, msg) {
 				return nil
 			}
 			// A typed nil must not be returned as a non-nil interface: the
@@ -2773,6 +2773,16 @@ func runGateway(c *cli.Context) error {
 
 	log.Info("Gateway stopped")
 	return nil
+}
+
+// shouldStream decides whether a turn gets incremental Telegram edits. Every
+// condition here is load-bearing and none of them fails loudly if dropped:
+// streaming a Discord or CLI turn reaches for a Telegram streamer that cannot
+// exist, and streaming a heartbeat edits a message into a chat the operator
+// never asked anything in — the heartbeat's own reply is usually suppressed
+// entirely, so the stream would be the only thing they ever see of it.
+func shouldStream(streaming, haveTelegram bool, msg bus.InboundMessage) bool {
+	return streaming && haveTelegram && msg.Channel == "telegram" && msg.SenderID != "heartbeat"
 }
 
 // getChannelID extracts the chat ID from message metadata.

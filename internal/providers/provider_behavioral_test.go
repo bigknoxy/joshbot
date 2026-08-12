@@ -134,13 +134,15 @@ func TestErrStreamingUnsupportedSentinel(t *testing.T) {
 
 type nonStreamProv struct{}
 
-func (*nonStreamProv) Chat(_ context.Context, _ ChatRequest) (*ChatResponse, error)   { return nil, nil }
+func (*nonStreamProv) Chat(_ context.Context, _ ChatRequest) (*ChatResponse, error) { return nil, nil }
 func (*nonStreamProv) ChatStream(_ context.Context, _ ChatRequest) (<-chan StreamChunk, error) {
 	return nil, fmt.Errorf("github-copilot: %w", ErrStreamingUnsupported)
 }
-func (*nonStreamProv) Transcribe(_ context.Context, _ []byte, _ string) (string, error) { return "", nil }
-func (*nonStreamProv) Name() string         { return "non-stream" }
-func (*nonStreamProv) Config() Config       { return DefaultConfig() }
+func (*nonStreamProv) Transcribe(_ context.Context, _ []byte, _ string) (string, error) {
+	return "", nil
+}
+func (*nonStreamProv) Name() string   { return "non-stream" }
+func (*nonStreamProv) Config() Config { return DefaultConfig() }
 
 // --- IsSupportedImageMIME ---
 

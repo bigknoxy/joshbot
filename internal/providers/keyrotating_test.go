@@ -26,9 +26,9 @@ func (k *keyedMock) ChatStream(_ context.Context, _ ChatRequest) (<-chan StreamC
 	return ch, k.streamErr
 }
 func (k *keyedMock) Transcribe(_ context.Context, _ []byte, _ string) (string, error) { return "", nil }
-func (k *keyedMock) SetAPIKey(key string)                                              { k.apiKeysUsed = append(k.apiKeysUsed, key) }
-func (k *keyedMock) Name() string                                                      { return k.name }
-func (k *keyedMock) Config() Config                                                    { return k.config }
+func (k *keyedMock) SetAPIKey(key string)                                             { k.apiKeysUsed = append(k.apiKeysUsed, key) }
+func (k *keyedMock) Name() string                                                     { return k.name }
+func (k *keyedMock) Config() Config                                                   { return k.config }
 
 // --- KeyRotatingProvider rotates pool keys on 429/401/402 errors ---
 

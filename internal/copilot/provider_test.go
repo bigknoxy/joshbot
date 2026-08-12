@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -83,14 +84,17 @@ func TestCopilotProvider_Config(t *testing.T) {
 	}
 }
 
-func TestCopilotProvider_ChatStream_NotImplemented(t *testing.T) {
+// Copilot has no streaming endpoint yet. The error must be the shared sentinel,
+// because streaming is on by default and the agent falls back to Chat only when
+// errors.Is matches — a bare error string would break every interactive turn.
+func TestCopilotProvider_ChatStream_ReportsUnsupported(t *testing.T) {
 	p := NewCopilotProvider(providers.Config{}, "token")
 	_, err := p.ChatStream(nil, providers.ChatRequest{})
 	if err == nil {
-		t.Error("ChatStream() should return error (not implemented)")
+		t.Fatal("ChatStream() should return an error")
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("ChatStream() error = %v, want 'not yet implemented'", err)
+	if !errors.Is(err, providers.ErrStreamingUnsupported) {
+		t.Errorf("ChatStream() error = %v, want providers.ErrStreamingUnsupported", err)
 	}
 }
 

@@ -170,7 +170,7 @@ func (p *CopilotProvider) Chat(ctx context.Context, req providers.ChatRequest) (
 }
 
 func (p *CopilotProvider) ChatStream(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
-	return nil, fmt.Errorf("streaming not yet implemented")
+	return nil, fmt.Errorf("github-copilot: %w", providers.ErrStreamingUnsupported)
 }
 
 func (p *CopilotProvider) Transcribe(ctx context.Context, audioData []byte, prompt string) (string, error) {

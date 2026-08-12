@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -612,5 +613,52 @@ func TestStreaming_ErrorBeforeAnyTextIsStillReported(t *testing.T) {
 	}
 	if strings.Contains(response, "I've processed your request") {
 		t.Errorf("a failed stream was reported as a completed answer: %q", response)
+	}
+}
+
+// A provider with no streaming endpoint must not fail the turn. Streaming is
+// on by default, so returning providers.ErrStreamingUnsupported has to fall
+// back to Chat — otherwise every interactive message on github-copilot dies
+// with "stream failed to open".
+func TestStreaming_UnsupportedProviderFallsBackToChat(t *testing.T) {
+	cfg := newStreamingConfig()
+
+	chatCalled := false
+	provider := &mockProvider{
+		chatFn: func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+			chatCalled = true
+			return &providers.ChatResponse{
+				ID:    "test-id",
+				Model: req.Model,
+				Choices: []providers.Choice{
+					{
+						Message:      providers.Message{Role: providers.RoleAssistant, Content: "Hello from Chat"},
+						FinishReason: "stop",
+					},
+				},
+			}, nil
+		},
+		streamFn: func(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
+			return nil, fmt.Errorf("github-copilot: %w", providers.ErrStreamingUnsupported)
+		},
+	}
+
+	agent := NewAgent(cfg, provider, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+
+	ctx := WithStreamSink(context.Background(), func(StreamEvent) {})
+	response, err := agent.Process(ctx, bus.InboundMessage{
+		SenderID:  "user123",
+		Content:   "Hello",
+		Channel:   "cli",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("process failed: %v", err)
+	}
+	if !chatCalled {
+		t.Error("expected a fallback to Chat when ChatStream reports it is unsupported")
+	}
+	if response != "Hello from Chat" {
+		t.Errorf("response = %q, want %q", response, "Hello from Chat")
 	}
 }

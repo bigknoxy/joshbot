@@ -2,9 +2,26 @@ package main
 
 import (
 	"os"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// readerOnFD hands the reader its *own* descriptor. newOSKeyReader calls
+// os.NewFile, which takes ownership and gets a finalizer that closes the fd — so
+// passing pr.Fd() directly would give one descriptor two owners and close it
+// twice. The second close lands on whatever fd number has since been reused,
+// which on CI was the coverage writer: every test passed and the package still
+// failed with "error generating coverage report: bad file descriptor".
+func readerOnFD(t *testing.T, fd int) *osKeyReader {
+	t.Helper()
+
+	dup, err := syscall.Dup(fd)
+	if err != nil {
+		t.Fatalf("dup: %v", err)
+	}
+	return newOSKeyReader(dup)
+}
 
 // osKeyReader turns raw terminal bytes into key events for the interactive
 // editor. It is the only thing standing between a terminal and the line editor,
@@ -28,7 +45,7 @@ func keyReaderOn(t *testing.T, input string) *osKeyReader {
 		_ = pw.Close()
 		_ = pr.Close()
 	})
-	return newOSKeyReader(int(pr.Fd()))
+	return readerOnFD(t, int(pr.Fd()))
 }
 
 func TestDecodeByteMapsControlCodes(t *testing.T) {
@@ -133,7 +150,7 @@ func TestReadKeyBareEscapeIsIgnoredAndNextByteSurvives(t *testing.T) {
 		_ = pw.Close()
 		_ = pr.Close()
 	})
-	r := newOSKeyReader(int(pr.Fd()))
+	r := readerOnFD(t, int(pr.Fd()))
 
 	if _, err := pw.WriteString("\x1b"); err != nil {
 		t.Fatalf("write ESC: %v", err)

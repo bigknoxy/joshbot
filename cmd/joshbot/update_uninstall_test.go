@@ -100,6 +100,8 @@ type stubManager struct {
 	installErr    error
 	status        service.Status
 	statusErr     error
+	startErr      error
+	statusCalls   int
 }
 
 func (s *stubManager) Install() (service.Result, error) {
@@ -113,8 +115,11 @@ func (s *stubManager) Uninstall() (service.Result, error) {
 	}
 	return service.Result{Message: "service removed", Success: true}, nil
 }
-func (s *stubManager) Status() (service.Status, error) { return s.status, s.statusErr }
-func (s *stubManager) Start() error                    { return nil }
+func (s *stubManager) Status() (service.Status, error) {
+	s.statusCalls++
+	return s.status, s.statusErr
+}
+func (s *stubManager) Start() error { return s.startErr }
 func (s *stubManager) Stop() error                     { return nil }
 func (s *stubManager) Restart() error                  { return nil }
 func (s *stubManager) IsInstalled() bool               { return s.installed }
@@ -361,6 +366,124 @@ func TestServiceStatusReportsARunningService(t *testing.T) {
 	out, _ := runCLI(t, "service", "status")
 	if !strings.Contains(out, "is currently running") {
 		t.Errorf("a running service was not reported as running:\n%s", out)
+	}
+}
+
+// `service uninstall` surfaces the manager's message. The command is the only
+// feedback the operator gets that the daemon definition is gone.
+func TestServiceUninstallReportsTheResult(t *testing.T) {
+	svc := &stubManager{}
+	withServiceManager(t, svc, nil)
+
+	out, code := runCLI(t, "service", "uninstall")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !svc.uninstalled {
+		t.Fatal("service uninstall never called Uninstall()")
+	}
+	if !strings.Contains(out, "service removed") {
+		t.Errorf("output did not carry the manager's message:\n%s", out)
+	}
+}
+
+// A failing Uninstall must be an error here, unlike the whole-app `uninstall`
+// where the binary still has to go. `service uninstall` has nothing else to do,
+// so exiting zero claims a daemon was removed that is still registered.
+func TestServiceUninstallFailureIsAnError(t *testing.T) {
+	withServiceManager(t, &stubManager{err: errors.New("launchctl refused")}, nil)
+
+	if _, code := runCLI(t, "service", "uninstall"); code == 0 {
+		t.Fatal("a failed service uninstall exited 0")
+	}
+}
+
+// runUpdate decides whether to restart the service or exec itself from this.
+// Under `go run` it must answer before touching the service manager at all:
+// the binary is throwaway, and probing launchd to decide what to do with it is
+// both pointless and, on a machine with a real joshbot service, misleading.
+func TestDetectRunningContextAnswersGoRunWithoutProbingTheService(t *testing.T) {
+	svc := &stubManager{installed: true, status: service.Status{Running: true}}
+	withServiceManager(t, svc, nil)
+	withExecutable(t, filepath.Join(t.TempDir(), "go-build999", "b001", "exe", "joshbot"))
+
+	ctx := detectRunningContext()
+	if !ctx.IsGoRun {
+		t.Error("a go-build path was not detected as go run")
+	}
+	if ctx.IsService {
+		t.Error("go run was also reported as a running service")
+	}
+	if svc.statusCalls != 0 {
+		t.Errorf("the service was probed %d time(s) under go run", svc.statusCalls)
+	}
+}
+
+// Installed is not the same as running. An installed-but-stopped service must
+// not be reported as a service context: runUpdate would then "restart" it and
+// return, leaving the user with a stopped daemon and a success message,
+// instead of exec'ing the new binary in place.
+func TestDetectRunningContextSeparatesInstalledFromRunning(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "joshbot")
+	withExecutable(t, bin)
+
+	t.Run("installed and running", func(t *testing.T) {
+		withServiceManager(t, &stubManager{installed: true, status: service.Status{Running: true}}, nil)
+		if !detectRunningContext().IsService {
+			t.Error("a running installed service was not detected")
+		}
+	})
+
+	t.Run("installed but stopped", func(t *testing.T) {
+		withServiceManager(t, &stubManager{installed: true, status: service.Status{Running: false}}, nil)
+		if detectRunningContext().IsService {
+			t.Error("a stopped service was reported as a running service context")
+		}
+	})
+
+	t.Run("no service backend", func(t *testing.T) {
+		withServiceManager(t, nil, errors.New("unsupported"))
+		if detectRunningContext().IsService {
+			t.Error("a platform with no service backend reported a service context")
+		}
+	})
+}
+
+// A service that installs but will not start is a warning with a recovery
+// command, not a failure: the unit is written, and failing the whole onboarding
+// at that point leaves the user with a half-configured install and no hint.
+func TestDoServiceInstallTreatsAFailedStartAsAWarning(t *testing.T) {
+	svc := &stubManager{
+		installResult: service.Result{Message: "unit written", LogPath: "/var/log/joshbot.log"},
+		startErr:      errors.New("launchctl kickstart refused"),
+	}
+	withServiceManager(t, svc, nil)
+
+	var err error
+	out := captureStdout(t, func() { err = doServiceInstall() })
+	if err != nil {
+		t.Fatalf("doServiceInstall() error = %v, want nil (a failed start is not a failed install)", err)
+	}
+	if !strings.Contains(out, "Could not start service") {
+		t.Errorf("the failed start was not reported:\n%s", out)
+	}
+	if !strings.Contains(out, "joshbot service start") {
+		t.Errorf("no recovery command was offered:\n%s", out)
+	}
+	if !strings.Contains(out, "/var/log/joshbot.log") {
+		t.Errorf("the log path was dropped, which is the only debugging route:\n%s", out)
+	}
+}
+
+// A failed Install is fatal here — there is no unit to start and nothing to
+// warn about.
+func TestDoServiceInstallFailureIsAnError(t *testing.T) {
+	withServiceManager(t, &stubManager{installErr: errors.New("permission denied")}, nil)
+
+	var err error
+	_ = captureStdout(t, func() { err = doServiceInstall() })
+	if err == nil {
+		t.Fatal("doServiceInstall() returned nil after Install failed")
 	}
 }
 

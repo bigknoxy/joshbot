@@ -186,6 +186,7 @@ func SupportedProviders() []string {
 	return []string{
 		"openrouter", "openai", "nvidia", "groq", "ollama",
 		"anthropic", "poolside", "azure", "custom", "litellm", "github-copilot",
+		"deepseek", "gemini",
 	}
 }
 
@@ -196,10 +197,19 @@ func SupportedProviders() []string {
 // registry entry leaves the base empty (its factory fills it in at request
 // time), so it is filled in here explicitly for the guided path.
 func getDefaultAPIBase(name string) string {
-	if name == "ollama" {
-		return "http://localhost:11434/v1"
+	// Model-path providers not in the registry need explicit endpoints here.
+	if base, ok := modelPathAPIBase[name]; ok {
+		return base
 	}
 	return providers.GetDefaultAPIBaseFor(name)
+}
+
+// modelPathAPIBase maps providers that route through OpenRouter/litellm
+// with a model prefix to their direct API endpoints.
+var modelPathAPIBase = map[string]string{
+	"deepseek": "https://api.deepseek.com/v1",
+	"gemini":   "https://generativelanguage.googleapis.com/v1",
+	"ollama":   "http://localhost:11434/v1",
 }
 
 func Save(cfg *config.Config) error {

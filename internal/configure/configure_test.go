@@ -328,12 +328,12 @@ func TestListProviders_CoversAllAdvertised(t *testing.T) {
 // etc.) so new users get the right base URL without typing it.
 func TestGetDefaultAPIBase_KnownProviders(t *testing.T) {
 	known := map[string]string{
-		"openai":  "https://api.openai.com/v1",
-		"groq":    "https://api.groq.com/openai/v1",
+		"openai":    "https://api.openai.com/v1",
+		"groq":      "https://api.groq.com/openai/v1",
 		"anthropic": "https://api.anthropic.com/v1",
-		"deepseek": "https://api.deepseek.com/v1",
-		"nvidia": "https://integrate.api.nvidia.com/v1",
-		"ollama": "http://localhost:11434/v1",
+		"deepseek":  "https://api.deepseek.com/v1",
+		"nvidia":    "https://integrate.api.nvidia.com/v1",
+		"ollama":    "http://localhost:11434/v1",
 	}
 	for name, expected := range known {
 		got := getDefaultAPIBase(name)
@@ -420,12 +420,13 @@ func TestMaskAPIKey(t *testing.T) {
 	}
 }
 
-// TestSupportedProviders_ListsAllEleven verifies every product-supported provider
+// TestSupportedProviders_ListsAllThirteen verifies every product-supported provider
 // is offered by the guided config path (#160), not just the legacy six.
-func TestSupportedProviders_ListsAllEleven(t *testing.T) {
+func TestSupportedProviders_ListsAllThirteen(t *testing.T) {
 	want := []string{
 		"openrouter", "openai", "nvidia", "groq", "ollama",
 		"anthropic", "poolside", "azure", "custom", "litellm", "github-copilot",
+		"deepseek", "gemini",
 	}
 	got := SupportedProviders()
 	if len(got) != len(want) {

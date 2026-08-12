@@ -6,6 +6,25 @@ joshbot is a lightweight personal AI assistant (~31,200 LOC Go non-test, 1,377 t
 
 Module: `github.com/bigknoxy/joshbot`. Go 1.24.0.
 
+## HARD RULE: all work goes through PRs and gh issues
+
+**Never push work directly to `main`.** Every change that alters code, docs,
+config, or observable behaviour ships as a pull request opened against `main`,
+and every feature/bug/refactor is tracked in a `gh issue`. This is a hard rule,
+not a guideline:
+
+1. Open (or reference) a `gh issue` for the work before starting.
+2. Do the work on a **feature branch** (`feat/...`, `fix/...`, `docs/...`).
+3. Open a **PR** from that branch to `main` when ready; do not merge it to
+   `main` directly.
+4. The PR must pass CI and be reviewed (use the panel-review workflow for
+   anything touching tool execution, config, or public surface).
+5. Only merge/close after the issue and PR are in step.
+
+The #194 delegate_subagent change was pushed directly to `main` in error; do not
+repeat that. If work ends up on `main` directly, revert it to a branch and open a
+PR rather than leaving it merged.
+
 ### ALL CLI commands work non-interactively
 
 | Command | Non-interactive | Notes |

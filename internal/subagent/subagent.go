@@ -45,11 +45,16 @@ type ToolResult struct {
 
 // AsyncResult is delivered to the async callback when a tool completes asynchronously.
 // It mirrors tools.AsyncResult to avoid an import cycle.
+// When tools.AsyncResult gains new fields, they MUST be added here too — the
+// TestFieldParity test enforces this.
 type AsyncResult struct {
 	ToolName string
 	Args     map[string]any
 	Output   string
-	Err      error
+	Error    error
+	Metadata map[string]any
+	Channel  string
+	ChatID   string
 }
 
 // ToolExecutor is a minimal interface for tool execution inside a subagent.
@@ -128,6 +133,7 @@ type Runner struct {
 	streamSink   StreamSink
 	logger       *log.Logger
 	defaultModel string
+	maxIter      int
 	maxTokens    int
 	temperature  float64
 	timeout      time.Duration
@@ -182,6 +188,15 @@ func WithTemperature(t float64) OptFunc {
 	}
 }
 
+// WithMaxIter sets the default max iterations for subagent ReAct loops.
+func WithMaxIter(n int) OptFunc {
+	return func(r *Runner) {
+		if n > 0 {
+			r.maxIter = n
+		}
+	}
+}
+
 // WithTimeout sets the default per-run timeout for subagent execution.
 func WithTimeout(d time.Duration) OptFunc {
 	return func(r *Runner) {
@@ -189,6 +204,46 @@ func WithTimeout(d time.Duration) OptFunc {
 			r.timeout = d
 		}
 	}
+}
+
+// firstNonZero returns the first non-zero int from the given values.
+func firstNonZero(vals ...int) int {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+// firstNonZeroFloat returns the first non-zero float64 from the given values.
+func firstNonZeroFloat(vals ...float64) float64 {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+// firstNonZeroDur returns the first non-zero time.Duration from the given values.
+func firstNonZeroDur(vals ...time.Duration) time.Duration {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+// firstNonZeroStr returns the first non-empty string from the given values.
+func firstNonZeroStr(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // NewRunner creates a Runner with the given provider and default model.
@@ -238,31 +293,14 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 	if r.provider == nil {
 		return nil, errors.New("no provider configured")
 	}
-	if cfg.MaxIter <= 0 {
-		cfg.MaxIter = DefaultMaxIterations
-	}
-	if cfg.MaxTokens <= 0 {
-		cfg.MaxTokens = DefaultMaxTokens
-		if r.maxTokens > 0 {
-			cfg.MaxTokens = r.maxTokens
-		}
-	}
-	if cfg.Temperature <= 0 {
-		cfg.Temperature = DefaultTemperature
-		if r.temperature > 0 {
-			cfg.Temperature = r.temperature
-		}
-	}
-	if cfg.Timeout <= 0 {
-		cfg.Timeout = DefaultTimeout
-		if r.timeout > 0 {
-			cfg.Timeout = r.timeout
-		}
-	}
-	model := cfg.Model
-	if model == "" {
-		model = r.defaultModel
-	}
+
+	// Apply defaults: Runner-level overrides > global defaults.
+	// Config-level values (when > 0) win over everything.
+	cfg.MaxIter = firstNonZero(cfg.MaxIter, r.maxIter, DefaultMaxIterations)
+	cfg.MaxTokens = firstNonZero(cfg.MaxTokens, r.maxTokens, DefaultMaxTokens)
+	cfg.Temperature = firstNonZeroFloat(cfg.Temperature, r.temperature, DefaultTemperature)
+	cfg.Timeout = firstNonZeroDur(cfg.Timeout, r.timeout, DefaultTimeout)
+	model := firstNonZeroStr(cfg.Model, r.defaultModel)
 
 	// Build the isolated system prompt based on role.
 	sysPrompt := r.buildSystemPrompt(cfg.Role, cfg.MaxIter)
@@ -510,68 +548,4 @@ func summarizeArgs(args map[string]any) string {
 		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
 	}
 	return strings.Join(parts, ", ")
-}
-
-// LegacyRunner is the old single-call runner kept for backward compatibility.
-// New code should use the ReAct-loop Runner above.
-//
-// DEPRECATED: Use NewRunner with WithTools instead.
-type LegacyRunner struct {
-	provider    providers.Provider
-	model       string
-	maxTokens   int
-	temperature float64
-	timeout     time.Duration
-}
-
-// NewLegacyRunner constructs a LegacyRunner.
-//
-// DEPRECATED: Use NewRunner instead.
-func NewLegacyRunner(provider providers.Provider, model string, maxTokens int, temperature float64, timeout time.Duration) *LegacyRunner {
-	return &LegacyRunner{
-		provider:    provider,
-		model:       model,
-		maxTokens:   maxTokens,
-		temperature: temperature,
-		timeout:     timeout,
-	}
-}
-
-// Run executes a legacy-style single-call subagent (no tools, no ReAct loop).
-func (r *LegacyRunner) Run(ctx context.Context, prompt string) (string, error) {
-	if r.provider == nil {
-		return "", errors.New("no provider")
-	}
-
-	sys := `You are an isolated subagent. Execute the following task only. Do not call external tools or
-make network requests. Keep the response concise (max 4096 tokens) and return final answer only.`
-
-	req := providers.ChatRequest{
-		Model:       r.model,
-		MaxTokens:   r.maxTokens,
-		Temperature: r.temperature,
-		Messages: []providers.Message{
-			{Role: providers.RoleSystem, Content: sys},
-			{Role: providers.RoleUser, Content: prompt},
-		},
-		Stream: false,
-	}
-
-	callCtx := ctx
-	if r.timeout > 0 {
-		var cancel context.CancelFunc
-		callCtx, cancel = context.WithTimeout(ctx, r.timeout)
-		defer cancel()
-	}
-
-	resp, err := r.provider.Chat(callCtx, req)
-	if err != nil {
-		return "", err
-	}
-
-	if len(resp.Choices) == 0 {
-		return "", errors.New("no choices in response")
-	}
-
-	return resp.Choices[0].Message.Content, nil
 }

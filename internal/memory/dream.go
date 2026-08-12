@@ -519,6 +519,15 @@ func (dm *DreamManager) Consolidate(ctx context.Context) ([]DreamConsolidated, e
 		consolidations = append(consolidations, consolidated)
 	}
 
+	// Truncate the raw log after successful consolidation to prevent unbounded
+	// growth. The consolidated insights in the vector store replace the raw data.
+	if len(consolidations) > 0 {
+		if err := dm.ClearRawRecords(); err != nil {
+			// Non-fatal: consolidation succeeded, we just couldn't trim the log.
+			// Next consolidation will re-process these records.
+		}
+	}
+
 	return consolidations, nil
 }
 

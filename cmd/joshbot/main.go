@@ -177,7 +177,10 @@ func (a *toolExecutorAdapter) ExecuteWithContext(ctx context.Context, name strin
 				ToolName: ar.ToolName,
 				Args:     ar.Args,
 				Output:   ar.Output,
-				Err:      ar.Error,
+				Error:    ar.Error,
+				Metadata: ar.Metadata,
+				Channel:  ar.Channel,
+				ChatID:   ar.ChatID,
 			})
 		}
 	})
@@ -318,8 +321,8 @@ func newApp() *cli.App {
 						Usage: "Override the ReAct loop iteration limit (default: 50)",
 						Value: 0, // 0 means use config default
 					},
-					},
-					Action: runAgent,
+				},
+				Action: runAgent,
 			},
 			{
 				Name:  "gateway",

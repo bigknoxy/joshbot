@@ -705,10 +705,10 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	// Persist a checkpoint marker in the session for /resume detection.
 	if a.sessions != nil {
 		sess.Checkpoint = &session.Checkpoint{
-			Iteration:   a.maxIterations,
+			Iteration:     a.maxIterations,
 			MaxIterations: a.maxIterations,
-			CreatedAt:    time.Now(),
-			UserMessage:  userMessage,
+			CreatedAt:     time.Now(),
+			UserMessage:   userMessage,
 		}
 		// Save the session so the checkpoint survives across requests.
 		if saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second); cancel != nil {
@@ -1637,10 +1637,10 @@ func (a *Agent) handleResumeCommand(ctx context.Context, msg bus.InboundMessage)
 	// ReAct loop. The session already holds all the accumulated messages and
 	// tool results, so reactLoop will pick up from where it left off.
 	continueMsg := bus.InboundMessage{
-		Channel:    msg.Channel,
-		SenderID:   msg.SenderID,
-		Content:    "Please continue the task you were working on, using the context already established in this conversation.",
-		Timestamp:  msg.Timestamp,
+		Channel:   msg.Channel,
+		SenderID:  msg.SenderID,
+		Content:   "Please continue the task you were working on, using the context already established in this conversation.",
+		Timestamp: msg.Timestamp,
 	}
 
 	resp, err := a.Process(ctx, continueMsg)

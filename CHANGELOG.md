@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Dream two-stage memory consolidation is now reachable (#193). The subsystem
+  was fully implemented in `internal/memory/dream.go` and wired to nothing — no
+  config key turned it on, nothing ever recorded to it, and nothing read from
+  it. It is now controlled by `agents.defaults.dream_mode`
+  (`""`/`off` default, `record`, `full`; env
+  `JOSHBOT_AGENTS__DEFAULTS__DREAM_MODE`), records every history append as
+  Stage 1, and consolidates raw records into durable insights with local TF-IDF
+  embeddings as Stage 2 — no embedding API and no new dependency. Insight
+  confidence decays with a 30-day half-life, applied both when promoting an
+  insight to a fact and when ranking a similarity search, so a stale cluster no
+  longer outranks a fresh fact. `memory_search` surfaces matching insights
+  alongside keyword facts, marked `consolidated`; with Dream off its output is
+  unchanged. The mode is a string rather than a bool because joshbot's config
+  bools are serialized into every saved config and a bool default cannot be
+  flipped without a schema migration.
+- `joshbot memory status` and `joshbot memory consolidate` (#193) — the
+  operator's view of Dream. `status` reports the mode, the raw record count and
+  the stored insights with decayed confidence; `consolidate` runs Stage 2 now.
+  Both print through the redactor, since an insight is derived from
+  conversation text. `consolidate` exits non-zero when Dream is off rather than
+  silently doing nothing.
+
 ### Fixed
 - `joshbot onboard` over an existing install now treats a bare Enter at the
   "Existing Installation Found" menu as choice 1, the option the menu itself

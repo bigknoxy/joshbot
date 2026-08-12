@@ -323,6 +323,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot mcp list` \| `trust <name>` \| `untrust <name>` | Review and approve MCP servers' advertised tools |
 | `joshbot configure` | Configure LLM providers and settings |
 | `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` \| `export <id>` | Inspect, manage and export stored conversations |
+| `joshbot memory status` \| `consolidate` | Inspect and run the Dream two-stage memory system (`agents.defaults.dream_mode`) |
 | `joshbot auth github-copilot [--force]` \| `status` | Manage OAuth authentication |
 | `joshbot service install` \| `uninstall` \| `status` | Manage joshbot as a system service |
 | `joshbot update` | Update to the latest release |
@@ -477,6 +478,7 @@ The old format is still supported for backward compatibility:
       "temperature": 0.7,
       "max_tool_iterations": 20,
       "memory_window": 50,
+      "dream_mode": "off",
       "streaming": true
     }
   },
@@ -806,6 +808,22 @@ When conversations exceed the memory window (default: 50 messages), joshbot:
 2. Extracts key facts to MEMORY.md
 3. Appends a summary to HISTORY.md
 4. Trims the session to recent messages
+
+#### Dream (optional)
+
+Set `agents.defaults.dream_mode` to `"record"` or `"full"` to enable a second
+memory track that clusters recorded turns into durable insights using local
+TF-IDF embeddings — no embedding API. Insights are surfaced by `memory_search`
+and confidence decays with a 30-day half-life. It is off (`""`) by default and
+leaves MEMORY.md and HISTORY.md untouched.
+
+```bash
+joshbot memory status        # mode, raw records, stored insights
+joshbot memory consolidate   # run consolidation now
+```
+
+Data lives in `<workspace>/memory/dream_raw.log` and
+`<workspace>/memory/dream_consolidated.jsonl`.
 
 ---
 

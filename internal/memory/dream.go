@@ -680,7 +680,7 @@ func (dm *DreamManager) PromoteToFacts(consolidations []DreamConsolidated) []Fac
 			Content:    c.Insight,
 			Tags:       c.Tags,
 			Source:     "dream_consolidation",
-			Confidence: ClampConfidence(c.Confidence),
+			Confidence: c.DecayedConfidence(now),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -744,7 +744,10 @@ func (dm *DreamManager) SearchSimilar(ctx context.Context, query string, k int) 
 		if len(vec) != len(queryVec) {
 			continue
 		}
-		results = append(results, scored{c, cosineSimilarity(queryVec, vec, normQ)})
+		// Rank by similarity discounted for age, so a stale insight has to be
+		// a markedly better match than a fresh one to outrank it.
+		sim := cosineSimilarity(queryVec, vec, normQ)
+		results = append(results, scored{c, sim * (0.5 + 0.5*c.DecayedConfidence(dm.now()))})
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
 
@@ -755,6 +758,19 @@ func (dm *DreamManager) SearchSimilar(ctx context.Context, query string, k int) 
 	for i := 0; i < k; i++ {
 		out = append(out, results[i].c)
 	}
+	return out, nil
+}
+
+// ListConsolidated returns every stored insight, newest-first. SearchSimilar
+// cannot stand in for this: it ranks by similarity to a query and returns at
+// most k, so "show me everything" through it means inventing a query and a
+// limit, and an empty query scores every insight identically.
+func (dm *DreamManager) ListConsolidated() ([]DreamConsolidated, error) {
+	out, err := dm.loadConsolidated()
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
 }
 
@@ -796,6 +812,47 @@ func (dm *DreamManager) GetVectorStore() VectorStore {
 // ---------------------------------------------------------------------------
 // Manager integration (Dream field on existing Manager)
 // ---------------------------------------------------------------------------
+
+// ParseDreamMode maps a config string onto a DreamMode. An empty string means
+// off, so a config written before the key existed keeps the old behaviour.
+// Anything else is an error rather than a silent fallback: an operator who
+// typed "record-only" would otherwise get no recording and no explanation.
+func ParseDreamMode(s string) (DreamMode, error) {
+	switch s {
+	case "", "off":
+		return DreamOff, nil
+	case "record":
+		return DreamRecordOnly, nil
+	case "full":
+		return DreamFull, nil
+	default:
+		return DreamOff, fmt.Errorf("unknown dream mode %q (want off, record or full)", s)
+	}
+}
+
+// DreamConfidenceHalfLife is how long a consolidated insight takes to lose half
+// its confidence. An insight is a claim about the user drawn from one window of
+// conversation; a year-old one that nothing has reinforced should not outrank a
+// fresh contradicting fact, and the only evidence of continued truth is that
+// consolidation keeps producing it.
+const DreamConfidenceHalfLife = 30 * 24 * time.Hour
+
+// DecayedConfidence is the insight's confidence discounted for age. It never
+// reaches zero — an old insight is weak evidence, not counter-evidence — and a
+// zero CreatedAt (a record written before this field was populated) is treated
+// as undated rather than infinitely old, which would silently zero out every
+// legacy insight.
+func (c DreamConsolidated) DecayedConfidence(now time.Time) float64 {
+	if c.CreatedAt.IsZero() {
+		return ClampConfidence(c.Confidence)
+	}
+	age := now.Sub(c.CreatedAt)
+	if age <= 0 {
+		return ClampConfidence(c.Confidence)
+	}
+	factor := math.Pow(0.5, age.Seconds()/DreamConfidenceHalfLife.Seconds())
+	return ClampConfidence(c.Confidence * factor)
+}
 
 // WithDream sets Dream consolidation options on the memory Manager.
 func WithDream(opts ...DreamOption) Option {

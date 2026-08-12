@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bigknoxy/joshbot/internal/memory"
 )
@@ -56,13 +58,23 @@ func (t *MemorySearchTool) Execute(ctx interface{}, args map[string]any) ToolRes
 		return ToolResult{Error: fmt.Errorf("search failed: %w", err)}
 	}
 
-	if len(results) == 0 {
+	// Dream insights are consolidated across turns and are found by vector
+	// similarity rather than keyword overlap, so they answer questions the
+	// keyword search misses. They are additive: when Dream is off,
+	// SearchSimilarMemories returns nothing and the output is unchanged.
+	insights, _ := t.mem.SearchSimilarMemories(context.Background(), query, maxResults)
+
+	if len(results) == 0 && len(insights) == 0 {
 		return ToolResult{Output: "No matching facts found in memory."}
 	}
 
 	var b strings.Builder
 	for _, r := range results {
 		fmt.Fprintf(&b, "- [%.0f%% confidence] %s\n", r.Score*100, r.Fact.Content)
+	}
+	now := time.Now()
+	for _, in := range insights {
+		fmt.Fprintf(&b, "- [%.0f%% confidence, consolidated] %s\n", in.DecayedConfidence(now)*100, in.Insight)
 	}
 	return ToolResult{Output: b.String()}
 }

@@ -84,6 +84,12 @@ const (
 	DefaultToolOutputMaxChars = 4000
 	// DefaultMaxMemorySize is the default maximum bytes for MEMORY.md content loaded into context.
 	DefaultMaxMemorySize = 4096
+
+	// Dream consolidation modes for agents.defaults.dream_mode.
+	DreamModeOff    = "off"
+	DreamModeRecord = "record"
+	DreamModeFull   = "full"
+
 	// CurrentSchemaVersion is the current config schema version.
 	CurrentSchemaVersion = 5
 )
@@ -132,6 +138,14 @@ type AgentDefaults struct {
 	// stream sink is attached to the request context. Default true; set it to
 	// false in the config file to restore whole-reply delivery.
 	Streaming bool `mapstructure:"streaming" json:"streaming" yaml:"streaming"`
+	// DreamMode selects the Dream two-stage memory consolidation mode:
+	// "off" (default), "record" (log raw turns only) or "full" (log and
+	// consolidate). It is a string rather than a bool on purpose: a bool
+	// default can never be flipped later without a schema migration, because
+	// every config joshbot has ever saved serializes the field. An empty
+	// value means off, so a config written before this key existed keeps the
+	// old behaviour without a migration.
+	DreamMode string `mapstructure:"dream_mode" json:"dream_mode,omitempty" yaml:"dream_mode,omitempty"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -549,6 +563,11 @@ func applyEnvOverrides(cfg *Config) {
 	// Max memory size
 	if v := getEnv("AGENTS__DEFAULTS__MAX_MEMORY_SIZE"); v != "" {
 		fmt.Sscanf(v, "%d", &cfg.Agents.Defaults.MaxMemorySize)
+	}
+
+	// Dream consolidation mode
+	if v := getEnv("AGENTS__DEFAULTS__DREAM_MODE"); v != "" {
+		cfg.Agents.Defaults.DreamMode = v
 	}
 
 	// Telegram enabled
@@ -1054,6 +1073,16 @@ func (c *Config) Validate() error {
 	// Validate max_memory_size is positive
 	if c.Agents.Defaults.MaxMemorySize <= 0 {
 		return errors.New("max_memory_size must be positive")
+	}
+
+	// Validate dream_mode. An unknown value is a startup error rather than a
+	// silent fallback to off: an operator who typed "record-only" would
+	// otherwise get no recording and no explanation.
+	switch c.Agents.Defaults.DreamMode {
+	case "", DreamModeOff, DreamModeRecord, DreamModeFull:
+	default:
+		return fmt.Errorf("dream_mode must be one of %q, %q or %q, got %q",
+			DreamModeOff, DreamModeRecord, DreamModeFull, c.Agents.Defaults.DreamMode)
 	}
 
 	// Validate exec timeout is positive

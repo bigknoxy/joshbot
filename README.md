@@ -286,6 +286,38 @@ When conversations grow large:
 3. A summary is appended to HISTORY.md
 4. Context is compressed to stay within limits
 
+### Dream: two-stage consolidation with vector search
+
+Dream is an optional second memory track. It is **off by default**; set
+`agents.defaults.dream_mode` to turn it on:
+
+| Value | Behaviour |
+|---|---|
+| `""` / `"off"` | Off (default) |
+| `"record"` | Stage 1 only — every history entry is appended to a raw log |
+| `"full"` | Stage 1 plus Stage 2 consolidation |
+
+**Stage 1** records each turn to `<workspace>/memory/dream_raw.log`.
+**Stage 2** fits a local TF-IDF embedding over those records, clusters them by
+cosine similarity, and writes durable insights to
+`<workspace>/memory/dream_consolidated.jsonl`. Embeddings are computed in-process
+— no embedding API, no extra dependency.
+
+Insight confidence decays with a 30-day half-life, so a stale insight loses to a
+fresh fact instead of outranking it forever. The `memory_search` tool surfaces
+matching insights alongside keyword facts, marked `consolidated`. `MEMORY.md`
+and `HISTORY.md` are untouched: Dream is additive, and with it off the output of
+`memory_search` is byte-for-byte what it was before.
+
+```bash
+joshbot memory status        # mode, raw record count, stored insights
+joshbot memory consolidate   # run Stage 2 now
+```
+
+Both are redacted, and `consolidate` exits non-zero when Dream is off rather
+than silently doing nothing. The env override is
+`JOSHBOT_AGENTS__DEFAULTS__DREAM_MODE`.
+
 **Context Compression** works efficiently with small local models (e.g., `gemma-2-9b`, `llama-3.2-3b`) — the summarization task is simple enough that you don't need a large model.
 
 ## Skills System
@@ -1058,7 +1090,7 @@ reaches the prompt.
 | `web_search` | Search the web (exa-cli / Exa MCP / DuckDuckGo — no key required) |
 | `web_fetch` | Fetch and extract web page content |
 | `message` | Send messages to other channels |
-| `memory_search` | Search stored facts by keyword, category, or tags |
+| `memory_search` | Search stored facts by keyword, category, or tags, plus Dream consolidated insights when `dream_mode` is on |
 | `skill_registry` | List, create, and delete skills (workspace skills need `joshbot skills trust` before use) |
 | `parallel_subagent` | Run multiple subagent tasks in parallel |
 | `chain_execution` | Run subagent steps sequentially, feeding output forward |

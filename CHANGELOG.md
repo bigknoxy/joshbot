@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Subagent output schemas and background runs** (#194, the last two acceptance
+  criteria). `subagent.Config.OutputSchema` constrains a run's final answer to a
+  JSON object with named keys and optional per-key types — a deliberate small
+  subset of JSON Schema, because the point is a parseable result rather than a
+  validator. The required keys are appended to the user turn (next to the task
+  they apply to, not buried in the system prompt), a `` ```json `` fence is
+  stripped before validation so a formatting quirk does not burn the repair, and
+  a mismatch gets **exactly one** repair round-trip and then errors. It errors
+  rather than returning prose, because success reported over output the caller
+  cannot parse is the `agent -m` anti-pattern. The repair gets its own turn via
+  an internal budget instead of spending one of the caller's `MaxIter`, so a
+  `MaxIter` of 1 does not make every schema'd run a failure. `Runner.RunBackground`
+  starts a run and returns a `*Handle` immediately: `Done()`, non-blocking
+  `Result()` (whose `ok` is false while running, so a poller cannot mistake a
+  zero result for an answer), `Wait(ctx)` and `Cancel()`, plus a `notify`
+  callback that fires exactly once **after** the handle is settled, so a
+  callback that inspects the handle does not race it. A panic inside the run is
+  recovered into the error rather than taking the process down, and because
+  `Runner.Run` reports a cancelled context as a `TimedOut` result with a *nil*
+  error (right for a chat turn that should still show partial output, wrong for
+  a background handle nobody is reading partials from), `RunBackground`
+  re-checks `runCtx.Err()` and converts it.
+
 ## [1.50.0] - 2026-08-12
 
 ### Added

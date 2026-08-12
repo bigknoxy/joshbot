@@ -10,6 +10,12 @@ import (
 	"strings"
 )
 
+// ErrStreamingUnsupported is returned by ChatStream on a provider that has no
+// streaming endpoint. Streaming is on by default, so a provider that simply
+// errors here kills every interactive turn; callers detect this sentinel with
+// errors.Is and fall back to Chat instead.
+var ErrStreamingUnsupported = errors.New("streaming not supported by this provider")
+
 // extractStatusCode parses HTTP status code from error message.
 // Avoids regex compilation overhead by using simple string scanning.
 func extractStatusCode(errMsg string) int {

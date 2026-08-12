@@ -472,6 +472,12 @@ func newApp() *cli.App {
 						Name:   "github-copilot",
 						Usage:  "Authenticate with GitHub Copilot",
 						Action: runAuthCopilot,
+						Flags: []cli.Flag{
+							&cli.BoolFlag{
+								Name:  "force",
+								Usage: "Re-authenticate even if a token is already stored",
+							},
+						},
 					},
 					{
 						Name:   "status",
@@ -4868,9 +4874,9 @@ func runAuthCopilot(c *cli.Context) error {
 	}
 
 	token, err := copilot.LoadToken(homeDir)
-	if err == nil && token != nil && token.AccessToken != "" {
+	if err == nil && token != nil && token.AccessToken != "" && !c.Bool("force") {
 		fmt.Println("Already authenticated with GitHub Copilot.")
-		fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate.")
+		fmt.Println("Run 'joshbot auth github-copilot --force' to re-authenticate.")
 		return nil
 	}
 
@@ -4907,30 +4913,52 @@ func runAuthCopilot(c *cli.Context) error {
 	fmt.Println("\nSelect a model:")
 	selected := promptModelSelection(models, defaultModel)
 
-	cfg, err := loadConfig("")
+	saveCopilotModel(selected)
+
+	fmt.Println("You can now use 'joshbot agent' with GitHub Copilot.")
+	return nil
+}
+
+// saveCopilotModel records the chosen model on the github-copilot provider,
+// refusing to write at all when the existing config file cannot be read. It
+// reports whether the config was saved.
+func saveCopilotModel(selected string) bool {
+	// LoadStrict, not loadConfig: config.Load answers an unreadable or
+	// unparseable file with Defaults() and a *nil* error, so saving what it
+	// returned would replace every provider, key and setting the operator had
+	// with defaults. A model preference is not worth that.
+	cfg, err := config.LoadStrict()
 	if err != nil {
-		fmt.Printf("Warning: Could not load existing config: %v\n", err)
-		fmt.Println("Creating new config with GitHub Copilot settings.")
+		if _, statErr := os.Stat(config.ConfigPath()); statErr == nil {
+			// The file is there and unusable. Anything written now is a
+			// destructive overwrite of content we could not read.
+			fmt.Printf("Warning: existing config could not be read: %v\n", err)
+			fmt.Printf("Not saving the model, to avoid overwriting it. Fix the file, then run:\n")
+			fmt.Printf("  joshbot configure --provider github-copilot --model %s\n", selected)
+			return false
+		}
+		// No config file yet — nothing to destroy.
+		fmt.Println("No config file yet; creating one with your GitHub Copilot settings.")
 	}
 	if cfg == nil {
-		cfg = &config.Config{Providers: make(map[string]config.ProviderConfig)}
+		cfg = config.Defaults()
 	}
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]config.ProviderConfig)
 	}
-	cfg.Providers["github-copilot"] = config.ProviderConfig{
-		Enabled: true,
-		Model:   selected,
-	}
+	// Update in place: replacing the struct would drop any other field the
+	// operator had already set on this provider.
+	pc := cfg.Providers["github-copilot"]
+	pc.Enabled = true
+	pc.Model = selected
+	cfg.Providers["github-copilot"] = pc
 
 	if err := config.Save(cfg); err != nil {
 		fmt.Printf("Warning: Could not save config: %v\n", err)
-	} else {
-		fmt.Printf("\nModel '%s' saved to config.\n", selected)
+		return false
 	}
-
-	fmt.Println("You can now use 'joshbot agent' with GitHub Copilot.")
-	return nil
+	fmt.Printf("\nModel '%s' saved to config.\n", selected)
+	return true
 }
 
 func runAuthStatus(c *cli.Context) error {

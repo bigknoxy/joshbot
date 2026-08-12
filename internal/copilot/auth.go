@@ -19,8 +19,65 @@ var (
 	ClientID       = "Ov23liNV83W9jiYnzBdK"
 	DeviceCodeURL  = "https://github.com/login/device/code"
 	AccessTokenURL = "https://github.com/login/oauth/access_token"
-	CopilotAPIURL  = "https://api.githubcopilot.com/v1"
+	// CopilotAPIURL is the Copilot chat API root. It has no "/v1" segment —
+	// adding one makes every chat completion 404.
+	CopilotAPIURL = "https://api.githubcopilot.com"
+	// CopilotTokenURL exchanges a GitHub OAuth token for a short-lived Copilot
+	// API token. The OAuth token itself is not accepted by api.githubcopilot.com.
+	CopilotTokenURL = "https://api.github.com/copilot_internal/v2/token"
 )
+
+// CopilotToken is the short-lived credential returned by CopilotTokenURL.
+type CopilotToken struct {
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at"`
+	RefreshIn int    `json:"refresh_in"`
+}
+
+// ExchangeCopilotToken trades the device-flow GitHub OAuth token for a Copilot
+// API token. The GitHub token is sent with the "token" scheme against
+// api.github.com; the result is used as a Bearer token against the Copilot API.
+func ExchangeCopilotToken(ctx context.Context, githubToken string) (*CopilotToken, error) {
+	if githubToken == "" {
+		return nil, fmt.Errorf("no GitHub token. Run: joshbot auth github-copilot")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, CopilotTokenURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token exchange request: %w", err)
+	}
+	req.Header.Set("Authorization", "token "+githubToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "joshbot/"+Version)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read token exchange response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("GitHub Copilot authorization rejected (status %d). Run: joshbot auth github-copilot", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tok CopilotToken
+	if err := json.Unmarshal(body, &tok); err != nil {
+		return nil, fmt.Errorf("failed to parse token exchange response: %w", err)
+	}
+	if tok.Token == "" {
+		return nil, fmt.Errorf("token exchange returned no token")
+	}
+	return &tok, nil
+}
 
 var Version = "dev"
 
@@ -227,7 +284,13 @@ func attemptTokenExchange(ctx context.Context, client *http.Client, deviceCode s
 		return nil, 0, nil
 	}
 
-	expiresAt := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).Unix()
+	// GitHub OAuth-App device flow returns no expires_in — the token does not
+	// expire on its own. Computing now+0 would stamp it as already expired and
+	// LoadToken would reject it the instant it was written.
+	var expiresAt int64
+	if result.ExpiresIn > 0 {
+		expiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).Unix()
+	}
 	return &TokenInfo{
 		AccessToken:  result.AccessToken,
 		RefreshToken: result.RefreshToken,

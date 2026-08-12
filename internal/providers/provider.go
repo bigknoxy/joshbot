@@ -189,28 +189,6 @@ type Usage struct {
 	TotalTokens int `json:"total_tokens"`
 }
 
-// ToolCallRequest represents a request to execute a tool call.
-type ToolCallRequest struct {
-	// ToolCallID is the ID of the tool call to execute
-	ToolCallID string `json:"tool_call_id"`
-	// FunctionName is the name of the function to call
-	FunctionName string `json:"function_name"`
-	// Arguments is the arguments to pass to the function
-	Arguments map[string]any `json:"arguments"`
-}
-
-// ToolCallResponse represents the result of executing a tool call.
-type ToolCallResponse struct {
-	// ToolCallID is the ID of the tool call this response is for
-	ToolCallID string `json:"tool_call_id"`
-	// Content is the result of the tool call (or error message)
-	Content string `json:"content"`
-	// Error is an error message if the tool call failed
-	Error string `json:"error,omitempty"`
-	// IsError indicates if this is an error response
-	IsError bool `json:"is_error,omitempty"`
-}
-
 // StreamChunk represents a chunk of a streaming response.
 type StreamChunk struct {
 	// ID is the unique identifier for this response
@@ -285,10 +263,3 @@ type Provider interface {
 
 // StreamHandler is a callback for handling streaming chunks.
 type StreamHandler func(chunk StreamChunk) error
-
-// ChatWithTools is a helper that executes tool calls in a loop until
-// the model returns a final response without tool calls.
-type ChatWithTools interface {
-	// ExecuteTool executes a tool call and returns the result.
-	ExecuteTool(ctx context.Context, req ToolCallRequest) (*ToolCallResponse, error)
-}

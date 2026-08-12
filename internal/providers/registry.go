@@ -1,12 +1,10 @@
 package providers
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 // ProviderFactory is a function that creates a Provider with the given configuration.
@@ -332,135 +330,4 @@ func init() {
 	RegisterProvider("litellm", func(cfg Config) (Provider, error) {
 		return NewLiteLLMProvider(cfg), nil
 	})
-}
-
-// ProviderOption is a functional option for configuring a provider.
-type ProviderOption func(*Config) error
-
-// WithAPIKey sets the API key for the provider.
-func WithAPIKey(apiKey string) ProviderOption {
-	return func(cfg *Config) error {
-		cfg.APIKey = apiKey
-		return nil
-	}
-}
-
-// WithAPIBase sets the API base URL for the provider.
-func WithAPIBase(apiBase string) ProviderOption {
-	return func(cfg *Config) error {
-		cfg.APIBase = apiBase
-		return nil
-	}
-}
-
-// WithModel sets the default model for the provider.
-func WithModel(model string) ProviderOption {
-	return func(cfg *Config) error {
-		cfg.Model = model
-		return nil
-	}
-}
-
-// WithTimeout sets the request timeout for the provider.
-func WithTimeout(timeoutSeconds int) ProviderOption {
-	return func(cfg *Config) error {
-		if timeoutSeconds > 0 {
-			cfg.Timeout = time.Duration(timeoutSeconds) * time.Second
-		}
-		return nil
-	}
-}
-
-// WithMaxTokens sets the default max tokens for the provider.
-func WithMaxTokens(maxTokens int) ProviderOption {
-	return func(cfg *Config) error {
-		cfg.MaxTokens = maxTokens
-		return nil
-	}
-}
-
-// WithTemperature sets the default temperature for the provider.
-func WithTemperature(temperature float64) ProviderOption {
-	return func(cfg *Config) error {
-		cfg.Temperature = temperature
-		return nil
-	}
-}
-
-// WithExtraHeaders sets extra headers for the provider.
-func WithExtraHeaders(headers map[string]string) ProviderOption {
-	return func(cfg *Config) error {
-		cfg.ExtraHeaders = headers
-		return nil
-	}
-}
-
-// NewConfig creates a new provider configuration with the given options.
-func NewConfig(options ...ProviderOption) (Config, error) {
-	cfg := DefaultConfig()
-
-	for _, opt := range options {
-		if err := opt(&cfg); err != nil {
-			return cfg, err
-		}
-	}
-
-	return cfg, nil
-}
-
-// ToolExecutorFunc is a type for tool execution functions.
-type ToolExecutorFunc func(ctx interface{}, req ToolCallRequest) (*ToolCallResponse, error)
-
-// SimpleProviderBuilder is a helper for building providers with tools.
-type SimpleProviderBuilder struct {
-	cfg         Config
-	toolHandler func(ctx context.Context, req ToolCallRequest) (*ToolCallResponse, error)
-}
-
-// NewSimpleProviderBuilder creates a new provider builder.
-func NewSimpleProviderBuilder() *SimpleProviderBuilder {
-	return &SimpleProviderBuilder{
-		cfg: DefaultConfig(),
-	}
-}
-
-// WithConfig sets the base configuration.
-func (b *SimpleProviderBuilder) WithConfig(cfg Config) *SimpleProviderBuilder {
-	b.cfg = cfg
-	return b
-}
-
-// WithAPIKey sets the API key.
-func (b *SimpleProviderBuilder) WithAPIKey(apiKey string) *SimpleProviderBuilder {
-	b.cfg.APIKey = apiKey
-	return b
-}
-
-// WithAPIBase sets the API base URL.
-func (b *SimpleProviderBuilder) WithAPIBase(apiBase string) *SimpleProviderBuilder {
-	b.cfg.APIBase = apiBase
-	return b
-}
-
-// WithModel sets the default model.
-func (b *SimpleProviderBuilder) WithModel(model string) *SimpleProviderBuilder {
-	b.cfg.Model = model
-	return b
-}
-
-// WithTools enables tool execution with the given handler.
-func (b *SimpleProviderBuilder) WithTools(handler func(ctx context.Context, req ToolCallRequest) (*ToolCallResponse, error)) *SimpleProviderBuilder {
-	b.toolHandler = handler
-	return b
-}
-
-// Build builds the provider.
-// If a tool handler was set, returns a LiteLLMProviderWithTools, otherwise returns a LiteLLMProvider.
-func (b *SimpleProviderBuilder) Build() (Provider, error) {
-	// Build appropriate provider
-	if b.toolHandler != nil {
-		return NewLiteLLMProviderWithTools(b.cfg, b.toolHandler), nil
-	}
-
-	return NewLiteLLMProvider(b.cfg), nil
 }

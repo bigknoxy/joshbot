@@ -143,15 +143,15 @@ func gatewayBusHandler(fn *ast.FuncDecl) *ast.FuncLit {
 // both a leak of unredacted content and an unfilterable one — it ignores the
 // configured log level.
 //
-// This is deliberately a SOURCE-LEVEL assertion. A behavioural test cannot
-// catch the regression: runGateway's handler is an anonymous closure registered
-// on the bus, reachable only by standing up a full gateway (config, providers,
-// live channels), and the previous version of this test settled for calling
-// log.Debug directly — which asserts the logging library's level filtering, not
-// the handler's discipline, and would stay green with a bare
-// fmt.Fprintf(os.Stderr, ...) put right back into the handler. Parsing the
-// function body is the only assertion that actually fails when the write
-// returns.
+// This is deliberately a SOURCE-LEVEL assertion. The behavioural tests in
+// gateway_handler_test.go cover what the handler decides, but no assertion on
+// its output can catch a stray fmt.Fprintf(os.Stderr, ...) — the write goes to
+// the process's console, not to anything the handler returns. Parsing the
+// function body is the only assertion that fails when the write returns.
+//
+// The handler was an anonymous closure inside runGateway until it was extracted
+// as gatewayHandler; the guard follows it there. If it moves again, point this
+// at wherever it lives rather than deleting it.
 func TestGatewayHandlerHasNoDirectConsoleWrites(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, 0)
@@ -161,21 +161,16 @@ func TestGatewayHandlerHasNoDirectConsoleWrites(t *testing.T) {
 
 	var fn *ast.FuncDecl
 	for _, d := range file.Decls {
-		if f, ok := d.(*ast.FuncDecl); ok && f.Recv == nil && f.Name.Name == "runGateway" {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Recv == nil && f.Name.Name == "gatewayHandler" {
 			fn = f
 			break
 		}
 	}
 	if fn == nil {
-		t.Fatal("runGateway not found in main.go; this guard needs updating")
+		t.Fatal("gatewayHandler not found in main.go; this guard needs updating")
 	}
 
-	handler := gatewayBusHandler(fn)
-	if handler == nil {
-		t.Fatal("runGateway no longer registers a bus handler closure via Subscribe; this guard needs updating")
-	}
-
-	if offenders := consoleWrites(fset, file, handler.Body); len(offenders) > 0 {
+	if offenders := consoleWrites(fset, file, fn.Body); len(offenders) > 0 {
 		t.Fatalf("the gateway bus handler writes directly to the console, bypassing the redacting logger and the log level:\n  %s\n"+
 			"Use log.Debug/log.Info from internal/log instead.", strings.Join(offenders, "\n  "))
 	}

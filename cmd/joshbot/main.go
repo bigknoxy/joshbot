@@ -133,7 +133,7 @@ func detectRunningContext() runningContext {
 	ctx := runningContext{}
 
 	// Check for go run
-	exePath, _ := os.Executable()
+	exePath, _ := osExecutable()
 	if runningFromGoRun(exePath) {
 		ctx.IsGoRun = true
 		return ctx
@@ -145,7 +145,7 @@ func detectRunningContext() runningContext {
 	}
 
 	// Check for service installation
-	svc, err := service.NewManager(service.Config{Name: "joshbot"})
+	svc, err := newServiceManager(service.Config{Name: "joshbot"})
 	if err == nil && svc.IsInstalled() {
 		status, _ := svc.Status()
 		if status.Running {
@@ -585,64 +585,16 @@ func loadConfig(cfgPath string) (*config.Config, error) {
 }
 
 // setupComponents initializes all required components.
-func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, error) {
-	// Ensure directories exist
-	if err := cfg.EnsureDirs(); err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
-	}
-
-	// Initialize memory manager
-	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace, memory.WithMaxSize(cfg.Agents.Defaults.MaxMemorySize))
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
-	}
-	if err := memoryManager.Initialize(context.Background()); err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
-	}
-
-	// Initialize skills loader
-	skillsLoader, err := skills.NewLoader(cfg.Agents.Defaults.Workspace)
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
-	}
-	// Workspace skills become part of the agent's standing instructions, so
-	// they are gated on operator approval. See internal/skills/trust.go.
-	skillsTrust, err := skills.LoadTrustStore(skills.DefaultTrustStorePath(config.DefaultHome))
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to load skills trust store: %w", err)
-	}
-	skillsLoader.SetTrustStore(skillsTrust)
-
-	// Discover skills now so agent has summaries available
-	_ = skillsLoader.Discover()
-
-	// Withheld skills must be announced. An operator who upgraded and found
-	// their skills quietly stopped working would reasonably call that a bug.
-	if pending := skillsLoader.Untrusted(); len(pending) > 0 {
-		names := make([]string, 0, len(pending))
-		for _, sk := range pending {
-			names = append(names, sk.Name)
-		}
-		log.Warn("Skills are awaiting review and are not in use",
-			"skills", strings.Join(names, ", "),
-			"approve_with", "joshbot skills trust <name>  (or --all)")
-	}
-
-	// Initialize message bus
-	msgBus := bus.NewMessageBus()
-
-	// Create BusMessageSender for tools that need to send messages
-	messageSender := tools.NewBusMessageSender(msgBus)
-
-	// Get logger
-	logger := log.Get()
-
-	// Create MultiProvider
-	multiProvider := providers.NewMultiProvider(providers.MultiProviderConfig{
-		DefaultProvider: cfg.ProviderDefaults.Default,
-		Logger:          &providers.DefaultLogger{},
-	})
-
+// registerProviders populates mp from cfg: the model-centric list when one is
+// configured, the legacy provider map otherwise.
+//
+// It is a function rather than inline in setupComponents because the configure
+// tool's hot reload has to do exactly the same thing. That reload used to carry
+// its own copy which reconstructed only openrouter and nvidia, so a config
+// change made through the agent silently dropped groq, poolside, ollama,
+// github-copilot and custom from the running process until the next restart —
+// with no error anywhere, because Clear() had already removed them.
+func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvider) error {
 	// Check if using new model-centric config
 	if cfg.UseModelsConfig() {
 		// Use new model-centric configuration
@@ -662,7 +614,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 
 		if len(resolvedModels) == 0 {
-			return nil, nil, nil, nil, nil, nil, fmt.Errorf("no models configured")
+			return fmt.Errorf("no models configured")
 		}
 	} else {
 		// Use legacy provider configuration
@@ -848,8 +800,72 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		// the first time Chat() is called. Distinguishes an empty config from
 		// providers present but none enabled (issue #71).
 		if len(multiProvider.GetProviderNames()) == 0 {
-			return nil, nil, nil, nil, nil, nil, noProvidersRegisteredError(cfg.Providers)
+			return noProvidersRegisteredError(cfg.Providers)
 		}
+	}
+	return nil
+}
+
+func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *session.Manager, *agent.Agent, *tools.Registry, *tools.BusMessageSender, error) {
+	// Ensure directories exist
+	if err := cfg.EnsureDirs(); err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to create directories: %w", err)
+	}
+
+	// Initialize memory manager
+	memoryManager, err := memory.New(cfg.Agents.Defaults.Workspace, memory.WithMaxSize(cfg.Agents.Defaults.MaxMemorySize))
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
+	}
+	if err := memoryManager.Initialize(context.Background()); err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to initialize memory files: %w", err)
+	}
+
+	// Initialize skills loader
+	skillsLoader, err := skills.NewLoader(cfg.Agents.Defaults.Workspace)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to init skills loader: %w", err)
+	}
+	// Workspace skills become part of the agent's standing instructions, so
+	// they are gated on operator approval. See internal/skills/trust.go.
+	skillsTrust, err := skills.LoadTrustStore(skills.DefaultTrustStorePath(config.DefaultHome))
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to load skills trust store: %w", err)
+	}
+	skillsLoader.SetTrustStore(skillsTrust)
+
+	// Discover skills now so agent has summaries available
+	_ = skillsLoader.Discover()
+
+	// Withheld skills must be announced. An operator who upgraded and found
+	// their skills quietly stopped working would reasonably call that a bug.
+	if pending := skillsLoader.Untrusted(); len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for _, sk := range pending {
+			names = append(names, sk.Name)
+		}
+		log.Warn("Skills are awaiting review and are not in use",
+			"skills", strings.Join(names, ", "),
+			"approve_with", "joshbot skills trust <name>  (or --all)")
+	}
+
+	// Initialize message bus
+	msgBus := bus.NewMessageBus()
+
+	// Create BusMessageSender for tools that need to send messages
+	messageSender := tools.NewBusMessageSender(msgBus)
+
+	// Get logger
+	logger := log.Get()
+
+	// Create MultiProvider
+	multiProvider := providers.NewMultiProvider(providers.MultiProviderConfig{
+		DefaultProvider: cfg.ProviderDefaults.Default,
+		Logger:          &providers.DefaultLogger{},
+	})
+
+	if err := registerProviders(cfg, multiProvider); err != nil {
+		return nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Initialize session manager
@@ -935,46 +951,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	// Create function to reload providers from config (for config tool hot-reload)
 	reloadProviders := func() error {
 		multiProvider.Clear()
-		if cfg.UseModelsConfig() {
-			resolvedModels := cfg.GetAllModelConfigs()
-			for i, resolved := range resolvedModels {
-				llmProvider := providers.NewProviderFromResolvedModel(resolved, &providers.DefaultLogger{})
-				var provider providers.Provider = llmProvider
-				if len(resolved.APIKeys) > 1 {
-					pool := providers.NewAPIKeyPool(resolved.APIKeys, 24*time.Hour, 3)
-					provider = providers.NewKeyRotatingProvider(llmProvider, pool)
-				}
-				multiProvider.Register(resolved.Name, provider, resolved.ModelID, i, true)
-			}
-		} else {
-			if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" && p.Enabled {
-				openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
-					APIKey: p.APIKey, APIBase: p.APIBase, ExtraHeaders: p.ExtraHeaders,
-					Model: cfg.Agents.Defaults.Model, MaxTokens: cfg.Agents.Defaults.MaxTokens,
-					Temperature: cfg.Agents.Defaults.Temperature,
-				})
-				if err != nil {
-					log.Warn("Failed to create OpenRouter provider", "error", err)
-				} else {
-					multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0, p.Enabled)
-				}
-			}
-			if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
-				nvidiaProvider, err := providers.GetProvider("nvidia", providers.Config{
-					APIKey: p.APIKey, APIBase: p.APIBase, ExtraHeaders: p.ExtraHeaders, Model: p.Model,
-				})
-				if err != nil {
-					log.Warn("Failed to create NVIDIA provider", "error", err)
-				} else {
-					model := p.Model
-					if model == "" {
-						model = cfg.Agents.Defaults.Model
-					}
-					multiProvider.Register("nvidia", nvidiaProvider, model, 1, p.Enabled)
-				}
-			}
-		}
-		return nil
+		return registerProviders(cfg, multiProvider)
 	}
 
 	// Register config tool
@@ -1011,27 +988,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 	}
 
-	go func() {
-		for result := range asyncCallbackCh {
-			var msg string
-			if result.Error != nil {
-				msg = fmt.Sprintf("❌ Background task failed (%s): %v", result.ToolName, result.Error)
-			} else {
-				output := result.Output
-				if len(output) > 2000 {
-					output = output[:2000] + "... (truncated)"
-				}
-				msg = fmt.Sprintf("✅ Background task completed (%s):\n%s", result.ToolName, output)
-			}
-
-			// Publish to message bus for gateway mode
-			msgBus.Publish(bus.OutboundMessage{
-				Channel:   result.Channel,
-				ChannelID: result.ChatID,
-				Content:   msg,
-			})
-		}
-	}()
+	go publishAsyncResults(asyncCallbackCh, msgBus)
 
 	// Create skill self-creation components (Milestone 2)
 	skillDetector := skills.NewSkillDetector()
@@ -1093,6 +1050,41 @@ var (
 // tools; a trust store that cannot be read is fatal to MCP registration and
 // nothing else, because the alternative — carrying on with a nil store — would
 // silently disable every server with no explanation an operator could act on.
+// asyncMaxOutput caps how much of a background task's output is repeated back
+// to the user. Telegram hard-fails over 4096 bytes and the notification is
+// unsolicited, so a long build log has to be cut rather than sent whole.
+const asyncMaxOutput = 2000
+
+// asyncResultMessage renders the notification for a finished background task.
+// A failed task must say so — an error rendered as a success line is a task the
+// user believes completed — and an over-long output must be visibly truncated
+// rather than silently cut, or the user reads a half-sentence as the whole
+// answer.
+func asyncResultMessage(result tools.AsyncResult) string {
+	if result.Error != nil {
+		return fmt.Sprintf("❌ Background task failed (%s): %v", result.ToolName, result.Error)
+	}
+	output := result.Output
+	if len(output) > asyncMaxOutput {
+		output = output[:asyncMaxOutput] + "... (truncated)"
+	}
+	return fmt.Sprintf("✅ Background task completed (%s):\n%s", result.ToolName, output)
+}
+
+// publishAsyncResults forwards finished background tasks to the bus until the
+// channel closes. The result carries the channel and chat it belongs to, and it
+// has to be routed back to that one: a notification published against the wrong
+// chat is delivered to a user who never started the task.
+func publishAsyncResults(ch <-chan tools.AsyncResult, msgBus *bus.MessageBus) {
+	for result := range ch {
+		msgBus.Publish(bus.OutboundMessage{
+			Channel:   result.Channel,
+			ChannelID: result.ChatID,
+			Content:   asyncResultMessage(result),
+		})
+	}
+}
+
 func registerMCPServers(ctx context.Context, reg *tools.Registry, cfg config.MCPConfig) {
 	trust, err := mcp.LoadTrustStore(mcp.DefaultTrustStorePath(config.DefaultHome))
 	if err != nil {
@@ -2077,8 +2069,8 @@ func runUpdate(c *cli.Context) error {
 		extension = ".exe"
 	}
 	downloadURL := fmt.Sprintf(
-		"https://github.com/bigknoxy/joshbot/releases/download/%s/joshbot_%s_%s_%s%s",
-		latestVersion, latestVersion, runtime.GOOS, runtime.GOARCH, extension,
+		"%s/%s/joshbot_%s_%s_%s%s",
+		releaseDownloadBase, latestVersion, latestVersion, runtime.GOOS, runtime.GOARCH, extension,
 	)
 
 	if err := downloadBinary(downloadURL, tmpFile); err != nil {
@@ -2128,7 +2120,7 @@ func runUpdate(c *cli.Context) error {
 	}
 
 	if runCtx.IsService {
-		svc, err := service.NewManager(service.Config{
+		svc, err := newServiceManager(service.Config{
 			Name:        "joshbot",
 			DisplayName: "Joshbot AI Assistant",
 			Description: "Personal AI assistant with Telegram integration",
@@ -2148,7 +2140,7 @@ func runUpdate(c *cli.Context) error {
 	// Interactive restart via exec
 	fmt.Println("Restarting joshbot...")
 	args := os.Args[1:]
-	err = syscall.Exec(exePath, append([]string{exePath}, args...), os.Environ())
+	err = execSelf(exePath, append([]string{exePath}, args...), os.Environ())
 	if err != nil {
 		fmt.Printf("Warning: Could not auto-restart: %v\n", err)
 		fmt.Println("Please restart joshbot manually.")
@@ -2175,12 +2167,30 @@ type GitHubRelease struct {
 }
 
 // getLatestVersion fetches the latest stable release tag from GitHub API.
+// releaseAPIURL is where the update check asks for the newest release. It is a
+// package var rather than a constant for the same reason isTTY is: it is the
+// one thing standing between this function and the network, and a test that
+// cannot substitute it cannot cover the parse, status and empty-tag paths at
+// all. Tests point it at an httptest server; nothing in production writes it.
+var releaseAPIURL = "https://api.github.com/repos/bigknoxy/joshbot/releases/latest"
+
+// releaseDownloadBase is the other half of that seam: where the new binary is
+// fetched from. execSelf is the last statement of a successful update and
+// replaces the process image, so a test that cannot substitute it can never
+// reach the binary-replacement code it guards — which is the part that can
+// leave an operator with no working joshbot at all. Nothing in production
+// writes either.
+var (
+	releaseDownloadBase = "https://github.com/bigknoxy/joshbot/releases/download"
+	execSelf            = syscall.Exec
+)
+
 func getLatestVersion() (string, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/bigknoxy/joshbot/releases/latest", nil)
+	req, err := http.NewRequest("GET", releaseAPIURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -2322,7 +2332,7 @@ func copyFile(src, dst string) error {
 
 // getBinaryPath returns the path to the current executable.
 func getBinaryPath() (string, error) {
-	exePath, err := os.Executable()
+	exePath, err := osExecutable()
 	if err != nil {
 		return "", err
 	}
@@ -2336,10 +2346,25 @@ func getBinaryPath() (string, error) {
 	return realPath, nil
 }
 
+// osExecutable and newServiceManager are the two things standing between this
+// package and the host: the path of the running binary (which uninstall and
+// update both replace or delete) and the real launchd/systemd manager. They
+// are package vars for the same reason isTTY is — a test that cannot
+// substitute them can only cover the early bail-outs, and the delete and
+// daemon-install paths are exactly the parts worth pinning. Every
+// service.NewManager call site goes through newServiceManager; a new one that
+// calls the package function directly is untestable by construction. Tests
+// point osExecutable at a temp file, so the removal is real but harmless.
+// Nothing in production writes either.
+var (
+	osExecutable      = os.Executable
+	newServiceManager = service.NewManager
+)
+
 // runUninstall uninstalls joshbot and optionally removes configuration.
 func runUninstall(c *cli.Context) error {
 	// Find the binary location
-	exePath, err := os.Executable()
+	exePath, err := osExecutable()
 	if err != nil {
 		return fmt.Errorf("could not determine executable path: %w", err)
 	}
@@ -2406,7 +2431,7 @@ func runUninstall(c *cli.Context) error {
 		ExecPath:    absPath,
 	}
 
-	svc, svcErr := service.NewManager(svcCfg)
+	svc, svcErr := newServiceManager(svcCfg)
 	serviceUninstalled := false
 
 	if svcErr == nil && svc.IsInstalled() {
@@ -2506,6 +2531,149 @@ func runUninstall(c *cli.Context) error {
 }
 
 // runGateway executes the gateway (Telegram + channels) mode.
+// gatewayStreamer is the part of *channels.TelegramStreamer the gateway
+// handler uses. It is an interface so the suppression rule below — the one
+// that decides whether the bus copy of a reply is sent — can be tested without
+// a Telegram bot.
+type gatewayStreamer interface {
+	Delta(text string)
+	Finish(procErr error) bool
+}
+
+// noStreamer stands in when the turn is not being streamed. Finish reporting
+// false is what routes the reply back through the bus.
+type noStreamer struct{}
+
+func (noStreamer) Delta(string)      {}
+func (noStreamer) Finish(error) bool { return false }
+
+// gatewayDeps is everything gatewayHandler needs from the running gateway.
+// Pulling them out as functions is what makes the handler testable at all:
+// the real ones are a message bus, an agent and a Telegram bot, none of which
+// a unit test can stand up.
+type gatewayDeps struct {
+	publish   func(bus.OutboundMessage) bool
+	process   func(context.Context, bus.InboundMessage) (string, error)
+	setChatID func(channel, chatID string)
+	// newStreamer returns nil when this turn must not be streamed.
+	newStreamer func(msg bus.InboundMessage) gatewayStreamer
+}
+
+// gatewayHandler is the bus subscription runGateway installs: one inbound
+// message in, at most one outbound message out. It is separated from
+// runGateway because runGateway cannot be run in a test — it dials providers,
+// opens a Telegram long poll and blocks on a signal — while every rule that
+// decides what the user actually sees lives here.
+func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
+	return func(ctx context.Context, msg bus.InboundMessage) {
+		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in agent handler",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+				outbound := bus.OutboundMessage{
+					Content:   "I encountered an internal error while processing your request. Please try again.",
+					Channel:   msg.Channel,
+					ChannelID: getChannelID(msg),
+					Timestamp: time.Now(),
+				}
+				d.publish(outbound)
+			}
+		}()
+
+		// Store the chat ID for this channel to enable proactive messaging
+		d.setChatID(msg.Channel, getChannelID(msg))
+
+		log.Debug("Processing message",
+			"channel", msg.Channel,
+			"content", msg.Content,
+		)
+		// Stream the reply into the chat when streaming is on, editing one
+		// message as text arrives instead of waiting for the whole turn.
+		//
+		// The streamer is per-request and rides the context, like the
+		// tool-progress sink: the handler runs concurrently for every chat,
+		// and a shared streamer would edit one conversation's message with
+		// another's text. Heartbeat turns are excluded because their reply is
+		// suppressed when nothing needs attention — streaming one would put
+		// "HEARTBEAT_OK" in the chat, which is the exact output the
+		// suppression exists to hide.
+		procCtx := ctx
+		// noStreamer, not a nil interface: Finish must return false rather
+		// than panic when this turn is not streamed.
+		var streamer gatewayStreamer = noStreamer{}
+		if s := d.newStreamer(msg); s != nil {
+			streamer = s
+			procCtx = agent.WithStreamSink(procCtx, func(e agent.StreamEvent) {
+				streamer.Delta(e.Delta)
+			})
+		}
+
+		response, err := d.process(procCtx, msg)
+		if err != nil {
+			log.Error("Agent error", "error", err)
+			// Partial text is already in the chat, so the error belongs on the
+			// end of it rather than in a second message contradicting the
+			// first. Finish reports false when nothing was delivered, and the
+			// ordinary error reply is sent instead.
+			if streamer.Finish(err) {
+				return
+			}
+			// Send error response
+			outbound := bus.OutboundMessage{
+				Content:   fmt.Sprintf("Error: %v", err),
+				Channel:   msg.Channel,
+				ChannelID: getChannelID(msg),
+				Timestamp: time.Now(),
+			}
+			d.publish(outbound)
+			return
+		}
+
+		// Heartbeat messages are proactive background checks: when the agent
+		// decides nothing needs the user's attention it replies HEARTBEAT_OK (see
+		// the heartbeat completion contract), and that reply is suppressed rather
+		// than delivered to the chat. An empty reply is treated the same way.
+		if msg.SenderID == "heartbeat" {
+			trimmed := strings.TrimSpace(response)
+			if trimmed == "" || strings.HasPrefix(strings.ToUpper(trimmed), "HEARTBEAT_OK") {
+				log.Debug("Heartbeat produced no actionable output; suppressing reply", "task", msg.Content)
+				return
+			}
+		}
+
+		// The streamed message is the reply. Publishing it again would post
+		// the whole answer a second time under the incremental one, so the
+		// bus path runs only when nothing was streamed — the same condition
+		// the interactive CLI uses (didStream), for the same reason: several
+		// Process paths return without streaming anything.
+		// Process reports LLM failures in band, as reply text with a nil error
+		// (see agentReplyError). A turn that streamed some text and then hit one
+		// would otherwise end silently: the partial text is on screen, Finish
+		// sees nothing wrong, and the publish that would have carried the error
+		// is suppressed. Translating it back gets the reason appended to what
+		// the user is already looking at.
+		if streamer.Finish(agentReplyError(response)) {
+			log.Info("Streamed outbound message", "channel", msg.Channel, "response_len", len(response))
+			return
+		}
+
+		// Send response back to the appropriate channel
+		channelID := getChannelID(msg)
+		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
+		outbound := bus.OutboundMessage{
+			Content:   response,
+			Channel:   msg.Channel,
+			ChannelID: channelID,
+			SenderID:  msg.SenderID,
+			Timestamp: time.Now(),
+		}
+		d.publish(outbound)
+	}
+}
+
 func runGateway(c *cli.Context) error {
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
@@ -2559,115 +2727,30 @@ func runGateway(c *cli.Context) error {
 	}
 	streaming := cfg.Agents.Defaults.Streaming
 
-	// Subscribe agent to all channels
-	msgBus.Subscribe("all", func(ctx context.Context, msg bus.InboundMessage) {
-		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("panic in agent handler",
-					"panic", fmt.Sprintf("%v", r),
-					"stack", string(debug.Stack()),
-				)
-				outbound := bus.OutboundMessage{
-					Content:   "I encountered an internal error while processing your request. Please try again.",
-					Channel:   msg.Channel,
-					ChannelID: getChannelID(msg),
-					Timestamp: time.Now(),
-				}
-				msgBus.Publish(outbound)
+	// Subscribe agent to all channels. The handler itself is gatewayHandler,
+	// which is where every decision worth testing lives; runGateway only owns
+	// the network and process lifecycle around it.
+	msgBus.Subscribe("all", gatewayHandler(gatewayDeps{
+		publish: msgBus.Publish,
+		process: agentInstance.Process,
+		setChatID: func(channel, chatID string) {
+			if sender != nil {
+				sender.SetChatID(channel, chatID)
 			}
-		}()
-
-		// Store the chat ID for this channel to enable proactive messaging
-		if sender != nil {
-			sender.SetChatID(msg.Channel, getChannelID(msg))
-		}
-
-		log.Debug("Processing message",
-			"channel", msg.Channel,
-			"content", msg.Content,
-		)
-		// Stream the reply into the chat when streaming is on, editing one
-		// message as text arrives instead of waiting for the whole turn.
-		//
-		// The streamer is per-request and rides the context, like the
-		// tool-progress sink: the handler runs concurrently for every chat,
-		// and a shared streamer would edit one conversation's message with
-		// another's text. Heartbeat turns are excluded because their reply is
-		// suppressed when nothing needs attention — streaming one would put
-		// "HEARTBEAT_OK" in the chat, which is the exact output the
-		// suppression exists to hide.
-		procCtx := ctx
-		var streamer *channels.TelegramStreamer
-		if streaming && tgChannel != nil && msg.Channel == "telegram" && msg.SenderID != "heartbeat" {
-			if streamer = tgChannel.NewStreamer(getChannelID(msg)); streamer != nil {
-				procCtx = agent.WithStreamSink(procCtx, func(e agent.StreamEvent) {
-					streamer.Delta(e.Delta)
-				})
+		},
+		newStreamer: func(msg bus.InboundMessage) gatewayStreamer {
+			if !shouldStream(streaming, tgChannel != nil, msg) {
+				return nil
 			}
-		}
-
-		response, err := agentInstance.Process(procCtx, msg)
-		if err != nil {
-			log.Error("Agent error", "error", err)
-			// Partial text is already in the chat, so the error belongs on the
-			// end of it rather than in a second message contradicting the
-			// first. Finish reports false when nothing was delivered, and the
-			// ordinary error reply is sent instead.
-			if streamer.Finish(err) {
-				return
+			// A typed nil must not be returned as a non-nil interface: the
+			// handler tests the interface, not the pointer.
+			s := tgChannel.NewStreamer(getChannelID(msg))
+			if s == nil {
+				return nil
 			}
-			// Send error response
-			outbound := bus.OutboundMessage{
-				Content:   fmt.Sprintf("Error: %v", err),
-				Channel:   msg.Channel,
-				ChannelID: getChannelID(msg),
-				Timestamp: time.Now(),
-			}
-			msgBus.Publish(outbound)
-			return
-		}
-
-		// Heartbeat messages are proactive background checks: when the agent
-		// decides nothing needs the user's attention it replies HEARTBEAT_OK (see
-		// the heartbeat completion contract), and that reply is suppressed rather
-		// than delivered to the chat. An empty reply is treated the same way.
-		if msg.SenderID == "heartbeat" {
-			trimmed := strings.TrimSpace(response)
-			if trimmed == "" || strings.HasPrefix(strings.ToUpper(trimmed), "HEARTBEAT_OK") {
-				log.Debug("Heartbeat produced no actionable output; suppressing reply", "task", msg.Content)
-				return
-			}
-		}
-
-		// The streamed message is the reply. Publishing it again would post
-		// the whole answer a second time under the incremental one, so the
-		// bus path runs only when nothing was streamed — the same condition
-		// the interactive CLI uses (didStream), for the same reason: several
-		// Process paths return without streaming anything.
-		// Process reports LLM failures in band, as reply text with a nil error
-		// (see agentReplyError). A turn that streamed some text and then hit one
-		// would otherwise end silently: the partial text is on screen, Finish
-		// sees nothing wrong, and the publish that would have carried the error
-		// is suppressed. Translating it back gets the reason appended to what
-		// the user is already looking at.
-		if streamer.Finish(agentReplyError(response)) {
-			log.Info("Streamed outbound message", "channel", msg.Channel, "response_len", len(response))
-			return
-		}
-
-		// Send response back to the appropriate channel
-		channelID := getChannelID(msg)
-		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
-		outbound := bus.OutboundMessage{
-			Content:   response,
-			Channel:   msg.Channel,
-			ChannelID: channelID,
-			SenderID:  msg.SenderID,
-			Timestamp: time.Now(),
-		}
-		msgBus.Publish(outbound)
-	})
+			return s
+		},
+	}))
 
 	// Start Telegram channel if enabled
 	if tgChannel != nil {
@@ -2718,13 +2801,14 @@ func runGateway(c *cli.Context) error {
 	return nil
 }
 
-// sendTelegramMessage is a stub for sending Telegram messages.
-func sendTelegramMessage(msg bus.OutboundMessage) {
-	// This would use the Telegram API in production
-	log.Debug("Telegram message",
-		"content", msg.Content,
-		"chat_id", msg.ChannelID,
-	)
+// shouldStream decides whether a turn gets incremental Telegram edits. Every
+// condition here is load-bearing and none of them fails loudly if dropped:
+// streaming a Discord or CLI turn reaches for a Telegram streamer that cannot
+// exist, and streaming a heartbeat edits a message into a chat the operator
+// never asked anything in — the heartbeat's own reply is usually suppressed
+// entirely, so the stream would be the only thing they ever see of it.
+func shouldStream(streaming, haveTelegram bool, msg bus.InboundMessage) bool {
+	return streaming && haveTelegram && msg.Channel == "telegram" && msg.SenderID != "heartbeat"
 }
 
 // getChannelID extracts the chat ID from message metadata.
@@ -2837,7 +2921,11 @@ func runOnboard(c *cli.Context) error {
 			fmt.Scanln(&choice)
 			fmt.Println()
 
-			if choice == "1" {
+			// The menu says "(default: 1)", so a bare Enter — which Scanln
+			// leaves as an empty string — must keep the data. It used to fall
+			// through to the else and move the whole install aside, which is
+			// the one outcome the operator was told they were declining.
+			if choice := strings.TrimSpace(choice); choice == "" || choice == "1" {
 				// Keep existing data: load config and run prompts with defaults
 				skipFileCreation = true
 				var err error
@@ -3659,7 +3747,7 @@ func installCronStartupEntry() error {
 		return fmt.Errorf("crontab not found")
 	}
 
-	execPath, err := os.Executable()
+	execPath, err := osExecutable()
 	if err != nil {
 		return fmt.Errorf("failed to detect executable path: %w", err)
 	}
@@ -3706,7 +3794,7 @@ func installCronStartupEntry() error {
 }
 
 func doServiceInstall() error {
-	svc, err := service.NewManager(service.Config{
+	svc, err := newServiceManager(service.Config{
 		Name:        "joshbot",
 		DisplayName: "joshbot AI Assistant",
 		Description: "Personal AI assistant with Telegram integration",
@@ -4472,7 +4560,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate if needed.")
 		} else {
 			ctx := context.Background()
-			_, err = copilot.RunDeviceFlow(ctx)
+			_, err = copilotRunDeviceFlow(ctx)
 			if err != nil {
 				fmt.Printf("OAuth failed: %v\n", err)
 				return cfg
@@ -4491,7 +4579,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 				defaultModel = p.Model
 			}
 			var models []string
-			models, err = copilot.ListModels(token.AccessToken)
+			models, err = copilotListModels(token.AccessToken)
 			if err != nil {
 				fmt.Printf("\nCould not fetch models: %v\n", err)
 				fmt.Printf("Model (default: %s): ", defaultModel)
@@ -4835,7 +4923,7 @@ func configureFallbackOrder(cfg *config.Config) *config.Config {
 
 // runServiceInstall installs joshbot as a system service.
 func runServiceInstall(c *cli.Context) error {
-	svc, err := service.NewManager(service.Config{
+	svc, err := newServiceManager(service.Config{
 		Name:        "joshbot",
 		DisplayName: "Joshbot AI Assistant",
 		Description: "Personal AI assistant with Telegram integration",
@@ -4867,7 +4955,7 @@ func runServiceInstall(c *cli.Context) error {
 
 // runServiceUninstall uninstalls the joshbot system service.
 func runServiceUninstall(c *cli.Context) error {
-	svc, err := service.NewManager(service.Config{
+	svc, err := newServiceManager(service.Config{
 		Name:        "joshbot",
 		DisplayName: "Joshbot AI Assistant",
 		Description: "Personal AI assistant with Telegram integration",
@@ -4893,7 +4981,7 @@ func runServiceUninstall(c *cli.Context) error {
 
 // runServiceStatus checks the joshbot service status.
 func runServiceStatus(c *cli.Context) error {
-	svc, err := service.NewManager(service.Config{
+	svc, err := newServiceManager(service.Config{
 		Name:        "joshbot",
 		DisplayName: "Joshbot AI Assistant",
 		Description: "Personal AI assistant with Telegram integration",
@@ -4934,6 +5022,17 @@ func runServiceStatus(c *cli.Context) error {
 	return nil
 }
 
+// The device flow cannot run under test: it prints a user code, opens a
+// browser and polls GitHub until a human approves. Nor can the model list,
+// which needs a live Copilot token. Both are package vars so tests can drive
+// runAuthCopilot's own branching — the already-authenticated short circuit,
+// --force, and the "authenticated but the model list failed" path, which must
+// still succeed because the token is already on disk.
+var (
+	copilotRunDeviceFlow = copilot.RunDeviceFlow
+	copilotListModels    = copilot.ListModels
+)
+
 func runAuthCopilot(c *cli.Context) error {
 	homeDir, err := copilot.GetHomeDir()
 	if err != nil {
@@ -4951,7 +5050,7 @@ func runAuthCopilot(c *cli.Context) error {
 	fmt.Println()
 
 	ctx := context.Background()
-	token, err = copilot.RunDeviceFlow(ctx)
+	token, err = copilotRunDeviceFlow(ctx)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
@@ -4964,7 +5063,7 @@ func runAuthCopilot(c *cli.Context) error {
 	fmt.Println("Successfully authenticated with GitHub Copilot!")
 
 	fmt.Println("\nFetching available models...")
-	models, err := copilot.ListModels(token.AccessToken)
+	models, err := copilotListModels(token.AccessToken)
 	if err != nil {
 		fmt.Printf("Could not fetch models: %v\n", err)
 		fmt.Println("You can configure models later with 'joshbot configure'.")

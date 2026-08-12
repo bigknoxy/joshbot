@@ -52,12 +52,11 @@ func (o *openrcManager) IsInstalled() bool {
 	return err == nil
 }
 
-func (o *openrcManager) Install() (Result, error) {
-	if o.IsInstalled() {
-		return Result{}, fmt.Errorf("service already installed at %s", o.scriptPath)
-	}
-
-	script := fmt.Sprintf(`#!/sbin/openrc-run
+// renderScript produces the OpenRC init script. Split out of Install for the
+// same reason as the systemd unit: the content is what an operator inspects,
+// and writing it needs root while checking it does not.
+func (o *openrcManager) renderScript() string {
+	return fmt.Sprintf(`#!/sbin/openrc-run
 name="%s"
 description="%s"
 
@@ -71,6 +70,14 @@ depend() {
     need net
 }
 `, o.config.DisplayName, o.config.Description, o.config.ExecPath, o.config.Name, o.config.WorkingDir)
+}
+
+func (o *openrcManager) Install() (Result, error) {
+	if o.IsInstalled() {
+		return Result{}, fmt.Errorf("service already installed at %s", o.scriptPath)
+	}
+
+	script := o.renderScript()
 
 	tmpFile, err := os.CreateTemp("", "joshbot-openrc-*.tmp")
 	if err != nil {

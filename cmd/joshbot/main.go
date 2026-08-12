@@ -4530,7 +4530,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			fmt.Println("Run 'joshbot auth github-copilot' to re-authenticate if needed.")
 		} else {
 			ctx := context.Background()
-			_, err = copilot.RunDeviceFlow(ctx)
+			_, err = copilotRunDeviceFlow(ctx)
 			if err != nil {
 				fmt.Printf("OAuth failed: %v\n", err)
 				return cfg
@@ -4549,7 +4549,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 				defaultModel = p.Model
 			}
 			var models []string
-			models, err = copilot.ListModels(token.AccessToken)
+			models, err = copilotListModels(token.AccessToken)
 			if err != nil {
 				fmt.Printf("\nCould not fetch models: %v\n", err)
 				fmt.Printf("Model (default: %s): ", defaultModel)

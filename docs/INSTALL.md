@@ -479,7 +479,8 @@ The old format is still supported for backward compatibility:
       "max_tool_iterations": 20,
       "memory_window": 50,
       "dream_mode": "off",
-      "streaming": true
+      "streaming": true,
+      "subagent_max_depth": 2
     }
   },
   "channels": {

@@ -983,6 +983,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		subagent.WithMaxTokens(4096),
 		subagent.WithTemperature(0.3),
 		subagent.WithTimeout(60*time.Second),
+		subagent.WithMaxDepth(maxSubagentDepth(cfg)),
 		subagent.WithTools(&toolExecutorAdapter{registry: toolsRegistry}),
 	)
 	toolsRegistry.Register(tools.NewParallelSubagentTool(subagentRunner))
@@ -1196,6 +1197,16 @@ func applyMaxIterationsOverride(agentInstance *agent.Agent, maxIter int) {
 	}
 	agentInstance.SetMaxIterations(maxIter)
 	log.Info("Overriding max iterations from CLI", "max_iterations", maxIter)
+}
+
+// maxSubagentDepth returns the configured delegate_subagent nesting depth, or
+// the default when the config value is unset (zero). It is what makes the
+// "configurable maximum depth" claim in the docs true.
+func maxSubagentDepth(cfg *config.Config) int {
+	if cfg == nil || cfg.Agents.Defaults.SubagentMaxDepth <= 0 {
+		return config.DefaultSubagentMaxDepth
+	}
+	return cfg.Agents.Defaults.SubagentMaxDepth
 }
 
 func runAgent(c *cli.Context) error {

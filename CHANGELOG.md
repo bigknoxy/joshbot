@@ -38,8 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `parallel_subagent` and `chain_execution` ran every task as a leaf. Nesting
   is bounded: the current depth rides the request context, and a
   `delegate_subagent` call that would exceed the configured maximum
-  (`subagent.WithMaxDepth`, default 2) is refused with an error naming the
-  depth and the limit, so a recursive delegation chain cannot grow unbounded.
+  (`subagent.WithMaxDepth` or the new `agents.defaults.subagent_max_depth`
+  config key, default 2) is refused with an error naming the depth and the
+  limit, so a recursive delegation chain cannot grow unbounded. A leaf subagent
+  is not offered the subagent-spawning tools (`delegate_subagent`,
+  `parallel_subagent`, `chain_execution`) in its schema, and `delegate_subagent`
+  also refuses a leaf at runtime, so the "leaf cannot spawn" contract is now
+  enforced in code rather than prompt-only.
 
 ### Fixed
 - `joshbot onboard` over an existing install now treats a bare Enter at the

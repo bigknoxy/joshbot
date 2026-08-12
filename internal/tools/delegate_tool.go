@@ -72,6 +72,14 @@ func (t *DelegateSubagentTool) Execute(ctx interface{}, args map[string]any) Too
 		cctx = context.Background()
 	}
 
+	// Defense in depth: a leaf subagent is not offered delegate_subagent in its
+	// schema, but the model may still attempt to call it by name. Refuse here at
+	// runtime too. The top-level agent has no role on the context (depth 0);
+	// only an actual leaf subagent (depth >= 1) is refused.
+	if depth := subagent.DepthFromContext(cctx); depth >= 1 && subagent.RoleFromContext(cctx) == subagent.RoleLeaf {
+		return ToolResult{Error: fmt.Errorf("delegate_subagent refused: a leaf subagent cannot spawn child subagents")}
+	}
+
 	// The child runs one level deeper than the current subagent. The depth is
 	// carried on the context so nested delegate_subagent calls accumulate.
 	depth := subagent.DepthFromContext(cctx) + 1

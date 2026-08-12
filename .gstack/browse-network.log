@@ -1,0 +1,5 @@
+[2026-08-11T23:45:20.783Z] GET https://raw.githubusercontent.com/ericc-ch/copilot-api/master/src/lib/api-config.ts → 200 (272ms, 1809B)
+[2026-08-11T23:45:28.597Z] GET https://raw.githubusercontent.com/ericc-ch/copilot-api/master/src/services/github/get-copilot-token.ts → 200 (107ms, 614B)
+[2026-08-11T23:45:28.806Z] GET https://raw.githubusercontent.com/ericc-ch/copilot-api/master/src/services/github/get-models.ts → 404 (82ms, 14B)
+[2026-08-11T23:45:28.995Z] GET https://raw.githubusercontent.com/ericc-ch/copilot-api/master/src/services/copilot/create-chat-completions.ts → 200 (123ms, 4283B)
+[2026-08-11T23:45:39.155Z] GET https://raw.githubusercontent.com/ericc-ch/copilot-api/master/src/services/copilot/get-models.ts → 200 (97ms, 1142B)

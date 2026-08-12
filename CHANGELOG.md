@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `agent --output-format json|stream-json` with no `-m/--message` now writes a
+  `{"type":"error",...}` document to stderr like every other JSON-mode failure
+  (#220). It previously returned bare, leaving a wrapper with a non-zero exit
+  and an empty error channel — indistinguishable from a crash, and inconsistent
+  with the sibling `--image` path, which did emit one. `README.md` already
+  documented the emitted behaviour, so the claim was true of every path but
+  this one.
+
 ### Changed
 - **Test coverage raised from 78.3% to 81.4%** (#216), with the CI total floor
   moved 70% -> 78% and the `cmd/joshbot` per-package floor 58% -> 66%. Measured

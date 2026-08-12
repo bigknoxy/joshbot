@@ -155,6 +155,37 @@ func TestAgentJSONBadImagePathEmitsAnErrorDocument(t *testing.T) {
 	}
 }
 
+// JSON mode with no --message is refused, and the refusal must arrive as an
+// error document like every other JSON-mode failure. Returning bare left a
+// wrapper with a non-zero exit and an empty error channel, which it cannot
+// tell apart from a crash (issue #220).
+func TestAgentJSONWithoutMessageEmitsAnErrorDocument(t *testing.T) {
+	srv := newRecordingChatServer(t, "ok")
+	cfg := agentEnv(t, srv.URL+"/v1")
+
+	stderr := captureStderr(t, func() {
+		_, code := runCLI(t, "--config", cfg, "agent", "--output-format", "json")
+		if code != exitValidation {
+			t.Errorf("exit code = %d, want exitValidation (%d)", code, exitValidation)
+		}
+	})
+
+	line := strings.TrimSpace(stderr)
+	if line == "" {
+		t.Fatal("json mode refused the run but reported nothing on stderr")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(lastLine(line)), &doc); err != nil {
+		t.Fatalf("stderr is not a JSON document (%v):\n%s", err, stderr)
+	}
+	if doc["type"] != "error" {
+		t.Errorf(`stderr document type = %v, want "error": %s`, doc["type"], stderr)
+	}
+	if n := len(srv.requests()); n != 0 {
+		t.Errorf("the provider was called %d time(s) for a run with no message", n)
+	}
+}
+
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	return lines[len(lines)-1]

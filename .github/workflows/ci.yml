@@ -49,11 +49,11 @@ jobs:
         run: |
           TOTAL=$(go tool cover -func=coverage.out | grep 'total:' | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${TOTAL}%"
-          if [ "$(echo "${TOTAL} < 58" | bc -l)" = "1" ]; then
-            echo "FAIL: Total coverage ${TOTAL}% is below 58% threshold"
+          if [ "$(echo "${TOTAL} < 70" | bc -l)" = "1" ]; then
+            echo "FAIL: Total coverage ${TOTAL}% is below 70% threshold"
             exit 1
           fi
-          echo "PASS: Total coverage ${TOTAL}% meets 58% threshold"
+          echo "PASS: Total coverage ${TOTAL}% meets 70% threshold"
 
       - name: Check per-package coverage floors
         # The total floor alone lets a well-covered package launder a blind
@@ -74,8 +74,9 @@ jobs:
         # have been deleted with CI still passing, which is the failure mode
         # this check exists to prevent.
         #
-        # Last measured 2026-08-10 (issue #177): cmd/joshbot 49.3%, total 66.7%,
-        # both on darwin/arm64.
+        # Last measured 2026-08-11 (issue #177): cmd/joshbot 66.1%, total 78.3%,
+        # both on darwin/arm64. The floors below keep the usual margin for the
+        # linux/darwin gap rather than tracking those numbers exactly.
         #
         # internal/service is build-tagged per OS and the number differs
         # sharply between them: on darwin only launchd.go compiles and the
@@ -102,7 +103,7 @@ jobs:
               exit 1
             fi
           }
-          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 48
+          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 58
           check_pkg "github.com/bigknoxy/joshbot/internal/service" 40
           echo "PASS: all per-package coverage floors met"
 

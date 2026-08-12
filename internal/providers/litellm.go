@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
 // Logger is a simple logger interface for providers.
@@ -165,7 +166,7 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 	url := strings.TrimRight(apiBase, "/") + "/chat/completions"
 
 	// Marshal the request body
-	body, err := json.Marshal(req)
+	body, err := p.marshalBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -405,6 +406,11 @@ func (p *LiteLLMProvider) parseError(body []byte, statusCode int) error {
 		// Fallback to raw body if not JSON
 		errMsg = string(body)
 	}
+
+	// The provider's error body is outside our control and routinely quotes the
+	// request back, credential included. It reaches the user as reply text, so
+	// it is redacted here rather than relying on the log writer.
+	errMsg = redact.String(errMsg)
 
 	// Determine if this error should trigger fallback
 	shouldFallback := isFallbackStatusCode(statusCode)

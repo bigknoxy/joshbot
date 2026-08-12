@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.50.0] - 2026-08-12
+
 ### Added
 - Dream two-stage memory consolidation is now reachable (#193). The subsystem
   was fully implemented in `internal/memory/dream.go` and wired to nothing — no

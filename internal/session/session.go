@@ -133,6 +133,27 @@ type Session struct {
 	// Personality, when set, is an instruction appended to the system prompt
 	// for this session only. Cleared by /new.
 	Personality string `json:"personality,omitempty"`
+	// Checkpoint is set when the agent hits its iteration limit, recording
+	// enough state for /resume to pick up where the run stopped.
+	// Cleared when the user sends a new message (not /resume) or /new.
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+}
+
+// Checkpoint records where a ReAct loop was interrupted by the iteration
+// limit, so /resume can restart from the accumulated session state.
+type Checkpoint struct {
+	// Iteration is the iteration count at which the loop stopped.
+	Iteration int `json:"iteration"`
+	// MaxIterations is the limit that was hit.
+	MaxIterations int `json:"max_iterations"`
+	// CreatedAt is when the checkpoint was saved.
+	CreatedAt time.Time `json:"created_at"`
+	// UserMessage is the original user message that drove the run,
+	// preserved so /resume can re-attach context if needed.
+	UserMessage string `json:"user_message,omitempty"`
+	// RemainingTokens is the token budget left at checkpoint time
+	// (informational, not enforced).
+	RemainingTokens int `json:"remaining_tokens,omitempty"`
 }
 
 // NewSession creates a new session with the given ID.
@@ -284,6 +305,11 @@ func (s *Session) UnmarshalJSON(data []byte) error {
 	s.Messages = aux.Messages
 	s.CreatedAt = aux.CreatedAt
 	s.UpdatedAt = aux.UpdatedAt
+	s.ConversationTopic = aux.ConversationTopic
+	s.ConversationContext = aux.ConversationContext
+	s.ModelOverride = aux.ModelOverride
+	s.Personality = aux.Personality
+	s.Checkpoint = aux.Checkpoint
 	return nil
 }
 

@@ -284,12 +284,14 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
 			ModelOverride       string            `json:"model_override,omitempty"`
 			Personality         string            `json:"personality,omitempty"`
+			Checkpoint          *Checkpoint       `json:"checkpoint,omitempty"`
 		}
 		if err := json.Unmarshal(metaData, &meta); err == nil {
 			sess.ConversationTopic = meta.ConversationTopic
 			sess.ConversationContext = meta.ConversationContext
 			sess.ModelOverride = meta.ModelOverride
 			sess.Personality = meta.Personality
+			sess.Checkpoint = meta.Checkpoint
 		}
 	}
 
@@ -339,17 +341,19 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 	// otherwise re-inject a cleared model override or personality on the next
 	// Load, so `/personality none` or `/model x --global` (which clears the
 	// session override) would silently do nothing after a restart.
-	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" {
+	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" || s.Checkpoint != nil {
 		meta := struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
 			ModelOverride       string            `json:"model_override,omitempty"`
 			Personality         string            `json:"personality,omitempty"`
+			Checkpoint          *Checkpoint       `json:"checkpoint,omitempty"`
 		}{
 			ConversationTopic:   s.ConversationTopic,
 			ConversationContext: s.ConversationContext,
 			ModelOverride:       s.ModelOverride,
 			Personality:         s.Personality,
+			Checkpoint:          s.Checkpoint,
 		}
 		metaData, err := json.Marshal(meta)
 		if err != nil {

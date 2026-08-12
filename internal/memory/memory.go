@@ -35,6 +35,7 @@ type Manager struct {
 	now       func() time.Time
 	mu        sync.RWMutex
 	maxSize   int
+	dream     *DreamManager // nil when Dream consolidation is disabled
 }
 
 // New returns a Manager rooted inside the provided workspace directory.

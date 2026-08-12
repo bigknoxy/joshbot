@@ -133,7 +133,7 @@ func detectRunningContext() runningContext {
 	ctx := runningContext{}
 
 	// Check for go run
-	exePath, _ := os.Executable()
+	exePath, _ := osExecutable()
 	if runningFromGoRun(exePath) {
 		ctx.IsGoRun = true
 		return ctx
@@ -145,7 +145,7 @@ func detectRunningContext() runningContext {
 	}
 
 	// Check for service installation
-	svc, err := service.NewManager(service.Config{Name: "joshbot"})
+	svc, err := newServiceManager(service.Config{Name: "joshbot"})
 	if err == nil && svc.IsInstalled() {
 		status, _ := svc.Status()
 		if status.Running {
@@ -2128,7 +2128,7 @@ func runUpdate(c *cli.Context) error {
 	}
 
 	if runCtx.IsService {
-		svc, err := service.NewManager(service.Config{
+		svc, err := newServiceManager(service.Config{
 			Name:        "joshbot",
 			DisplayName: "Joshbot AI Assistant",
 			Description: "Personal AI assistant with Telegram integration",
@@ -2175,12 +2175,19 @@ type GitHubRelease struct {
 }
 
 // getLatestVersion fetches the latest stable release tag from GitHub API.
+// releaseAPIURL is where the update check asks for the newest release. It is a
+// package var rather than a constant for the same reason isTTY is: it is the
+// one thing standing between this function and the network, and a test that
+// cannot substitute it cannot cover the parse, status and empty-tag paths at
+// all. Tests point it at an httptest server; nothing in production writes it.
+var releaseAPIURL = "https://api.github.com/repos/bigknoxy/joshbot/releases/latest"
+
 func getLatestVersion() (string, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/bigknoxy/joshbot/releases/latest", nil)
+	req, err := http.NewRequest("GET", releaseAPIURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -2322,7 +2329,7 @@ func copyFile(src, dst string) error {
 
 // getBinaryPath returns the path to the current executable.
 func getBinaryPath() (string, error) {
-	exePath, err := os.Executable()
+	exePath, err := osExecutable()
 	if err != nil {
 		return "", err
 	}
@@ -2336,10 +2343,25 @@ func getBinaryPath() (string, error) {
 	return realPath, nil
 }
 
+// osExecutable and newServiceManager are the two things standing between this
+// package and the host: the path of the running binary (which uninstall and
+// update both replace or delete) and the real launchd/systemd manager. They
+// are package vars for the same reason isTTY is — a test that cannot
+// substitute them can only cover the early bail-outs, and the delete and
+// daemon-install paths are exactly the parts worth pinning. Every
+// service.NewManager call site goes through newServiceManager; a new one that
+// calls the package function directly is untestable by construction. Tests
+// point osExecutable at a temp file, so the removal is real but harmless.
+// Nothing in production writes either.
+var (
+	osExecutable      = os.Executable
+	newServiceManager = service.NewManager
+)
+
 // runUninstall uninstalls joshbot and optionally removes configuration.
 func runUninstall(c *cli.Context) error {
 	// Find the binary location
-	exePath, err := os.Executable()
+	exePath, err := osExecutable()
 	if err != nil {
 		return fmt.Errorf("could not determine executable path: %w", err)
 	}
@@ -2406,7 +2428,7 @@ func runUninstall(c *cli.Context) error {
 		ExecPath:    absPath,
 	}
 
-	svc, svcErr := service.NewManager(svcCfg)
+	svc, svcErr := newServiceManager(svcCfg)
 	serviceUninstalled := false
 
 	if svcErr == nil && svc.IsInstalled() {
@@ -3659,7 +3681,7 @@ func installCronStartupEntry() error {
 		return fmt.Errorf("crontab not found")
 	}
 
-	execPath, err := os.Executable()
+	execPath, err := osExecutable()
 	if err != nil {
 		return fmt.Errorf("failed to detect executable path: %w", err)
 	}
@@ -3706,7 +3728,7 @@ func installCronStartupEntry() error {
 }
 
 func doServiceInstall() error {
-	svc, err := service.NewManager(service.Config{
+	svc, err := newServiceManager(service.Config{
 		Name:        "joshbot",
 		DisplayName: "joshbot AI Assistant",
 		Description: "Personal AI assistant with Telegram integration",
@@ -4835,7 +4857,7 @@ func configureFallbackOrder(cfg *config.Config) *config.Config {
 
 // runServiceInstall installs joshbot as a system service.
 func runServiceInstall(c *cli.Context) error {
-	svc, err := service.NewManager(service.Config{
+	svc, err := newServiceManager(service.Config{
 		Name:        "joshbot",
 		DisplayName: "Joshbot AI Assistant",
 		Description: "Personal AI assistant with Telegram integration",
@@ -4867,7 +4889,7 @@ func runServiceInstall(c *cli.Context) error {
 
 // runServiceUninstall uninstalls the joshbot system service.
 func runServiceUninstall(c *cli.Context) error {
-	svc, err := service.NewManager(service.Config{
+	svc, err := newServiceManager(service.Config{
 		Name:        "joshbot",
 		DisplayName: "Joshbot AI Assistant",
 		Description: "Personal AI assistant with Telegram integration",
@@ -4893,7 +4915,7 @@ func runServiceUninstall(c *cli.Context) error {
 
 // runServiceStatus checks the joshbot service status.
 func runServiceStatus(c *cli.Context) error {
-	svc, err := service.NewManager(service.Config{
+	svc, err := newServiceManager(service.Config{
 		Name:        "joshbot",
 		DisplayName: "Joshbot AI Assistant",
 		Description: "Personal AI assistant with Telegram integration",

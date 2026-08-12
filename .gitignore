@@ -52,3 +52,6 @@ htmlcov/
 # Agent worktrees (transient)
 .claude/worktrees/
 /bin/
+
+# gstack skill scratch artifacts
+.gstack/

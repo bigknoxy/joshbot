@@ -101,6 +101,8 @@ type stubManager struct {
 	status        service.Status
 	statusErr     error
 	startErr      error
+	restarted     bool
+	restartErr    error
 	statusCalls   int
 }
 
@@ -119,9 +121,12 @@ func (s *stubManager) Status() (service.Status, error) {
 	s.statusCalls++
 	return s.status, s.statusErr
 }
-func (s *stubManager) Start() error      { return s.startErr }
-func (s *stubManager) Stop() error       { return nil }
-func (s *stubManager) Restart() error    { return nil }
+func (s *stubManager) Start() error { return s.startErr }
+func (s *stubManager) Stop() error  { return nil }
+func (s *stubManager) Restart() error {
+	s.restarted = true
+	return s.restartErr
+}
 func (s *stubManager) IsInstalled() bool { return s.installed }
 func (s *stubManager) Name() string      { return "joshbot" }
 

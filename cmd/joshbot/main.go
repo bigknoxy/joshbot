@@ -2054,8 +2054,8 @@ func runUpdate(c *cli.Context) error {
 		extension = ".exe"
 	}
 	downloadURL := fmt.Sprintf(
-		"https://github.com/bigknoxy/joshbot/releases/download/%s/joshbot_%s_%s_%s%s",
-		latestVersion, latestVersion, runtime.GOOS, runtime.GOARCH, extension,
+		"%s/%s/joshbot_%s_%s_%s%s",
+		releaseDownloadBase, latestVersion, latestVersion, runtime.GOOS, runtime.GOARCH, extension,
 	)
 
 	if err := downloadBinary(downloadURL, tmpFile); err != nil {
@@ -2125,7 +2125,7 @@ func runUpdate(c *cli.Context) error {
 	// Interactive restart via exec
 	fmt.Println("Restarting joshbot...")
 	args := os.Args[1:]
-	err = syscall.Exec(exePath, append([]string{exePath}, args...), os.Environ())
+	err = execSelf(exePath, append([]string{exePath}, args...), os.Environ())
 	if err != nil {
 		fmt.Printf("Warning: Could not auto-restart: %v\n", err)
 		fmt.Println("Please restart joshbot manually.")
@@ -2158,6 +2158,17 @@ type GitHubRelease struct {
 // cannot substitute it cannot cover the parse, status and empty-tag paths at
 // all. Tests point it at an httptest server; nothing in production writes it.
 var releaseAPIURL = "https://api.github.com/repos/bigknoxy/joshbot/releases/latest"
+
+// releaseDownloadBase is the other half of that seam: where the new binary is
+// fetched from. execSelf is the last statement of a successful update and
+// replaces the process image, so a test that cannot substitute it can never
+// reach the binary-replacement code it guards — which is the part that can
+// leave an operator with no working joshbot at all. Nothing in production
+// writes either.
+var (
+	releaseDownloadBase = "https://github.com/bigknoxy/joshbot/releases/download"
+	execSelf            = syscall.Exec
+)
 
 func getLatestVersion() (string, error) {
 	client := &http.Client{

@@ -73,6 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enforced in code rather than prompt-only.
 
 ### Fixed
+- **`--image` without `-m/--message` still started the background services and
+  could cost a provider request.** The validation ran after `setupComponents`,
+  which starts cron, the heartbeat and the consolidator — and the consolidator's
+  first pass dials the provider. Both `--image` checks now run before anything is
+  built, so a refused invocation costs nothing.
 - **`extra_body` reached the provider on streaming requests only.** `Chat`
   marshalled the request itself instead of going through `marshalBody`, so any
   provider-specific JSON field configured under `extra_body` — poolside's

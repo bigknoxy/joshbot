@@ -126,14 +126,64 @@ func TestDelegateSubagentTool_IncrementsDepthOnContext(t *testing.T) {
 		t.Errorf("expected child depth 1, got %d", got)
 	}
 
-	// A nested call from a subagent already at depth 1 -> child at depth 2.
-	ctx := subagent.WithDepth(context.Background(), 1)
+	// A nested call from an orchestrator subagent already at depth 1 -> child
+	// at depth 2. The role must be orchestrator, or the leaf gate refuses it.
+	ctx := subagent.WithRole(subagent.WithDepth(context.Background(), 1), subagent.RoleOrchestrator)
 	result = tool.Execute(ctx, map[string]any{"prompt": "do it again"})
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 	if got := subagent.DepthFromContext(runner.lastCtx); got != 2 {
 		t.Errorf("expected child depth 2, got %d", got)
+	}
+}
+
+// The delegate tool must refuse a leaf subagent at runtime (defense in depth),
+// even though the leaf is not offered the tool in its schema. A leaf subagent
+// is at depth >= 1 with RoleLeaf on the context.
+func TestDelegateSubagentTool_RefusesLeafSubagent(t *testing.T) {
+	runner := &mockDelegatingRunner{output: "ok"}
+	tool := NewDelegateSubagentTool(runner)
+
+	ctx := subagent.WithRole(subagent.WithDepth(context.Background(), 1), subagent.RoleLeaf)
+	result := tool.Execute(ctx, map[string]any{"prompt": "do it"})
+	if result.Error == nil {
+		t.Fatal("expected delegate_subagent to refuse a leaf subagent")
+	}
+	if !strings.Contains(result.Error.Error(), "leaf subagent") {
+		t.Errorf("refusal error %q should mention the leaf role", result.Error)
+	}
+	if runner.callCount != 0 {
+		t.Errorf("runner was called %d time(s); a refused leaf must not spawn a child", runner.callCount)
+	}
+}
+
+// An orchestrator subagent (or the top-level agent with no role) may delegate.
+func TestDelegateSubagentTool_AllowsOrchestrator(t *testing.T) {
+	runner := &mockDelegatingRunner{output: "ok"}
+	tool := NewDelegateSubagentTool(runner)
+
+	ctx := subagent.WithRole(subagent.WithDepth(context.Background(), 2), subagent.RoleOrchestrator)
+	result := tool.Execute(ctx, map[string]any{"prompt": "do it"})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if runner.callCount != 1 {
+		t.Errorf("expected the orchestrator's child to run, callCount=%d", runner.callCount)
+	}
+}
+
+// The top-level agent (no role, depth 0) may delegate.
+func TestDelegateSubagentTool_AllowsTopLevelAgent(t *testing.T) {
+	runner := &mockDelegatingRunner{output: "ok"}
+	tool := NewDelegateSubagentTool(runner)
+
+	result := tool.Execute(context.Background(), map[string]any{"prompt": "do it"})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if runner.callCount != 1 {
+		t.Errorf("expected the top-level child to run, callCount=%d", runner.callCount)
 	}
 }
 

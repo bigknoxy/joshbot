@@ -53,6 +53,10 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("expected max tool iterations %d, got %d", DefaultMaxToolIterations, cfg.Agents.Defaults.MaxToolIterations)
 	}
 
+	if cfg.Agents.Defaults.SubagentMaxDepth != 0 {
+		t.Errorf("expected SubagentMaxDepth default 0 (falls back), got %d", cfg.Agents.Defaults.SubagentMaxDepth)
+	}
+
 	if cfg.Agents.Defaults.MemoryWindow != DefaultMemoryWindow {
 		t.Errorf("expected memory window %d, got %d", DefaultMemoryWindow, cfg.Agents.Defaults.MemoryWindow)
 	}
@@ -280,10 +284,20 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid log level error",
+			name: "invalid negative subagent depth",
 			cfg: func() *Config {
 				cfg := Defaults()
-				cfg.LogLevel = "error"
+				cfg.Agents.Defaults.SubagentMaxDepth = -1
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  "subagent_max_depth must not be negative",
+		},
+		{
+			name: "valid subagent depth",
+			cfg: func() *Config {
+				cfg := Defaults()
+				cfg.Agents.Defaults.SubagentMaxDepth = 3
 				return cfg
 			}(),
 			wantErr: false,

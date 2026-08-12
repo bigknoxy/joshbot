@@ -84,6 +84,9 @@ const (
 	DefaultToolOutputMaxChars = 4000
 	// DefaultMaxMemorySize is the default maximum bytes for MEMORY.md content loaded into context.
 	DefaultMaxMemorySize = 4096
+	// DefaultSubagentMaxDepth is the default maximum nesting depth for
+	// delegate_subagent chains. Mirrors subagent.DefaultMaxDepth.
+	DefaultSubagentMaxDepth = 2
 
 	// Dream consolidation modes for agents.defaults.dream_mode.
 	DreamModeOff    = "off"
@@ -146,6 +149,9 @@ type AgentDefaults struct {
 	// value means off, so a config written before this key existed keeps the
 	// old behaviour without a migration.
 	DreamMode string `mapstructure:"dream_mode" json:"dream_mode,omitempty" yaml:"dream_mode,omitempty"`
+	// SubagentMaxDepth bounds how deep a delegate_subagent chain may nest. A
+	// zero value falls back to DefaultSubagentMaxDepth.
+	SubagentMaxDepth int `mapstructure:"subagent_max_depth" json:"subagent_max_depth,omitempty" yaml:"subagent_max_depth,omitempty"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -1058,6 +1064,11 @@ func (c *Config) Validate() error {
 	// Validate max_tool_iterations is positive
 	if c.Agents.Defaults.MaxToolIterations <= 0 {
 		return errors.New("max_tool_iterations must be positive")
+	}
+
+	// Validate subagent_max_depth is positive
+	if c.Agents.Defaults.SubagentMaxDepth < 0 {
+		return errors.New("subagent_max_depth must not be negative")
 	}
 
 	// Validate memory_window is positive

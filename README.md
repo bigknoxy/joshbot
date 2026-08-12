@@ -426,8 +426,9 @@ Subagents are useful for:
 
 An **orchestrator** subagent can delegate to child subagents via the
 `delegate_subagent` tool, optionally with a different model per task. Nesting
-is bounded to a configurable maximum depth (default 2) so a recursive
-delegation chain cannot grow unbounded.
+is bounded to a maximum depth (`agents.defaults.subagent_max_depth`, default
+2) so a recursive delegation chain cannot grow unbounded; a leaf subagent is
+not offered the subagent-spawning tools at all.
 
 ## Heartbeat (Proactive Tasks)
 
@@ -720,7 +721,8 @@ For backward compatibility, the old format still works:
       "temperature": 0.7,
       "max_tool_iterations": 20,
       "memory_window": 50,
-      "streaming": true
+      "streaming": true,
+      "subagent_max_depth": 2
     }
   },
   "channels": {

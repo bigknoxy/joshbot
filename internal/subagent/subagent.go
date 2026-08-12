@@ -46,6 +46,26 @@ func DepthFromContext(ctx context.Context) int {
 	return 0
 }
 
+// roleKey is the context key carrying the current subagent role.
+type roleKey struct{}
+
+// WithRole returns a context carrying the role of the currently-running
+// subagent. The top-level agent (not a subagent) has no role set, so
+// RoleFromContext returns RoleLeaf (the zero value) for it.
+func WithRole(ctx context.Context, role Role) context.Context {
+	return context.WithValue(ctx, roleKey{}, role)
+}
+
+// RoleFromContext returns the subagent role carried on the context, or
+// RoleLeaf when none is set (the top-level agent, or a caller that did not
+// record a role).
+func RoleFromContext(ctx context.Context) Role {
+	if r, ok := ctx.Value(roleKey{}).(Role); ok {
+		return r
+	}
+	return RoleLeaf
+}
+
 // Role controls what a subagent can do and whether it can spawn further subagents.
 type Role int
 
@@ -354,22 +374,27 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 		{Role: providers.RoleUser, Content: prompt},
 	}
 
-	// Apply timeout from config (in addition to any caller-provided context).
+	// Apply timeout from config (in addition to any caller-provided context),
+	// and carry the role on the context so a nested delegate_subagent call can
+	// enforce the "leaf cannot spawn" contract at runtime.
 	runCtx := ctx
 	if cfg.Timeout > 0 {
 		var cancel context.CancelFunc
 		runCtx, cancel = context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 	}
+	runCtx = WithRole(runCtx, cfg.Role)
 
 	var totalUsage providers.Usage
 	var iterations int
 	var timedOut bool
 
-	// Get tool schemas once — they don't change mid-run.
+	// Get tool schemas once — they don't change mid-run. The subagent-spawning
+	// tools are only advertised to orchestrators: a leaf is not offered them, so
+	// it cannot spawn children even if it ignores its system prompt.
 	var toolSchemas []providers.Tool
 	if r.tools != nil {
-		toolSchemas = r.tools.GetSchemas()
+		toolSchemas = filterSchemasByRole(r.tools.GetSchemas(), cfg.Role)
 	}
 
 	for i := 0; i < cfg.MaxIter; i++ {
@@ -609,4 +634,32 @@ func summarizeArgs(args map[string]any) string {
 		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// spawnToolNames are the tools that can spawn or fan out further subagents.
+// They are filtered out of a leaf subagent's schema so a leaf cannot delegate
+// or fan out even if it ignores its system prompt.
+var spawnToolNames = map[string]bool{
+	"delegate_subagent": true,
+	"parallel_subagent": true,
+	"chain_execution":   true,
+	"subagent_profile":  true,
+}
+
+// filterSchemasByRole returns the tool schemas appropriate for the given role.
+// Orchestrators (and the top-level agent, whose role is the zero value RoleLeaf
+// but which is not a subagent) keep every tool; a leaf subagent loses the
+// subagent-spawning tools.
+func filterSchemasByRole(schemas []providers.Tool, role Role) []providers.Tool {
+	if role != RoleLeaf || len(schemas) == 0 {
+		return schemas
+	}
+	out := make([]providers.Tool, 0, len(schemas))
+	for _, t := range schemas {
+		if spawnToolNames[t.Function.Name] {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }

@@ -119,11 +119,11 @@ func (s *stubManager) Status() (service.Status, error) {
 	s.statusCalls++
 	return s.status, s.statusErr
 }
-func (s *stubManager) Start() error { return s.startErr }
-func (s *stubManager) Stop() error                     { return nil }
-func (s *stubManager) Restart() error                  { return nil }
-func (s *stubManager) IsInstalled() bool               { return s.installed }
-func (s *stubManager) Name() string                    { return "joshbot" }
+func (s *stubManager) Start() error      { return s.startErr }
+func (s *stubManager) Stop() error       { return nil }
+func (s *stubManager) Restart() error    { return nil }
+func (s *stubManager) IsInstalled() bool { return s.installed }
+func (s *stubManager) Name() string      { return "joshbot" }
 
 // uninstallEnv points osExecutable at a throwaway binary and config.DefaultHome
 // at a throwaway directory, so the removals are real but land in a temp dir.

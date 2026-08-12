@@ -24,6 +24,28 @@ const DefaultTemperature = 0.3
 // DefaultTimeout is the default timeout for a subagent run.
 const DefaultTimeout = 60 * time.Second
 
+// DefaultMaxDepth is the default maximum nesting depth for subagent
+// delegation. A depth of 0 means the top-level subagent; each delegate_subagent
+// call descends one level, and a call that would exceed the limit is refused.
+const DefaultMaxDepth = 2
+
+// depthKey is the context key carrying the current subagent nesting depth.
+type depthKey struct{}
+
+// WithDepth returns a context carrying the current subagent nesting depth.
+func WithDepth(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, depthKey{}, depth)
+}
+
+// DepthFromContext returns the subagent nesting depth carried on the context,
+// or 0 when none is set (a top-level subagent).
+func DepthFromContext(ctx context.Context) int {
+	if d, ok := ctx.Value(depthKey{}).(int); ok {
+		return d
+	}
+	return 0
+}
+
 // Role controls what a subagent can do and whether it can spawn further subagents.
 type Role int
 
@@ -95,6 +117,10 @@ type Config struct {
 	MaxIter     int
 	Timeout     time.Duration
 	Role        Role
+	// MaxDepth is the maximum nesting depth this subagent may delegate to.
+	// 0 means the DefaultMaxDepth. A delegate_subagent call that would exceed
+	// it is refused.
+	MaxDepth int
 }
 
 // StreamSink receives streaming text deltas and tool progress events from a subagent.
@@ -137,6 +163,7 @@ type Runner struct {
 	maxTokens    int
 	temperature  float64
 	timeout      time.Duration
+	maxDepth     int
 }
 
 // OptFunc configures a Runner.
@@ -202,6 +229,15 @@ func WithTimeout(d time.Duration) OptFunc {
 	return func(r *Runner) {
 		if d > 0 {
 			r.timeout = d
+		}
+	}
+}
+
+// WithMaxDepth sets the default maximum nesting depth for subagent delegation.
+func WithMaxDepth(n int) OptFunc {
+	return func(r *Runner) {
+		if n > 0 {
+			r.maxDepth = n
 		}
 	}
 }
@@ -300,10 +336,18 @@ func (r *Runner) RunWithCallback(ctx context.Context, prompt string, cfg Config,
 	cfg.MaxTokens = firstNonZero(cfg.MaxTokens, r.maxTokens, DefaultMaxTokens)
 	cfg.Temperature = firstNonZeroFloat(cfg.Temperature, r.temperature, DefaultTemperature)
 	cfg.Timeout = firstNonZeroDur(cfg.Timeout, r.timeout, DefaultTimeout)
+	cfg.MaxDepth = firstNonZero(cfg.MaxDepth, r.maxDepth, DefaultMaxDepth)
 	model := firstNonZeroStr(cfg.Model, r.defaultModel)
 
+	// Enforce the nesting-depth limit. The current depth rides the context
+	// (set by delegate_subagent); a call that would exceed the configured max
+	// is refused rather than spawning an unbounded chain of subagents.
+	if depth := DepthFromContext(ctx); depth > cfg.MaxDepth {
+		return nil, fmt.Errorf("subagent nesting depth %d exceeds the maximum of %d", depth, cfg.MaxDepth)
+	}
+
 	// Build the isolated system prompt based on role.
-	sysPrompt := r.buildSystemPrompt(cfg.Role, cfg.MaxIter)
+	sysPrompt := r.buildSystemPrompt(cfg.Role, cfg.MaxIter, cfg.MaxDepth)
 
 	messages := []providers.Message{
 		{Role: providers.RoleSystem, Content: sysPrompt},
@@ -521,7 +565,7 @@ func (r *Runner) RunOrchestrator(ctx context.Context, prompt string, cfg Config,
 }
 
 // buildSystemPrompt constructs the system prompt based on the subagent's role.
-func (r *Runner) buildSystemPrompt(role Role, maxIter int) string {
+func (r *Runner) buildSystemPrompt(role Role, maxIter, maxDepth int) string {
 	var roleDesc string
 	var constraints string
 
@@ -531,7 +575,7 @@ func (r *Runner) buildSystemPrompt(role Role, maxIter int) string {
 		constraints = "You cannot spawn subagents. Complete the task directly with available tools."
 	case RoleOrchestrator:
 		roleDesc = "orchestrator subagent"
-		constraints = "You can delegate sub-tasks to child subagents via available tools, and combine their results."
+		constraints = fmt.Sprintf("You can delegate sub-tasks to child subagents via the delegate_subagent tool, up to a nesting depth of %d. Combine their results.", maxDepth)
 	}
 
 	return fmt.Sprintf(`You are an isolated %s running in a separate sandboxed context.

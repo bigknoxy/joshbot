@@ -8,11 +8,20 @@ import (
 	"sync"
 
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/subagent"
 )
 
 // SubagentRunner is the interface for running a subagent task.
 type SubagentRunner interface {
 	SimpleRun(ctx context.Context, prompt string) (string, error)
+}
+
+// DelegatingRunner is the interface for running a subagent with a role, model
+// override, and nesting-depth tracking. It is implemented by subagent.Runner
+// and used by the delegate_subagent tool so an orchestrator can actually spawn
+// a child subagent.
+type DelegatingRunner interface {
+	RunWithCallback(ctx context.Context, prompt string, cfg subagent.Config, asyncCallback func(subagent.AsyncResult), onProgress subagent.ProgressFunc) (*subagent.SubResult, error)
 }
 
 // subagentTask represents a single parallel task.

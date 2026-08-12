@@ -424,6 +424,11 @@ Subagents are useful for:
 - Multi-step implementation tasks
 - Parallel independent work
 
+An **orchestrator** subagent can delegate to child subagents via the
+`delegate_subagent` tool, optionally with a different model per task. Nesting
+is bounded to a configurable maximum depth (default 2) so a recursive
+delegation chain cannot grow unbounded.
+
 ## Heartbeat (Proactive Tasks)
 
 The heartbeat service (active in gateway mode) reads `~/.joshbot/workspace/HEARTBEAT.md` periodically. Add tasks in checkbox format:
@@ -1099,6 +1104,7 @@ reaches the prompt.
 | `skill_registry` | List, create, and delete skills (workspace skills need `joshbot skills trust` before use) |
 | `parallel_subagent` | Run multiple subagent tasks in parallel |
 | `chain_execution` | Run subagent steps sequentially, feeding output forward |
+| `delegate_subagent` | Spawn a child subagent (leaf or orchestrator) with an optional model override; nesting depth is bounded |
 
 **Security defaults:**
 - `web_fetch` and `web_search` block localhost, private IP ranges, and metadata hosts (SSRF protection), enforced at dial time.

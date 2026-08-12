@@ -987,6 +987,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	)
 	toolsRegistry.Register(tools.NewParallelSubagentTool(subagentRunner))
 	toolsRegistry.Register(tools.NewChainExecutionTool(subagentRunner))
+	toolsRegistry.Register(tools.NewDelegateSubagentTool(subagentRunner))
 
 	// Create subagent config manager for agent profile discovery
 	agentConfigDir := filepath.Join(config.DefaultHome, "agents")

@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both print through the redactor, since an insight is derived from
   conversation text. `consolidate` exits non-zero when Dream is off rather than
   silently doing nothing.
+- **Orchestrator subagents can now actually spawn children** (#194). A new
+  `delegate_subagent` tool lets an orchestrator-role subagent delegate a task
+  to a child subagent (leaf or orchestrator) with an optional per-task model
+  override, and the child runs its own isolated ReAct loop with tool access.
+  Previously the orchestrator role was scaffolding only — its system prompt
+  claimed it could delegate but no tool existed to do so, and both
+  `parallel_subagent` and `chain_execution` ran every task as a leaf. Nesting
+  is bounded: the current depth rides the request context, and a
+  `delegate_subagent` call that would exceed the configured maximum
+  (`subagent.WithMaxDepth`, default 2) is refused with an error naming the
+  depth and the limit, so a recursive delegation chain cannot grow unbounded.
 
 ### Fixed
 - `joshbot onboard` over an existing install now treats a bare Enter at the

@@ -137,14 +137,15 @@ func TestBackgroundRunNotifiesOnceAndSettlesTheHandleFirst(t *testing.T) {
 	prov := &scriptedProvider{replies: []providers.Message{{Content: "background answer"}}}
 	r := NewRunner(prov, "m")
 
-	var calls int
+	// The handle reaches the callback through a channel rather than a captured
+	// variable: notify can fire before RunBackground has returned, so reading
+	// the assignment directly is a race in the test, not in the runner.
+	hc := make(chan *Handle, 1)
 	seen := make(chan string, 4)
-	var h *Handle
-	h = r.RunBackground(context.Background(), "go", Config{}, func(res *SubResult, err error) {
-		calls++
+	h := r.RunBackground(context.Background(), "go", Config{}, func(res *SubResult, err error) {
 		// The callback must see a settled handle: a notify that fires before
 		// the result is stored makes every callback-driven caller race.
-		if _, _, ok := h.Result(); !ok {
+		if _, _, ok := (<-hc).Result(); !ok {
 			seen <- "handle not settled when notify fired"
 			return
 		}
@@ -154,6 +155,7 @@ func TestBackgroundRunNotifiesOnceAndSettlesTheHandleFirst(t *testing.T) {
 		}
 		seen <- res.Output
 	})
+	hc <- h
 
 	select {
 	case got := <-seen:
@@ -168,8 +170,12 @@ func TestBackgroundRunNotifiesOnceAndSettlesTheHandleFirst(t *testing.T) {
 	if err != nil || res.Output != "background answer" {
 		t.Fatalf("Wait after completion: %v / %+v", err, res)
 	}
-	if calls != 1 {
-		t.Errorf("notify fired %d times, want 1", calls)
+	// notify must fire exactly once: a second delivery would leave a value in
+	// the buffered channel, and would also block forever on the empty hc.
+	select {
+	case extra := <-seen:
+		t.Errorf("notify fired more than once, second delivery %q", extra)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

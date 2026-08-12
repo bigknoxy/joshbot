@@ -116,6 +116,12 @@ func runMemoryConsolidate(c *cli.Context) error {
 	if dm == nil {
 		return cli.Exit("Dream memory is off; set agents.defaults.dream_mode to \"record\" or \"full\" first.", 1)
 	}
+	// Consolidate is a no-op below DreamFull. Printing "Consolidated N records
+	// into 0 insights" there is the agent -m anti-pattern: exit 0 over work
+	// that never happened, while dream_raw.log grows without bound.
+	if dm.Mode() != memory.DreamFull {
+		return cli.Exit("Dream memory is in \"record\" mode, which only records; set agents.defaults.dream_mode to \"full\" to consolidate.", 1)
+	}
 
 	raw := dm.CountRawRecords()
 	insights, err := dm.Consolidate(c.Context)

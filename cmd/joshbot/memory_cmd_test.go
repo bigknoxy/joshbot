@@ -131,3 +131,20 @@ func TestMemoryConsolidateTurnsRawRecordsIntoInsightsAndDrainsTheLog(t *testing.
 		t.Errorf("status does not list the stored insights:\n%s", out)
 	}
 }
+
+// Consolidate is a no-op below DreamFull, so "record" mode used to print
+// "Consolidated 2 raw record(s) into 0 insight(s)" and exit 0 forever while
+// dream_raw.log grew without bound — the agent -m anti-pattern, success
+// reported over work that never happened.
+func TestMemoryConsolidateRefusesInRecordMode(t *testing.T) {
+	cfg, workspace := dreamEnv(t, "record")
+	writeDreamRaw(t, workspace, "the deploy pipeline runs on github actions")
+
+	out, code := runCLI(t, "--config", cfg, "memory", "consolidate")
+	if code == 0 {
+		t.Fatalf("consolidate exited 0 in record mode:\n%s", out)
+	}
+	if strings.Contains(out, "Consolidated") {
+		t.Errorf("consolidate claimed to have consolidated something:\n%s", out)
+	}
+}

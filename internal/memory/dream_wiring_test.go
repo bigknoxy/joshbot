@@ -218,3 +218,37 @@ func TestListConsolidatedReturnsEveryInsightNewestFirst(t *testing.T) {
 		t.Errorf("order is %q..%q, want newest..oldest", got[0].Insight, got[2].Insight)
 	}
 }
+
+// Consolidate persists before it clears, and a failed persist must surface.
+// Reporting success there prints insights that are not on disk, leaves the
+// next `memory status` showing none, and gives the operator nothing to
+// correlate. The raw log staying intact is the other half: it is what makes
+// the next run a retry rather than a loss.
+func TestConsolidateReportsAFailedPersistAndKeepsTheRawLog(t *testing.T) {
+	dir := t.TempDir()
+	dm := NewDreamManager(dir, WithDreamMode(DreamFull))
+
+	for _, c := range []string{
+		"the deploy pipeline runs on github actions",
+		"deploys go out through github actions pipelines",
+	} {
+		if err := dm.Record(context.Background(), DreamRecord{Type: DreamThought, Content: c}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Make the consolidated log unwritable the way a permissions change or a
+	// full disk would.
+	consolidated := filepath.Join(dir, "dream_consolidated.jsonl")
+	if err := os.WriteFile(consolidated, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(consolidated, 0o600) })
+
+	if _, err := dm.Consolidate(context.Background()); err == nil {
+		t.Fatal("Consolidate reported success over a failed persist")
+	}
+	if n := dm.CountRawRecords(); n == 0 {
+		t.Fatal("raw log was cleared even though the insights never reached disk")
+	}
+}

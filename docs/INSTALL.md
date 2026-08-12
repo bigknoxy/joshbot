@@ -823,7 +823,10 @@ joshbot memory consolidate   # run consolidation now
 ```
 
 Data lives in `<workspace>/memory/dream_raw.log` and
-`<workspace>/memory/dream_consolidated.jsonl`.
+`<workspace>/memory/dream_consolidated.jsonl`. Consolidation is manual — nothing
+schedules it, so the raw log grows until you run `joshbot memory consolidate`
+(or schedule it yourself). In `"record"` mode that command exits non-zero:
+recording is all that mode does.
 
 ---
 

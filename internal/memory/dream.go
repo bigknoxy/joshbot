@@ -526,8 +526,11 @@ func (dm *DreamManager) Consolidate(ctx context.Context) ([]DreamConsolidated, e
 		// steps cannot lose the work: the raw log is only cleared once the
 		// consolidated form is safely on disk.
 		if err := dm.saveConsolidated(consolidations); err != nil {
-			// Non-fatal: keep the raw log so the next consolidation can retry.
-			return consolidations, nil
+			// The raw log is deliberately left intact so the next run can
+			// retry — but the error is returned, not swallowed. Reporting
+			// success here would print insights that are not on disk and
+			// leave `memory status` showing none, with nothing to correlate.
+			return consolidations, fmt.Errorf("persist consolidated insights: %w", err)
 		}
 		if err := dm.ClearRawRecords(); err != nil {
 			// Non-fatal: consolidation succeeded, we just couldn't trim the log.
@@ -705,12 +708,19 @@ func (dm *DreamManager) ClearRawRecords() error {
 func (dm *DreamManager) SearchSimilar(ctx context.Context, query string, k int) ([]DreamConsolidated, error) {
 	dm.config.mu.RLock()
 	enabled := dm.config.enabled
-	emb := dm.config.embedder
 	dm.config.mu.RUnlock()
 
 	if !enabled {
 		return nil, nil
 	}
+
+	// A search-local embedder, never the shared dm.config.embedder: Fit
+	// replaces the whole vocabulary, so a search running alongside Consolidate
+	// would have its Transform calls straddle two different vocabularies.
+	// Fit/Transform are each locked, so that races cleanly — it just scores
+	// against the wrong basis, silently, whenever the dimensions happen to
+	// match. Search reads; it must not mutate shared state.
+	emb := NewTFIDFEmbedder()
 
 	// Search over the durable consolidated insights, not the in-memory vector
 	// store. The vector store is rebuilt per Consolidate call and holds raw

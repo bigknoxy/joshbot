@@ -314,9 +314,14 @@ joshbot memory status        # mode, raw record count, stored insights
 joshbot memory consolidate   # run Stage 2 now
 ```
 
-Both are redacted, and `consolidate` exits non-zero when Dream is off rather
-than silently doing nothing. The env override is
+Both are redacted, and `consolidate` exits non-zero when Dream is off — or when
+it is in `"record"` mode, which records but never consolidates — rather than
+silently doing nothing. The env override is
 `JOSHBOT_AGENTS__DEFAULTS__DREAM_MODE`.
+
+**Stage 2 only runs when you run it.** Nothing schedules it, so `dream_raw.log`
+grows for as long as the agent runs. Drain it with `joshbot memory consolidate`,
+or schedule that command yourself (cron, systemd timer, launchd).
 
 **Context Compression** works efficiently with small local models (e.g., `gemma-2-9b`, `llama-3.2-3b`) — the summarization task is simple enough that you don't need a large model.
 

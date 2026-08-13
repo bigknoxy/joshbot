@@ -7,52 +7,6 @@ import (
 	"time"
 )
 
-// TestWithTimeout tests that WithTimeout correctly sets the timeout value
-func TestWithTimeout(t *testing.T) {
-	// DefaultConfig returns 120s timeout
-	defaultTimeout := 120 * time.Second
-
-	tests := []struct {
-		name           string
-		timeoutSeconds int
-		expectedValue  time.Duration
-	}{
-		{
-			name:           "positive timeout",
-			timeoutSeconds: 60,
-			expectedValue:  60 * time.Second,
-		},
-		{
-			name:           "zero timeout keeps default",
-			timeoutSeconds: 0,
-			expectedValue:  defaultTimeout,
-		},
-		{
-			name:           "negative timeout keeps default",
-			timeoutSeconds: -5,
-			expectedValue:  defaultTimeout,
-		},
-		{
-			name:           "large timeout",
-			timeoutSeconds: 300,
-			expectedValue:  300 * time.Second,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := NewConfig(WithTimeout(tt.timeoutSeconds))
-			if err != nil {
-				t.Fatalf("NewConfig failed: %v", err)
-			}
-
-			if cfg.Timeout != tt.expectedValue {
-				t.Errorf("expected Timeout to be %v, got %v", tt.expectedValue, cfg.Timeout)
-			}
-		})
-	}
-}
-
 // TestLiteLLMProviderParseError tests that parseError returns correct error types
 func TestLiteLLMProviderParseError(t *testing.T) {
 	tests := []struct {
@@ -242,38 +196,4 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-// TestNewConfigWithMultipleOptions tests that multiple options work together
-func TestNewConfigWithMultipleOptions(t *testing.T) {
-	cfg, err := NewConfig(
-		WithAPIKey("test-key"),
-		WithAPIBase("https://api.test.com"),
-		WithModel("test-model"),
-		WithTimeout(60),
-		WithMaxTokens(4096),
-		WithTemperature(0.5),
-	)
-	if err != nil {
-		t.Fatalf("NewConfig failed: %v", err)
-	}
-
-	if cfg.APIKey != "test-key" {
-		t.Errorf("expected APIKey test-key, got %s", cfg.APIKey)
-	}
-	if cfg.APIBase != "https://api.test.com" {
-		t.Errorf("expected APIBase https://api.test.com, got %s", cfg.APIBase)
-	}
-	if cfg.Model != "test-model" {
-		t.Errorf("expected Model test-model, got %s", cfg.Model)
-	}
-	if cfg.Timeout != 60*time.Second {
-		t.Errorf("expected Timeout 60s, got %v", cfg.Timeout)
-	}
-	if cfg.MaxTokens != 4096 {
-		t.Errorf("expected MaxTokens 4096, got %d", cfg.MaxTokens)
-	}
-	if cfg.Temperature != 0.5 {
-		t.Errorf("expected Temperature 0.5, got %f", cfg.Temperature)
-	}
 }

@@ -73,6 +73,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enforced in code rather than prompt-only.
 
 ### Fixed
+- **`--image` without `-m/--message` still started the background services and
+  could cost a provider request.** The validation ran after `setupComponents`,
+  which starts cron, the heartbeat and the consolidator — and the consolidator's
+  first pass dials the provider. Both `--image` checks now run before anything is
+  built, so a refused invocation costs nothing.
+- **`extra_body` reached the provider on streaming requests only.** `Chat`
+  marshalled the request itself instead of going through `marshalBody`, so any
+  provider-specific JSON field configured under `extra_body` — poolside's
+  `chat_template_kwargs`, the reason the setting exists — was dropped from every
+  non-streaming request, with no error anywhere. Streaming was unaffected.
+- **A provider's HTTP error body is now redacted before it becomes an error.**
+  The body is outside joshbot's control and routinely quotes the request back,
+  credential included; the error text reaches the user as reply text, which the
+  log-writer redaction never covers.
+
 - `joshbot onboard` over an existing install now treats a bare Enter at the
   "Existing Installation Found" menu as choice 1, the option the menu itself
   labels `(default: 1)`. Empty input fell through to choice 2 and moved the

@@ -94,18 +94,11 @@ func (s *systemdManager) IsInstalled() bool {
 	return err == nil
 }
 
-func (s *systemdManager) Install() (Result, error) {
-	if s.IsInstalled() {
-		return Result{}, fmt.Errorf("service already installed at %s", s.servicePath)
-	}
-
-	// Get the current user's home directory for HOME environment variable
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = s.config.WorkingDir // Fallback to working directory
-	}
-
-	unit := fmt.Sprintf(`[Unit]
+// renderUnit produces the systemd unit file. Operators read and edit this file
+// directly, so it is kept separate from the privileged install path that writes
+// it — the content is checkable without root.
+func (s *systemdManager) renderUnit(homeDir string) string {
+	return fmt.Sprintf(`[Unit]
 Description=%s
 After=network.target
 
@@ -120,6 +113,20 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 `, s.config.DisplayName, s.config.ExecPath, s.config.WorkingDir, homeDir)
+}
+
+func (s *systemdManager) Install() (Result, error) {
+	if s.IsInstalled() {
+		return Result{}, fmt.Errorf("service already installed at %s", s.servicePath)
+	}
+
+	// Get the current user's home directory for HOME environment variable
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = s.config.WorkingDir // Fallback to working directory
+	}
+
+	unit := s.renderUnit(homeDir)
 
 	tmpFile, err := os.CreateTemp("", "joshbot-service-*.tmp")
 	if err != nil {

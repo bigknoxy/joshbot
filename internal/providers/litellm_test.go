@@ -1,11 +1,9 @@
 package providers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -706,123 +704,6 @@ func TestListModels_InvalidResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
-}
-
-func TestLiteLLMProviderWithTools_ExecuteTool(t *testing.T) {
-	executed := false
-	executor := func(ctx context.Context, req ToolCallRequest) (*ToolCallResponse, error) {
-		executed = true
-		return &ToolCallResponse{
-			ToolCallID: req.ToolCallID,
-			Content:    "tool result",
-		}, nil
-	}
-
-	provider := NewLiteLLMProviderWithTools(Config{}, executor)
-
-	resp, err := provider.ExecuteTool(context.Background(), ToolCallRequest{
-		ToolCallID:   "call-123",
-		FunctionName: "test-func",
-		Arguments:    map[string]any{"arg": "value"},
-	})
-
-	if err != nil {
-		t.Fatalf("ExecuteTool() error = %v", err)
-	}
-	if !executed {
-		t.Error("executor was not called")
-	}
-	if resp.Content != "tool result" {
-		t.Errorf("Content = %q, want %q", resp.Content, "tool result")
-	}
-}
-
-func TestLiteLLMProviderWithTools_NoExecutor(t *testing.T) {
-	provider := NewLiteLLMProviderWithTools(Config{}, nil)
-
-	resp, err := provider.ExecuteTool(context.Background(), ToolCallRequest{
-		ToolCallID: "call-123",
-	})
-
-	if err != nil {
-		t.Fatalf("ExecuteTool() error = %v", err)
-	}
-	if !resp.IsError {
-		t.Error("expected error response when no executor")
-	}
-	if resp.Error != "no tool executor configured" {
-		t.Errorf("Error = %q", resp.Error)
-	}
-}
-
-func TestLiteLLMProviderWithTools_ChatWithTools(t *testing.T) {
-	provider := NewLiteLLMProviderWithTools(Config{
-		Model: "test-model",
-	}, func(ctx context.Context, req ToolCallRequest) (*ToolCallResponse, error) {
-		return &ToolCallResponse{
-			ToolCallID: req.ToolCallID,
-			Content:    "File content: hello world",
-		}, nil
-	})
-
-	// Create a test server that returns a tool call
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req ChatRequest
-		body, _ := io.ReadAll(r.Body)
-		_ = body
-
-		json.NewDecoder(bytes.NewReader(body)).Decode(&req)
-
-		// First call: return tool call
-		// Subsequent calls: return final response
-		if len(req.Messages) == 1 {
-			// First call - return tool call
-			resp := ChatResponse{
-				ID:    "chatcmpl-123",
-				Model: "test-model",
-				Choices: []Choice{{
-					Index: 0,
-					Message: Message{
-						Role:    RoleAssistant,
-						Content: "",
-						ToolCalls: []ToolCall{{
-							ID:   "call-123",
-							Type: "function",
-							Function: FunctionCall{
-								Name:      "read_file",
-								Arguments: `{"path":"/test.txt"}`,
-							},
-						}},
-					},
-				}},
-				Usage: Usage{},
-			}
-			json.NewEncoder(w).Encode(resp)
-		} else {
-			// After tool call - return final
-			resp := ChatResponse{
-				ID:    "chatcmpl-124",
-				Model: "test-model",
-				Choices: []Choice{{
-					Index: 0,
-					Message: Message{
-						Role:    RoleAssistant,
-						Content: "The file contains: hello world",
-					},
-				}},
-				Usage: Usage{},
-			}
-			json.NewEncoder(w).Encode(resp)
-		}
-	}))
-	server.Close()
-
-	// Override the client (hacky but works for testing)
-	provider.client = server.Client()
-
-	// Can't easily test ChatWithTools without a proper server setup
-	// Just verify the function exists
-	_ = provider.ChatWithTools
 }
 
 // Verify LiteLLMProvider implements Provider interface

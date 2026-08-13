@@ -1250,6 +1250,29 @@ func runAgent(c *cli.Context) error {
 		}
 	}
 
+	// Attachments are read before anything is built so a bad path fails fast,
+	// naming the path, instead of surfacing mid-conversation. This runs ahead of
+	// setupComponents on purpose: that call starts the cron, heartbeat and
+	// consolidator services, and the consolidator's first pass can dial the
+	// provider — so validating later left a refused invocation still costing a
+	// request.
+	images, imgErr := loadImageFlags(c.StringSlice("image"))
+	if imgErr != nil {
+		err := newExitError(exitValidation, "check the --image paths", imgErr)
+		if jsonMode {
+			emitJSONError(os.Stderr, "", err)
+		}
+		return err
+	}
+	if len(images) > 0 && c.String("message") == "" {
+		err := newExitError(exitValidation, "pass -m/--message with --image",
+			fmt.Errorf("--image requires --message"))
+		if jsonMode {
+			emitJSONError(os.Stderr, "", err)
+		}
+		return err
+	}
+
 	// Check for either legacy providers or new model-centric config
 	if !cfg.UseModelsConfig() && len(cfg.Providers) == 0 {
 		err := newExitError(exitAuth, "run 'joshbot onboard' to configure a provider",
@@ -1335,25 +1358,6 @@ func runAgent(c *cli.Context) error {
 			}
 		}
 	}()
-
-	// Attachments are read before the turn starts so a bad path fails fast,
-	// naming the path, instead of surfacing mid-conversation.
-	images, imgErr := loadImageFlags(c.StringSlice("image"))
-	if imgErr != nil {
-		err := newExitError(exitValidation, "check the --image paths", imgErr)
-		if jsonMode {
-			emitJSONError(os.Stderr, "", err)
-		}
-		return err
-	}
-	if len(images) > 0 && c.String("message") == "" {
-		err := newExitError(exitValidation, "pass -m/--message with --image",
-			fmt.Errorf("--image requires --message"))
-		if jsonMode {
-			emitJSONError(os.Stderr, "", err)
-		}
-		return err
-	}
 
 	// Non-interactive JSON modes: machine-readable single turn.
 	if jsonMode {

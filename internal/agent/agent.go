@@ -789,7 +789,14 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	a.logger.Warn("Hit max iterations", "max", a.maxIterations)
 
 	// Persist a checkpoint marker in the session for /resume detection.
-	var checkpointSaveErr error
+	//
+	// checkpointSaved gates the `/resume` suggestion, and it is a bool rather
+	// than a nil error check because there are two ways not to have a
+	// checkpoint: the save failed, or there is no session manager at all. A
+	// `err == nil` gate reads the second case as success and offers `/resume`,
+	// which then answers "session manager not initialized" — the same dead end
+	// the discarded error caused (#244).
+	checkpointSaved := false
 	if a.sessions != nil {
 		sess.Checkpoint = &session.Checkpoint{
 			Iteration:     a.maxIterations,
@@ -799,16 +806,17 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		}
 		// Save the session so the checkpoint survives across requests.
 		saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		checkpointSaveErr = a.sessions.Save(saveCtx, sess)
+		err := a.sessions.Save(saveCtx, sess)
 		cancel()
-		if checkpointSaveErr != nil {
-			a.logger.Error("Failed to save checkpoint", "session", sess.ID, "error", checkpointSaveErr)
+		if err != nil {
+			a.logger.Error("Failed to save checkpoint", "session", sess.ID, "error", err)
 		}
+		checkpointSaved = err == nil
 	}
 
-	respBase := "I've been working on this for a while. Here's what I found so far.\n\n⚠️ Hit the max iteration limit (%d)."
-	resp := fmt.Sprintf(respBase, a.maxIterations)
-	if checkpointSaveErr == nil {
+	resp := fmt.Sprintf("I've been working on this for a while. Here's what I found so far.\n\n"+
+		"⚠️ Hit the max iteration limit (%d).", a.maxIterations)
+	if checkpointSaved {
 		resp += "\nTo continue, type `/resume` and I'll pick up where we left off."
 	}
 	return resp, nil

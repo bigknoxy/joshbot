@@ -278,14 +278,28 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// writeError answers with an error joshbot itself wrote. The message is sent
+// verbatim: it is a constant in this package, so it carries no credential, and
+// running it through the redactor mangles it. The 401 body said
+// "Authorization: Bearer [REDACTED]" for exactly that reason (#238) — the
+// header rule ate the <key> placeholder that tells the caller what to send.
+//
+// Anything whose text came from outside this package — a provider error, an
+// upstream failure — goes through writeUpstreamError instead.
 func writeError(w http.ResponseWriter, status int, kind, code, msg string) {
-	writeJSON(w, status, errorEnvelope{Error: errorBody{Message: safeErrorMessage(msg), Type: kind, Code: code}})
+	writeJSON(w, status, errorEnvelope{Error: errorBody{Message: msg, Type: kind, Code: code}})
+}
+
+// writeUpstreamError answers with an error that originated outside joshbot,
+// redacting it first. See safeErrorMessage.
+func writeUpstreamError(w http.ResponseWriter, status int, kind, code, msg string) {
+	writeError(w, status, kind, code, safeErrorMessage(msg))
 }
 
 // safeErrorMessage strips credentials and the operator's home path out of an
 // error before it crosses the network.
 //
-// The messages that reach here are not joshbot's own prose: a 502 carries the
+// The messages it is applied to are not joshbot's own prose: a 502 carries the
 // provider's error text verbatim, and providers routinely echo credentials and
 // absolute paths. An API caller is authenticated but is not the operator, so
 // handing it the operator's upstream provider key is a privilege escalation.

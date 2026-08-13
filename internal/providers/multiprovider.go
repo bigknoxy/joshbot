@@ -296,7 +296,18 @@ func (mp *MultiProvider) Transcribe(ctx context.Context, audioData []byte, promp
 
 // parseModel resolves a model specification to a provider name and model name.
 // It handles "provider:model" format and direct provider name lookups.
+//
+// The read lock is held across the whole body, not reacquired per lookup. Both
+// defaultProvider reads used to sit outside it, so a config reload calling
+// SetDefault raced any in-flight turn — including the learning consolidator's
+// own Chat, which runs on a background goroutine for the lifetime of the
+// process. Taking and dropping the lock twice also let a reload land between
+// the entries lookup and the default read, resolving against a chain that no
+// longer existed. Nothing called here locks, so a single span is safe.
 func (mp *MultiProvider) parseModel(modelSpec string) (providerName, modelName string) {
+	mp.mu.RLock()
+	defer mp.mu.RUnlock()
+
 	if modelSpec == "" {
 		return mp.defaultProvider, ""
 	}
@@ -306,20 +317,13 @@ func (mp *MultiProvider) parseModel(modelSpec string) (providerName, modelName s
 		potentialProvider := modelSpec[:idx]
 		potentialModel := modelSpec[idx+1:]
 
-		mp.mu.RLock()
-		_, exists := mp.entries[potentialProvider]
-		mp.mu.RUnlock()
-
-		if exists {
+		if _, exists := mp.entries[potentialProvider]; exists {
 			return potentialProvider, potentialModel
 		}
 	}
 
 	// Check if modelSpec is itself a registered provider name (e.g., "smart")
-	mp.mu.RLock()
-	_, exists := mp.entries[modelSpec]
-	mp.mu.RUnlock()
-	if exists {
+	if _, exists := mp.entries[modelSpec]; exists {
 		return modelSpec, ""
 	}
 

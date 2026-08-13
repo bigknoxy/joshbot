@@ -29,6 +29,10 @@ var (
 type Manager struct {
 	sessionsDir string
 	mu          sync.RWMutex
+
+	// keys serialises whole turns per session id. mu guards a single Load or
+	// Save; keys guards the load→modify→save span that spans several of them.
+	keys *keyLock
 }
 
 // NewManager creates a new session manager with the given sessions directory.
@@ -49,6 +53,7 @@ func NewManager(sessionsDir string) (*Manager, error) {
 
 	return &Manager{
 		sessionsDir: sessionsDir,
+		keys:        newKeyLock(),
 	}, nil
 }
 
@@ -255,19 +260,19 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 		}
 	}
 
-	if len(messages) == 0 {
-		// Return empty session if file exists but is empty
-		return &Session{
-			ID:        sessionID,
-			Messages:  []Message{},
-			CreatedAt: time.Now().UTC(),
-			UpdatedAt: time.Now().UTC(),
-		}, nil
+	// First message determines created_at, last message determines updated_at.
+	// An empty file still falls through to the metadata load below rather than
+	// returning early: the sidecar carries the checkpoint, model override and
+	// personality, and a session can legitimately hold those with no messages
+	// yet. Returning early here dropped all of them silently.
+	createdAt := time.Now().UTC()
+	updatedAt := createdAt
+	if len(messages) > 0 {
+		createdAt = messages[0].Timestamp
+		updatedAt = messages[len(messages)-1].Timestamp
+	} else {
+		messages = []Message{}
 	}
-
-	// First message determines created_at, last message determines updated_at
-	createdAt := messages[0].Timestamp
-	updatedAt := messages[len(messages)-1].Timestamp
 
 	sess := &Session{
 		ID:        sessionID,
@@ -276,9 +281,20 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 		UpdatedAt: updatedAt,
 	}
 
-	// Load optional metadata file for conversation topic/context
+	// Load optional metadata file for conversation topic/context.
+	//
+	// A missing sidecar is the normal case and stays silent. Anything else is
+	// reported: the sidecar carries the model override, personality and
+	// checkpoint, and losing it produces no visible error at all — the user's
+	// /model appears to take, reverts on the next load, and takes again. The
+	// load itself stays lenient, matching the transcript path above.
 	metaPath := m.metadataFilePath(sessionID)
-	if metaData, err := os.ReadFile(metaPath); err == nil {
+	metaData, metaErr := os.ReadFile(metaPath)
+	if metaErr != nil && !os.IsNotExist(metaErr) {
+		log.Warnf("session %s: metadata sidecar unreadable (%v); model override, personality and checkpoint not restored",
+			sessionID, metaErr)
+	}
+	if metaErr == nil {
 		var meta struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
@@ -286,7 +302,10 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 			Personality         string            `json:"personality,omitempty"`
 			Checkpoint          *Checkpoint       `json:"checkpoint,omitempty"`
 		}
-		if err := json.Unmarshal(metaData, &meta); err == nil {
+		if err := json.Unmarshal(metaData, &meta); err != nil {
+			log.Warnf("session %s: metadata sidecar unparseable (%v); model override, personality and checkpoint not restored",
+				sessionID, err)
+		} else {
 			sess.ConversationTopic = meta.ConversationTopic
 			sess.ConversationContext = meta.ConversationContext
 			sess.ModelOverride = meta.ModelOverride

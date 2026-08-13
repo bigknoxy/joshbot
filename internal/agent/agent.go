@@ -70,21 +70,25 @@ type HistoryAppender interface {
 
 // Agent represents the main agent that processes messages using ReAct loop.
 type Agent struct {
-	cfg           *config.Config
-	provider      providers.Provider
-	tools         ToolExecutor
-	sessions      SessionManager
-	memory        MemoryLoader
-	history       HistoryAppender
-	skills        SkillsLoader
-	logger        *log.Logger
-	budget        *ctxpkg.BudgetManager
-	compressor    ContextCompressor
-	maxIterations int
-	timeout       time.Duration
-	skillDetector *skills.SkillDetector
-	extractor     *skills.Extractor
-	skillLoader   *skills.Loader
+	cfg      *config.Config
+	provider providers.Provider
+	tools    ToolExecutor
+	sessions SessionManager
+	// noLockerWarning keeps the "store cannot lock" warning out of the per-turn
+	// path; the condition is a property of the store, so it is true forever or
+	// never.
+	noLockerWarning sync.Once
+	memory          MemoryLoader
+	history         HistoryAppender
+	skills          SkillsLoader
+	logger          *log.Logger
+	budget          *ctxpkg.BudgetManager
+	compressor      ContextCompressor
+	maxIterations   int
+	timeout         time.Duration
+	skillDetector   *skills.SkillDetector
+	extractor       *skills.Extractor
+	skillLoader     *skills.Loader
 	// modelName holds a runtime global model override set by `joshbot`
 	// /model ... --global. It is read on every model resolution, so it is
 	// mutex-guarded: two sessions processed concurrently (the Telegram bus
@@ -367,19 +371,82 @@ func WithSkillLoader(l *skills.Loader) Option {
 	}
 }
 
+// SessionLocker is implemented by session stores that can serialise whole turns
+// for one session key.
+//
+// It is optional and checked with a type assertion, like session.Archiver, so
+// that test doubles and alternative SessionManager implementations are not
+// forced to implement it. A store that does not implement it keeps the previous
+// behaviour: turns for one key may interleave and lose each other's messages.
+type SessionLocker interface {
+	LockSession(ctx context.Context, sessionID string) (func(), error)
+}
+
 // Process handles an inbound message and returns the response content.
 // It implements the full ReAct loop: receive message, call LLM, execute tools, repeat.
+//
+// The turn is serialised per session key. A turn is a read-modify-write over
+// one session file, so two overlapping turns for the same key would each load
+// the same prefix and the later save would publish a file missing the earlier
+// turn's messages (#236). This is reachable by default through the HTTP API,
+// where two requests carrying the same `user` land on one session.
+//
+// Acquisition happens after the timeout context is built, so a turn queued
+// behind a long one waits against its own deadline rather than forever, and
+// reports the timeout instead of hanging.
 func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+
+	locker, ok := a.sessions.(SessionLocker)
+	if !ok {
+		// Failing open is deliberate — an alternative store must not be
+		// unusable — but it is #236 restored, and the symptom is messages
+		// vanishing from a transcript under load with nothing in the log to
+		// correlate against. *session.Manager implements the interface, so this
+		// branch only opens when something wraps it. Say so, once.
+		a.noLockerWarning.Do(func() {
+			a.logger.Warn("Session store does not support locking; concurrent turns for one session may lose messages",
+				"type", fmt.Sprintf("%T", a.sessions))
+		})
+	}
+	if ok {
+		sessionKey := getSessionKey(msg)
+		waitStart := time.Now()
+		release, err := locker.LockSession(ctx, sessionKey)
+		if err != nil {
+			// LockSession validates before it queues, so a rejected session id
+			// arrives here too. Reporting that as a lock failure sends the
+			// reader hunting for a concurrency problem that does not exist.
+			if errors.Is(err, session.ErrInvalidSessionID) {
+				a.logger.Error("Rejected an invalid session id", "session", sessionKey, "error", err)
+				return ReplyPrefix + fmt.Sprintf("invalid session id: %v", err), nil
+			}
+			a.logger.Error("Failed to acquire session lock",
+				"session", sessionKey, "waited", time.Since(waitStart), "error", err)
+			// ReplyPrefix, not a prefix of its own: Process reports failures in
+			// band as reply text with a nil error, and every non-interactive
+			// caller translates them back with ReplyError. A turn that gave up
+			// waiting for the lock must reach `agent -m` as exit 1 and the HTTP
+			// API as a 502, not as a 200 carrying an error string as the answer.
+			return ReplyPrefix + fmt.Sprintf("could not acquire the session lock: %v", err), nil
+		}
+		defer release()
+	}
+
+	return a.process(ctx, msg)
+}
+
+// process is Process without the lock. handleResumeCommand re-enters it to run
+// the resumed turn through the normal ReAct loop, and re-entering Process there
+// would deadlock on the lock this goroutine already holds.
+func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, error) {
 	startTime := time.Now()
 	a.logger.Info("Processing message",
 		"channel", msg.Channel,
 		"sender", msg.SenderID,
 		"content_len", len(msg.Content),
 	)
-
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(ctx, a.timeout)
-	defer cancel()
 
 	// Handle commands (pass context for session deletion)
 	if isCommand(msg.Content) {
@@ -1664,7 +1731,9 @@ func (a *Agent) handleResumeCommand(ctx context.Context, msg bus.InboundMessage)
 		Timestamp: msg.Timestamp,
 	}
 
-	resp, err := a.Process(ctx, continueMsg)
+	// a.process, not a.Process: this goroutine already holds the session lock,
+	// and re-entering Process would deadlock against itself.
+	resp, err := a.process(ctx, continueMsg)
 	if err != nil {
 		return fmt.Sprintf("Error: resume failed: %v", err)
 	}

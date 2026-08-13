@@ -20,6 +20,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default they were trying to raise.
 
 ### Fixed
+- **Data race on the multi-provider's default provider.**
+  `MultiProvider.parseModel` read `defaultProvider` outside the lock while
+  `SetDefault` wrote it under one, so a config reload racing any in-flight
+  request was a genuine race — reachable in production, since the learning
+  consolidator runs `Chat` on a background goroutine for the life of the
+  process. `parseModel` now holds the read lock across its whole body, which
+  also stops a reload landing between the provider-entry lookup and the default
+  read and resolving against a chain that no longer exists.
+- **Concurrent turns on one session no longer lose each other's messages**
+  (#236). A turn is a read-modify-write over one session file: it loads the
+  history, appends, and rewrites the whole thing. The manager's mutex guarded
+  each load and each save but was released between them, so two overlapping
+  turns for the same key both loaded the same prefix and the later save
+  published a file with the other turn's messages gone. It was reachable by
+  default through the HTTP API, where two requests carrying the same `user` land
+  on one session. `Process` now holds a per-session-key lock across the whole
+  span, so same-key turns queue instead of racing — which is also what a single
+  conversation means. A turn that gives up waiting fails on its own timeout
+  rather than blocking indefinitely, and the lock table is reference counted so
+  the unbounded `user` key space cannot grow it. The lock is process-local: a
+  gateway and a concurrent `joshbot agent -m` sharing one sessions directory can
+  still interleave, which is the pre-existing state.
+- **A session's metadata sidecar survives having no messages.** `Load` returned
+  early on an empty message list, before reading `.meta.json` at all, so a
+  checkpoint, model override or personality set on a session with no transcript
+  yet was silently dropped on the next load. Command turns are not appended to
+  the transcript, so `/model` or `/personality` as the first thing a user does
+  hit exactly that case. An unreadable or unparseable sidecar is now logged
+  rather than discarded silently — losing it produces no visible error at all,
+  just a `/model` that appears to take and reverts on the next load.
+- **A turn that gives up waiting for the session lock is reported as a failure.**
+  It returned a message with a prefix of its own, which `agent.ReplyError` does
+  not match, so the HTTP API answered 200 with an error string as the assistant's
+  reply and `agent -m` exited 0. It now uses `agent.ReplyPrefix` like every other
+  in-band failure. An invalid session id is reported as such instead of as a lock
+  failure, and a session store that cannot lock warns once instead of silently
+  restoring #236.
 - **A timeout written as `"timeout": 600` no longer means 600 nanoseconds**
   (#240). A plain `time.Duration` is an `int64` of nanoseconds and
   `encoding/json` decodes it as exactly that, so a config that looked like ten

@@ -121,7 +121,7 @@ func TestConfigureProviderOllamaFallsBackToTypedModel(t *testing.T) {
 	if p.Model != "llama3.2:3b" {
 		t.Errorf("model = %q, want the hand-typed name", p.Model)
 	}
-	if p.Timeout != 45*time.Second {
+	if p.Timeout.Duration() != 45*time.Second {
 		t.Errorf("timeout = %v, want 45s (the answer is in seconds)", p.Timeout)
 	}
 	if p.APIBase != "http://127.0.0.1:1" {

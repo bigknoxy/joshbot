@@ -123,7 +123,10 @@ type ProviderConfig struct {
 	ExtraHeaders map[string]string `mapstructure:"extra_headers" json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
 	ExtraBody    map[string]any    `mapstructure:"extra_body" json:"extra_body,omitempty" yaml:"extra_body,omitempty"`
 	Enabled      bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Timeout      time.Duration     `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	// Timeout bounds a single request to this provider. It reads a duration
+	// string ("600s", "10m") or a bare number of seconds; see config.Duration
+	// for why a bare number needs a rule at all.
+	Timeout Duration `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // ProviderDefaults holds default provider settings
@@ -157,6 +160,15 @@ type AgentDefaults struct {
 	// SubagentMaxDepth bounds how deep a delegate_subagent chain may nest. A
 	// zero value falls back to DefaultSubagentMaxDepth.
 	SubagentMaxDepth int `mapstructure:"subagent_max_depth" json:"subagent_max_depth,omitempty" yaml:"subagent_max_depth,omitempty"`
+	// Timeout bounds one agent turn. A zero value means agent.DefaultTimeout,
+	// which is why the key is omitempty: it is new, so no config in the wild
+	// carries it, and an absent value must keep the old behaviour without a
+	// schema migration (the trap the streaming bool hit at v4→v5).
+	//
+	// It exists because 120s is wrong for exactly the deployment that cannot
+	// patch the binary: a cold local model with a large prompt runs past it,
+	// and the operator had no knob at all (#241).
+	Timeout Duration `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -464,7 +476,7 @@ func splitEnvList(v string) []string {
 }
 
 // applyEnvOverrides applies environment variable overrides to the config.
-func applyEnvOverrides(cfg *Config) {
+func applyEnvOverrides(cfg *Config) error {
 	// Helper to get env var with prefix
 	getEnv := func(key string) string {
 		return os.Getenv("JOSHBOT_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_")))
@@ -615,6 +627,18 @@ func applyEnvOverrides(cfg *Config) {
 	// Dream consolidation mode
 	if v := getEnv("AGENTS__DEFAULTS__DREAM_MODE"); v != "" {
 		cfg.Agents.Defaults.DreamMode = v
+	}
+
+	// Agent turn timeout. Parsed rather than Sscanf'd, and reported rather
+	// than ignored: this key exists for the env-only deployment (#241), where
+	// silently discarding a mistyped value leaves the operator on the default
+	// they were trying to raise, with nothing anywhere saying so.
+	if v := getEnv("AGENTS__DEFAULTS__TIMEOUT"); v != "" {
+		d, err := parseDurationEnv(v)
+		if err != nil {
+			return fatalConfigError{fmt.Errorf("JOSHBOT_AGENTS__DEFAULTS__TIMEOUT: %w", err)}
+		}
+		cfg.Agents.Defaults.Timeout = d
 	}
 
 	// Telegram enabled
@@ -770,6 +794,7 @@ func applyEnvOverrides(cfg *Config) {
 	if os.Getenv("JOSHBOT_NVIDIA_API_KEY") != "" && os.Getenv(providerEnvKey("nvidia")) == "" {
 		cfg.noteCredentialSource("nvidia", CredentialFromEnv("JOSHBOT_NVIDIA_API_KEY"))
 	}
+	return nil
 }
 
 // Defaults returns a Config with all default values set.
@@ -1150,6 +1175,19 @@ func (c *Config) Validate() error {
 		return errors.New("exec timeout must be positive")
 	}
 
+	// A sub-second timeout is never intentional and fails every request the
+	// moment it is used, blaming the context rather than the config. Catching
+	// it here names the key and the value it parsed to, at load, instead of at
+	// the first request (#240).
+	if err := validateTimeout("agents.defaults.timeout", c.Agents.Defaults.Timeout); err != nil {
+		return err
+	}
+	for name, p := range c.Providers {
+		if err := validateTimeout("providers."+name+".timeout", p.Timeout); err != nil {
+			return err
+		}
+	}
+
 	// Validate gateway port is valid
 	if c.Gateway.Port <= 0 || c.Gateway.Port > 65535 {
 		return errors.New("gateway port must be between 1 and 65535")
@@ -1204,7 +1242,9 @@ func loadFileConfig(data []byte) (*Config, error) {
 		return cfg, fatalConfigError{err}
 	}
 
-	applyEnvOverrides(cfg)
+	if err := applyEnvOverrides(cfg); err != nil {
+		return cfg, err
+	}
 
 	// Sanitize string fields that may have whitespace from user input
 	for name, p := range cfg.Providers {
@@ -1245,7 +1285,9 @@ func LoadStrict() (*Config, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg := Defaults()
-			applyEnvOverrides(cfg)
+			if envErr := applyEnvOverrides(cfg); envErr != nil {
+				return cfg, envErr
+			}
 			return cfg, fmt.Errorf("no config file at %s; run `joshbot onboard`", configPath)
 		}
 		return nil, err
@@ -1292,7 +1334,12 @@ func Load() (*Config, error) {
 	cfg := Defaults()
 
 	// Apply environment variable overrides even without config file
-	applyEnvOverrides(cfg)
+	// A bad value here is fatal for the same reason it is in loadFileConfig:
+	// an env-only deployment has no file to fall back to, and running on the
+	// default the operator was trying to change is the silent failure.
+	if err := applyEnvOverrides(cfg); err != nil {
+		return nil, err
+	}
 
 	// Sanitize string fields that may have whitespace from user input
 	for name, p := range cfg.Providers {

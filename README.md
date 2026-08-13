@@ -724,7 +724,8 @@ For backward compatibility, the old format still works:
       "max_tool_iterations": 20,
       "memory_window": 50,
       "streaming": true,
-      "subagent_max_depth": 2
+      "subagent_max_depth": 2,
+      "timeout": "10m"
     }
   },
   "channels": {
@@ -746,6 +747,30 @@ For backward compatibility, the old format still works:
   }
 }
 ```
+
+### Timeouts
+
+Two keys bound how long joshbot waits:
+
+| Key | Bounds | Default |
+|---|---|---|
+| `agents.defaults.timeout` | one agent turn, end to end | 2m |
+| `providers.<name>.timeout` | one request to that provider | provider default |
+
+Both accept a **duration string** — `"600s"`, `"10m"`, `"1h30m"` — which is the form
+joshbot writes when it saves a config, and the same spelling the `cron` tool takes.
+A bare number is read as **seconds**, so `"timeout": 600` means ten minutes.
+
+Raise `agents.defaults.timeout` when a turn legitimately runs long: a cold local
+model with a large prompt regularly outruns the 2m default, and before this key
+existed there was no way to change it short of patching the binary.
+
+Anything under one second is rejected at load, naming the key. A sub-second timeout
+fails every request the moment it is used and blames the context, not the config.
+
+> **Upgrading:** a config written by an older joshbot stores this as a raw
+> nanosecond count (`"timeout": 900000000000`). It is still read correctly — as
+> 900s — and is rewritten in the string form the next time the config is saved.
 
 ### Shell Sandbox
 

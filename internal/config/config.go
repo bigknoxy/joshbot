@@ -123,7 +123,10 @@ type ProviderConfig struct {
 	ExtraHeaders map[string]string `mapstructure:"extra_headers" json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
 	ExtraBody    map[string]any    `mapstructure:"extra_body" json:"extra_body,omitempty" yaml:"extra_body,omitempty"`
 	Enabled      bool              `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Timeout      time.Duration     `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	// Timeout bounds a single request to this provider. It reads a duration
+	// string ("600s", "10m") or a bare number of seconds; see config.Duration
+	// for why a bare number needs a rule at all.
+	Timeout Duration `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // ProviderDefaults holds default provider settings
@@ -157,6 +160,15 @@ type AgentDefaults struct {
 	// SubagentMaxDepth bounds how deep a delegate_subagent chain may nest. A
 	// zero value falls back to DefaultSubagentMaxDepth.
 	SubagentMaxDepth int `mapstructure:"subagent_max_depth" json:"subagent_max_depth,omitempty" yaml:"subagent_max_depth,omitempty"`
+	// Timeout bounds one agent turn. A zero value means agent.DefaultTimeout,
+	// which is why the key is omitempty: it is new, so no config in the wild
+	// carries it, and an absent value must keep the old behaviour without a
+	// schema migration (the trap the streaming bool hit at v4→v5).
+	//
+	// It exists because 120s is wrong for exactly the deployment that cannot
+	// patch the binary: a cold local model with a large prompt runs past it,
+	// and the operator had no knob at all (#241).
+	Timeout Duration `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -1148,6 +1160,19 @@ func (c *Config) Validate() error {
 	// Validate exec timeout is positive
 	if c.Tools.Exec.Timeout <= 0 {
 		return errors.New("exec timeout must be positive")
+	}
+
+	// A sub-second timeout is never intentional and fails every request the
+	// moment it is used, blaming the context rather than the config. Catching
+	// it here names the key and the value it parsed to, at load, instead of at
+	// the first request (#240).
+	if err := validateTimeout("agents.defaults.timeout", c.Agents.Defaults.Timeout); err != nil {
+		return err
+	}
+	for name, p := range c.Providers {
+		if err := validateTimeout("providers."+name+".timeout", p.Timeout); err != nil {
+			return err
+		}
 	}
 
 	// Validate gateway port is valid

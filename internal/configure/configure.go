@@ -66,7 +66,7 @@ func (c *Configurator) ConfigureProvider(opts ProviderOptions) error {
 
 	p.Enabled = true
 	if opts.Timeout > 0 {
-		p.Timeout = opts.Timeout
+		p.Timeout = config.Duration(opts.Timeout)
 	}
 	c.cfg.Providers[opts.Name] = p
 

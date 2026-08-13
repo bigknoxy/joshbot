@@ -711,7 +711,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 			if apiBase == "" {
 				apiBase = providers.GetDefaultAPIBase()
 			}
-			timeout := p.Timeout
+			timeout := p.Timeout.Duration()
 			if timeout == 0 {
 				timeout = 300 * time.Second
 			}
@@ -1025,6 +1025,9 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		agent.WithSkillLoader(skillsLoader),
 		agent.WithBudgetManager(budget),
 		agent.WithCompressor(compressor),
+		// Zero is ignored by WithTimeout, so an unset key keeps
+		// agent.DefaultTimeout without a special case here.
+		agent.WithTimeout(cfg.Agents.Defaults.Timeout.Duration()),
 	)
 
 	// Start background services (best-effort)
@@ -3063,7 +3066,7 @@ func runOnboard(c *cli.Context) error {
 		}
 		// For Ollama, set appropriate defaults
 		if provider == "ollama" {
-			providerCfg.Timeout = 300 * time.Second
+			providerCfg.Timeout = config.Duration(300 * time.Second)
 		}
 		cfg.Providers = map[string]config.ProviderConfig{
 			provider: providerCfg,
@@ -4558,7 +4561,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 
 		timeoutSecs := 300
 		if exists && p.Timeout > 0 {
-			timeoutSecs = int(p.Timeout.Seconds())
+			timeoutSecs = int(p.Timeout.Duration().Seconds())
 		}
 		fmt.Printf("Timeout in seconds (CPU models need longer) [%d]: ", timeoutSecs)
 		var timeoutInput string
@@ -4566,7 +4569,7 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 		if timeoutInput != "" {
 			fmt.Sscanf(timeoutInput, "%d", &timeoutSecs)
 		}
-		p.Timeout = time.Duration(timeoutSecs) * time.Second
+		p.Timeout = config.Duration(time.Duration(timeoutSecs) * time.Second)
 
 		fmt.Println(`=== Ollama Tips ===
 • CPU-only: Pull smaller models: ollama pull llama3.2:3b

@@ -209,7 +209,7 @@ func TestConfigureProviderWizardOllamaEmptyAnswersKeepTheExistingEntry(t *testin
 			Enabled: true,
 			APIBase: "http://127.0.0.1:1",
 			Model:   "llama3.2:3b",
-			Timeout: 900 * time.Second,
+			Timeout: config.Duration(900 * time.Second),
 		},
 	}
 	cfg.ProviderDefaults.Default = "ollama"
@@ -224,7 +224,7 @@ func TestConfigureProviderWizardOllamaEmptyAnswersKeepTheExistingEntry(t *testin
 	if p.Model != "llama3.2:3b" {
 		t.Errorf("model = %q; pressing Enter must keep the configured model", p.Model)
 	}
-	if p.Timeout != 900*time.Second {
+	if p.Timeout.Duration() != 900*time.Second {
 		t.Errorf("timeout = %v, want the configured 900s kept", p.Timeout)
 	}
 	if p.APIKey != "" {

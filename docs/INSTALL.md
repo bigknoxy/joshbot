@@ -481,7 +481,8 @@ The old format is still supported for backward compatibility:
       "memory_window": 50,
       "dream_mode": "off",
       "streaming": true,
-      "subagent_max_depth": 2
+      "subagent_max_depth": 2,
+      "timeout": "10m"
     }
   },
   "channels": {
@@ -518,6 +519,14 @@ The old format is still supported for backward compatibility:
 ```
 
 > **Important:** each provider under `providers` needs `"enabled": true` to register — omitting it silently disables that provider rather than erroring.
+
+> **Timeouts:** `agents.defaults.timeout` bounds one agent turn (default 2m) and
+> `providers.<name>.timeout` bounds one request to that provider. Both take a
+> duration string — `"600s"`, `"10m"`, `"1h30m"` — or a bare number of **seconds**,
+> so `"timeout": 600` is ten minutes. Raise the agent timeout for a slow local
+> model. Anything under a second is rejected at load, naming the key. A value
+> written by an older joshbot is a raw nanosecond count (`900000000000`); it is
+> still read correctly and rewritten as a string on the next save.
 
 ### Environment Variables
 

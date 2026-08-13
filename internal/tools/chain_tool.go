@@ -51,7 +51,7 @@ func (t *ChainExecutionTool) Parameters() []Parameter {
 		{
 			Name:        "steps",
 			Type:        ParamArray,
-			Description: "Steps to execute sequentially. Each step has: prompt (required), description (label), name (variable for template substitution).",
+			Description: fmt.Sprintf("Steps to execute sequentially. Each step has: prompt (required), description (label), name (variable for template substitution). At most %d steps per call; split longer chains across several calls.", MaxChainSteps),
 			Required:    true,
 		},
 		{
@@ -125,6 +125,10 @@ func (t *ChainExecutionTool) Execute(ctx interface{}, args map[string]any) ToolR
 	if len(stepsRaw) == 0 {
 		return ToolResult{Error: fmt.Errorf("'steps' must be a non-empty array of objects with 'prompt' field")}
 	}
+	if len(stepsRaw) > MaxChainSteps {
+		return ToolResult{Error: fmt.Errorf("too many steps: %d exceeds the maximum of %d; split the work across several chain_execution calls",
+			len(stepsRaw), MaxChainSteps)}
+	}
 
 	initialContext, _ := args["context"].(string)
 
@@ -132,6 +136,12 @@ func (t *ChainExecutionTool) Execute(ctx interface{}, args map[string]any) ToolR
 	if !ok {
 		cctx = context.Background()
 	}
+	if err := spawnGate(cctx, t.Name()); err != nil {
+		return ToolResult{Error: err}
+	}
+	// Each step runs one level deeper than this call, so a chain contributes to
+	// the same nesting budget delegate_subagent uses.
+	cctx = childContext(cctx)
 
 	// Parse steps into typed structs.
 	steps := make([]chainStep, 0, len(stepsRaw))

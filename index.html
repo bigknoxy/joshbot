@@ -578,6 +578,11 @@ footer a:hover { text-decoration: underline; }
       <p>Switch models or personalities per-session (<code>/model</code>, <code>/personality</code>), summarize context (<code>/compact</code>) and inspect status (<code>/status</code>) — in the CLI and from the Telegram menu.</p>
     </div>
     <div class="case-card">
+      <div class="icon">🔌</div>
+      <h3>OpenAI-Compatible API</h3>
+      <p><code>joshbot serve</code> speaks the OpenAI chat API at <code>/v1/chat/completions</code> (streaming included) and <code>/v1/models</code>, so any client with a base-URL setting can use joshbot as a backend. The model <em>is</em> the agent — a request runs the full loop with tools, memory and skills, not a proxy to an upstream provider. Authentication is mandatory (it refuses to start with no key configured) and it binds loopback by default, because whoever reaches this endpoint reaches the shell tool.</p>
+    </div>
+    <div class="case-card">
       <div class="icon">📱</div>
       <h3>Telegram &amp; Discord</h3>
       <p>Chat from anywhere via Telegram or Discord. Full skill and memory access from your phone. Telegram uses long-polling, Discord an outbound gateway websocket — no webhooks or inbound ports either way. Both channels fail closed — an empty allowlist rejects everyone. Enable one at a time: the bus has a single outbound channel that both read competitively, so running them together has them steal each other's replies.</p>

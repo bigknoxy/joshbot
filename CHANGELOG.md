@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a background handle nobody is reading partials from), `RunBackground`
   re-checks `runCtx.Err()` and converts it.
 
+### Fixed
+- **`parallel_subagent` and `chain_execution` now have width and depth limits**
+  (#228). Both fanned out an unbounded task/step list, and both spawned their
+  children at the caller's own nesting depth, so a single top-level tool call
+  could turn into an arbitrary number of full ReAct loops with shell access and
+  none of them counted against the nesting budget `delegate_subagent` respects.
+  A `parallel_subagent` call is now capped at 8 tasks and a `chain_execution`
+  call at 16 steps — the error names the cap so the model can split the work,
+  and it is refused before any subagent starts. Note `concurrency` was never a
+  limit on this: it bounds how many tasks run at once, never how many run in
+  total, which is the number that costs money. Both tools also run their
+  children one level deeper, and both now refuse at runtime when called by a
+  leaf subagent, sharing the gate with `delegate_subagent` so the three spawning
+  tools cannot drift apart.
+
 ## [1.50.0] - 2026-08-12
 
 ### Added

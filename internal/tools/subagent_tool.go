@@ -106,6 +106,10 @@ func (t *ParallelSubagentTool) Execute(ctx interface{}, args map[string]any) Too
 	if len(tasksRaw) == 0 {
 		return ToolResult{Error: fmt.Errorf("'tasks' must be a non-empty array of objects with 'prompt' field")}
 	}
+	if len(tasksRaw) > MaxParallelTasks {
+		return ToolResult{Error: fmt.Errorf("too many tasks: %d exceeds the maximum of %d; split the work across several parallel_subagent calls",
+			len(tasksRaw), MaxParallelTasks)}
+	}
 
 	concurrency := 5
 	if cRaw, ok := args["concurrency"]; ok {
@@ -138,6 +142,12 @@ func (t *ParallelSubagentTool) Execute(ctx interface{}, args map[string]any) Too
 	if !ok {
 		cctx = context.Background()
 	}
+	if err := spawnGate(cctx, t.Name()); err != nil {
+		return ToolResult{Error: err}
+	}
+	// Every task runs one level deeper than this call, so the fan-out counts
+	// against the same nesting budget delegate_subagent uses.
+	cctx = childContext(cctx)
 
 	sem := make(chan struct{}, concurrency)
 	results := make(chan subagentResult, len(tasks))

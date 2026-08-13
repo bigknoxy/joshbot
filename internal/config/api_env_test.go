@@ -26,8 +26,12 @@ func TestAPIKeysFromEnv(t *testing.T) {
 // shell and filesystem tools, so a default of ":port" would publish them to the
 // local network the first time anyone runs joshbot serve.
 func TestAPIDefaultsToLoopback(t *testing.T) {
-	if got := Defaults().API.Listen; got != DefaultAPIListen {
-		t.Fatalf("default listen %q, want %q", got, DefaultAPIListen)
+	// Defaults() must leave this empty: `omitempty` does not apply to a struct
+	// field, so a seeded value would be written into every saved config and
+	// freeze the port against any future change without a schema migration. The
+	// default belongs to the constant, applied at use time.
+	if got := Defaults().API.Listen; got != "" {
+		t.Fatalf("Defaults().API.Listen is %q; a seeded value is serialized into every saved config", got)
 	}
 	// Spelled out rather than compared to the constant alone: the point of the
 	// test is the loopback host, which a rename of the constant would not catch.

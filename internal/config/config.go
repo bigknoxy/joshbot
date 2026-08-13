@@ -832,9 +832,14 @@ func Defaults() *Config {
 			Host: DefaultGatewayHost,
 			Port: DefaultGatewayPort,
 		},
-		API: APIConfig{
-			Listen: DefaultAPIListen,
-		},
+		// API.Listen is deliberately left empty rather than seeded with
+		// DefaultAPIListen. `omitempty` on a struct field is a no-op — Go emits
+		// the object either way — so a non-empty default here would be written
+		// into every config joshbot ever saves, by onboard, by configure, by any
+		// save at all. Changing the default port later would then reach nobody
+		// who had saved a config since, exactly the trap that made the
+		// `streaming` default a v4→v5 schema migration. The default is resolved
+		// at use time instead, in cmd/joshbot's runServe.
 		LogLevel: "info",
 	}
 }

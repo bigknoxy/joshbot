@@ -26,8 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client-supplied `system` message is dropped rather than forwarded, since
   joshbot's own system prompt carries its tool and safety rules. The optional
   `user` field selects the session (`api:<user>`) and is validated before it
-  becomes a path. `/v1/embeddings` and `/v1/audio/transcriptions` are not
-  implemented: joshbot has no embedding or audio provider interface yet.
+  becomes a path — capped at 64 characters and restricted to letters, digits,
+  `.`, `_` and `-`, because it becomes part of a filename and because a name
+  carrying a newline or an RTL override renders deceptively in
+  `joshbot sessions`, where an operator reads it to decide what to prune. The
+  server sets a 60s read deadline and no write deadline (a streamed answer
+  legitimately outlives any fixed one), and throttles the 401 log line to one a
+  minute with a count of what it covers, so an unauthenticated flood costs one
+  line rather than one per request without hiding a password spray. Two limits
+  are documented rather than fixed: a client that disconnects mid-turn loses that
+  turn from its session, and two concurrent requests with the same `user`
+  can overwrite each other's session write. `/v1/embeddings` and
+  `/v1/audio/transcriptions` are not implemented: joshbot has no embedding or
+  audio provider interface yet.
 - **Subagent output schemas and background runs** (#194, the last two acceptance
   criteria). `subagent.Config.OutputSchema` constrains a run's final answer to a
   JSON object with named keys and optional per-key types — a deliberate small

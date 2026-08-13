@@ -11,10 +11,13 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
 // MaxRequestBytes bounds a request body. An agent turn is a chat message, not
@@ -51,7 +54,51 @@ type Server struct {
 	agent Processor
 	keys  [][]byte
 	http  *http.Server
+	// served latches the one run this Server gets. http.Server cannot be
+	// restarted after Shutdown: a second Serve would bind the port, take
+	// ErrServerClosed straight back, and — since that error is mapped to nil —
+	// report a clean successful run while serving nothing. A SIGHUP reload or a
+	// supervisor loop would then no-op silently, which is the same class of bug
+	// the bus, Discord and mcp.Client each shipped once.
+	served atomic.Bool
+
+	// rejections throttles the 401 log line. Unauthenticated requests are the
+	// one thing an attacker can generate without a credential, and a line per
+	// request turns that into a disk-fill primitive on any install that
+	// redirects the log to a file.
+	rejections limiter
 }
+
+// limiter allows one event per window and counts what it dropped, so a burst
+// costs one line rather than one line per request and the line still says how
+// many there were. Silently dropping would be worse than the flood: a password
+// spray would look like a single stray request.
+type limiter struct {
+	mu    sync.Mutex
+	last  time.Time
+	since int
+}
+
+// rejectionLogWindow is the minimum gap between 401 log lines.
+const rejectionLogWindow = time.Minute
+
+// note records an event and reports whether it should be logged, along with how
+// many events (including this one) the line covers.
+func (l *limiter) note() (int, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.since++
+	if !l.last.IsZero() && time.Since(l.last) < rejectionLogWindow {
+		return 0, false
+	}
+	l.last = time.Now()
+	n := l.since
+	l.since = 0
+	return n, true
+}
+
+// ErrServerReused reports a second Serve on a Server that has already run.
+var ErrServerReused = errors.New("api: server already served; construct a new one")
 
 // Options configures a Server.
 type Options struct {
@@ -80,21 +127,31 @@ func New(a Processor, opts Options) (*Server, error) {
 		return nil, ErrNoAPIKey
 	}
 
-	listen := opts.Listen
-	if listen == "" {
-		listen = "127.0.0.1:18791"
+	// No default is chosen here. The caller resolves it from
+	// config.DefaultAPIListen, and a second copy of that address in this package
+	// would be a value nothing keeps in agreement with the first — a drift shows
+	// up as a server not on the port the docs name.
+	if strings.TrimSpace(opts.Listen) == "" {
+		return nil, errors.New("api: listen address is required")
 	}
 
 	s := &Server{agent: a, keys: keys}
 	s.http = &http.Server{
-		Addr:    listen,
+		Addr:    opts.Listen,
 		Handler: s.routes(),
 		// No WriteTimeout: a streamed answer legitimately outlives any fixed
 		// deadline, and the agent applies its own timeout to the work itself.
 		// ReadHeaderTimeout still closes a client that connects and says
 		// nothing.
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// ReadTimeout bounds the whole request, headers and body. It is safe to
+		// set here and not on the write side: a request is a chat message capped
+		// at MaxRequestBytes, so nothing legitimately dribbles one in for
+		// minutes, while a streamed *answer* legitimately outlives any deadline.
+		// Without it an authenticated client can hold a goroutine open
+		// indefinitely by sending one byte of body at a time.
+		ReadTimeout: 60 * time.Second,
+		IdleTimeout: 60 * time.Second,
 	}
 	return s, nil
 }
@@ -118,6 +175,9 @@ func (s *Server) routes() http.Handler {
 
 // Serve runs the server until ctx is cancelled, then shuts it down gracefully.
 func (s *Server) Serve(ctx context.Context) error {
+	if !s.served.CompareAndSwap(false, true) {
+		return ErrServerReused
+	}
 	ln, err := net.Listen("tcp", s.http.Addr)
 	if err != nil {
 		return fmt.Errorf("api: listen on %s: %w", s.http.Addr, err)
@@ -155,7 +215,10 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		presented := bearerToken(r.Header.Get("Authorization"))
 		if presented == "" || !s.keyMatches([]byte(presented)) {
-			log.Warn("API request rejected", "path", r.URL.Path, "remote", remoteHost(r))
+			if n, ok := s.rejections.note(); ok {
+				log.Warn("API request rejected", "path", r.URL.Path, "remote", remoteHost(r),
+					"since_last_log", n)
+			}
 			writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key",
 				"Incorrect API key provided. Send it as 'Authorization: Bearer <key>'.")
 			return
@@ -216,7 +279,29 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, kind, code, msg string) {
-	writeJSON(w, status, errorEnvelope{Error: errorBody{Message: msg, Type: kind, Code: code}})
+	writeJSON(w, status, errorEnvelope{Error: errorBody{Message: safeErrorMessage(msg), Type: kind, Code: code}})
+}
+
+// safeErrorMessage strips credentials and the operator's home path out of an
+// error before it crosses the network.
+//
+// The messages that reach here are not joshbot's own prose: a 502 carries the
+// provider's error text verbatim, and providers routinely echo credentials and
+// absolute paths. An API caller is authenticated but is not the operator, so
+// handing it the operator's upstream provider key is a privilege escalation.
+//
+// The cover is real but partial, and the limit is worth stating rather than
+// assuming away: redact.String catches assignment shapes (api_key=..., "token":
+// "...") and Authorization headers, and redact.HomePath rewrites the running
+// process's own $HOME. A credential quoted in free prose — OpenAI's own
+// "Incorrect API key provided: sk-..." is the canonical case — is NOT caught.
+// Widening that belongs in internal/redact, where every other sink benefits,
+// not in a second pattern list here.
+//
+// This happens at construction rather than through redact.Writer, which only
+// wraps the log sink and never sees an HTTP body.
+func safeErrorMessage(msg string) string {
+	return redact.HomePath(redact.String(msg))
 }
 
 // newID returns an OpenAI-shaped completion id. It uses crypto/rand so ids are

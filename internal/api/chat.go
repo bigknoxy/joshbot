@@ -99,7 +99,36 @@ func senderID(user string) (string, error) {
 	if err := session.ValidateSessionID(user); err != nil {
 		return "", fmt.Errorf("'user' is not a valid identifier: %w", err)
 	}
+	// ValidateSessionID stops traversal but says nothing about length or shape,
+	// and this value becomes a filename: "<channel>:<user>.jsonl". Anything past
+	// NAME_MAX (255 on APFS and ext4) makes every turn for that caller fail to
+	// persist, with the failure surfacing as a session error rather than as the
+	// bad request it is. The charset is narrowed for a second reason: a name
+	// carrying a newline or an RTL override renders deceptively in
+	// `joshbot sessions`, where an operator reads it to decide what to prune.
+	if len(user) > MaxUserLength {
+		return "", fmt.Errorf("'user' must be at most %d characters", MaxUserLength)
+	}
+	for _, r := range user {
+		if !isUserRune(r) {
+			return "", fmt.Errorf("'user' may contain only letters, digits, '.', '_' and '-'")
+		}
+	}
 	return user, nil
+}
+
+// MaxUserLength bounds the caller-supplied identity. It is well under NAME_MAX
+// once the channel prefix and the ".jsonl" suffix are added.
+const MaxUserLength = 64
+
+func isUserRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '.' || r == '_' || r == '-':
+		return true
+	}
+	return false
 }
 
 // completion answers a non-streaming request.
@@ -111,8 +140,10 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request, msg bus.Inbo
 	ctx := agent.WithUsageSink(r.Context(), func(u providers.Usage) {
 		// The sink fires once per provider call, and one turn makes several
 		// when tools are involved, so the totals accumulate rather than
-		// overwrite. It is called from the agent's own goroutines, hence the
-		// lock.
+		// overwrite. The lock is defensive rather than currently load-bearing:
+		// today Process calls the sink inline on this handler's own goroutine,
+		// but nothing in the sink contract promises that, and a provider that
+		// later reports usage from a reader goroutine would otherwise race.
 		mu.Lock()
 		defer mu.Unlock()
 		total.PromptTokens += u.PromptTokens
@@ -170,9 +201,11 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, msg bu
 		started bool
 	)
 
-	// send serializes every write to the response. The stream sink is called
-	// from the agent's goroutines while this handler's own goroutine writes the
-	// final frame, so without the lock the two interleave mid-frame.
+	// send writes one SSE frame. Callers hold mu: the stream sink and the final
+	// frame both write to the same ResponseWriter, and today both run on this
+	// handler's goroutine, so the lock is a guard against a future sink that
+	// does not — not a race being fixed here. http.ResponseWriter is not safe
+	// for concurrent use, so the guard is cheap next to what it prevents.
 	send := func(c chunk) {
 		payload, err := json.Marshal(c)
 		if err != nil {

@@ -124,8 +124,12 @@ func TestLastUserMessageWins(t *testing.T) {
 	if a.got.Content != "second" {
 		t.Fatalf("prompt was %q, want the trimmed last user turn", a.got.Content)
 	}
-	if a.got.Channel != ChannelName {
-		t.Fatalf("channel was %q, want %q", a.got.Channel, ChannelName)
+	// Spelled out as a literal rather than compared to ChannelName: comparing
+	// the value against the constant that produced it is a tautology that can
+	// never fail. The session key is "channel:senderID", so a change here
+	// silently moves every API caller into another channel's namespace.
+	if a.got.Channel != "api" {
+		t.Fatalf("channel was %q, want \"api\"", a.got.Channel)
 	}
 }
 
@@ -281,8 +285,13 @@ func TestStreamShape(t *testing.T) {
 		t.Fatalf("content-type %q", ct)
 	}
 	cs := frames(t, w.Body.String())
-	if len(cs) < 3 {
-		t.Fatalf("got %d frames, want role + content + final: %s", len(cs), w.Body.String())
+	// Exact, not a lower bound: three deltas went in and one was empty, so the
+	// count is what distinguishes dropping it from emitting a bare
+	// `{"delta":{}}` frame. Asserting only the concatenated text cannot — an
+	// empty delta contributes no characters either way.
+	if len(cs) != 4 {
+		t.Fatalf("got %d frames, want role + 2 content + final (the empty delta must emit none): %s",
+			len(cs), w.Body.String())
 	}
 	if cs[0].Choices[0].Delta.Role != "assistant" {
 		t.Fatalf("first frame is not the role frame: %+v", cs[0])

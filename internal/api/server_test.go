@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -36,7 +39,7 @@ func testServer(t *testing.T, a Processor, keys ...string) *Server {
 	if len(keys) == 0 {
 		keys = []string{"secret"}
 	}
-	s, err := New(a, Options{APIKeys: keys})
+	s, err := New(a, Options{Listen: "127.0.0.1:0", APIKeys: keys})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -163,6 +166,45 @@ func TestModelsListsTheSingleAgentModel(t *testing.T) {
 	}
 	if len(got.Data) != 1 || got.Data[0].ID != ModelID {
 		t.Fatalf("got %+v, want a single %q entry", got.Data, ModelID)
+	}
+}
+
+// TestErrorBodiesAreRedacted pins the boundary crossed by every error this
+// server returns. A 502 carries the provider's error text verbatim, so an
+// upstream credential or the operator's home path would otherwise be handed to
+// an API caller, who is authenticated but is not the operator.
+//
+// It goes through the real handler rather than calling safeErrorMessage
+// directly: the funnel is only a defence if every writer uses it, and a new
+// handler that marshals its own envelope is exactly the regression to catch.
+func TestErrorBodiesAreRedacted(t *testing.T) {
+	// The home path is the operator's real one: redact.HomePath rewrites that
+	// specific prefix, not any path that merely looks like a home directory.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory: %v", err)
+	}
+	a := &fakeAgent{err: errors.New(
+		"provider call failed: Authorization: Bearer sk-live-abcdef0123456789 " +
+			"reading " + filepath.Join(home, ".joshbot", "config.json"))}
+	s := testServer(t, a)
+	w := do(t, s, http.MethodPost, "/v1/chat/completions", "secret",
+		`{"messages":[{"role":"user","content":"hi"}]}`)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("got %d, want 502", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "sk-live-abcdef0123456789") {
+		t.Fatalf("502 body leaked an upstream credential: %s", body)
+	}
+	if strings.Contains(body, home) {
+		t.Fatalf("502 body leaked an absolute home path: %s", body)
+	}
+	// The message must still be diagnosable — redacting it to nothing would
+	// trade one failure mode for another.
+	if !strings.Contains(body, "provider call failed") {
+		t.Fatalf("502 body lost the diagnosis: %s", body)
 	}
 }
 

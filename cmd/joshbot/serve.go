@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/urfave/cli/v2"
 
@@ -34,6 +35,25 @@ func serveCommand() *cli.Command {
 	}
 }
 
+// resolveListen picks the bind address: --listen beats api.listen beats the
+// package default.
+//
+// It is a function rather than three lines inside runServe because the order is
+// security-relevant and nothing else would catch it getting reversed. An
+// operator who narrows the bind with --listen while config.json still holds
+// 0.0.0.0 must win: silently keeping the config value publishes the shell and
+// filesystem tools to the local network while the command line says otherwise.
+// Whitespace counts as unset, because api.New refuses a blank address and a
+// config key set to " " would otherwise fail at bind time rather than fall back.
+func resolveListen(flag, configured string) string {
+	for _, v := range []string{flag, configured} {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return config.DefaultAPIListen
+}
+
 func runServe(c *cli.Context) error {
 	cfg, err := loadConfig(c.Path("config"))
 	if err != nil {
@@ -46,13 +66,7 @@ func runServe(c *cli.Context) error {
 		return fmt.Errorf("no providers configured. Run 'joshbot onboard' first")
 	}
 
-	listen := cfg.API.Listen
-	if flag := c.String("listen"); flag != "" {
-		listen = flag
-	}
-	if listen == "" {
-		listen = config.DefaultAPIListen
-	}
+	listen := resolveListen(c.String("listen"), cfg.API.Listen)
 
 	_, _, _, agentInstance, _, _, err := setupComponents(cfg)
 	defer closeMCPServers()
@@ -86,8 +100,8 @@ func runServe(c *cli.Context) error {
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════╗")
 	fmt.Println("║        joshbot API server running         ║")
-	fmt.Printf("║  Listen: %-33s ║\n", listen)
-	fmt.Printf("║  Model:  %-33s ║\n", api.ModelID)
+	fmt.Printf("║  Listen: %-32s ║\n", listen)
+	fmt.Printf("║  Model:  %-32s ║\n", api.ModelID)
 	fmt.Println("║                                           ║")
 	fmt.Println("║  Press Ctrl+C to stop                     ║")
 	fmt.Println("╚═══════════════════════════════════════════╝")

@@ -1070,8 +1070,10 @@ skills, sessions — rather than proxying an upstream provider. Two consequences
 
 The optional `user` field selects the conversation: it becomes the session key
 `api:<user>`, so two values are two independent histories. It defaults to
-`default`, and is validated — a value containing `:` or a path separator is a
-400, never a file written outside the sessions directory.
+`default`, and is validated: at most 64 characters, and only letters, digits,
+`.`, `_` and `-`. Anything else — a `:`, a path separator, a newline — is a 400,
+never a file written outside the sessions directory or a name that renders
+deceptively in `joshbot sessions`.
 
 ```bash
 curl http://127.0.0.1:18791/v1/chat/completions \
@@ -1114,8 +1116,28 @@ an agent with shell access to your network; if you need remote access, put it
 behind a reverse proxy with TLS, and consider `tools.shell_sandbox` and
 `tools.shell_allow_list` (see [Shell Sandbox](#shell-sandbox)).
 
-Requests are capped at 1 MB. Streaming responses are `text/event-stream` frames
-terminated by `data: [DONE]`; token usage rides the final frame.
+Requests are capped at 1 MB and must arrive within 60 seconds; there is no write
+deadline, because a streamed answer legitimately outlives any fixed one.
+Streaming responses are `text/event-stream` frames terminated by `data: [DONE]`;
+token usage rides the final frame and is the sum of every provider call the turn
+made, not just the last.
+
+The optional `user` field picks the session (`api:<user>`). It becomes part of a
+filename, so it is capped at 64 characters and may contain only letters, digits,
+`.`, `_` and `-`; omitting it puts every anonymous caller in one shared
+conversation, which is the right default for a single-operator install.
+
+Rejected requests are logged at most once a minute, with a count of how many the
+line covers — unauthenticated requests are the one thing an attacker can send
+without a credential, and a line each would fill the disk of any install that
+redirects the log to a file.
+
+Two limits worth knowing. A client that disconnects mid-turn cancels the request
+context, so that turn is not saved to the session — the conversation resumes from
+the last completed turn. And two concurrent requests carrying the same `user`
+share one session file; joshbot loads and saves it per turn without a lock across
+processes, so the slower turn can overwrite the faster one. Give concurrent
+callers distinct `user` values.
 
 > Embeddings (`/v1/embeddings`) and audio transcription
 > (`/v1/audio/transcriptions`) are not implemented — joshbot has no embedding or

@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **OpenAI-compatible HTTP API** (#202). `joshbot serve` exposes
+  `POST /v1/chat/completions` (with SSE streaming) and `GET /v1/models`, so any
+  client that accepts a custom base URL — the OpenAI SDKs, `curl`, an editor
+  plugin — can use joshbot as a backend. The served model *is* the agent: a
+  request runs the full ReAct loop with tools, memory, skills and sessions
+  rather than proxying an upstream provider, so `/v1/models` advertises exactly
+  one id (`joshbot`) and the request's `model` field is accepted and ignored,
+  which keeps clients hardcoded to `gpt-4` working. New config keys `api.listen`
+  (default `127.0.0.1:18791`) and `api.api_keys`, overridable as
+  `JOSHBOT_API__LISTEN` and `JOSHBOT_API__API_KEYS` (comma-separated, replacing
+  the configured list so a key can be revoked without editing the file).
+  Authentication is mandatory and there is no unauthenticated mode — a caller
+  reaching this endpoint reaches the shell and filesystem tools, so `serve`
+  refuses to start with no key configured rather than starting open; keys are
+  compared in constant time and never appear in a response or a log line. A
+  client-supplied `system` message is dropped rather than forwarded, since
+  joshbot's own system prompt carries its tool and safety rules. The optional
+  `user` field selects the session (`api:<user>`) and is validated before it
+  becomes a path — capped at 64 characters and restricted to letters, digits,
+  `.`, `_` and `-`, because it becomes part of a filename and because a name
+  carrying a newline or an RTL override renders deceptively in
+  `joshbot sessions`, where an operator reads it to decide what to prune. The
+  server sets a 60s read deadline and no write deadline (a streamed answer
+  legitimately outlives any fixed one), and throttles the 401 log line to one a
+  minute with a count of what it covers, so an unauthenticated flood costs one
+  line rather than one per request without hiding a password spray. Two limits
+  are documented rather than fixed: a client that disconnects mid-turn loses that
+  turn from its session, and two concurrent requests with the same `user`
+  can overwrite each other's session write. `/v1/embeddings` and
+  `/v1/audio/transcriptions` are not implemented: joshbot has no embedding or
+  audio provider interface yet.
 - **Subagent output schemas and background runs** (#194, the last two acceptance
   criteria). `subagent.Config.OutputSchema` constrains a run's final answer to a
   JSON object with named keys and optional per-key types — a deliberate small

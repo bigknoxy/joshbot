@@ -147,3 +147,12 @@ func ProgressFromContext(ctx context.Context) ProgressFunc {
 func UsageFromContext(ctx context.Context) UsageSink {
 	return usageFromContext(ctx)
 }
+
+// StreamSinkFromContext exposes the per-request stream sink to callers outside
+// this package, for the same reason ProgressFromContext exists: a test double
+// standing in for *Agent has to emit deltas the way the real ReAct loop does,
+// and a caller that installs a sink but is only ever driven by a double would
+// otherwise be untestable. Returns nil if none is attached.
+func StreamSinkFromContext(ctx context.Context) StreamSink {
+	return streamSinkFromContext(ctx)
+}

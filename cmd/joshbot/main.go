@@ -336,6 +336,7 @@ func newApp() *cli.App {
 				},
 				Action: runGateway,
 			},
+			serveCommand(),
 			{
 				Name:  "onboard",
 				Usage: "First-time setup wizard",
@@ -2009,21 +2010,17 @@ func runAgentSingleMessage(ctx context.Context, agentInstance agentProcessor, me
 	return nil
 }
 
-// agentReplyPrefix is the in-band failure report the ReAct loop returns when a
-// turn could not be completed (see internal/agent).
-const agentReplyPrefix = "Error processing request: "
-
-// agentReplyError turns that in-band report back into an error. The agent
-// answers a chat channel, so it reports provider failures as reply text with a
-// nil error; a non-interactive CLI must not exit 0 over one — a script piping
-// `joshbot agent -m` cannot otherwise tell a real answer from an unreachable
-// provider.
+// agentReplyError turns the agent's in-band failure report back into an error.
+// The agent answers a chat channel, so it reports provider failures as reply
+// text with a nil error; a non-interactive CLI must not exit 0 over one — a
+// script piping `joshbot agent -m` cannot otherwise tell a real answer from an
+// unreachable provider.
+//
+// The translation itself lives in internal/agent because every non-interactive
+// caller needs it — the CLI, the Telegram streamer and the HTTP API all do —
+// and a second copy of the prefix is a copy that can drift.
 func agentReplyError(response string) error {
-	trimmed := strings.TrimSpace(response)
-	if !strings.HasPrefix(trimmed, agentReplyPrefix) {
-		return nil
-	}
-	return errors.New(strings.TrimSpace(strings.TrimPrefix(trimmed, agentReplyPrefix)))
+	return agent.ReplyError(response)
 }
 
 func runVersion(c *cli.Context) error {

@@ -61,7 +61,7 @@ func (t *ParallelSubagentTool) Parameters() []Parameter {
 		{
 			Name:        "tasks",
 			Type:        ParamArray,
-			Description: "Tasks to run in parallel. Each has: prompt (instruction), description (label).",
+			Description: fmt.Sprintf("Tasks to run in parallel. Each has: prompt (instruction), description (label). At most %d tasks per call; split larger work across several calls.", MaxParallelTasks),
 			Required:    true,
 		},
 		{

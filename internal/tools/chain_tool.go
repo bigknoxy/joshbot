@@ -51,7 +51,7 @@ func (t *ChainExecutionTool) Parameters() []Parameter {
 		{
 			Name:        "steps",
 			Type:        ParamArray,
-			Description: "Steps to execute sequentially. Each step has: prompt (required), description (label), name (variable for template substitution).",
+			Description: fmt.Sprintf("Steps to execute sequentially. Each step has: prompt (required), description (label), name (variable for template substitution). At most %d steps per call; split longer chains across several calls.", MaxChainSteps),
 			Required:    true,
 		},
 		{

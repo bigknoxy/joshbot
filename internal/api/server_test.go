@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
 )
 
@@ -218,5 +219,66 @@ func TestHealthNeedsNoCredential(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "topsecret") {
 		t.Fatalf("health body leaked a key: %s", w.Body.String())
+	}
+}
+
+// TestUnauthorizedBodyKeepsItsInstruction pins the other half of the boundary
+// TestErrorBodiesAreRedacted guards. joshbot's own constants must reach the
+// caller verbatim: running them through the redactor made the 401 read
+// "Authorization: Bearer [REDACTED]", because the header rule ate the <key>
+// placeholder that tells the caller what to send (#238). The 401 is the first
+// thing anyone integrating against this server sees, and that body told them
+// their key had been censored rather than how to present it.
+func TestUnauthorizedBodyKeepsItsInstruction(t *testing.T) {
+	s := testServer(t, &fakeAgent{})
+	for _, key := range []string{"", "wrong"} {
+		w := do(t, s, http.MethodGet, "/v1/models", key, "")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("key %q: got %d, want 401", key, w.Code)
+		}
+		// Decoded, not raw: encoding/json escapes the angle brackets, so a
+		// substring check against the wire bytes would fail on correct output.
+		var env errorEnvelope
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("key %q: decode 401 body: %v", key, err)
+		}
+		if strings.Contains(env.Error.Message, "REDACTED") {
+			t.Fatalf("key %q: 401 body was redacted: %s", key, env.Error.Message)
+		}
+		if !strings.Contains(env.Error.Message, "Authorization: Bearer <key>") {
+			t.Fatalf("key %q: 401 body lost the instruction: %s", key, env.Error.Message)
+		}
+	}
+}
+
+// TestMidStreamErrorFrameIsRedacted covers the one error path that does not go
+// through writeError at all: once bytes are on the wire the status is already
+// 200, so the failure is reported inside the stream. That frame is built by
+// hand, and it carries the same provider text a 502 would — so it needs the
+// same redaction, or a streaming client sees the upstream credential a
+// non-streaming one is protected from.
+func TestMidStreamErrorFrameIsRedacted(t *testing.T) {
+	a := &fakeAgent{
+		err: errors.New("provider call failed: Authorization: Bearer sk-live-abcdef0123456789"),
+		before: func(ctx context.Context) {
+			agent.StreamSinkFromContext(ctx)(agent.StreamEvent{Delta: "partial"})
+		},
+	}
+	s := testServer(t, a)
+	w := do(t, s, http.MethodPost, "/v1/chat/completions", "secret",
+		`{"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(body, "partial") {
+		t.Fatalf("expected a started stream, got %d: %s", w.Code, body)
+	}
+	if strings.Contains(body, "sk-live-abcdef0123456789") {
+		t.Fatalf("mid-stream error frame leaked an upstream credential: %s", body)
+	}
+	if !strings.Contains(body, "provider call failed") {
+		t.Fatalf("mid-stream error frame lost the diagnosis: %s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("a failed stream reported a clean finish: %s", body)
 	}
 }

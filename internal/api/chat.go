@@ -161,7 +161,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request, msg bus.Inbo
 	}
 	if err != nil {
 		log.Warn("API completion failed", "error", err)
-		writeError(w, http.StatusBadGateway, "api_error", "", err.Error())
+		writeUpstreamError(w, http.StatusBadGateway, "api_error", "", err.Error())
 		return
 	}
 
@@ -268,13 +268,13 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, msg bu
 			// Nothing has been written, so a real status code is still
 			// possible and is far more useful to a client than a 200 whose
 			// body happens to contain an error.
-			writeError(w, http.StatusBadGateway, "api_error", "", err.Error())
+			writeUpstreamError(w, http.StatusBadGateway, "api_error", "", err.Error())
 			return
 		}
 		// Mid-stream the status is already 200. OpenAI clients surface an
 		// error object embedded in the stream, so report it there and stop
 		// rather than closing the connection silently on a partial answer.
-		payload, mErr := json.Marshal(errorEnvelope{Error: errorBody{Message: err.Error(), Type: "api_error"}})
+		payload, mErr := json.Marshal(errorEnvelope{Error: errorBody{Message: safeErrorMessage(err.Error()), Type: "api_error"}})
 		if mErr == nil {
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
 		}

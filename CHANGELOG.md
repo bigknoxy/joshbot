@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **HTTP API 401 no longer censors its own instructions** (#238). The body read
+  `Send it as 'Authorization: Bearer [REDACTED]'.` — every error the server
+  wrote went through the credential redactor, whose `Authorization:` header rule
+  ate the `<key>` placeholder that tells a caller what to present. Error writing
+  now splits on origin: `writeError` sends joshbot's own constants verbatim
+  (they are package constants and carry no credential), and `writeUpstreamError`
+  redacts anything whose text came from outside — a provider error surfaced as a
+  502. The same pass closed a real gap on the mid-stream path: once bytes are on
+  the wire the failure is reported inside the stream, and that hand-built frame
+  was not redacted at all, so a streaming client could have been shown an
+  upstream credential a non-streaming one was protected from.
+
 ## [1.51.0] - 2026-08-12
 
 ### Added

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.51.0] - 2026-08-12
+
 ### Added
 - **OpenAI-compatible HTTP API** (#202). `joshbot serve` exposes
   `POST /v1/chat/completions` (with SSE streaming) and `GET /v1/models`, so any

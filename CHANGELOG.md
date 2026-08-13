@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default they were trying to raise.
 
 ### Fixed
+- **Data race on the multi-provider's default provider.**
+  `MultiProvider.parseModel` read `defaultProvider` outside the lock while
+  `SetDefault` wrote it under one, so a config reload racing any in-flight
+  request was a genuine race — reachable in production, since the learning
+  consolidator runs `Chat` on a background goroutine for the life of the
+  process. `parseModel` now holds the read lock across its whole body, which
+  also stops a reload landing between the provider-entry lookup and the default
+  read and resolving against a chain that no longer exists.
 - **Concurrent turns on one session no longer lose each other's messages**
   (#236). A turn is a read-modify-write over one session file: it loads the
   history, appends, and rewrites the whole thing. The manager's mutex guarded

@@ -28,6 +28,7 @@ joshbot is heavier on guarantees, lighter on your machine.
 - **Context Compression** - Summarizes old context to stay within token limits; works well with small local models
 - **Skill Self-Creation** - Creates new capabilities for itself as markdown files, with auto-detection from conversation patterns and LLM-based extraction
 - **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
+- **OpenAI-Compatible API** - `joshbot serve` exposes the agent at `/v1/chat/completions` (streaming included) and `/v1/models`, so any OpenAI client can drive it; authentication is mandatory and it binds loopback by default
 - **Telegram & Discord** - Chat from your phone with full media support; both fail closed on an empty allowlist
 - **Scriptable / Non-Interactive** - Every command runs headless; `agent -m` for one-shot, `--output-format json`/`stream-json` for machine-readable output, `--resume` to thread sessions, and a stable exit-code contract for CI
 - **Interactive CLI** - Rich terminal interface with markdown rendering
@@ -90,6 +91,7 @@ joshbot onboard # First-time setup
 joshbot agent # Interactive CLI chat
 joshbot agent --debug # CLI chat with debug logging
 joshbot gateway # Start all channels (Telegram, etc.)
+joshbot serve # Start the OpenAI-compatible HTTP API
 joshbot gateway --debug # Gateway with debug logging
 joshbot status # Show configuration and status
 joshbot preflight # Check the config would work, without calling any provider
@@ -1038,6 +1040,86 @@ joshbot also speaks Discord (gateway websocket + REST via the pure-Go
 > service's chat, with no error anywhere. Until the bus fans out per channel,
 > enable **either** `channels.telegram` **or** `channels.discord`, not both.
 > (`internal/channels/discord.go`, `consumeOutbound`.)
+
+## OpenAI-Compatible API
+
+`joshbot serve` exposes joshbot over the OpenAI chat API, so any client that can
+point at a custom base URL — the OpenAI SDKs, `curl`, an editor plugin, another
+agent — can use joshbot as a backend.
+
+```bash
+joshbot serve                        # binds api.listen (default 127.0.0.1:18791)
+joshbot serve --listen 127.0.0.1:9000
+```
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/v1/chat/completions` | POST | Run a turn. Supports `"stream": true` (SSE). |
+| `/v1/models` | GET | List the served model. |
+| `/healthz` | GET | Liveness. The only route needing no credential. |
+
+**The model *is* the agent.** A request runs the full ReAct loop — tools, memory,
+skills, sessions — rather than proxying an upstream provider. Two consequences:
+
+- `/v1/models` returns exactly one id, `joshbot`. There is nothing to select, so
+  the request's `model` field is accepted and ignored — a client hardcoded to
+  `gpt-4` works unchanged.
+- A `system` message from the client is **dropped**, not forwarded. joshbot's own
+  system prompt carries its tool and safety rules, and letting a caller prepend to
+  it would be a way to talk the agent out of them.
+
+The optional `user` field selects the conversation: it becomes the session key
+`api:<user>`, so two values are two independent histories. It defaults to
+`default`, and is validated — a value containing `:` or a path separator is a
+400, never a file written outside the sessions directory.
+
+```bash
+curl http://127.0.0.1:18791/v1/chat/completions \
+  -H "Authorization: Bearer $JOSHBOT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"joshbot","messages":[{"role":"user","content":"what files are in my workspace?"}]}'
+```
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:18791/v1", api_key="<your key>")
+print(client.chat.completions.create(
+    model="joshbot",
+    messages=[{"role": "user", "content": "hello"}],
+).choices[0].message.content)
+```
+
+### Authentication and exposure
+
+**Authentication is mandatory and there is no unauthenticated mode.** A caller
+that reaches this endpoint reaches the shell and filesystem tools, so `joshbot
+serve` refuses to start when no key is configured rather than starting open.
+
+```json
+{
+  "api": {
+    "listen": "127.0.0.1:18791",
+    "api_keys": ["<a long random string>"]
+  }
+}
+```
+
+Or by environment: `JOSHBOT_API__LISTEN`, and `JOSHBOT_API__API_KEYS` as a
+comma-separated list (it replaces the configured list rather than adding to it,
+so a key can be revoked without editing the file). Keys are compared in constant
+time and never appear in a response body or a log line.
+
+The default bind address is loopback on purpose. Binding to `0.0.0.0` publishes
+an agent with shell access to your network; if you need remote access, put it
+behind a reverse proxy with TLS, and consider `tools.shell_sandbox` and
+`tools.shell_allow_list` (see [Shell Sandbox](#shell-sandbox)).
+
+Requests are capped at 1 MB. Streaming responses are `text/event-stream` frames
+terminated by `data: [DONE]`; token usage rides the final frame.
+
+> Embeddings (`/v1/embeddings`) and audio transcription
+> (`/v1/audio/transcriptions`) are not implemented — joshbot has no embedding or
+> audio provider interface yet.
 
 ## MCP Servers (experimental)
 

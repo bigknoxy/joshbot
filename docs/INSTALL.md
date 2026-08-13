@@ -314,6 +314,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot onboard` | First-time setup wizard |
 | `joshbot agent` | Interactive CLI chat mode |
 | `joshbot gateway` | Start all channels (Telegram, Discord) |
+| `joshbot serve [--listen host:port]` | Serve the OpenAI-compatible HTTP API (`POST /v1/chat/completions`, `GET /v1/models`) |
 | `joshbot status` | Show configuration and status |
 | `joshbot preflight` | Check the config would work, without calling any provider (exits non-zero if it would not) |
 | `joshbot --output json <cmd>` | Machine-readable form of `preflight`, `status`, `skills list`, `mcp list`, `profiles list`, `auth status` and `configure --list` |
@@ -568,6 +569,9 @@ export JOSHBOT_TOOLS__SHELL_ALLOW_LIST="git,status,go,test"
 export JOSHBOT_TOOLS__FILESYSTEM_ALLOWED_PATHS="/var/log,/opt/shared"
 
 # Logging
+export JOSHBOT_API__LISTEN="127.0.0.1:18791"
+export JOSHBOT_API__API_KEYS="key-one,key-two"  # comma-separated; replaces api.api_keys
+
 export JOSHBOT_LOG_LEVEL="debug"
 ```
 
@@ -776,6 +780,43 @@ Upgrading from v1.47.x turns it on even if your config file already says
 `"streaming": false`: that key has no `omitempty`, so it was written into every
 config those versions saved regardless of intent. The schema v4→v5 migration
 resets it once and logs that it did; set it to `false` afterwards and it stays off.
+
+### HTTP API (`joshbot serve`)
+
+`joshbot serve` speaks the OpenAI chat API so any client that accepts a custom
+base URL can use joshbot as a backend. The served "model" is the agent itself —
+a request runs the full ReAct loop with tools, memory and skills, so `/v1/models`
+advertises exactly one id (`joshbot`) and the request's `model` field is accepted
+and ignored.
+
+```json
+{
+  "api": {
+    "listen": "127.0.0.1:18791",
+    "api_keys": ["<a long random string>"]
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `api.listen` | `127.0.0.1:18791` | Bind address. `--listen` overrides it for one run. |
+| `api.api_keys` | none | Accepted bearer tokens. Empty means the server refuses to start. |
+
+Authentication is mandatory: a caller reaching this endpoint reaches the shell
+and filesystem tools, so there is no unauthenticated mode and no default key. The
+bind address is loopback for the same reason — see [SECURITY.md](../SECURITY.md)
+before exposing it.
+
+```bash
+curl http://127.0.0.1:18791/v1/chat/completions \
+  -H "Authorization: Bearer $JOSHBOT_API_KEY" \
+  -d '{"messages":[{"role":"user","content":"hello"}]}'
+```
+
+Set `"stream": true` for `text/event-stream` frames ending in `data: [DONE]`. The
+optional `user` field picks the session (`api:<user>`, default `default`).
+`/v1/embeddings` and `/v1/audio/transcriptions` are not implemented.
 
 ### Skill Approval
 

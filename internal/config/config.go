@@ -67,6 +67,11 @@ const (
 	DefaultGatewayHost = "0.0.0.0"
 	// DefaultGatewayPort is the default gateway port.
 	DefaultGatewayPort = 18790
+	// DefaultAPIListen is the default bind address for `joshbot serve`. It is
+	// loopback, not 0.0.0.0: the OpenAI-compatible endpoint runs the full agent
+	// with its shell and filesystem tools, so reaching the network is a
+	// decision the operator makes deliberately.
+	DefaultAPIListen = "127.0.0.1:18791"
 	// DefaultMaxTokens is the default max tokens for LLM responses.
 	DefaultMaxTokens = 8192
 	// DefaultTemperature is the default temperature for LLM responses.
@@ -326,6 +331,23 @@ type GatewayConfig struct {
 	Port int    `mapstructure:"port" json:"port" yaml:"port"`
 }
 
+// APIConfig configures the OpenAI-compatible HTTP server started by
+// `joshbot serve`. There is deliberately no Enabled flag: running the command
+// is the opt-in, and a bool here would be written into every saved config
+// without omitempty, which makes its default impossible to change later
+// without a schema migration (see the streaming v4→v5 note in AGENTS.md).
+type APIConfig struct {
+	// Listen is the address the server binds, host:port. It defaults to
+	// loopback because the endpoint hands callers the full agent, tools
+	// included; binding a wider interface is an explicit operator act.
+	Listen string `mapstructure:"listen" json:"listen,omitempty" yaml:"listen,omitempty"`
+
+	// APIKeys are the accepted bearer credentials. At least one is required —
+	// `joshbot serve` refuses to start without one, because an unauthenticated
+	// endpoint that reaches the shell tool is remote code execution.
+	APIKeys []string `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
+}
+
 // HeartbeatConfig configures the HEARTBEAT.md proactive task scanner.
 type HeartbeatConfig struct {
 	// Interval is how often HEARTBEAT.md is scanned for unchecked tasks, as a Go
@@ -374,6 +396,7 @@ type Config struct {
 	Channels  ChannelsConfig  `mapstructure:"channels" json:"channels" yaml:"channels"`
 	Tools     ToolsConfig     `mapstructure:"tools" json:"tools" yaml:"tools"`
 	Gateway   GatewayConfig   `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
+	API       APIConfig       `mapstructure:"api" json:"api,omitempty" yaml:"api,omitempty"`
 	Heartbeat HeartbeatConfig `mapstructure:"heartbeat" json:"heartbeat,omitempty" yaml:"heartbeat,omitempty"`
 	LogLevel  string          `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
 	User      UserConfig      `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
@@ -455,6 +478,24 @@ func applyEnvOverrides(cfg *Config) {
 	// Heartbeat interval, e.g. JOSHBOT_HEARTBEAT__INTERVAL=30m
 	if v := getEnv("HEARTBEAT__INTERVAL"); v != "" {
 		cfg.Heartbeat.Interval = v
+	}
+
+	// OpenAI-compatible API server, e.g. JOSHBOT_API__LISTEN=127.0.0.1:9000
+	if v := getEnv("API__LISTEN"); v != "" {
+		cfg.API.Listen = v
+	}
+	// Comma-separated, because the whole point of this variable is to supply the
+	// credential without writing it to disk — a JSON array in an env var would
+	// be worse ergonomics for the container and systemd cases it exists for.
+	// It replaces the configured list rather than adding to it, so an operator
+	// can revoke a key in the file by overriding here.
+	if v := getEnv("API__API_KEYS"); v != "" {
+		cfg.API.APIKeys = nil
+		for _, k := range strings.Split(v, ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				cfg.API.APIKeys = append(cfg.API.APIKeys, k)
+			}
+		}
 	}
 
 	// Model-centric config support
@@ -790,6 +831,9 @@ func Defaults() *Config {
 		Gateway: GatewayConfig{
 			Host: DefaultGatewayHost,
 			Port: DefaultGatewayPort,
+		},
+		API: APIConfig{
+			Listen: DefaultAPIListen,
 		},
 		LogLevel: "info",
 	}

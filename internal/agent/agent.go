@@ -789,6 +789,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	a.logger.Warn("Hit max iterations", "max", a.maxIterations)
 
 	// Persist a checkpoint marker in the session for /resume detection.
+	var checkpointSaveErr error
 	if a.sessions != nil {
 		sess.Checkpoint = &session.Checkpoint{
 			Iteration:     a.maxIterations,
@@ -798,13 +799,18 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		}
 		// Save the session so the checkpoint survives across requests.
 		saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_ = a.sessions.Save(saveCtx, sess)
+		checkpointSaveErr = a.sessions.Save(saveCtx, sess)
 		cancel()
+		if checkpointSaveErr != nil {
+			a.logger.Error("Failed to save checkpoint", "session", sess.ID, "error", checkpointSaveErr)
+		}
 	}
 
-	resp := fmt.Sprintf("I've been working on this for a while. Here's what I found so far.\n\n"+
-		"⚠️ Hit the max iteration limit (%d).\n"+
-		"To continue, type `/resume` and I'll pick up where we left off.", a.maxIterations)
+	respBase := "I've been working on this for a while. Here's what I found so far.\n\n⚠️ Hit the max iteration limit (%d)."
+	resp := fmt.Sprintf(respBase, a.maxIterations)
+	if checkpointSaveErr == nil {
+		resp += "\nTo continue, type `/resume` and I'll pick up where we left off."
+	}
 	return resp, nil
 }
 

@@ -1165,12 +1165,18 @@ line covers — unauthenticated requests are the one thing an attacker can send
 without a credential, and a line each would fill the disk of any install that
 redirects the log to a file.
 
-Two limits worth knowing. A client that disconnects mid-turn cancels the request
+Two requests carrying the same `user` share one session, and joshbot serialises
+them: the second waits for the first to finish rather than loading the same
+history and overwriting it. They are queued, not parallel, which is what a single
+conversation means — a client that wants genuine concurrency should send distinct
+`user` values. A request that gives up waiting fails on its own timeout rather
+than blocking indefinitely. The lock is process-local: two joshbot processes
+sharing one sessions directory (the gateway plus a concurrent `joshbot agent -m`)
+can still interleave.
+
+One limit worth knowing. A client that disconnects mid-turn cancels the request
 context, so that turn is not saved to the session — the conversation resumes from
-the last completed turn. And two concurrent requests carrying the same `user`
-share one session file; joshbot loads and saves it per turn without a lock across
-processes, so the slower turn can overwrite the faster one. Give concurrent
-callers distinct `user` values.
+the last completed turn.
 
 > Embeddings (`/v1/embeddings`) and audio transcription
 > (`/v1/audio/transcriptions`) are not implemented — joshbot has no embedding or

@@ -367,19 +367,55 @@ func WithSkillLoader(l *skills.Loader) Option {
 	}
 }
 
+// SessionLocker is implemented by session stores that can serialise whole turns
+// for one session key.
+//
+// It is optional and checked with a type assertion, like session.Archiver, so
+// that test doubles and alternative SessionManager implementations are not
+// forced to implement it. A store that does not implement it keeps the previous
+// behaviour: turns for one key may interleave and lose each other's messages.
+type SessionLocker interface {
+	LockSession(ctx context.Context, sessionID string) (func(), error)
+}
+
 // Process handles an inbound message and returns the response content.
 // It implements the full ReAct loop: receive message, call LLM, execute tools, repeat.
+//
+// The turn is serialised per session key. A turn is a read-modify-write over
+// one session file, so two overlapping turns for the same key would each load
+// the same prefix and the later save would publish a file missing the earlier
+// turn's messages (#236). This is reachable by default through the HTTP API,
+// where two requests carrying the same `user` land on one session.
+//
+// Acquisition happens after the timeout context is built, so a turn queued
+// behind a long one waits against its own deadline rather than forever, and
+// reports the timeout instead of hanging.
 func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+
+	if locker, ok := a.sessions.(SessionLocker); ok {
+		release, err := locker.LockSession(ctx, getSessionKey(msg))
+		if err != nil {
+			a.logger.Error("Failed to acquire session lock", "error", err)
+			return fmt.Sprintf("Error: Failed to load session: %v", err), nil
+		}
+		defer release()
+	}
+
+	return a.process(ctx, msg)
+}
+
+// process is Process without the lock. handleResumeCommand re-enters it to run
+// the resumed turn through the normal ReAct loop, and re-entering Process there
+// would deadlock on the lock this goroutine already holds.
+func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, error) {
 	startTime := time.Now()
 	a.logger.Info("Processing message",
 		"channel", msg.Channel,
 		"sender", msg.SenderID,
 		"content_len", len(msg.Content),
 	)
-
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(ctx, a.timeout)
-	defer cancel()
 
 	// Handle commands (pass context for session deletion)
 	if isCommand(msg.Content) {
@@ -1664,7 +1700,9 @@ func (a *Agent) handleResumeCommand(ctx context.Context, msg bus.InboundMessage)
 		Timestamp: msg.Timestamp,
 	}
 
-	resp, err := a.Process(ctx, continueMsg)
+	// a.process, not a.Process: this goroutine already holds the session lock,
+	// and re-entering Process would deadlock against itself.
+	resp, err := a.process(ctx, continueMsg)
 	if err != nil {
 		return fmt.Sprintf("Error: resume failed: %v", err)
 	}

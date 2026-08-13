@@ -29,6 +29,10 @@ var (
 type Manager struct {
 	sessionsDir string
 	mu          sync.RWMutex
+
+	// keys serialises whole turns per session id. mu guards a single Load or
+	// Save; keys guards the load→modify→save span that spans several of them.
+	keys *keyLock
 }
 
 // NewManager creates a new session manager with the given sessions directory.
@@ -49,6 +53,7 @@ func NewManager(sessionsDir string) (*Manager, error) {
 
 	return &Manager{
 		sessionsDir: sessionsDir,
+		keys:        newKeyLock(),
 	}, nil
 }
 
@@ -255,19 +260,19 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 		}
 	}
 
-	if len(messages) == 0 {
-		// Return empty session if file exists but is empty
-		return &Session{
-			ID:        sessionID,
-			Messages:  []Message{},
-			CreatedAt: time.Now().UTC(),
-			UpdatedAt: time.Now().UTC(),
-		}, nil
+	// First message determines created_at, last message determines updated_at.
+	// An empty file still falls through to the metadata load below rather than
+	// returning early: the sidecar carries the checkpoint, model override and
+	// personality, and a session can legitimately hold those with no messages
+	// yet. Returning early here dropped all of them silently.
+	createdAt := time.Now().UTC()
+	updatedAt := createdAt
+	if len(messages) > 0 {
+		createdAt = messages[0].Timestamp
+		updatedAt = messages[len(messages)-1].Timestamp
+	} else {
+		messages = []Message{}
 	}
-
-	// First message determines created_at, last message determines updated_at
-	createdAt := messages[0].Timestamp
-	updatedAt := messages[len(messages)-1].Timestamp
 
 	sess := &Session{
 		ID:        sessionID,

@@ -562,3 +562,38 @@ func TestSessionContentIsStoredVerbatim(t *testing.T) {
 		t.Errorf("session content did not round-trip verbatim: %+v", loaded.Messages)
 	}
 }
+
+// A session can carry metadata before it carries any message: /model and
+// /personality are commands, and a command turn is not appended to the
+// transcript. Load used to return early on an empty message list, before
+// reading the sidecar at all, so a checkpoint, model override or personality
+// set on such a session was silently dropped on the next load.
+func TestMetaSidecarSurvivesOnASessionWithNoMessages(t *testing.T) {
+	m := newTestManager(t)
+	id := "meta-no-messages"
+
+	sess := NewSession(id)
+	sess.ModelOverride = "openrouter/some-model"
+	sess.Personality = "be terse"
+	sess.Checkpoint = &Checkpoint{Iteration: 7, MaxIterations: 50, CreatedAt: time.Now().UTC()}
+	if err := m.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := m.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Messages) != 0 {
+		t.Fatalf("Messages = %d, want 0", len(got.Messages))
+	}
+	if got.ModelOverride != "openrouter/some-model" {
+		t.Errorf("ModelOverride = %q, want %q", got.ModelOverride, "openrouter/some-model")
+	}
+	if got.Personality != "be terse" {
+		t.Errorf("Personality = %q, want %q", got.Personality, "be terse")
+	}
+	if got.Checkpoint == nil || got.Checkpoint.Iteration != 7 {
+		t.Errorf("Checkpoint = %+v, want Iteration=7", got.Checkpoint)
+	}
+}

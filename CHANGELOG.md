@@ -20,6 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default they were trying to raise.
 
 ### Fixed
+- **Concurrent turns on one session no longer lose each other's messages**
+  (#236). A turn is a read-modify-write over one session file: it loads the
+  history, appends, and rewrites the whole thing. The manager's mutex guarded
+  each load and each save but was released between them, so two overlapping
+  turns for the same key both loaded the same prefix and the later save
+  published a file with the other turn's messages gone. It was reachable by
+  default through the HTTP API, where two requests carrying the same `user` land
+  on one session. `Process` now holds a per-session-key lock across the whole
+  span, so same-key turns queue instead of racing — which is also what a single
+  conversation means. A turn that gives up waiting fails on its own timeout
+  rather than blocking indefinitely, and the lock table is reference counted so
+  the unbounded `user` key space cannot grow it. The lock is process-local: a
+  gateway and a concurrent `joshbot agent -m` sharing one sessions directory can
+  still interleave, which is the pre-existing state.
+- **A session's metadata sidecar survives having no messages.** `Load` returned
+  early on an empty message list, before reading `.meta.json` at all, so a
+  checkpoint, model override or personality set on a session with no transcript
+  yet was silently dropped on the next load. Command turns are not appended to
+  the transcript, so `/model` or `/personality` as the first thing a user does
+  hit exactly that case.
 - **A timeout written as `"timeout": 600` no longer means 600 nanoseconds**
   (#240). A plain `time.Duration` is an `int64` of nanoseconds and
   `encoding/json` decodes it as exactly that, so a config that looked like ten

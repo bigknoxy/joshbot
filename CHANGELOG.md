@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Hitting the max iteration limit no longer tells you to type `/resume` when the
+  checkpoint was not persisted. The save error was discarded, so a failed write
+  still produced the suggestion and `/resume` then answered "No checkpoint
+  found" with the interrupted task gone and no error anywhere. The failure is
+  now logged with the session id, and the suggestion is withheld both when the
+  save fails and when there is no session manager at all. (#244)
+
 ## [1.52.0] - 2026-08-13
 
 ### Added

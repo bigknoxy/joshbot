@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -233,4 +234,104 @@ func TestResumeCommand_RealSessionManager(t *testing.T) {
 	if !strings.Contains(resp, "Resuming from checkpoint") {
 		t.Errorf("expected 'Resuming from checkpoint' in response, got: %s", resp)
 	}
+}
+
+// iterationLimitAgent builds an agent whose provider never stops calling tools,
+// so reactLoop always reaches the max-iteration checkpoint path.
+func iterationLimitAgent(t *testing.T, sm SessionManager) *Agent {
+	t.Helper()
+	InvalidatePromptCache()
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+
+	tc := providers.ToolCall{
+		ID:   "tc_1",
+		Type: "function",
+		Function: providers.FunctionCall{
+			Name:      "shell",
+			Arguments: `{"command":"echo test"}`,
+		},
+	}
+	provider := &scriptedProvider{
+		turns: []scriptedTurn{
+			{toolCalls: []providers.ToolCall{tc}},
+			{toolCalls: []providers.ToolCall{tc}},
+			{toolCalls: []providers.ToolCall{tc}},
+		},
+	}
+	agent := NewAgent(cfg, provider, &mockToolExecutor{}, sm, newMockLogger())
+	agent.SetMaxIterations(2)
+	return agent
+}
+
+// TestIterationLimitOffersResumeOnlyWhenCheckpointPersisted is the #244
+// regression. The reply told the user to type /resume even when the checkpoint
+// save had failed, and /resume then answered "No checkpoint found" — the
+// interrupted task was gone with no error anywhere. The suggestion must track
+// whether the checkpoint actually landed.
+func TestIterationLimitOffersResumeOnlyWhenCheckpointPersisted(t *testing.T) {
+	const resumeHint = "/resume"
+
+	t.Run("saved", func(t *testing.T) {
+		sm := newMockSessionManager()
+		agent := iterationLimitAgent(t, sm)
+
+		resp, err := agent.Process(context.Background(), bus.InboundMessage{
+			SenderID: "user", Channel: "cli", Content: "loop forever", Timestamp: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("Process returned %v", err)
+		}
+		if !strings.Contains(resp, "max iteration limit") {
+			t.Fatalf("expected the iteration-limit reply, got: %s", resp)
+		}
+		if !strings.Contains(resp, resumeHint) {
+			t.Errorf("checkpoint saved, so the reply must offer %s; got: %s", resumeHint, resp)
+		}
+	})
+
+	t.Run("save fails", func(t *testing.T) {
+		sm := newMockSessionManager()
+		agent := iterationLimitAgent(t, sm)
+		sm.mu.Lock()
+		sm.saveErr = errors.New("disk full")
+		sm.mu.Unlock()
+
+		resp, err := agent.Process(context.Background(), bus.InboundMessage{
+			SenderID: "user", Channel: "cli", Content: "loop forever", Timestamp: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("Process returned %v", err)
+		}
+		if !strings.Contains(resp, "max iteration limit") {
+			t.Fatalf("expected the iteration-limit reply, got: %s", resp)
+		}
+		if strings.Contains(resp, resumeHint) {
+			t.Errorf("checkpoint save failed, so the reply must not offer %s; got: %s", resumeHint, resp)
+		}
+	})
+
+	// No session manager at all is the second way not to have a checkpoint. An
+	// `err == nil` gate reads it as success, and /resume then answers "session
+	// manager not initialized" — the same dead end as a failed save.
+	t.Run("no session manager", func(t *testing.T) {
+		sm := newMockSessionManager()
+		agent := iterationLimitAgent(t, sm)
+		sess, err := sm.GetOrCreate(context.Background(), "cli:user")
+		if err != nil {
+			t.Fatalf("GetOrCreate: %v", err)
+		}
+		agent.sessions = nil
+
+		resp, err := agent.reactLoop(context.Background(), nil, sess, "cli", "user", "loop forever", &compactionState{})
+		if err != nil {
+			t.Fatalf("reactLoop returned %v", err)
+		}
+		if !strings.Contains(resp, "max iteration limit") {
+			t.Fatalf("expected the iteration-limit reply, got: %s", resp)
+		}
+		if strings.Contains(resp, resumeHint) {
+			t.Errorf("no session manager, so the reply must not offer %s; got: %s", resumeHint, resp)
+		}
+	})
 }

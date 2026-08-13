@@ -88,7 +88,11 @@ func (m *mockToolExecutor) GetSchemas() []providers.Tool {
 // mockSessionManager is a mock session manager for testing.
 type mockSessionManager struct {
 	sessions map[string]*session.Session
-	mu       sync.Mutex
+	// saveErr, when set, makes every Save fail. Persistence failure is not
+	// reachable through the real manager without breaking the filesystem, and
+	// the checkpoint path branches on it (#244).
+	saveErr error
+	mu      sync.Mutex
 }
 
 func newMockSessionManager() *mockSessionManager {
@@ -113,6 +117,9 @@ func (m *mockSessionManager) GetOrCreate(ctx context.Context, key string) (*sess
 func (m *mockSessionManager) Save(ctx context.Context, sess *session.Session) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.saveErr != nil {
+		return m.saveErr
+	}
 	m.sessions[sess.ID] = sess
 	return nil
 }

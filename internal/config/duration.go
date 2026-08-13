@@ -3,6 +3,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,8 +20,10 @@ import (
 //
 // This type accepts three forms and states which it read:
 //
-//   - a duration string — "600s", "10m", "1h30m" — the preferred form, and the
-//     same spelling the cron tool takes
+//   - a duration string — "600s", "10m", "1h30m" — the preferred form. This is
+//     time.ParseDuration's grammar exactly. It is *not* the cron tool's
+//     spelling: internal/cron.ParseDuration additionally accepts a "d" suffix,
+//     and "1d" here is an error, not a day.
 //   - a small bare number — seconds, the unit a caller writing 600 means
 //   - a large bare number — nanoseconds, because that is what an older joshbot
 //     *wrote*: `joshbot configure` set p.Timeout and saved, so configs in the
@@ -52,8 +57,10 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 // how a bare number's unit is decided.
 func (d *Duration) UnmarshalJSON(b []byte) error {
 	// A JSON null leaves the field at its zero value, which every caller
-	// already treats as "unset".
-	if string(b) == "null" {
+	// already treats as "unset". Empty input is not reachable through
+	// encoding/json, but a hand-rolled caller reaching b[0] below would panic
+	// rather than report anything.
+	if len(b) == 0 || string(b) == "null" {
 		return nil
 	}
 
@@ -81,6 +88,11 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 	neg := int64(1)
 	if i < 0 {
+		// math.MinInt64 negates to itself, so splitting the sign off would
+		// carry the negative through and land on 0s with a nil error.
+		if i == math.MinInt64 {
+			return fmt.Errorf("invalid duration %s: out of range", b)
+		}
 		neg, i = -1, -i
 	}
 	if i >= legacyNanosecondCutoff {
@@ -89,6 +101,28 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	}
 	*d = Duration(time.Duration(neg*i) * time.Second)
 	return nil
+}
+
+// parseDurationEnv reads a duration from an environment variable under exactly
+// the rules the config file uses, by routing the raw text through
+// UnmarshalJSON. A bare "600" therefore means 600 seconds here as well; env
+// and file must not disagree about the unit, which is the whole bug (#240).
+func parseDurationEnv(v string) (Duration, error) {
+	v = strings.TrimSpace(v)
+	// An env var carries no JSON quoting, so supply it: a bare integer is the
+	// number form, anything else is the string form. json.Marshal escapes the
+	// value, so a hostile string cannot break out into other JSON.
+	b := []byte(v)
+	if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+		if b, err = json.Marshal(v); err != nil {
+			return 0, err
+		}
+	}
+	var d Duration
+	if err := d.UnmarshalJSON(b); err != nil {
+		return 0, err
+	}
+	return d, nil
 }
 
 // YAML support is deliberately absent. The struct tags carry yaml names, but
@@ -108,8 +142,15 @@ func validateTimeout(key string, d Duration) error {
 		return nil
 	}
 	if d.Duration() < minConfiguredTimeout {
-		return fmt.Errorf("%s is %s, which is below the %s minimum; write a duration string like \"600s\" or \"10m\", or a whole number of seconds",
-			key, d, minConfiguredTimeout)
+		// fatalConfigError, because the alternative is worse than the mistake.
+		// Load answers a plain validation failure by logging "Config unusable,
+		// using defaults" and substituting Defaults() — so a mistyped
+		// "500ms" would silently take every provider, API key and allowlist
+		// with it and leave joshbot dialling the default model with no
+		// credential. That is the same silent-degradation class this type
+		// exists to fix, one layer up.
+		return fatalConfigError{fmt.Errorf("%s is %s, which is below the %s minimum; write a duration string like \"600s\" or \"10m\", or a whole number of seconds",
+			key, d, minConfiguredTimeout)}
 	}
 	return nil
 }

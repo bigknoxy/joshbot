@@ -755,15 +755,23 @@ Two keys bound how long joshbot waits:
 | Key | Bounds | Default |
 |---|---|---|
 | `agents.defaults.timeout` | one agent turn, end to end | 2m |
-| `providers.<name>.timeout` | one request to that provider | provider default |
+| `providers.<name>.timeout` | one request to that provider | 300s for ollama, 120s for every other provider |
 
 Both accept a **duration string** — `"600s"`, `"10m"`, `"1h30m"` — which is the form
-joshbot writes when it saves a config, and the same spelling the `cron` tool takes.
-A bare number is read as **seconds**, so `"timeout": 600` means ten minutes.
+joshbot writes when it saves a config. A bare number is read as **seconds**, so
+`"timeout": 600` means ten minutes. This is Go's `time.ParseDuration` grammar, not
+the `cron` tool's: `cron` also takes a `"d"` suffix, and `"1d"` here is an error.
+
+`agents.defaults.timeout` can also be set as an environment variable —
+`JOSHBOT_AGENTS__DEFAULTS__TIMEOUT=10m` — under the same rules, for a deployment
+with no config file. An unparseable value is an error at startup, not a silent
+fallback to the default you were trying to raise.
 
 Raise `agents.defaults.timeout` when a turn legitimately runs long: a cold local
 model with a large prompt regularly outruns the 2m default, and before this key
-existed there was no way to change it short of patching the binary.
+existed there was no way to change it short of patching the binary. It bounds the
+top-level turn only; a subagent spawned by `delegate_subagent` and friends runs
+under its own fixed 60s budget, which this key does not change.
 
 Anything under one second is rejected at load, naming the key. A sub-second timeout
 fails every request the moment it is used and blames the context, not the config.

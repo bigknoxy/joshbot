@@ -630,6 +630,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				APIKey:       p.APIKey,
 				APIBase:      p.APIBase,
 				ExtraHeaders: p.ExtraHeaders,
+				Timeout:      p.Timeout.Duration(),
 				Model:        cfg.Agents.Defaults.Model,
 				MaxTokens:    cfg.Agents.Defaults.MaxTokens,
 				Temperature:  cfg.Agents.Defaults.Temperature,
@@ -647,6 +648,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				APIKey:       p.APIKey,
 				APIBase:      p.APIBase,
 				ExtraHeaders: p.ExtraHeaders,
+				Timeout:      p.Timeout.Duration(),
 				Model:        p.Model,
 			})
 			if err != nil {
@@ -670,6 +672,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				APIKey:       p.APIKey,
 				APIBase:      p.APIBase,
 				ExtraHeaders: p.ExtraHeaders,
+				Timeout:      p.Timeout.Duration(),
 			})
 			if err != nil {
 				log.Warn("Failed to create Groq provider", "error", err)
@@ -688,6 +691,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				APIKey:       p.APIKey,
 				APIBase:      p.APIBase,
 				ExtraHeaders: p.ExtraHeaders,
+				Timeout:      p.Timeout.Duration(),
 				Model:        p.Model,
 			})
 			if err != nil {
@@ -746,6 +750,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 			} else {
 				copilotCfg := providers.Config{
 					APIKey:      token.AccessToken,
+					Timeout:     p.Timeout.Duration(),
 					Model:       cfg.Agents.Defaults.Model,
 					MaxTokens:   cfg.Agents.Defaults.MaxTokens,
 					Temperature: cfg.Agents.Defaults.Temperature,
@@ -779,6 +784,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				APIKey:       p.APIKey,
 				APIBase:      p.APIBase,
 				ExtraHeaders: p.ExtraHeaders,
+				Timeout:      p.Timeout.Duration(),
 				Model:        p.Model,
 			})
 			if err != nil {

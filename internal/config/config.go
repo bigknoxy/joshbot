@@ -476,7 +476,7 @@ func splitEnvList(v string) []string {
 }
 
 // applyEnvOverrides applies environment variable overrides to the config.
-func applyEnvOverrides(cfg *Config) {
+func applyEnvOverrides(cfg *Config) error {
 	// Helper to get env var with prefix
 	getEnv := func(key string) string {
 		return os.Getenv("JOSHBOT_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_")))
@@ -627,6 +627,18 @@ func applyEnvOverrides(cfg *Config) {
 	// Dream consolidation mode
 	if v := getEnv("AGENTS__DEFAULTS__DREAM_MODE"); v != "" {
 		cfg.Agents.Defaults.DreamMode = v
+	}
+
+	// Agent turn timeout. Parsed rather than Sscanf'd, and reported rather
+	// than ignored: this key exists for the env-only deployment (#241), where
+	// silently discarding a mistyped value leaves the operator on the default
+	// they were trying to raise, with nothing anywhere saying so.
+	if v := getEnv("AGENTS__DEFAULTS__TIMEOUT"); v != "" {
+		d, err := parseDurationEnv(v)
+		if err != nil {
+			return fatalConfigError{fmt.Errorf("JOSHBOT_AGENTS__DEFAULTS__TIMEOUT: %w", err)}
+		}
+		cfg.Agents.Defaults.Timeout = d
 	}
 
 	// Telegram enabled
@@ -782,6 +794,7 @@ func applyEnvOverrides(cfg *Config) {
 	if os.Getenv("JOSHBOT_NVIDIA_API_KEY") != "" && os.Getenv(providerEnvKey("nvidia")) == "" {
 		cfg.noteCredentialSource("nvidia", CredentialFromEnv("JOSHBOT_NVIDIA_API_KEY"))
 	}
+	return nil
 }
 
 // Defaults returns a Config with all default values set.
@@ -1229,7 +1242,9 @@ func loadFileConfig(data []byte) (*Config, error) {
 		return cfg, fatalConfigError{err}
 	}
 
-	applyEnvOverrides(cfg)
+	if err := applyEnvOverrides(cfg); err != nil {
+		return cfg, err
+	}
 
 	// Sanitize string fields that may have whitespace from user input
 	for name, p := range cfg.Providers {
@@ -1270,7 +1285,9 @@ func LoadStrict() (*Config, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg := Defaults()
-			applyEnvOverrides(cfg)
+			if envErr := applyEnvOverrides(cfg); envErr != nil {
+				return cfg, envErr
+			}
 			return cfg, fmt.Errorf("no config file at %s; run `joshbot onboard`", configPath)
 		}
 		return nil, err
@@ -1317,7 +1334,12 @@ func Load() (*Config, error) {
 	cfg := Defaults()
 
 	// Apply environment variable overrides even without config file
-	applyEnvOverrides(cfg)
+	// A bad value here is fatal for the same reason it is in loadFileConfig:
+	// an env-only deployment has no file to fall back to, and running on the
+	// default the operator was trying to change is the silent failure.
+	if err := applyEnvOverrides(cfg); err != nil {
+		return nil, err
+	}
 
 	// Sanitize string fields that may have whitespace from user input
 	for name, p := range cfg.Providers {

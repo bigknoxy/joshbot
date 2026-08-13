@@ -521,9 +521,14 @@ The old format is still supported for backward compatibility:
 > **Important:** each provider under `providers` needs `"enabled": true` to register — omitting it silently disables that provider rather than erroring.
 
 > **Timeouts:** `agents.defaults.timeout` bounds one agent turn (default 2m) and
-> `providers.<name>.timeout` bounds one request to that provider. Both take a
-> duration string — `"600s"`, `"10m"`, `"1h30m"` — or a bare number of **seconds**,
-> so `"timeout": 600` is ten minutes. Raise the agent timeout for a slow local
+> `providers.<name>.timeout` bounds one request to that provider (default 300s for
+> ollama, 120s elsewhere). Both take a duration string — `"600s"`, `"10m"`,
+> `"1h30m"` — or a bare number of **seconds**, so `"timeout": 600` is ten minutes.
+> This is Go's `time.ParseDuration` grammar, so `"1d"` is an error even though the
+> `cron` tool accepts it. The agent key also reads from
+> `JOSHBOT_AGENTS__DEFAULTS__TIMEOUT` under the same rules, for a deployment with
+> no config file; an unparseable value fails startup rather than being ignored.
+> Raise the agent timeout for a slow local
 > model. Anything under a second is rejected at load, naming the key. A value
 > written by an older joshbot is a raw nanosecond count (`900000000000`); it is
 > still read correctly and rewritten as a string on the next save.
@@ -557,6 +562,7 @@ export JOSHBOT_PROVIDERS__OPENROUTER__API_KEY="sk-or-v1-..."
 export JOSHBOT_AGENTS__DEFAULTS__MODEL="anthropic/claude-sonnet-4"
 export JOSHBOT_AGENTS__DEFAULTS__MAX_TOKENS="16384"
 export JOSHBOT_AGENTS__DEFAULTS__TEMPERATURE="0.5"
+export JOSHBOT_AGENTS__DEFAULTS__TIMEOUT="10m"        # or a bare number of seconds
 ```
 
 **Common Settings:**

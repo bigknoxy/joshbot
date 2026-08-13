@@ -13,7 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot patch the binary: a cold local model with a large prompt runs past it
   and every turn dies. The key carries `omitempty` and `WithTimeout` ignores a
   non-positive value, so an absent value keeps the old default with no schema
-  migration — the trap the `streaming` bool hit at v4→v5.
+  migration — the trap the `streaming` bool hit at v4→v5. It is also settable as
+  `JOSHBOT_AGENTS__DEFAULTS__TIMEOUT` for a deployment with no config file, under
+  exactly the file's parsing rules, and a value that will not parse is reported
+  rather than silently ignored — an ignored override leaves the operator on the
+  default they were trying to raise.
 
 ### Fixed
 - **A timeout written as `"timeout": 600` no longer means 600 nanoseconds**
@@ -29,7 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value the same number would be over thirty years, so the ranges cannot collide
   in practice. `Config.Validate` now rejects any nonzero timeout under a second
   at load, naming the key, instead of letting it fail at the first request and
-  blame the context.
+  blame the context — as a *fatal* config error, because `config.Load` answers an
+  ordinary validation failure by substituting `Defaults()`, and a mistyped
+  `"500ms"` would otherwise take every provider, API key and allowlist with it.
+- **`providers.<name>.timeout` now reaches every provider**, not only ollama. The
+  key was documented as universal and consumed in one place; the other six
+  provider registrations silently took the built-in default.
+
+### Note on downgrading
+A config saved by this release writes timeouts in the string form (`"600s"`). An
+older joshbot cannot parse that, and its `config.Load` is lenient — it logs and
+falls back to `Defaults()`, losing every provider and key. Keep a copy of the
+config before downgrading across this release.
 - **HTTP API 401 no longer censors its own instructions** (#238). The body read
   `Send it as 'Authorization: Bearer [REDACTED]'.` — every error the server
   wrote went through the credential redactor, whose `Authorization:` header rule

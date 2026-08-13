@@ -234,6 +234,11 @@ func (a *Agent) MaxIterations() int {
 	return a.maxIterations
 }
 
+// Timeout reports the per-turn deadline this agent runs under. It exists so
+// cmd/joshbot can assert that agents.defaults.timeout actually reached the
+// agent: that wiring is one line, and deleting it turns nothing else red.
+func (a *Agent) Timeout() time.Duration { return a.timeout }
+
 // WithTimeout sets the processing timeout.
 func WithTimeout(timeout time.Duration) Option {
 	return func(a *Agent) {

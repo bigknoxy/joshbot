@@ -39,7 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkpoint, model override or personality set on a session with no transcript
   yet was silently dropped on the next load. Command turns are not appended to
   the transcript, so `/model` or `/personality` as the first thing a user does
-  hit exactly that case.
+  hit exactly that case. An unreadable or unparseable sidecar is now logged
+  rather than discarded silently — losing it produces no visible error at all,
+  just a `/model` that appears to take and reverts on the next load.
+- **A turn that gives up waiting for the session lock is reported as a failure.**
+  It returned a message with a prefix of its own, which `agent.ReplyError` does
+  not match, so the HTTP API answered 200 with an error string as the assistant's
+  reply and `agent -m` exited 0. It now uses `agent.ReplyPrefix` like every other
+  in-band failure. An invalid session id is reported as such instead of as a lock
+  failure, and a session store that cannot lock warns once instead of silently
+  restoring #236.
 - **A timeout written as `"timeout": 600` no longer means 600 nanoseconds**
   (#240). A plain `time.Duration` is an `int64` of nanoseconds and
   `encoding/json` decodes it as exactly that, so a config that looked like ten

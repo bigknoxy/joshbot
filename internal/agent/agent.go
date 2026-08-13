@@ -70,21 +70,25 @@ type HistoryAppender interface {
 
 // Agent represents the main agent that processes messages using ReAct loop.
 type Agent struct {
-	cfg           *config.Config
-	provider      providers.Provider
-	tools         ToolExecutor
-	sessions      SessionManager
-	memory        MemoryLoader
-	history       HistoryAppender
-	skills        SkillsLoader
-	logger        *log.Logger
-	budget        *ctxpkg.BudgetManager
-	compressor    ContextCompressor
-	maxIterations int
-	timeout       time.Duration
-	skillDetector *skills.SkillDetector
-	extractor     *skills.Extractor
-	skillLoader   *skills.Loader
+	cfg      *config.Config
+	provider providers.Provider
+	tools    ToolExecutor
+	sessions SessionManager
+	// noLockerWarning keeps the "store cannot lock" warning out of the per-turn
+	// path; the condition is a property of the store, so it is true forever or
+	// never.
+	noLockerWarning sync.Once
+	memory          MemoryLoader
+	history         HistoryAppender
+	skills          SkillsLoader
+	logger          *log.Logger
+	budget          *ctxpkg.BudgetManager
+	compressor      ContextCompressor
+	maxIterations   int
+	timeout         time.Duration
+	skillDetector   *skills.SkillDetector
+	extractor       *skills.Extractor
+	skillLoader     *skills.Loader
 	// modelName holds a runtime global model override set by `joshbot`
 	// /model ... --global. It is read on every model resolution, so it is
 	// mutex-guarded: two sessions processed concurrently (the Telegram bus
@@ -394,11 +398,38 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	if locker, ok := a.sessions.(SessionLocker); ok {
-		release, err := locker.LockSession(ctx, getSessionKey(msg))
+	locker, ok := a.sessions.(SessionLocker)
+	if !ok {
+		// Failing open is deliberate — an alternative store must not be
+		// unusable — but it is #236 restored, and the symptom is messages
+		// vanishing from a transcript under load with nothing in the log to
+		// correlate against. *session.Manager implements the interface, so this
+		// branch only opens when something wraps it. Say so, once.
+		a.noLockerWarning.Do(func() {
+			a.logger.Warn("Session store does not support locking; concurrent turns for one session may lose messages",
+				"type", fmt.Sprintf("%T", a.sessions))
+		})
+	}
+	if ok {
+		sessionKey := getSessionKey(msg)
+		waitStart := time.Now()
+		release, err := locker.LockSession(ctx, sessionKey)
 		if err != nil {
-			a.logger.Error("Failed to acquire session lock", "error", err)
-			return fmt.Sprintf("Error: Failed to load session: %v", err), nil
+			// LockSession validates before it queues, so a rejected session id
+			// arrives here too. Reporting that as a lock failure sends the
+			// reader hunting for a concurrency problem that does not exist.
+			if errors.Is(err, session.ErrInvalidSessionID) {
+				a.logger.Error("Rejected an invalid session id", "session", sessionKey, "error", err)
+				return ReplyPrefix + fmt.Sprintf("invalid session id: %v", err), nil
+			}
+			a.logger.Error("Failed to acquire session lock",
+				"session", sessionKey, "waited", time.Since(waitStart), "error", err)
+			// ReplyPrefix, not a prefix of its own: Process reports failures in
+			// band as reply text with a nil error, and every non-interactive
+			// caller translates them back with ReplyError. A turn that gave up
+			// waiting for the lock must reach `agent -m` as exit 1 and the HTTP
+			// API as a 502, not as a 200 carrying an error string as the answer.
+			return ReplyPrefix + fmt.Sprintf("could not acquire the session lock: %v", err), nil
 		}
 		defer release()
 	}

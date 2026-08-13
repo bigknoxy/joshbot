@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -30,6 +31,21 @@ type refCountedLock struct {
 	refs int
 }
 
+// wrapCancellation keeps the ErrContextCancelled sentinel — every caller in the
+// package matches on it — while preserving which cancellation this was.
+//
+// A queued turn that exhausts `agents.defaults.timeout` and a client that
+// disconnected are the same sentinel, and they call for opposite remedies: the
+// first means the operator's timeout is shorter than a turn already in flight
+// for that session, the second means nobody is listening. Flattening both to
+// "context cancelled" sends the operator hunting for the wrong one.
+func wrapCancellation(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrContextCancelled, err)
+	}
+	return ErrContextCancelled
+}
+
 func newKeyLock() *keyLock {
 	return &keyLock{locks: make(map[string]*refCountedLock)}
 }
@@ -41,7 +57,7 @@ func newKeyLock() *keyLock {
 // error, not block past its own deadline. sync.Mutex has no such wait.
 func (k *keyLock) acquire(ctx context.Context, key string) (func(), error) {
 	if err := ctx.Err(); err != nil {
-		return nil, ErrContextCancelled
+		return nil, wrapCancellation(ctx)
 	}
 
 	k.mu.Lock()
@@ -69,7 +85,7 @@ func (k *keyLock) acquire(ctx context.Context, key string) (func(), error) {
 	case l.ch <- struct{}{}:
 	case <-ctx.Done():
 		release()
-		return nil, ErrContextCancelled
+		return nil, wrapCancellation(ctx)
 	}
 
 	var once sync.Once

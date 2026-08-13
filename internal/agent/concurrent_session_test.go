@@ -120,6 +120,59 @@ func TestConcurrentTurnsOnOneSessionKeyKeepEveryMessage(t *testing.T) {
 	}
 }
 
+// TestLockFailureIsReportedAsAnError pins the prefix on the lock-acquisition
+// failure path.
+//
+// Process reports failures in band — reply text with a nil error — and every
+// non-interactive caller turns that back into a real failure by matching
+// ReplyPrefix (`agent -m` exits 1, the HTTP API answers 502). A turn that gives
+// up waiting for the session lock returns through exactly that path, so a
+// prefix of its own would be reported to the caller as a successful answer
+// whose content happens to be an error message.
+func TestLockFailureIsReportedAsAnError(t *testing.T) {
+	InvalidatePromptCache()
+
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	a := NewAgent(cfg, &slowEchoProvider{}, &mockToolExecutor{}, mgr, newMockLogger())
+
+	// Hold the key so the turn below can never acquire it, and give the turn a
+	// deadline it will hit while queued.
+	release, err := mgr.LockSession(context.Background(), "api:blocked")
+	if err != nil {
+		t.Fatalf("LockSession: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	done := make(chan string, 1)
+	go func() {
+		resp, err := a.Process(ctx, bus.InboundMessage{
+			Channel: "api", SenderID: "blocked", Content: "hello", Timestamp: time.Now(),
+		})
+		if err != nil {
+			t.Errorf("Process returned a hard error, want in-band: %v", err)
+		}
+		done <- resp
+	}()
+
+	select {
+	case resp := <-done:
+		if ReplyError(resp) == nil {
+			t.Errorf("a failed lock acquisition was reported as a successful reply: %q", resp)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Process ignored its own deadline while queued for the session lock")
+	}
+}
+
 // TestResumeDoesNotDeadlockAgainstItsOwnSessionLock pins the reason
 // handleResumeCommand calls the unlocked a.process rather than a.Process.
 //

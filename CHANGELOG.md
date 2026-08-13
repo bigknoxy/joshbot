@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.52.0] - 2026-08-13
+
 ### Added
 - **`agents.defaults.timeout` bounds one agent turn** (#241). It was hardcoded at
   2 minutes with no config key, which is wrong for exactly the deployment that

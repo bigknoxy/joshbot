@@ -528,6 +528,13 @@ The old format is still supported for backward compatibility:
 > `cron` tool accepts it. The agent key also reads from
 > `JOSHBOT_AGENTS__DEFAULTS__TIMEOUT` under the same rules, for a deployment with
 > no config file; an unparseable value fails startup rather than being ignored.
+
+> **Retries:** `providers.<name>.max_retries` (default 2, range 0–10) is how many
+> times a transient failure — 429, 5xx, or a network error — is retried on the
+> same provider with exponential backoff (an upstream `Retry-After` header is
+> honoured) before the fallback chain moves to the next provider. `0` means fail
+> over immediately. A provider that keeps failing is deprioritized in the chain
+> for a cooldown window rather than re-dialled on every turn.
 > Raise the agent timeout for a slow local
 > model. Anything under a second is rejected at load, naming the key. A value
 > written by an older joshbot is a raw nanosecond count (`900000000000`); it is

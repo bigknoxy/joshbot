@@ -514,6 +514,13 @@ The new model-centric format is simpler and more intuitive. Define models direct
   provider-specific, so forwarding one would earn a "model not found" that hides
   the real failure. If every entry fails, the error names each one and what it
   returned.
+- Transient failures are **retried on the same provider first** (429/5xx/network,
+  up to `providers.<name>.max_retries` times, default 2, `0` = fail over
+  immediately) with exponential backoff, honouring an upstream `Retry-After`
+  header — so one blip doesn't switch the model you're talking to. A provider
+  that keeps failing (or asks for a long `Retry-After`) is deprioritized in the
+  chain for a cooldown window instead of being re-dialled and timed out on every
+  turn; the in-chat `/status` command shows any provider currently cooling down.
 - No separate provider configuration needed
 
 ### Provider Auto-Detection
@@ -1355,7 +1362,10 @@ Debug output will show:
 - Empty content warnings when detected
 - Fallback provider activation
 
-If you see rate limit errors (HTTP 429), configure fallback providers in your config for resilience.
+Rate limits (HTTP 429) and transient server errors are retried on the same
+provider with backoff before falling over — `providers.<name>.max_retries`
+(default 2) controls how many times. If you see persistent 429s, configure
+fallback providers in your config for resilience.
 
 ## License
 

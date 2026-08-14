@@ -5,10 +5,34 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// ParseRetryAfter reads a Retry-After header value: either delay-seconds
+// ("120") or an HTTP-date. Returns zero for anything unparseable, absent, or
+// in the past — a zero simply means "no upstream guidance".
+func ParseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(value); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
 
 // ErrStreamingUnsupported is returned by ChatStream on a provider that has no
 // streaming endpoint. Streaming is on by default, so a provider that simply
@@ -86,6 +110,11 @@ type FallbackError struct {
 	Provider   string // Provider that returned the error
 	Model      string // Model that was being used
 	Cause      error  // Underlying error
+	// RetryAfter carries the upstream Retry-After header when the provider
+	// sent one (zero otherwise). It seeds both the in-turn retry delay and
+	// the provider cooldown, so a rate limit with a known reset is waited
+	// out rather than guessed at.
+	RetryAfter time.Duration
 }
 
 func (e *FallbackError) Error() string {
@@ -130,6 +159,16 @@ func IsFallbackError(err error, providerName string) bool {
 	}
 
 	return false
+}
+
+// RetryAfterFromError extracts the upstream Retry-After hint from an error
+// chain, or zero when there is none.
+func RetryAfterFromError(err error) time.Duration {
+	var fallbackErr *FallbackError
+	if errors.As(err, &fallbackErr) {
+		return fallbackErr.RetryAfter
+	}
+	return 0
 }
 
 // isFallbackStatusCode returns true for status codes that should trigger fallback.

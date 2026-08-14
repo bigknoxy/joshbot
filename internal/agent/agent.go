@@ -1438,7 +1438,7 @@ Just type normally to chat with me!`
 		if sess, err := a.sessions.GetOrCreate(ctx, getSessionKey(msg)); err == nil {
 			model = a.modelForSession(sess)
 		}
-		return fmt.Sprintf(`Status:
+		status := fmt.Sprintf(`Status:
   Model: %s
   Tools: %d registered
   Memory window: %d
@@ -1448,6 +1448,24 @@ Just type normally to chat with me!`
 			a.cfg.Agents.Defaults.MemoryWindow,
 			a.cfg.Agents.Defaults.MaxToolIterations,
 		)
+		// Provider health is optional (checked by type assertion, like
+		// session.Archiver) and process-local, so it only appears when the
+		// LLM is a MultiProvider with something to report.
+		if hp, ok := a.provider.(interface {
+			HealthSnapshot() []providers.ProviderHealthInfo
+		}); ok {
+			if infos := hp.HealthSnapshot(); len(infos) > 0 {
+				status += "\n  Provider health:"
+				for _, info := range infos {
+					line := fmt.Sprintf("\n    %s: %d consecutive failure(s), last: %s", info.Name, info.Failures, info.LastErr)
+					if until := time.Until(info.CoolUntil); until > 0 {
+						line += fmt.Sprintf(", deprioritized for %s", until.Round(time.Second))
+					}
+					status += line
+				}
+			}
+		}
+		return status
 	case "model":
 		return a.handleModelCommand(ctx, msg)
 	case "personality":

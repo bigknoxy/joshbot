@@ -83,7 +83,7 @@ func TestLiteLLMProviderParseError(t *testing.T) {
 			cfg.Model = "test-model"
 			provider := NewLiteLLMProvider(cfg)
 
-			err := provider.parseError([]byte(tt.body), tt.statusCode)
+			err := provider.parseError([]byte(tt.body), tt.statusCode, "")
 			if err == nil {
 				t.Fatalf("expected non-nil error for status %d", tt.statusCode)
 			}

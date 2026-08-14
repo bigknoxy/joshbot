@@ -210,7 +210,7 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespo
 
 	// Check for HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		return nil, p.parseError(respBody, resp.StatusCode)
+		return nil, p.parseError(respBody, resp.StatusCode, resp.Header.Get("Retry-After"))
 	}
 
 	// Parse the response
@@ -291,7 +291,7 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, p.parseError(respBody, resp.StatusCode)
+		return nil, p.parseError(respBody, resp.StatusCode, resp.Header.Get("Retry-After"))
 	}
 
 	// Create the channel
@@ -387,7 +387,8 @@ func (p *LiteLLMProvider) Transcribe(ctx context.Context, audioData []byte, prom
 
 // parseError parses an error response from the API and returns a FallbackError
 // for errors that should trigger fallback (rate limits, server errors, etc.)
-func (p *LiteLLMProvider) parseError(body []byte, statusCode int) error {
+// retryAfter is the upstream Retry-After header value, empty when absent.
+func (p *LiteLLMProvider) parseError(body []byte, statusCode int, retryAfter string) error {
 	// Try to parse as an OpenAI-style error response
 	var errResp struct {
 		Error struct {
@@ -421,6 +422,7 @@ func (p *LiteLLMProvider) parseError(body []byte, statusCode int) error {
 		Message:    errMsg,
 		Provider:   p.Name(),
 		Model:      p.cfg.Model,
+		RetryAfter: ParseRetryAfter(retryAfter),
 	}
 
 	// If it's a fallback error, return the FallbackError type

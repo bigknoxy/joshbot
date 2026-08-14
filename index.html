@@ -593,6 +593,11 @@ footer a:hover { text-decoration: underline; }
       <p>Attach a picture with <code>joshbot agent -m "what is this?" --image shot.png</code> (repeatable), or just send a photo on Telegram. The type is decided by sniffing the bytes, never by the extension or by what the sender declared — PNG, JPEG, GIF and WebP, 5&nbsp;MB per image and 20&nbsp;MB per request. If no configured model is known to accept images, the run fails before any provider call with an error naming the models it tried; unknown models count as not vision-capable, so a typo reads as a typo rather than a provider 400. Sessions record what was sent — type, size, SHA-256 — not the bytes.</p>
     </div>
     <div class="case-card">
+      <div class="icon">🔁</div>
+      <h3>Resilient Multi-Provider Fallback</h3>
+      <p>A transient 429 or 5xx is retried on the same provider with backoff — honouring the upstream <code>Retry-After</code> — before the fallback chain moves on, so one blip never silently switches the model mid-conversation. A provider that keeps failing is deprioritized for a cooldown window instead of being re-dialled on every turn, and when a fallback does answer, the reply says so in one line. Set the chain from the CLI: <code>joshbot configure --fallback "nvidia,poolside"</code>. Common failures end with an actionable next step, not just an upstream error dump.</p>
+    </div>
+    <div class="case-card">
       <div class="icon">🔀</div>
       <h3>Named Profiles</h3>
       <p>Define profiles for a hosted model and your local Ollama, then pick one per run with <code>--profile</code> — on <code>agent</code>, <code>gateway</code> and <code>preflight</code>. A profile stores the <em>name</em> of the environment variable holding its key, never the key, and a typo, a disabled profile or an unset variable stops the run at startup instead of surfacing as a 401 mid-conversation. <code>joshbot profiles list</code> shows what each would dial and is safe to paste into a bug report.</p>

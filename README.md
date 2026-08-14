@@ -146,7 +146,9 @@ joshbot agent -m "what is in this screenshot?" --image ~/Desktop/shot.png
 
 `--image <path>` attaches a picture to the message. It is repeatable, and it
 requires `-m`/`--message` — an image with no question attached has nothing to
-answer. Telegram photos and image documents are attached automatically. Media
+answer. Telegram photos and image documents are attached automatically, and
+text documents (txt, md, csv, json, code) are read and inlined into the
+message, capped at 64KB with a visible truncation marker. Media
 the agent cannot perceive — voice messages, audio, video — gets an honest
 "I can't listen/watch yet" reply instead of a confident answer about content
 nobody heard; a caption on such media is forwarded as the message text,

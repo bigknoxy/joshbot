@@ -78,7 +78,7 @@ func TestTelegramMediaHandlersForwardToTheBus(t *testing.T) {
 		{kind: "voice", wantContent: "[The user sent a voice message you cannot hear. Its caption]: listen", wantFileID: "v1"},
 		{kind: "audio", wantContent: "[The user sent an audio file you cannot hear (song). Its caption]: track", wantFileID: "a1"},
 		{kind: "video", wantContent: "[The user sent a video you cannot watch. Its caption]: clip", wantFileID: "vid1"},
-		{kind: "edited", wantContent: "[Edited]: corrected text"},
+		{kind: "edited", wantContent: "[The user edited a previous message; treat this as the corrected version]: corrected text"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.kind, func(t *testing.T) {

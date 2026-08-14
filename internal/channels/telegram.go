@@ -976,7 +976,11 @@ func (t *TelegramChannel) handleEdited(ctx telebot.Context) error {
 		return nil
 	}
 
-	content := fmt.Sprintf("[Edited]: %s", msg.Text)
+	// An edit is almost always a correction of a message the agent already
+	// answered. The bare "[Edited]:" framing read as brand-new context and
+	// earned a full fresh answer; naming it a correction lets the model
+	// answer the fixed question and skip re-answering what did not change.
+	content := fmt.Sprintf("[The user edited a previous message; treat this as the corrected version]: %s", msg.Text)
 
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),

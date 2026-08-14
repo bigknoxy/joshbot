@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported no such provider. Registry-backed registration now covers both,
   honouring `fallback_order`, `max_retries` and the per-provider timeout
   like every other provider.
+- **Common LLM failures now end with one actionable next step.** A raw
+  provider error says what broke, never what to do about it. The reply
+  keeps the full error (the `Error processing request:` contract and its
+  exit-code/HTTP translations are unchanged) and appends a hint: a 401/403
+  points at `joshbot configure` naming the provider when known; a model 404
+  points at `/model` and `joshbot preflight` (or `ollama pull` for ollama);
+  a 429 points at `joshbot configure --fallback`; and the
+  all-providers-failed aggregate points at `preflight` rather than picking
+  one of its several statuses arbitrarily.
 
 ### Added
 

@@ -519,7 +519,15 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 		if ctx.Err() == context.DeadlineExceeded {
 			return "I'm sorry, but processing your request took too long. Please try again or simplify your request.", nil
 		}
-		return fmt.Sprintf("Error processing request: %v", err), nil
+		reply := fmt.Sprintf("Error processing request: %v", err)
+		// A raw provider error tells the user what broke, never what to do
+		// about it. The hint is appended, not substituted: callers that
+		// match on the error text (tests, the ReplyPrefix contract, humans
+		// filing issues) keep the full detail.
+		if hint := llmErrorHint(err); hint != "" {
+			reply += "\n\n" + hint
+		}
+		return reply, nil
 	}
 
 	if a.history != nil {
@@ -1010,6 +1018,38 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 	sink(StreamEvent{Done: true})
 
 	return resp, nil
+}
+
+// llmErrorHint maps the common LLM failure classes to one actionable next
+// step. The raw error stays in the reply (see the call site); this only adds
+// what to do about it. An empty return means no hint applies.
+func llmErrorHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	// The aggregate "all providers failed" error carries several statuses at
+	// once; a single-status hint would pick one arbitrarily and mislead.
+	if strings.Contains(err.Error(), "all providers failed") {
+		return "Every provider in the fallback chain failed. Run `joshbot preflight` to check the configuration without dialling anyone, or add a fallback with `joshbot configure --fallback`."
+	}
+
+	provider := providers.ProviderFromError(err)
+	switch providers.StatusCodeFromError(err) {
+	case 401, 403:
+		who := "The provider"
+		if provider != "" {
+			who = provider
+		}
+		return fmt.Sprintf("%s rejected the API key — update it with `joshbot configure --provider <name> --api-key <key>`, or run `joshbot preflight` to see which credential is in use.", who)
+	case 404:
+		if provider == "ollama" {
+			return "Ollama does not have that model — pull it with `ollama pull <model>`."
+		}
+		return "The model was not found — check the model name with `/model`, or run `joshbot preflight` to see the exact ID being sent."
+	case 429:
+		return "The provider is rate-limiting — a fallback provider keeps the conversation going: `joshbot configure --fallback \"<primary>,<backup>\"`."
+	}
+	return ""
 }
 
 // formatFallbackNotice renders the one-line, user-facing note that a reply

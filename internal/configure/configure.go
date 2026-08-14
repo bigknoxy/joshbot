@@ -231,6 +231,34 @@ func SupportedProviders() []string {
 	}
 }
 
+// InteractiveProviders lists the providers the guided (menu) paths can set
+// up with just a credential: everything in SupportedProviders() except those
+// with no fixed endpoint (azure, custom, litellm), which need --api-base and
+// so cannot complete from a menu that only asks for a key. The menus used to
+// hardcode six names, so an Anthropic or OpenAI key-holder ran onboard,
+// couldn't find their provider, and reasonably concluded it wasn't
+// supported.
+func InteractiveProviders() []string {
+	// deepseek and gemini are excluded for a different reason: the legacy
+	// runtime path (registerProviders in cmd/joshbot) has no registration
+	// for them, so a menu that offered them would write a config entry the
+	// runtime silently ignores — worse than not listing them.
+	excluded := map[string]bool{
+		"azure": true, "custom": true, "litellm": true,
+		"deepseek": true, "gemini": true,
+	}
+	var out []string
+	for _, name := range SupportedProviders() {
+		if excluded[name] {
+			continue
+		}
+		if name == "github-copilot" || getDefaultAPIBase(name) != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // getDefaultAPIBase returns a provider's default API base URL. The values come
 // from the provider registry (the single source of truth), so they cannot drift
 // from what the runtime actually dials. Azure, custom and litellm have no fixed

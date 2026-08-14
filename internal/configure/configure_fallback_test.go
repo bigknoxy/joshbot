@@ -65,3 +65,27 @@ func TestSetFallbackOrderEmptyClears(t *testing.T) {
 		t.Errorf("clear left %v", cfg.ProviderDefaults.FallbackOrder)
 	}
 }
+
+// The interactive menus must cover every provider the guided path can finish
+// with just a credential — the six-name hardcoding taught Anthropic and
+// OpenAI key-holders their provider was unsupported.
+func TestInteractiveProvidersIncludeAnthropicAndOpenAI(t *testing.T) {
+	got := InteractiveProviders()
+	want := map[string]bool{"anthropic": false, "openai": false}
+	for _, name := range got {
+		if _, ok := want[name]; ok {
+			want[name] = true
+		}
+		switch name {
+		case "azure", "custom", "litellm":
+			t.Errorf("%q needs --api-base and must not be in the credential-only menu", name)
+		case "deepseek", "gemini":
+			t.Errorf("%q has no legacy runtime registration; offering it writes dead config", name)
+		}
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("menu is missing %q", name)
+		}
+	}
+}

@@ -170,7 +170,7 @@ joshbot onboard
 The wizard will guide you through:
 
 1. **LLM Provider Configuration**
-   - Choose a provider — NVIDIA NIM is the recommended default (free tier), with OpenRouter, Groq, Ollama, GitHub Copilot, and Poolside also offered
+   - Choose a provider — NVIDIA NIM is the recommended default (free tier), with OpenRouter, OpenAI, Groq, Ollama, Anthropic, Poolside, and GitHub Copilot also offered (Azure/custom/litellm need `--api-base` and are configured via flags)
    - Enter your API key for the chosen provider (OpenRouter's free tier key: https://openrouter.ai/keys)
 
 2. **Personality Selection**

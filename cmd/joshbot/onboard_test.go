@@ -311,13 +311,18 @@ func TestTelegramValidationFailed(t *testing.T) {
 }
 
 func TestSelectProviderMapping(t *testing.T) {
+	// The menu is the recommended default first, then every provider the
+	// guided path can finish with just a credential, in SupportedProviders
+	// order. Anthropic and OpenAI key-holders must find their provider here.
 	cases := []struct{ choice, want string }{
 		{"1", "nvidia"},
 		{"2", "openrouter"},
-		{"3", "groq"},
-		{"4", "ollama"},
-		{"5", "github-copilot"},
-		{"6", "poolside"},
+		{"3", "openai"},
+		{"4", "groq"},
+		{"5", "ollama"},
+		{"6", "anthropic"},
+		{"7", "poolside"},
+		{"8", "github-copilot"},
 		{"", "nvidia"},
 		{"99", "nvidia"},
 	}

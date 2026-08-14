@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
@@ -172,6 +173,50 @@ func TestSetupComponentsLegacyProviderBuildsRegistry(t *testing.T) {
 	for _, want := range []string{"filesystem", "shell", "cron"} {
 		if _, ok := reg.Get(want); !ok {
 			t.Errorf("tool %q is not registered; bundled skills reference it", want)
+		}
+	}
+}
+
+// An anthropic (or openai) entry in a legacy config used to be silently
+// ignored: registerProviders only knew the six original providers, so
+// `configure --provider anthropic` wrote config the runtime never read.
+func TestSetupComponentsRegistersAnthropicAndOpenAILegacy(t *testing.T) {
+	cfg := setupConfig(t)
+	cfg.Providers = map[string]config.ProviderConfig{
+		"anthropic": {Enabled: true, APIKey: "sk-a", APIBase: "https://example.invalid/v1"},
+		"openai":    {Enabled: true, APIKey: "sk-o", APIBase: "https://example.invalid/v1", Model: "gpt-4o"},
+	}
+	cfg.ProviderDefaults.Default = "anthropic"
+	cfg.ProviderDefaults.FallbackOrder = []string{"anthropic", "openai"}
+
+	_, provider, _, _, _, _, err := setupComponents(cfg)
+	if err != nil {
+		t.Fatalf("setupComponents: %v", err)
+	}
+	mp, ok := provider.(*providers.MultiProvider)
+	if !ok {
+		t.Fatalf("provider is %T, want *providers.MultiProvider", provider)
+	}
+	for _, name := range []string{"anthropic", "openai"} {
+		if !mp.HasProvider(name) {
+			t.Errorf("legacy config with %q was not registered", name)
+		}
+	}
+}
+
+// The menu covers every guided-path provider, recommended default first.
+func TestInteractiveProviderMenuOrder(t *testing.T) {
+	menu := interactiveProviderMenu()
+	if menu[0] != "nvidia" {
+		t.Errorf("menu[0] = %q, want the recommended nvidia first", menu[0])
+	}
+	found := map[string]bool{}
+	for _, name := range menu {
+		found[name] = true
+	}
+	for _, want := range []string{"anthropic", "openai", "openrouter", "groq", "ollama", "poolside", "github-copilot"} {
+		if !found[want] {
+			t.Errorf("menu is missing %q", want)
 		}
 	}
 }

@@ -1497,11 +1497,16 @@ func runAgent(c *cli.Context) error {
 
 	// --continue threads onto the most recently updated session without the
 	// caller having to know its id. The recap goes to stderr so scripted
-	// stdout stays data-only.
+	// stdout stays data-only. It is headless-only: the interactive loop
+	// always opens cli:cli_user, so honouring --continue there would
+	// announce one session and then talk in another.
 	resume := c.String("resume")
 	if c.Bool("continue") {
 		if resume != "" {
 			return exitErrorf(exitValidation, "--continue and --resume are mutually exclusive")
+		}
+		if !jsonMode && c.String("message") == "" {
+			return exitErrorf(exitValidation, "--continue requires -m/--message: the interactive session always continues cli:cli_user (a recap is shown on startup)")
 		}
 		info, err := latestSession(ctx, sessionMgr)
 		if err != nil {

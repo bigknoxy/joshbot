@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`joshbot agent --continue` (`-c`) resumes the most recently updated
   session** — no session id needed. A one-line recap goes to stderr so
   scripted stdout stays data-only; `--continue` with `--resume` is a
-  validation error. Interactive `joshbot agent` now opens with a short
+  validation error, and so is `--continue` without `-m` — the interactive
+  loop always continues `cli:cli_user`, so honouring it there would
+  announce one session and then talk in another. Interactive `joshbot
+  agent` instead opens with a short
   recap of the last exchange when the session has history ("Continuing
   conversation (4 messages). Last exchange: ..."), silent on a fresh
   session.

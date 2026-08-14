@@ -509,7 +509,11 @@ The new model-centric format is simpler and more intuitive. Define models direct
 
 **Benefits:**
 - Provider auto-detected from model prefix (e.g., `groq/` → Groq API)
-- Easy fallback chains — try next model if one fails
+- Easy fallback chains — try next model if one fails. Each entry in the chain is
+  called with **its own** model, never the failed entry's: model IDs are
+  provider-specific, so forwarding one would earn a "model not found" that hides
+  the real failure. If every entry fails, the error names each one and what it
+  returned.
 - No separate provider configuration needed
 
 ### Provider Auto-Detection

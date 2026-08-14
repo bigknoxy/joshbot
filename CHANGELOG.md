@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.54.0] - 2026-08-14
+
 ### Added
 
 - **Reminders survive gateway restarts all the way to delivery.** Cron

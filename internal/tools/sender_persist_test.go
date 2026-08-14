@@ -74,3 +74,33 @@ func TestChatIDPersistenceLiveWinsAndCorruptTolerated(t *testing.T) {
 		t.Errorf("recovery write did not land: %q", id)
 	}
 }
+
+// An id set before EnablePersistence must still reach disk: SetChatID skips
+// persisting unchanged values, so if enablement did not write the merged map
+// back, that id would silently vanish on the next restart (#269 review).
+func TestChatIDSetBeforeEnablementSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat_ids.json")
+
+	s1 := NewBusMessageSender(bus.NewMessageBus())
+	s1.SetChatID("telegram", "999")
+	if err := s1.EnablePersistence(path); err != nil {
+		t.Fatalf("EnablePersistence: %v", err)
+	}
+
+	s2 := NewBusMessageSender(bus.NewMessageBus())
+	if err := s2.EnablePersistence(path); err != nil {
+		t.Fatalf("EnablePersistence (reload): %v", err)
+	}
+	if id, ok := s2.GetChatID("telegram"); !ok || id != "999" {
+		t.Errorf("telegram id after restart = %q, %v (want %q, true)", id, ok, "999")
+	}
+
+	// And the file's mode was still set on that merge write-back.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("chat_ids.json mode = %v, want 0600", info.Mode().Perm())
+	}
+}

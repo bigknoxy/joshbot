@@ -125,26 +125,45 @@ func (s *BusMessageSender) EnablePersistence(path string) error {
 	defer s.mu.Unlock()
 	s.persistPath = path
 
+	stored := map[string]string{}
 	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to read chat ids: %w", err)
 	}
-	stored := map[string]string{}
-	if err := json.Unmarshal(data, &stored); err != nil {
-		// A damaged file must not take the gateway down; it just means no
-		// recall until the user speaks. Start fresh and overwrite on the
-		// next SetChatID.
-		return nil
+	if err == nil {
+		if err := json.Unmarshal(data, &stored); err != nil {
+			// A damaged file must not take the gateway down; it just means
+			// no recall until the user speaks. Treat it as empty — the
+			// merge write-back below replaces it if memory holds anything.
+			stored = map[string]string{}
+		}
 	}
 	for channel, id := range stored {
 		if _, live := s.chatIDs[channel]; !live {
 			s.chatIDs[channel] = id
 		}
 	}
+	// Write the merged map back unless the file already matches it —
+	// otherwise an id set before enablement (which SetChatID's unchanged-skip
+	// will never persist later) would not survive the next restart.
+	if !mapsEqual(s.chatIDs, stored) {
+		if err := s.persistLocked(); err != nil {
+			return fmt.Errorf("failed to persist merged chat ids: %w", err)
+		}
+	}
 	return nil
+}
+
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // persistLocked writes the map through to disk. Callers hold s.mu. Failures

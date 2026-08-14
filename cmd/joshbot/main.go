@@ -2877,11 +2877,6 @@ func inboundMessageID(msg bus.InboundMessage) int {
 	return 0
 }
 
-// gatewayHandler is the bus subscription runGateway installs: one inbound
-// message in, at most one outbound message out. It is separated from
-// runGateway because runGateway cannot be run in a test — it dials providers,
-// opens a Telegram long poll and blocks on a signal — while every rule that
-// decides what the user actually sees lives here.
 // resolveChannelID returns the chat to answer msg in: the id it carries, or
 // the channel's last known chat id. Cron and heartbeat inbounds carry none,
 // and before the fallback their replies failed with "no valid recipient" —
@@ -2898,6 +2893,11 @@ func resolveChannelID(d gatewayDeps, msg bus.InboundMessage) string {
 	return ""
 }
 
+// gatewayHandler is the bus subscription runGateway installs: one inbound
+// message in, at most one outbound message out. It is separated from
+// runGateway because runGateway cannot be run in a test — it dials providers,
+// opens a Telegram long poll and blocks on a signal — while every rule that
+// decides what the user actually sees lives here.
 func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 	return func(ctx context.Context, msg bus.InboundMessage) {
 		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)

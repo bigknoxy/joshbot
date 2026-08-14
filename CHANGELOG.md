@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.53.0] - 2026-08-14
+
 ### Added
 
 - **Onboarding builds a fallback chain from keys already in the environment.**
@@ -26,50 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't support my provider". The menus (and `configure --list`) now
   derive from the supported-provider registry; azure/custom/litellm stay
   flag-only because they need `--api-base`.
-
-### Fixed
-
-- **An `anthropic` or `openai` entry in a legacy config is now actually
-  registered at runtime.** `joshbot configure --provider anthropic` happily
-  wrote the entry, but the legacy registration path only knew the six
-  original providers, so the config was silently ignored and the agent
-  reported no such provider. Registry-backed registration now covers both,
-  honouring `fallback_order`, `max_retries` and the per-provider timeout
-  like every other provider.
-- **Common LLM failures now end with one actionable next step.** A raw
-  provider error says what broke, never what to do about it. The reply
-  keeps the full error (the `Error processing request:` contract and its
-  exit-code/HTTP translations are unchanged) and appends a hint: a 401/403
-  points at `joshbot configure` naming the provider when known; a model 404
-  points at `/model` and `joshbot preflight` (or `ollama pull` for ollama);
-  a 429 points at `joshbot configure --fallback`; and the
-  all-providers-failed aggregate points at `preflight` rather than picking
-  one of its several statuses arbitrarily.
-
-### Added
-
 - **`joshbot configure --fallback "nvidia,poolside"`** — the first CLI path
   that writes `provider_defaults.fallback_order`; configuring the headline
   fallback feature previously required hand-editing config.json. Every name
   must be a configured, enabled provider (a typo would silently vanish from
   the chain at the exact moment the primary is down); the error names the
   providers that are configured. `--fallback ""` clears the order.
-
-### Fixed
-
-- **Onboarding no longer prints "✓ credentials validated" for a key that
-  would fail the first real request.** Validation listed the provider's
-  models, but several providers' `/models` endpoint is unauthenticated —
-  OpenRouter answers 200 to *any* Authorization header — so a typo'd key
-  earned a checkmark and then greeted the user's first message with a raw
-  401. Validation is now a one-token chat completion: 401/403 reports
-  "credential rejected" with the upstream text and the provider's key URL, a
-  429 counts as authenticated (a rate limit is issued to a real key), and
-  anything else reports "could not verify" rather than claiming a check that
-  never ran.
-
-### Added
-
 - **A stream that dies before delivering any text is retried invisibly.**
   It used to end the turn with `[stream error: ...]` standing in for an
   answer the provider chain could still have produced — and the most common
@@ -79,9 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Retry-After` handling and the fallback chain with it; the reply arrives
   unstreamed. A stream that dies *after* text has appeared keeps the visible
   marker: shown text cannot be retried.
-
-### Added
-
 - **Transient provider failures are now retried on the same provider before the
   fallback chain moves on.** A single 429/5xx/network blip used to switch the
   conversation to a different provider — and therefore a different model —
@@ -106,6 +67,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text carries it too, so the streamed buffer and the recorded answer stay
   identical.
 
+### Fixed
+
+- **An `anthropic` or `openai` entry in a legacy config is now actually
+  registered at runtime.** `joshbot configure --provider anthropic` happily
+  wrote the entry, but the legacy registration path only knew the six
+  original providers, so the config was silently ignored and the agent
+  reported no such provider. Registry-backed registration now covers both,
+  honouring `fallback_order`, `max_retries` and the per-provider timeout
+  like every other provider.
+- **Common LLM failures now end with one actionable next step.** A raw
+  provider error says what broke, never what to do about it. The reply
+  keeps the full error (the `Error processing request:` contract and its
+  exit-code/HTTP translations are unchanged) and appends a hint: a 401/403
+  points at `joshbot configure` naming the provider when known; a model 404
+  points at `/model` and `joshbot preflight` (or `ollama pull` for ollama);
+  a 429 points at `joshbot configure --fallback`; and the
+  all-providers-failed aggregate points at `preflight` rather than picking
+  one of its several statuses arbitrarily.
+- **Onboarding no longer prints "✓ credentials validated" for a key that
+  would fail the first real request.** Validation listed the provider's
+  models, but several providers' `/models` endpoint is unauthenticated —
+  OpenRouter answers 200 to *any* Authorization header — so a typo'd key
+  earned a checkmark and then greeted the user's first message with a raw
+  401. Validation is now a one-token chat completion: 401/403 reports
+  "credential rejected" with the upstream text and the provider's key URL, a
+  429 counts as authenticated (a rate limit is issued to a real key), and
+  anything else reports "could not verify" rather than claiming a check that
+  never ran.
+- The background services started at startup — cron, the heartbeat and the
+  memory consolidator — are now stopped on shutdown. Nothing held a handle to
+  them, and the consolidator runs its first pass immediately from a goroutine,
+  so they kept writing into the workspace after the process was on its way out.
+  The same leak made `cmd/joshbot`'s tests flaky: a consolidator writing into
+  `workspace/memory` raced `t.TempDir` cleanup and failed the run with
+  "directory not empty".
+
 ## [1.52.1] - 2026-08-14
 
 ### Fixed
@@ -127,13 +124,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   found" with the interrupted task gone and no error anywhere. The failure is
   now logged with the session id, and the suggestion is withheld both when the
   save fails and when there is no session manager at all. (#244)
-- The background services started at startup — cron, the heartbeat and the
-  memory consolidator — are now stopped on shutdown. Nothing held a handle to
-  them, and the consolidator runs its first pass immediately from a goroutine,
-  so they kept writing into the workspace after the process was on its way out.
-  The same leak made `cmd/joshbot`'s tests flaky: a consolidator writing into
-  `workspace/memory` raced `t.TempDir` cleanup and failed the run with
-  "directory not empty".
 
 ## [1.52.0] - 2026-08-13
 

@@ -173,11 +173,19 @@ func (c *Configurator) ValidateProviderCredentials(name string) error {
 	if baseURL == "" {
 		return fmt.Errorf("could not verify %q credentials: no API base URL configured (set api_base)", name)
 	}
-	_, err := providers.ListModels(providers.Config{
+	model := p.Model
+	if model == "" {
+		model = providers.GetDefaultModel(name)
+	}
+	// A one-token chat completion, not ListModels: several providers'
+	// /models endpoint is unauthenticated (OpenRouter answers 200 to any
+	// key), so listing models validated nothing and a typo'd key earned a
+	// checkmark and then a raw 401 on the first real message.
+	return providers.ProbeCredential(providers.Config{
 		APIKey:  p.APIKey,
 		APIBase: baseURL,
+		Model:   model,
 	})
-	return err
 }
 
 // SupportedProviders lists every provider the guided config path can configure.

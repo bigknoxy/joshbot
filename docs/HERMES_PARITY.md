@@ -50,27 +50,27 @@ path** from install to working multi-provider fallback.
 
 ### Phase 1 — resilience core
 
-- [ ] Same-provider retry with jittered backoff before fallback
+- [x] Same-provider retry with jittered backoff before fallback
       (`providers.<name>.max_retries`, default 2, `0` = immediate failover;
       retries only fallback-class errors)
-- [ ] Honor `Retry-After`: carried on `providers.FallbackError`, used as the
+- [x] Honor `Retry-After`: carried on `providers.FallbackError`, used as the
       retry/cooldown wait
-- [ ] Provider health tracking: cooldown table on `MultiProvider`; skip a
+- [x] Provider health tracking: cooldown table on `MultiProvider`; skip a
       failing provider for a window (seeded from Retry-After), re-probe on
       expiry; visible in `joshbot status`
-- [ ] Mid-stream failover: a stream dying partway is retried (same then next
+- [x] Mid-stream failover: a stream dying partway is retried (same then next
       provider) instead of saving partial text as a successful turn
-- [ ] Visible fallback notice via the sink ("nvidia rate-limited — answered by
+- [x] Visible fallback notice via the sink ("nvidia rate-limited — answered by
       poolside/laguna-s-2.1"), with a config toggle
 - [ ] Typed errors end-to-end: finish `FallbackError` adoption; retire
       status-code extraction by error-string scanning
-- [ ] Fallback chaos harness checked in: fake HTTP providers (429 +
+- [x] Fallback chaos harness checked in: fake HTTP providers (429 +
       Retry-After, strict-404 fallback, dying streams) exercising the real
       `MultiProvider`
 
 ### Phase 2 — configuration parity
 
-- [ ] Fix false-positive credential validation (1-token completion, or no
+- [x] Fix false-positive credential validation (1-token completion, or no
       checkmark for unauthenticated `/models` endpoints)
 - [ ] `joshbot configure fallback` (flag + interactive) — first CLI path that
       writes a fallback chain

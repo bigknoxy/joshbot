@@ -211,9 +211,12 @@ model comes from the provider you selected (e.g. `llama3.1:8b` for `ollama`).
 Onboarding **exits non-zero when no provider ended up configured** — including
 interactive runs with stdin closed. The config and workspace scaffold are still
 written; only the exit status reports the failure. Credential validation after
-save is non-fatal, and providers with no fixed endpoint (`azure`, `custom`,
-`litellm`) report "could not verify ... no API base URL configured" instead of
-being validated against an unrelated API.
+save is non-fatal and is a **one-token chat completion** — listing models is
+not an auth check, since some providers' `/models` endpoint accepts any key. A
+rejected key (401/403) is reported with the provider's key URL; providers with
+no fixed endpoint (`azure`, `custom`, `litellm`) report "could not verify ...
+no API base URL configured" instead of being validated against an unrelated
+API.
 
 After onboarding completes, you'll see:
 

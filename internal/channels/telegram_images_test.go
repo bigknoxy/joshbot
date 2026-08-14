@@ -153,35 +153,60 @@ func TestFailedDownloadIsNotForwardedAsTextOnly(t *testing.T) {
 	}
 }
 
-// TestNonImageDocumentIsUnaffected — documents were already forwarded as
-// metadata, and adding image handling must not start downloading every PDF.
-func TestNonImageDocumentIsUnaffected(t *testing.T) {
-	tg, mb, downloads := imageChannel(t, []string{"1234"}, testPNG(t), nil)
-
-	ctx := &fakeCtx{msg: &telebot.Message{
-		ID:     8,
-		Sender: &telebot.User{ID: 1234},
-		Chat:   &telebot.Chat{ID: 42},
-		Document: &telebot.Document{
-			File:     telebot.File{FileID: "d1", FileSize: 1000},
-			FileName: "report.pdf",
-			MIME:     "application/pdf",
-		},
-	}}
-	if err := tg.handleDocument(ctx); err != nil {
-		t.Fatalf("handleDocument: %v", err)
-	}
-	if *downloads != 0 {
-		t.Fatal("a non-image document was downloaded")
-	}
-	select {
-	case m := <-mb.InboundChannel():
-		if len(m.Images) != 0 {
-			t.Fatalf("a PDF was attached as an image: %+v", m.Images)
+// TestNonImageDocumentIsNeverDownloaded — a binary document the agent cannot
+// open must not be downloaded at all. Captionless it is refused honestly (no
+// agent turn); with a caption the caption is forwarded, framed so the model
+// knows what it cannot open.
+func TestNonImageDocumentIsNeverDownloaded(t *testing.T) {
+	pdf := func(caption string) *telebot.Message {
+		return &telebot.Message{
+			ID:     8,
+			Sender: &telebot.User{ID: 1234},
+			Chat:   &telebot.Chat{ID: 42},
+			Document: &telebot.Document{
+				File:     telebot.File{FileID: "d1", FileSize: 1000},
+				FileName: "report.pdf",
+				MIME:     "application/pdf",
+				Caption:  caption,
+			},
 		}
-	default:
-		t.Fatal("the document did not reach the bus")
 	}
+
+	t.Run("captionless is refused, no agent turn", func(t *testing.T) {
+		tg, mb, downloads := imageChannel(t, []string{"1234"}, testPNG(t), nil)
+		if err := tg.handleDocument(&fakeCtx{msg: pdf("")}); err != nil {
+			t.Fatalf("handleDocument: %v", err)
+		}
+		if *downloads != 0 {
+			t.Fatal("a binary document was downloaded")
+		}
+		select {
+		case m := <-mb.InboundChannel():
+			t.Fatalf("a captionless binary document reached the agent as %q", m.Content)
+		default:
+		}
+	})
+
+	t.Run("caption is forwarded framed, still no download", func(t *testing.T) {
+		tg, mb, downloads := imageChannel(t, []string{"1234"}, testPNG(t), nil)
+		if err := tg.handleDocument(&fakeCtx{msg: pdf("summarize this")}); err != nil {
+			t.Fatalf("handleDocument: %v", err)
+		}
+		if *downloads != 0 {
+			t.Fatal("a binary document was downloaded")
+		}
+		select {
+		case m := <-mb.InboundChannel():
+			if len(m.Images) != 0 {
+				t.Fatalf("a PDF was attached as an image: %+v", m.Images)
+			}
+			if !strings.Contains(m.Content, "cannot open") || !strings.Contains(m.Content, "summarize this") {
+				t.Fatalf("Content = %q, want the framed caption", m.Content)
+			}
+		default:
+			t.Fatal("the captioned document did not reach the bus")
+		}
+	})
 }
 
 // TestImageDocumentIsAttachedByContentNotExtension — a document declares its
@@ -206,6 +231,112 @@ func TestImageDocumentIsAttachedByContentNotExtension(t *testing.T) {
 	select {
 	case m := <-mb.InboundChannel():
 		t.Fatalf("a text file declaring image/png was attached as an image: %+v", m)
+	default:
+	}
+}
+
+// docMsg builds a document message with the given name, MIME and caption.
+func docMsg(name, mime, caption string, size int64) *fakeCtx {
+	return &fakeCtx{msg: &telebot.Message{
+		ID:     9,
+		Sender: &telebot.User{ID: 1234},
+		Chat:   &telebot.Chat{ID: 42},
+		Document: &telebot.Document{
+			File:     telebot.File{FileID: "d2", FileSize: size},
+			FileName: name,
+			MIME:     mime,
+			Caption:  caption,
+		},
+	}}
+}
+
+// A text document's content is inlined into the turn — the whole point of
+// sending a file is that the agent reads it, not its filename.
+func TestTextDocumentContentIsInlined(t *testing.T) {
+	tg, mb, downloads := imageChannel(t, []string{"1234"}, []byte("alpha,beta\n1,2\n"), nil)
+	if err := tg.handleDocument(docMsg("data.csv", "text/csv", "sum it", 15)); err != nil {
+		t.Fatalf("handleDocument: %v", err)
+	}
+	if *downloads != 1 {
+		t.Fatalf("downloads = %d, want 1", *downloads)
+	}
+	select {
+	case m := <-mb.InboundChannel():
+		if !strings.Contains(m.Content, "alpha,beta\n1,2") {
+			t.Fatalf("Content = %q, want the file body inlined", m.Content)
+		}
+		if !strings.Contains(m.Content, "data.csv") || !strings.Contains(m.Content, "sum it") {
+			t.Fatalf("Content = %q, want filename and caption kept", m.Content)
+		}
+	default:
+		t.Fatal("the text document never reached the bus")
+	}
+}
+
+// An octet-stream declaration with a code extension is still text-like:
+// Telegram declares most code and config files exactly that way.
+func TestOctetStreamCodeFileIsInlinedByExtension(t *testing.T) {
+	tg, mb, _ := imageChannel(t, []string{"1234"}, []byte("package main\n"), nil)
+	if err := tg.handleDocument(docMsg("main.go", "application/octet-stream", "", 13)); err != nil {
+		t.Fatalf("handleDocument: %v", err)
+	}
+	select {
+	case m := <-mb.InboundChannel():
+		if !strings.Contains(m.Content, "package main") {
+			t.Fatalf("Content = %q, want the file body inlined", m.Content)
+		}
+	default:
+		t.Fatal("the code file never reached the bus")
+	}
+}
+
+// The declaration decides only whether to download; the bytes decide what
+// they are. Binary content behind a .txt name is refused, not inlined.
+func TestBinaryBytesBehindATextNameAreRefused(t *testing.T) {
+	tg, mb, _ := imageChannel(t, []string{"1234"}, []byte{0x00, 0x01, 0xFF, 0xFE}, nil)
+	if err := tg.handleDocument(docMsg("notes.txt", "text/plain", "", 4)); err != nil {
+		t.Fatalf("handleDocument: %v", err)
+	}
+	select {
+	case m := <-mb.InboundChannel():
+		t.Fatalf("binary bytes reached the agent as %q", m.Content)
+	default:
+	}
+}
+
+// Oversized text is truncated with a visible marker, never silently cut and
+// never refused — the head of a log usually answers the question.
+func TestOversizedTextDocumentIsTruncatedWithAMarker(t *testing.T) {
+	big := bytes.Repeat([]byte("x"), telegramTextDocMaxBytes+100)
+	tg, mb, _ := imageChannel(t, []string{"1234"}, big, nil)
+	if err := tg.handleDocument(docMsg("huge.log", "text/plain", "", int64(len(big)))); err != nil {
+		t.Fatalf("handleDocument: %v", err)
+	}
+	select {
+	case m := <-mb.InboundChannel():
+		if !strings.Contains(m.Content, "truncated at") {
+			t.Fatal("no truncation marker on an over-limit document")
+		}
+		if len(m.Content) > telegramTextDocMaxBytes+200 {
+			t.Fatalf("content is %d bytes, cap not applied", len(m.Content))
+		}
+	default:
+		t.Fatal("the truncated document never reached the bus")
+	}
+}
+
+// An oversized *binary* file must be refused, not trimmed to nothing: an
+// unbounded rune-boundary trim on invalid-UTF-8 content used to eat the whole
+// buffer and inline an empty "document" carrying only the truncation marker.
+func TestOversizedBinaryFileIsRefusedNotEmptied(t *testing.T) {
+	big := bytes.Repeat([]byte{0xFF, 0xFE}, (telegramTextDocMaxBytes/2)+100)
+	tg, mb, _ := imageChannel(t, []string{"1234"}, big, nil)
+	if err := tg.handleDocument(docMsg("blob.txt", "text/plain", "", int64(len(big)))); err != nil {
+		t.Fatalf("handleDocument: %v", err)
+	}
+	select {
+	case m := <-mb.InboundChannel():
+		t.Fatalf("oversized binary reached the agent as %q", m.Content)
 	default:
 	}
 }

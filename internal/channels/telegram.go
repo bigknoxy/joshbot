@@ -765,17 +765,31 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 		content = fmt.Sprintf("[Document: %s]\n%s", doc.FileName, doc.Caption)
 	}
 
-	// A document is only downloaded when it claims to be an image; every other
-	// document type is forwarded as metadata exactly as before. The claim is
-	// not trusted — NewImage sniffs the content — it only decides whether to
-	// spend a download at all.
+	// What happens to a document depends on whether the agent can perceive
+	// it. An image claim earns a download and rides the turn as an image; a
+	// text-like claim earns a download and is inlined as the message text; a
+	// binary blob is refused honestly (or its caption forwarded, framed),
+	// because "[Document: report.xlsx]" alone got a confident answer about a
+	// file nobody opened. Claims decide only whether to spend the download —
+	// the bytes decide what they are.
 	var images []providers.Image
-	if providers.IsSupportedImageMIME(doc.MIME) {
+	switch {
+	case providers.IsSupportedImageMIME(doc.MIME):
 		img, ok := t.attachImage(ctx, doc.File, doc.FileName, int64(doc.FileSize))
 		if !ok {
 			return nil
 		}
 		images = []providers.Image{img}
+	case isTextLikeDocument(doc.MIME, doc.FileName):
+		text, ok := t.attachTextDocument(ctx, doc)
+		if !ok {
+			return nil
+		}
+		content = fmt.Sprintf("%s\n%s", content, text)
+	case doc.Caption == "":
+		return t.replyCannotPerceive(ctx, fmt.Sprintf("📄 I can't open %q yet — I can read text files (txt, md, csv, json, code) and images.", doc.FileName))
+	default:
+		content = fmt.Sprintf("[The user sent a file you cannot open (%s). Its caption]: %s", doc.FileName, doc.Caption)
 	}
 
 	inbound := bus.InboundMessage{
@@ -925,7 +939,11 @@ func (t *TelegramChannel) handleSticker(ctx telebot.Context) error {
 // message; plain text on purpose (the note contains no formatting).
 func (t *TelegramChannel) replyCannotPerceive(ctx telebot.Context, note string) error {
 	t.stopTyping(ctx.Chat())
-	_, err := ctx.Bot().Send(ctx.Chat(), note, &telebot.SendOptions{ReplyTo: ctx.Message()})
+	b := ctx.Bot()
+	if b == nil {
+		return nil
+	}
+	_, err := b.Send(ctx.Chat(), note, &telebot.SendOptions{ReplyTo: ctx.Message()})
 	return err
 }
 

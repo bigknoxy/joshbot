@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Telegram text documents are read, not named.** A text-like document
+  (txt, md, csv, json, code — by MIME, or by extension when Telegram
+  declares `application/octet-stream`) is downloaded after the allowlist
+  check and its content inlined into the turn, capped at 64KB with a
+  visible truncation marker. The declaration decides only whether to spend
+  the download; the bytes decide what they are — binary content behind a
+  `.txt` name is refused. A binary document the agent cannot open is
+  refused honestly (captionless) or has its caption forwarded framed,
+  instead of "[Document: report.xlsx]" earning a confident answer about a
+  file nobody opened.
+
 ### Changed
 
 - **Edited Telegram messages are forwarded as corrections.** The bare

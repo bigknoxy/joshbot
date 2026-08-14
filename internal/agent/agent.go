@@ -620,6 +620,17 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			if errors.Is(err, providers.ErrStreamingUnsupported) {
 				resp, err = a.provider.Chat(callCtx, req)
 			}
+			// A stream that died before delivering anything is retried once
+			// through the non-streaming path — safe for the same reason as
+			// above (nothing reached the sink), and Chat brings the whole
+			// retry/fallback chain with it, so a mid-open connection reset no
+			// longer ends the turn with "[stream error: ...]" as the answer.
+			// The reply arrives unstreamed; every sink consumer already
+			// handles that (it is the ErrStreamingUnsupported path).
+			if errors.Is(err, errStreamDiedEmpty) {
+				a.logger.Warn("Stream died before any content, retrying via Chat", "error", err)
+				resp, err = a.provider.Chat(callCtx, req)
+			}
 		} else {
 			resp, err = a.provider.Chat(callCtx, req)
 		}
@@ -843,6 +854,14 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	return resp, nil
 }
 
+// errStreamDiedEmpty reports a stream that died before delivering any text.
+// Unlike a mid-text death, nothing has reached the sink, so the call can be
+// retried invisibly — returning a marker for this case ended the turn with
+// "[stream error: ...]" standing in for an answer the chain could still have
+// produced. Text already shown can never be retried; that case keeps the
+// marker.
+var errStreamDiedEmpty = errors.New("stream died before any content was delivered")
+
 // streamErrorMarker renders a mid-stream failure as text the user can see.
 //
 // A leading newline only when text preceded it, so a stream that failed before
@@ -903,19 +922,6 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 
 	for chunk := range stream {
 		if err := acc.Accumulate(chunk); err != nil {
-			// Stream error mid-flight — append a visible marker to what
-			// was already shown. Return partial content, not an error,
-			// so the caller sees the text that was already delivered.
-			//
-			// The marker is emitted even when nothing arrived first. A stream
-			// that dies before any text is the common case, and suppressing
-			// the marker there left an empty response that reactLoop replaced
-			// with "I've processed your request." — a confident non-answer
-			// standing in for a failure.
-			marker := streamErrorMarker(err, accumulatedContent != "")
-			sink(StreamEvent{Delta: marker, Done: true})
-			accumulatedContent += marker
-
 			// Drain the rest of the stream. The provider goroutine blocks
 			// sending into this channel and does not close the response body
 			// until it can, so abandoning it would hold the goroutine and its
@@ -927,6 +933,18 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 			// contract, not a live bug — the moment Accumulate can fail, an
 			// early return here becomes a leak.
 			drainStream(stream)
+
+			// Nothing delivered yet: the caller can retry invisibly.
+			if accumulatedContent == "" {
+				return nil, fmt.Errorf("%w: %w", errStreamDiedEmpty, err)
+			}
+
+			// Stream error mid-text — append a visible marker to what was
+			// already shown and return the partial content, not an error, so
+			// the caller sees the text that was already delivered.
+			marker := streamErrorMarker(err, true)
+			sink(StreamEvent{Delta: marker, Done: true})
+			accumulatedContent += marker
 
 			return &providers.ChatResponse{
 				ID:    "stream-error",
@@ -954,7 +972,16 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 
 	resp, err := acc.Result()
 	if err != nil {
-		// Stream ended with a truncation error — append a visible marker.
+		// Nothing delivered yet: the caller can retry invisibly. (A stream
+		// that dies before any text used to end the turn with a
+		// "[stream error: ...]" marker standing in for an answer the chain
+		// could still have produced.)
+		if accumulatedContent == "" {
+			return nil, fmt.Errorf("%w: %w", errStreamDiedEmpty, err)
+		}
+
+		// Stream ended with a truncation error mid-text — append a visible
+		// marker to what was already shown.
 		marker := streamErrorMarker(err, accumulatedContent != "")
 		sink(StreamEvent{Delta: marker, Done: true})
 		accumulatedContent += marker

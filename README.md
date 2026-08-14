@@ -521,6 +521,10 @@ The new model-centric format is simpler and more intuitive. Define models direct
   that keeps failing (or asks for a long `Retry-After`) is deprioritized in the
   chain for a cooldown window instead of being re-dialled and timed out on every
   turn; the in-chat `/status` command shows any provider currently cooling down.
+- When a fallback does answer, the reply **opens with a one-line notice** —
+  `⚠️ nvidia unavailable (rate_limit) — answered by poolside (poolside/laguna-s-2.1)` —
+  so a silent model switch never masquerades as the primary working. Set
+  `agents.defaults.quiet_fallback` to `true` to suppress it.
 - No separate provider configuration needed
 
 ### Provider Auto-Detection

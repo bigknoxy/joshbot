@@ -594,6 +594,20 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		sink := streamSinkFromContext(ctx)
 		streaming := a.cfg.Agents.Defaults.Streaming && sink != nil
 
+		// Capture a fallback notice for this LLM call so the user learns
+		// their answer came from a different provider than configured. The
+		// streaming path installs its own callback inside streamChat (the
+		// notice has to enter the delta stream before any content, so the
+		// buffer and the reply text stay identical); this one covers the
+		// non-streaming calls only.
+		var fallbackNotice string
+		callCtx := ctx
+		if !a.cfg.Agents.Defaults.QuietFallback {
+			callCtx = providers.WithFallbackNotice(ctx, func(n providers.FallbackNotice) {
+				fallbackNotice = formatFallbackNotice(n)
+			})
+		}
+
 		var resp *providers.ChatResponse
 		var err error
 		if streaming {
@@ -604,10 +618,10 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			// The fallback is safe because the stream never opened, so nothing
 			// has been delivered to the sink yet.
 			if errors.Is(err, providers.ErrStreamingUnsupported) {
-				resp, err = a.provider.Chat(ctx, req)
+				resp, err = a.provider.Chat(callCtx, req)
 			}
 		} else {
-			resp, err = a.provider.Chat(ctx, req)
+			resp, err = a.provider.Chat(callCtx, req)
 		}
 		if err != nil {
 			return "", fmt.Errorf("LLM call failed: %w", err)
@@ -650,6 +664,13 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 
 			// Sanitize: strip internal context tags from response
 			content = sanitizeResponse(content)
+
+			// A non-streaming reply answered by a fallback carries the
+			// notice as a visible first line. (Streamed replies had it
+			// woven in by streamChat already.)
+			if fallbackNotice != "" {
+				content = fallbackNotice + content
+			}
 
 			// Add assistant message to session
 			sess.AddMessage(session.Message{
@@ -849,6 +870,29 @@ func drainStream(stream <-chan providers.StreamChunk) {
 // The returned *ChatResponse has the same shape as the non-streaming Chat
 // path, so everything downstream of the call site is unchanged.
 func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink StreamSink) (*providers.ChatResponse, error) {
+	// Fallback notice for streamed replies. It fires while the stream is
+	// being opened, but it is emitted lazily, right before the first content
+	// delta: emitted eagerly it would surface for a tool-call-only response
+	// that shows no text, and the notice must enter both the sink and the
+	// accumulated content so the streamed buffer and the reply text stay
+	// identical — a divergence there re-sends the whole reply through the
+	// bus fallback on Telegram.
+	var notice string
+	if !a.cfg.Agents.Defaults.QuietFallback {
+		ctx = providers.WithFallbackNotice(ctx, func(n providers.FallbackNotice) {
+			notice = formatFallbackNotice(n)
+		})
+	}
+	noticeShown := false
+	emitNotice := func() string {
+		if notice == "" || noticeShown {
+			return ""
+		}
+		noticeShown = true
+		sink(StreamEvent{Delta: notice})
+		return notice
+	}
+
 	stream, err := a.provider.ChatStream(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("stream failed to open: %w", err)
@@ -901,6 +945,7 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 		// Forward text deltas to the sink as they arrive.
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
+				accumulatedContent = emitNotice() + accumulatedContent
 				accumulatedContent += choice.Delta.Content
 				sink(StreamEvent{Delta: choice.Delta.Content})
 			}
@@ -927,10 +972,25 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 		}, nil
 	}
 
+	// The reply text must carry the notice the sink already showed, or the
+	// session, the history and every non-streaming consumer of this response
+	// records a different answer than the one on screen.
+	if noticeShown && len(resp.Choices) > 0 {
+		resp.Choices[0].Message.Content = notice + resp.Choices[0].Message.Content
+	}
+
 	// Signal completion to the sink.
 	sink(StreamEvent{Done: true})
 
 	return resp, nil
+}
+
+// formatFallbackNotice renders the one-line, user-facing note that a reply
+// was answered by a fallback provider. Prepended to the reply rather than
+// sent out of band so every channel — CLI, Telegram, Discord, HTTP API —
+// carries it without per-channel wiring.
+func formatFallbackNotice(n providers.FallbackNotice) string {
+	return fmt.Sprintf("⚠️ %s unavailable (%s) — answered by %s (%s)\n\n", n.From, n.Reason, n.To, n.Model)
 }
 
 // afterReActDetection records the trace and, if a strong-enough candidate is

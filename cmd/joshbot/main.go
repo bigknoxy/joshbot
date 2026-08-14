@@ -1086,8 +1086,14 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		agent.WithTimeout(cfg.Agents.Defaults.Timeout.Duration()),
 	)
 
-	// Start background services (best-effort)
+	// Start background services (best-effort). Every service started here is
+	// registered with stopBackgroundServices: the consolidator runs its first
+	// pass immediately on Start, writing into workspace/memory from a
+	// goroutine, so a setup with no way to stop it keeps writing after its
+	// caller is done — which in tests races t.TempDir cleanup ("directory not
+	// empty") and in production leaves the writes running through shutdown.
 	cronSvc.Start()
+	registerBackgroundService(cronSvc.Stop)
 	hb := heartbeat.NewService(msgBus, cfg.Agents.Defaults.Workspace)
 	hb.SetInterval(cfg.HeartbeatInterval())
 	// Route heartbeat tasks to the same channel scheduled reminders use, and
@@ -1096,10 +1102,12 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	hb.SetChannel(defaultReminderChannel(cfg))
 	hb.SetChatIDResolver(messageSender.GetChatID)
 	hb.Start()
+	registerBackgroundService(hb.Stop)
 
 	// Start consolidator (self-learning memory consolidation)
 	consolidator := learning.NewConsolidator(memoryManager, multiProvider, 10*time.Minute)
 	consolidator.Start()
+	registerBackgroundService(consolidator.Stop)
 
 	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
@@ -1175,6 +1183,41 @@ func registerMCPServers(ctx context.Context, reg *tools.Registry, cfg config.MCP
 	mcpMu.Unlock()
 	if prev != nil {
 		prev.Close()
+	}
+}
+
+// bgMu guards bgStoppers, the stop functions for the background services
+// setupComponents starts. It is a package var for the same reason mcpManager
+// is: the services are process-scoped and the only thing a caller does with
+// them is stop them on the way out.
+//
+// Each stopper is one-shot — heartbeat.Stop and Consolidator.Stop close a
+// channel and panic if called twice — so stopBackgroundServices takes the
+// slice and clears it under the lock, which is what makes it safe to call
+// twice and safe to defer alongside closeMCPServers.
+var (
+	bgMu       sync.Mutex
+	bgStoppers []func()
+)
+
+func registerBackgroundService(stop func()) {
+	bgMu.Lock()
+	bgStoppers = append(bgStoppers, stop)
+	bgMu.Unlock()
+}
+
+// stopBackgroundServices stops every background service started by
+// setupComponents and waits for their goroutines to finish. Safe to call when
+// none were started, and safe to call twice.
+func stopBackgroundServices() {
+	bgMu.Lock()
+	stoppers := bgStoppers
+	bgStoppers = nil
+	bgMu.Unlock()
+	// Reverse order: services are stopped in the mirror of the order they
+	// were started, the way a chain of defers would.
+	for i := len(stoppers) - 1; i >= 0; i-- {
+		stoppers[i]()
 	}
 }
 
@@ -1385,6 +1428,7 @@ func runAgent(c *cli.Context) error {
 	// Setup components
 	_, _, _, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
 	defer closeMCPServers()
+	defer stopBackgroundServices()
 	if err != nil {
 		// HARD RULE: in JSON modes a setup failure must still be well-formed —
 		// a machine-readable error on stderr, not a plain-text line.
@@ -2799,6 +2843,7 @@ func runGateway(c *cli.Context) error {
 	// Setup components
 	msgBus, _, _, agentInstance, _, sender, err := setupComponents(cfg)
 	defer closeMCPServers()
+	defer stopBackgroundServices()
 	if err != nil {
 		return err
 	}

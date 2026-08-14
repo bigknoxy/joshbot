@@ -12,6 +12,9 @@ import (
 // object every channel dials.
 func agentFrom(t *testing.T, cfg *config.Config) *agent.Agent {
 	t.Helper()
+	// setupComponents leaves background services running; stop them so their
+	// goroutines do not outlive the test (see setupConfig).
+	t.Cleanup(stopBackgroundServices)
 
 	_, _, _, a, _, _, err := setupComponents(cfg)
 	if err != nil {

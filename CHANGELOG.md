@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Edited Telegram messages are forwarded as corrections.** The bare
+  "[Edited]:" framing read as brand-new context and earned a full fresh
+  answer; the edit is now framed as the corrected version of an
+  already-seen message, so the model answers the fixed question instead of
+  re-answering everything.
 - **Imperceptible Telegram media is answered honestly, not hallucinated
   about.** A voice message, audio file or video used to be forwarded to the
   agent as a "[Voice message]" placeholder, which earned a confident answer

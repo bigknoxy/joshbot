@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.52.1] - 2026-08-14
+
 ### Fixed
 
 - **Provider fallback no longer hands the next provider the primary's model ID.**
   A model ID belongs to the provider that publishes it, but the fallback chain
   forwarded the requested model verbatim to every provider it tried. A rate
-  limit on openrouter for `z-ai/glm-5.2` therefore fell through to poolside as
-  `z-ai/glm-5.2` and came back `404 {"error":"please check the model you
+  limit on the addressed provider for `z-ai/glm-5.2` therefore fell through to
+  poolside as `z-ai/glm-5.2` and came back `404 {"error":"please check the model you
   provided"}` — a message that reads as a joshbot misconfiguration, names a
   provider the user never selected, and completely hides the rate limit that
   actually happened. Fallbacks are now asked for their own configured model, and

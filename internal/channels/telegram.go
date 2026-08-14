@@ -496,6 +496,9 @@ func (t *TelegramChannel) handleMessage(ctx telebot.Context) (err error) {
 	inbound := t.convertToInboundMessage(msg)
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send message to bus", "sender", msg.Sender.Username)
+		// The keep-alive would otherwise show "typing…" for up to ten
+		// minutes over a message that was dropped.
+		t.stopTyping(ctx.Chat())
 		_, err := ctx.Bot().Send(ctx.Sender(), "Sorry, I couldn't process your message. Please try again.")
 		return err
 	}
@@ -1274,6 +1277,19 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		if i == 0 {
 			if replyToMsg, ok := msg.Metadata["reply_to_message"].(**telebot.Message); ok && replyToMsg != nil {
 				partOpts.ReplyTo = *replyToMsg
+			}
+			// The gateway carries the triggering message's id, not a
+			// *telebot.Message: an id-only reply target is all Telegram
+			// needs to thread the answer under its question.
+			switch id := msg.Metadata["reply_to_id"].(type) {
+			case int:
+				if id != 0 {
+					partOpts.ReplyTo = &telebot.Message{ID: id}
+				}
+			case float64:
+				if id != 0 {
+					partOpts.ReplyTo = &telebot.Message{ID: int(id)}
+				}
 			}
 			if markup, ok := msg.Metadata["reply_markup"].(map[string]any); ok {
 				partOpts.ReplyMarkup = t.buildReplyMarkup(markup)

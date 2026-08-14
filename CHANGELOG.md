@@ -14,7 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output, sidecars excluded), and the new `session_search` tool gives the
   agent the same recall — "what did we decide about X last week" is now
   answered from the transcripts, on any channel, instead of guessed.
-
+- **Telegram replies now render as Markdown.** Every ordinary reply used to
+  go out as plain text — literal \`\`\` and ** on the phone — while the
+  parse-entity fallback protected a path nothing took. The final streamed
+  edit and non-streamed replies now default to Markdown; anything Telegram
+  rejects degrades to plain text via the existing fallback, never gets
+  lost. Interim streamed edits stay plain on purpose (a partial stream
+  splits fences mid-way). Error replies stay plain too.
+- **Telegram replies thread to the message that asked.** Streamed and
+  non-streamed answers carry `reply_to`, so an answer landing after other
+  traffic stays anchored to its question. Only the first message of a turn
+  threads; a 4096 rollover's continuation does not re-anchor.
 - **`joshbot agent --continue` (`-c`) resumes the most recently updated
   session** — no session id needed. A one-line recap goes to stderr so
   scripted stdout stays data-only; `--continue` with `--resume` is a
@@ -25,19 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recap of the last exchange when the session has history ("Continuing
   conversation (4 messages). Last exchange: ..."), silent on a fresh
   session.
-
-### Fixed
-
-- **An empty model reply is now reported as the failure it is.** Empty
-  content with no tool calls used to become "I've processed your request."
-  — and a choiceless response "I didn't get a response. Please try again."
-  — both with a nil error, which reached scripts as exit 0 and the HTTP
-  API as a 200. Both now go through the in-band error contract: `agent -m`
-  exits 1, the API returns 502, and the message says it is a provider
-  problem.
-
-### Added
-
 - **`joshbot configure --migrate` converts a legacy provider config to the
   model-centric format.** All-or-nothing and deliberately non-lossy: a
   provider it cannot represent faithfully (github-copilot, a per-provider
@@ -49,6 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   populated now logs a loud startup warning naming the ignored legacy
   provider — filling in the `models_config` stub used to flip the entire
   routing regime with no signal at all.
+
+### Fixed
+
+- **A dropped Telegram message no longer leaves "typing…" running.** The
+  bus-full apology path now stops the keep-alive, which otherwise showed
+  typing for up to ten minutes over a message that was never processed.
+- **An empty model reply is now reported as the failure it is.** Empty
+  content with no tool calls used to become "I've processed your request."
+  — and a choiceless response "I didn't get a response. Please try again."
+  — both with a nil error, which reached scripts as exit 0 and the HTTP
+  API as a 200. Both now go through the in-band error contract: `agent -m`
+  exits 1, the API returns 502, and the message says it is a provider
+  problem.
 
 ## [1.53.0] - 2026-08-14
 

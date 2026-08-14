@@ -47,6 +47,9 @@ type TelegramStreamer struct {
 	// or a code fence down the middle, and Telegram rejects the whole edit
 	// for it. Formatting a half-written message is not worth losing it.
 	parseMode telebot.ParseMode
+	// replyTo anchors the initial send to the triggering message; nil sends
+	// unthreaded.
+	replyTo *telebot.Message
 	// now and sleep are overridable so throttle behaviour is testable without
 	// real time passing.
 	now   func() time.Time
@@ -95,10 +98,27 @@ func (t *TelegramChannel) newStreamer(recipient telebot.Recipient) *TelegramStre
 	return &TelegramStreamer{
 		ch:        t,
 		recipient: recipient,
-		parseMode: telebot.ModeDefault,
+		// Markdown by default: every ordinary reply used to land as plain
+		// text, showing literal ``` and ** on the phone, while the
+		// parse-entity fallback below protected a path nothing took. The
+		// fallback is what makes the default safe — a reply Telegram
+		// rejects degrades to plain text, never gets lost.
+		parseMode: telebot.ModeMarkdown,
 		now:       time.Now,
 		sleep:     time.Sleep,
 	}
+}
+
+// SetReplyTo threads the streamed reply to the message that triggered it, so
+// an answer arriving after other traffic is anchored to its question. Only
+// the initial send can carry it; edits keep the anchor automatically.
+func (s *TelegramStreamer) SetReplyTo(messageID int) {
+	if s == nil || messageID == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.replyTo = &telebot.Message{ID: messageID}
 }
 
 // currentEditorLocked returns the editor to stream through. Callers must hold
@@ -258,6 +278,9 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 		mode = s.parseMode
 	}
 	opts := &telebot.SendOptions{ParseMode: mode}
+	if s.msg == nil && s.replyTo != nil {
+		opts.ReplyTo = s.replyTo
+	}
 
 	var err error
 	if s.msg == nil {
@@ -265,6 +288,9 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 		sent, err = editor.Send(s.recipient, s.buf, opts)
 		if err == nil {
 			s.msg = sent
+			// Only the first message of the turn threads to the question; a
+			// 4096 rollover clears s.msg and must not re-anchor part two.
+			s.replyTo = nil
 		}
 	} else {
 		_, err = editor.Edit(s.msg, s.buf, opts)
@@ -282,6 +308,7 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 			sent, err = editor.Send(s.recipient, s.buf, opts)
 			if err == nil {
 				s.msg = sent
+				s.replyTo = nil
 			}
 		} else {
 			_, err = editor.Edit(s.msg, s.buf, opts)

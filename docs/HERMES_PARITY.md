@@ -78,7 +78,7 @@ path** from install to working multi-provider fallback.
 - [ ] Converge on one canonical config format + `joshbot configure migrate`;
       stop serializing the empty `models_config` stub
 - [x] Full provider menu derived from `configure.SupportedProviders()`
-- [ ] Actionable error mapping at the `Process` boundary (401 → configure
+- [x] Actionable error mapping at the `Process` boundary (401 → configure
       hint, 429-all-failed → fallback hint, model 404 → `/model`/preflight,
       ollama 404 → `ollama pull`)
 

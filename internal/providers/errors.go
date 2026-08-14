@@ -161,6 +161,30 @@ func IsFallbackError(err error, providerName string) bool {
 	return false
 }
 
+// StatusCodeFromError exposes the HTTP status carried by (or parsed out of)
+// an error chain, or 0 when there is none. A FallbackError's structured code
+// wins over text scanning.
+func StatusCodeFromError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var fallbackErr *FallbackError
+	if errors.As(err, &fallbackErr) && fallbackErr.StatusCode > 0 {
+		return fallbackErr.StatusCode
+	}
+	return extractStatusCode(err.Error())
+}
+
+// ProviderFromError names the provider an error chain came from, or "" when
+// the error carries no structured provider (plain non-fallback errors).
+func ProviderFromError(err error) string {
+	var fallbackErr *FallbackError
+	if errors.As(err, &fallbackErr) {
+		return fallbackErr.Provider
+	}
+	return ""
+}
+
 // RetryAfterFromError extracts the upstream Retry-After hint from an error
 // chain, or zero when there is none.
 func RetryAfterFromError(err error) time.Duration {

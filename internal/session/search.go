@@ -104,13 +104,20 @@ func (m *Manager) Search(ctx context.Context, query string, limit int) ([]Search
 // occurrence of needle (already lower-cased).
 func snippetAround(content, needle string) string {
 	flat := strings.Join(strings.Fields(content), " ")
-	idx := strings.Index(strings.ToLower(flat), needle)
+	lower := strings.ToLower(flat)
+	idx := strings.Index(lower, needle)
 	if idx < 0 {
 		idx = 0
 	}
 	runes := []rune(flat)
-	// Byte index -> rune index for the window start.
-	start := len([]rune(flat[:idx]))
+	// The byte offset is into the lowered string, whose byte and rune
+	// lengths can differ from the original's (İ lowers to two runes), so
+	// convert within the lowered string and clamp: a slightly drifted
+	// window on exotic Unicode beats a slice panic.
+	start := len([]rune(lower[:idx]))
+	if start > len(runes) {
+		start = len(runes)
+	}
 	from := start - maxSnippetRunes/4
 	if from < 0 {
 		from = 0

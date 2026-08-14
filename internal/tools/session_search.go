@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bigknoxy/joshbot/internal/redact"
 	"github.com/bigknoxy/joshbot/internal/session"
 )
 
@@ -72,5 +73,8 @@ func (t *SessionSearchTool) Execute(ctx interface{}, args map[string]any) ToolRe
 		fmt.Fprintf(&b, "- [%s] %s (%s): %s\n",
 			m.Timestamp.Format(time.DateTime), m.SessionID, m.Role, m.Snippet)
 	}
-	return ToolResult{Output: b.String()}
+	// Session files are stored unredacted (the 0600 mode is the boundary),
+	// and this output re-enters a live conversation — an old transcript that
+	// captured a credential must not resurface it into the current chat.
+	return ToolResult{Output: redact.String(b.String())}
 }

@@ -200,6 +200,9 @@ func (s *TelegramStreamer) Status(text string) {
 		}
 		sent, err := editor.Send(s.recipient, text, opts)
 		if err != nil {
+			if isFloodError(err) {
+				s.nextEdit = s.now().Add(floodRetryAfter(err))
+			}
 			log.Debug("failed to send tool-progress status", "error", err)
 			return
 		}
@@ -271,6 +274,11 @@ func (s *TelegramStreamer) Finish(procErr error) bool {
 		s.sleep(wait)
 	}
 	s.flushLocked(true)
+	// A final flush that failed with nothing ever delivered leaves the reply
+	// to the bus fallback — clear any status message here too, for the same
+	// reason as the empty-buffer branch above. clearStatusLocked's own guards
+	// make this a no-op once reply text has landed.
+	s.clearStatusLocked()
 	// The return value is a delivery contract with the gateway: true suppresses
 	// the bus publish, so it may only mean "the whole answer is in the chat".
 	// Reporting delivery because *something* landed is how a single failed final

@@ -711,3 +711,42 @@ func TestStatusIsSkippedInsideTheThrottleWindow(t *testing.T) {
 		t.Fatalf("calls = %+v, want only the first status", calls)
 	}
 }
+
+// A turn whose reply text never lands (the final write fails with nothing
+// ever delivered) must also delete its status message — the answer arrives
+// via the bus fallback, same as the status-only case.
+func TestFailedFinalWriteStillDeletesTheStatusMessage(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 42, nil)
+
+	s.Status("⚙️ shell: sleep 60")
+	ed.mu.Lock()
+	ed.editErrs = []error{errors.New("400 chat not found")}
+	ed.mu.Unlock()
+	s.Delta("the answer")
+	if s.Finish(nil) {
+		t.Fatal("Finish reported delivery over a failed write")
+	}
+	calls := ed.snapshot()
+	if !calls[len(calls)-1].deleted {
+		t.Fatalf("stale status message was not deleted: %+v", calls)
+	}
+}
+
+// A 429 on the initial status send must back off like the edit path does:
+// ignoring retry_after just earns the next write another 429.
+func TestStatusSendFloodErrorBacksOff(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 42, nil)
+	base := time.Unix(1000, 0)
+	s.now = func() time.Time { return base }
+
+	ed.mu.Lock()
+	ed.sendErrs = []error{errors.New("telegram: retry after 30 (429)")}
+	ed.mu.Unlock()
+	s.Status("⚙️ first")
+	s.Status("⚙️ second") // inside the flood window — must be skipped
+	if n := len(ed.snapshot()); n != 1 {
+		t.Fatalf("%d writes went out during the flood window, want 1", n)
+	}
+}

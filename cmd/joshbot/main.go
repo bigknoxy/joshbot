@@ -2834,6 +2834,24 @@ type gatewayDeps struct {
 	newStreamer func(msg bus.InboundMessage) gatewayStreamer
 }
 
+// replyMetadata builds the outbound metadata that anchors a reply to the
+// inbound message that triggered it, and (for ordinary answers) selects
+// Markdown rendering. Safe on any channel: consumers ignore keys they do not
+// understand, and Telegram degrades rejected formatting to plain text.
+func replyMetadata(msg bus.InboundMessage, markdown bool) map[string]any {
+	meta := map[string]any{}
+	if id, ok := msg.Metadata["message_id"].(int); ok && id != 0 {
+		meta["reply_to_id"] = id
+	}
+	if markdown {
+		meta["parse_mode"] = "markdown"
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
 // gatewayHandler is the bus subscription runGateway installs: one inbound
 // message in, at most one outbound message out. It is separated from
 // runGateway because runGateway cannot be run in a test — it dials providers,
@@ -2896,12 +2914,14 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			if streamer.Finish(err) {
 				return
 			}
-			// Send error response
+			// Send error response, threaded but plain text: error content
+			// is arbitrary and formatting it buys nothing.
 			outbound := bus.OutboundMessage{
 				Content:   fmt.Sprintf("Error: %v", err),
 				Channel:   msg.Channel,
 				ChannelID: getChannelID(msg),
 				Timestamp: time.Now(),
+				Metadata:  replyMetadata(msg, false),
 			}
 			d.publish(outbound)
 			return
@@ -2935,7 +2955,11 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			return
 		}
 
-		// Send response back to the appropriate channel
+		// Send response back to the appropriate channel. Markdown by
+		// default — the channel's parse-entity fallback degrades a reply
+		// Telegram rejects to plain text, never loses it — and threaded to
+		// the message that asked, so an answer landing after other traffic
+		// stays anchored to its question.
 		channelID := getChannelID(msg)
 		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
 		outbound := bus.OutboundMessage{
@@ -2944,6 +2968,7 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			ChannelID: channelID,
 			SenderID:  msg.SenderID,
 			Timestamp: time.Now(),
+			Metadata:  replyMetadata(msg, true),
 		}
 		d.publish(outbound)
 	}
@@ -3023,6 +3048,9 @@ func runGateway(c *cli.Context) error {
 			s := tgChannel.NewStreamer(getChannelID(msg))
 			if s == nil {
 				return nil
+			}
+			if id, ok := msg.Metadata["message_id"].(int); ok {
+				s.SetReplyTo(id)
 			}
 			return s
 		},

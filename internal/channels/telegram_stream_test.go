@@ -14,10 +14,11 @@ import (
 // editorCall is one Send or Edit the streamer made, recorded with the chat it
 // targeted so a test can prove two chats never saw each other's text.
 type editorCall struct {
-	chat string
-	text string
-	mode telebot.ParseMode
-	edit bool
+	chat    string
+	text    string
+	mode    telebot.ParseMode
+	edit    bool
+	replyTo int // 0 = unthreaded
 }
 
 // fakeEditor stands in for *telebot.Bot. Errors are queued per operation and
@@ -43,7 +44,7 @@ func (f *fakeEditor) pop(errs *[]error) error {
 func (f *fakeEditor) Send(to telebot.Recipient, what interface{}, opts ...interface{}) (*telebot.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, editorCall{chat: to.Recipient(), text: fmt.Sprint(what), mode: modeOf(opts)})
+	f.calls = append(f.calls, editorCall{chat: to.Recipient(), text: fmt.Sprint(what), mode: modeOf(opts), replyTo: replyToOf(opts)})
 	if err := f.pop(&f.sendErrs); err != nil {
 		return nil, err
 	}
@@ -80,6 +81,15 @@ func (f *fakeEditor) lastFor(chat string) string {
 		}
 	}
 	return last
+}
+
+func replyToOf(opts []interface{}) int {
+	for _, o := range opts {
+		if so, ok := o.(*telebot.SendOptions); ok && so.ReplyTo != nil {
+			return so.ReplyTo.ID
+		}
+	}
+	return 0
 }
 
 func modeOf(opts []interface{}) telebot.ParseMode {
@@ -526,5 +536,58 @@ func TestRolloverKeepsGenuineClosingFences(t *testing.T) {
 	}
 	if !strings.Contains(last, "plain prose after the block") {
 		t.Fatalf("tail did not reach the chat: %q", last)
+	}
+}
+
+// Every ordinary streamed reply renders as Markdown on the final edit — the
+// default used to be plain text, showing literal ``` and ** on the phone
+// while the parse-entity fallback protected a path nothing took.
+func TestFinalEditDefaultsToMarkdown(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Hour)
+	s := newTestStreamer(t, tg, 42, nil)
+
+	s.Delta("some `code` here")
+	if !s.Finish(nil) {
+		t.Fatal("Finish reported non-delivery")
+	}
+	calls := ed.snapshot()
+	last := calls[len(calls)-1]
+	if last.mode != telebot.ModeMarkdown {
+		t.Errorf("final edit mode = %q, want Markdown by default", last.mode)
+	}
+	// Interim sends stay plain: a partial stream splits fences mid-way.
+	if calls[0].mode != telebot.ModeDefault {
+		t.Errorf("interim send mode = %q, want plain", calls[0].mode)
+	}
+}
+
+// SetReplyTo threads the first message of the turn to the question; a 4096
+// rollover's second message must not re-anchor.
+func TestStreamedReplyThreadsToTheQuestion(t *testing.T) {
+	tg, ed := streamTestChannel(t, 0)
+	s := newTestStreamer(t, tg, 42, nil)
+	s.SetReplyTo(777)
+
+	s.Delta("part one ")
+	// Force a rollover: exceed the message limit so a second message sends.
+	s.Delta(strings.Repeat("x", TelegramMaxMessageLen))
+	s.Finish(nil)
+
+	var sends []editorCall
+	for _, c := range ed.snapshot() {
+		if !c.edit {
+			sends = append(sends, c)
+		}
+	}
+	if len(sends) < 2 {
+		t.Fatalf("expected a rollover to produce a second send, got %d", len(sends))
+	}
+	if sends[0].replyTo != 777 {
+		t.Errorf("first send replyTo = %d, want 777", sends[0].replyTo)
+	}
+	for _, c := range sends[1:] {
+		if c.replyTo != 0 {
+			t.Errorf("rollover send re-anchored to %d; only the first message threads", c.replyTo)
+		}
 	}
 }

@@ -249,3 +249,23 @@ func TestGatewayHandlerHandlesAnAbsentStreamer(t *testing.T) {
 		t.Fatalf("published %d message(s), want 1", n)
 	}
 }
+
+// Ordinary replies carry Markdown + the triggering message id; error replies
+// thread but stay plain; a message with no id adds nothing.
+func TestReplyMetadata(t *testing.T) {
+	msg := bus.InboundMessage{Metadata: map[string]any{"message_id": 42}}
+	meta := replyMetadata(msg, true)
+	if meta["reply_to_id"] != 42 || meta["parse_mode"] != "markdown" {
+		t.Errorf("replyMetadata = %v", meta)
+	}
+	meta = replyMetadata(msg, false)
+	if meta["reply_to_id"] != 42 {
+		t.Errorf("error metadata = %v", meta)
+	}
+	if _, ok := meta["parse_mode"]; ok {
+		t.Errorf("error replies must stay plain: %v", meta)
+	}
+	if m := replyMetadata(bus.InboundMessage{}, false); m != nil {
+		t.Errorf("no-id no-markdown should be nil, got %v", m)
+	}
+}

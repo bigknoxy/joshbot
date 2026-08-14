@@ -100,7 +100,10 @@ func TestDocumentedCommandsExist(t *testing.T) {
 // silently reports an unknown flag or drops it. Pin the set so that addition
 // has to be deliberate.
 func TestSessionsSubcommandFlagsAreKnownToTheTrailingParser(t *testing.T) {
-	known := map[string]bool{"force": true, "last": true, "older-than": true, "out": true}
+	// "limit" is handled by runSessionsSearch's own trailing parse (its
+	// positional is free text, not a session id, so parseSessionArgs does
+	// not apply); the others by parseSessionArgs.
+	known := map[string]bool{"force": true, "last": true, "older-than": true, "out": true, "limit": true}
 
 	var sessions *cli.Command
 	for _, c := range newApp().Commands {

@@ -519,3 +519,51 @@ func TestPruneRejectsIdAndOlderThanInEitherOrder(t *testing.T) {
 		}
 	}
 }
+
+// The search subcommand: query joined from positionals, trailing --limit
+// parsed by hand, redacted output, usage error on no query.
+func TestSessionsSearchCommand(t *testing.T) {
+	configPath, dir := sessionsEnv(t)
+	seedCLISession(t, dir, "cli:alpha", "the magic word is banana", "unrelated chatter")
+	seedCLISession(t, dir, "telegram:99", "banana bread recipe", "apikey = sk-supersecret99")
+
+	out, code := runSessionsCmd(t, configPath, "search", "banana")
+	if code != 0 {
+		t.Fatalf("search exited %d:\n%s", code, out)
+	}
+	for _, want := range []string{"cli:alpha", "telegram:99", "2 match(es)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Trailing --limit after the positional (the urfave parse-stop trap).
+	out, code = runSessionsCmd(t, configPath, "search", "banana", "--limit", "1")
+	if code != 0 || !strings.Contains(out, "1 match(es)") {
+		t.Errorf("trailing --limit dropped: code=%d\n%s", code, out)
+	}
+	out, code = runSessionsCmd(t, configPath, "search", "banana", "--limit=1")
+	if code != 0 || !strings.Contains(out, "1 match(es)") {
+		t.Errorf("--limit= form dropped: code=%d\n%s", code, out)
+	}
+
+	// Multi-word query without quotes.
+	out, _ = runSessionsCmd(t, configPath, "search", "magic", "word")
+	if !strings.Contains(out, "magic word") {
+		t.Errorf("multi-word query not joined:\n%s", out)
+	}
+
+	// Output is redacted: a stored credential must not print.
+	out, _ = runSessionsCmd(t, configPath, "search", "apikey")
+	if strings.Contains(out, "sk-supersecret99") {
+		t.Errorf("credential printed:\n%s", out)
+	}
+
+	// No query is a usage error, not a crash or an empty search.
+	if _, code := runSessionsCmd(t, configPath, "search"); code == 0 {
+		t.Error("search with no query must not exit 0")
+	}
+	if out, code := runSessionsCmd(t, configPath, "search", "durian"); code != 0 || !strings.Contains(out, "No matches") {
+		t.Errorf("no-match: code=%d out=%s", code, out)
+	}
+}

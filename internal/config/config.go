@@ -154,6 +154,12 @@ type AgentDefaults struct {
 	// stream sink is attached to the request context. Default true; set it to
 	// false in the config file to restore whole-reply delivery.
 	Streaming bool `mapstructure:"streaming" json:"streaming" yaml:"streaming"`
+	// QuietFallback suppresses the one-line notice prepended to a reply that
+	// was answered by a fallback provider rather than the one addressed.
+	// Deliberately inverted so the zero value (notices shown) is the
+	// default — a `true` default on a bool would need a schema migration,
+	// exactly the trap the streaming flag hit at v4→v5.
+	QuietFallback bool `mapstructure:"quiet_fallback" json:"quiet_fallback,omitempty" yaml:"quiet_fallback,omitempty"`
 	// DreamMode selects the Dream two-stage memory consolidation mode:
 	// "off" (default), "record" (log raw turns only) or "full" (log and
 	// consolidate). It is a string rather than a bool on purpose: a bool

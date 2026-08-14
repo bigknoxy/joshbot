@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deprioritizes, never drops: a chain that is all cooling is still dialled.
   Any success resets a provider's record. The in-chat `/status` command shows
   consecutive failures and remaining cooldown per provider.
+- **A reply answered by a fallback provider now says so.** The reply opens
+  with a one-line notice — `⚠️ nvidia unavailable (rate_limit) — answered by
+  poolside (poolside/laguna-s-2.1)` — on every channel, streamed and not,
+  because a silent model switch reads as the primary working when it is not.
+  `agents.defaults.quiet_fallback: true` suppresses it. On the streaming path
+  the notice enters the delta stream before the first content and the reply
+  text carries it too, so the streamed buffer and the recorded answer stay
+  identical.
 
 ## [1.52.1] - 2026-08-14
 

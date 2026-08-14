@@ -1281,8 +1281,15 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 			// The gateway carries the triggering message's id, not a
 			// *telebot.Message: an id-only reply target is all Telegram
 			// needs to thread the answer under its question.
-			if id, ok := msg.Metadata["reply_to_id"].(int); ok && id != 0 {
-				partOpts.ReplyTo = &telebot.Message{ID: id}
+			switch id := msg.Metadata["reply_to_id"].(type) {
+			case int:
+				if id != 0 {
+					partOpts.ReplyTo = &telebot.Message{ID: id}
+				}
+			case float64:
+				if id != 0 {
+					partOpts.ReplyTo = &telebot.Message{ID: int(id)}
+				}
 			}
 			if markup, ok := msg.Metadata["reply_markup"].(map[string]any); ok {
 				partOpts.ReplyMarkup = t.buildReplyMarkup(markup)

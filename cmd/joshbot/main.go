@@ -2840,7 +2840,7 @@ type gatewayDeps struct {
 // understand, and Telegram degrades rejected formatting to plain text.
 func replyMetadata(msg bus.InboundMessage, markdown bool) map[string]any {
 	meta := map[string]any{}
-	if id, ok := msg.Metadata["message_id"].(int); ok && id != 0 {
+	if id := inboundMessageID(msg); id != 0 {
 		meta["reply_to_id"] = id
 	}
 	if markdown {
@@ -2850,6 +2850,22 @@ func replyMetadata(msg bus.InboundMessage, markdown bool) map[string]any {
 		return nil
 	}
 	return meta
+}
+
+// inboundMessageID reads the triggering Telegram message id out of inbound
+// metadata, tolerating the integer types it may arrive as (telebot stores an
+// int; a JSON round-trip would make it float64). 0 means none — a silently
+// failed assertion here just meant an unthreaded reply, with no signal.
+func inboundMessageID(msg bus.InboundMessage) int {
+	switch v := msg.Metadata["message_id"].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	}
+	return 0
 }
 
 // gatewayHandler is the bus subscription runGateway installs: one inbound
@@ -3049,9 +3065,7 @@ func runGateway(c *cli.Context) error {
 			if s == nil {
 				return nil
 			}
-			if id, ok := msg.Metadata["message_id"].(int); ok {
-				s.SetReplyTo(id)
-			}
+			s.SetReplyTo(inboundMessageID(msg))
 			return s
 		},
 	}))

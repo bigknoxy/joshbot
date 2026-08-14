@@ -42,19 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recap of the last exchange when the session has history ("Continuing
   conversation (4 messages). Last exchange: ..."), silent on a fresh
   session.
-
-### Fixed
-
-- **An empty model reply is now reported as the failure it is.** Empty
-  content with no tool calls used to become "I've processed your request."
-  — and a choiceless response "I didn't get a response. Please try again."
-  — both with a nil error, which reached scripts as exit 0 and the HTTP
-  API as a 200. Both now go through the in-band error contract: `agent -m`
-  exits 1, the API returns 502, and the message says it is a provider
-  problem.
-
-### Added
-
 - **`joshbot configure --migrate` converts a legacy provider config to the
   model-centric format.** All-or-nothing and deliberately non-lossy: a
   provider it cannot represent faithfully (github-copilot, a per-provider
@@ -66,6 +53,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   populated now logs a loud startup warning naming the ignored legacy
   provider — filling in the `models_config` stub used to flip the entire
   routing regime with no signal at all.
+
+### Fixed
+
+- **A dropped Telegram message no longer leaves "typing…" running.** The
+  bus-full apology path now stops the keep-alive, which otherwise showed
+  typing for up to ten minutes over a message that was never processed.
+- **An empty model reply is now reported as the failure it is.** Empty
+  content with no tool calls used to become "I've processed your request."
+  — and a choiceless response "I didn't get a response. Please try again."
+  — both with a nil error, which reached scripts as exit 0 and the HTTP
+  API as a 200. Both now go through the in-band error contract: `agent -m`
+  exits 1, the API returns 502, and the message says it is a provider
+  problem.
 
 ## [1.53.0] - 2026-08-14
 

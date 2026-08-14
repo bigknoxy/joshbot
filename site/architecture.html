@@ -329,7 +329,7 @@ footer a:hover { text-decoration: underline; }
 <div class="container">
   <div class="page-hero">
     <h1>Architecture</h1>
-    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~38,300 LOC non-test &middot; 2,113 test functions</div>
+    <div class="meta"><span>joshbot</span> &middot; Go 1.24 &middot; ~40,400 LOC non-test &middot; 2,189 test functions (measured 2026-08-14)</div>
   </div>
 
   <section>
@@ -357,7 +357,7 @@ footer a:hover { text-decoration: underline; }
         <div class="box amber full"><span class="name">Message Bus</span><div class="desc">goroutine channel multiplexer</div></div>
         <div class="arrow-down solid"></div>
         <div class="arrow-label">routed to agent goroutine</div>
-        <div class="box amber full"><span class="name">Agent (ReAct Loop)</span><div class="desc">max 20 iterations: think → act → observe</div></div>
+        <div class="box amber full"><span class="name">Agent (ReAct Loop)</span><div class="desc">max 50 iterations: think → act → observe</div></div>
         <div class="diagram-row wrap" style="margin-top: 8px;">
           <div class="box purple"><span class="name">Tools Registry</span><div class="desc">Built-in tools + MCP</div></div>
           <div class="box purple"><span class="name">MCP Clients</span><div class="desc">stdio servers, namespaced</div></div>
@@ -409,7 +409,7 @@ footer a:hover { text-decoration: underline; }
         <div class="flow-num">4</div>
         <div class="flow-content">
           <strong>ReAct Loop Begins</strong>
-          <div class="flow-desc">LLM responds with text and/or tool calls. Agent executes tools via the Registry, feeds results back as observations. Repeats up to 20 iterations.</div>
+          <div class="flow-desc">LLM responds with text and/or tool calls. Agent executes tools via the Registry, feeds results back as observations. Repeats up to 50 iterations (default).</div>
         </div>
       </div>
       <div class="flow-item">
@@ -435,12 +435,12 @@ footer a:hover { text-decoration: underline; }
     <p>The project follows Go conventions with <code>cmd/</code> for the entry point and <code>internal/</code> for all implementation packages.</p>
 
     <div class="file-tree">joshbot/
-├── <span class="dir">cmd/joshbot/</span>       <span class="highlight">← CLI entry point, service wiring (~8,040 LOC)</span>
+├── <span class="dir">cmd/joshbot/</span>       <span class="highlight">← CLI entry point, service wiring (~8,560 LOC)</span>
 │   ├── main.go             entry point, flags, gateway
 │   ├── editor.go           raw-mode line editor for the interactive CLI (Tab completion, history, multiline)
 │   ├── terminal.go         ANSI key parsing + raw-mode helpers for the editor
 │   ├── skills_cmd.go       joshbot skills subcommands (list/trust/untrust)
-│   ├── sessions_cmd.go     joshbot sessions subcommands (list/show/prune/new/export)
+│   ├── sessions_cmd.go     joshbot sessions subcommands (list/show/search/prune/new/export)
 │   └── main_test.go, editor_test.go, utils_test.go
 ├── <span class="dir">internal/</span>             <span class="highlight">← all implementation</span>
 │   ├── <span class="dir">agent/</span>              ReAct loop, context assembly, prompt caching
@@ -485,7 +485,7 @@ footer a:hover { text-decoration: underline; }
       </div>
       <div class="pattern-card">
         <h4>ReAct Loop</h4>
-        <p>LLM → tools → reflect → repeat (max 20 iterations). Each iteration appends tool results as observations for the next LLM call.</p>
+        <p>LLM → tools → reflect → repeat (max 50 iterations by default). Each iteration appends tool results as observations for the next LLM call.</p>
       </div>
       <div class="pattern-card">
         <h4>Plain-File Storage</h4>
@@ -527,7 +527,7 @@ footer a:hover { text-decoration: underline; }
     <h2>Key Components</h2>
 
     <h3>Agent (<code>internal/agent/</code>)</h3>
-    <p>The core ReAct loop. Each message triggers up to 20 think-act-observe iterations. System prompt is assembled from identity files + memory + skills summaries (with mtime-based caching). The agent serializes the tool schema from the Registry into the LLM's function calling format.</p>
+    <p>The core ReAct loop. Each message triggers up to 50 think-act-observe iterations by default. System prompt is assembled from identity files + memory + skills summaries (with mtime-based caching). The agent serializes the tool schema from the Registry into the LLM's function calling format.</p>
     <p>Slash commands dispatch on the command word and include <code>/new</code>, <code>/model [name]</code>, <code>/personality [name]</code>, <code>/compact</code>, <code>/status</code> and <code>/help</code>. <code>/model</code> and <code>/personality</code> are <strong>per-session</strong> — each <code>Session</code> carries <code>ModelOverride</code> and <code>Personality</code> persisted in its metadata sidecar, so a model or personality chosen mid-conversation survives a restart (resolution order: session override, then a global runtime override, then the config default). <code>/model ... --global</code> writes the config default for all sessions. <code>/new</code> clears both; <code>/compact</code> summarizes context on demand. These commands are forwarded from the Telegram menu too, with the same allowlist gate as a direct message.</p>
 
     <h3>Tools (<code>internal/tools/</code>)</h3>
@@ -550,6 +550,7 @@ footer a:hover { text-decoration: underline; }
     <h3>Channels (<code>internal/channels/</code>)</h3>
     <p><code>Channel</code> is the interface; Telegram (<code>telebot</code>, long-polling) and Discord (<code>discordgo</code>, an outbound gateway websocket) implement it. Neither needs an inbound port or a public webhook URL. Both split long replies on a code-fence-aware boundary (4096 chars for Telegram, 2000 for Discord), keep a typing indicator alive for the length of an agent turn, and enforce the allowlist <strong>deny-by-default</strong>: an empty or unset <code>allow_from</code> rejects every sender and the channel logs an actionable startup warning naming the config key. The interactive CLI is not a <code>Channel</code> — it is <code>runAgentLoop</code> in <code>cmd/joshbot/main.go</code>.</p>
     <p><strong>Enable one chat channel at a time.</strong> The bus exposes a single outbound channel that channel implementations read competitively, so Telegram and Discord running together steal each other's replies — about half of each conversation's answers are delivered to the other service, silently. Per-channel fan-out in the bus is the fix; until then <code>channels.telegram.enabled</code> and <code>channels.discord.enabled</code> should not both be true.</p>
+    <p><strong>Telegram UX.</strong> Replies render as Markdown by default (anything Telegram rejects degrades to plain text, never gets lost) and thread to the message that asked. While the agent works, the chat shows a live tool-progress status line ("⚙️ shell: go test ./...") that the streamed answer replaces in place. The last chat id per channel is persisted (<code>~/.joshbot/chat_ids.json</code>, <code>0600</code>, atomic writes), so a cron reminder fired after a restart still knows where to go. Media the agent cannot perceive — voice, audio, video — gets an honest "I can't listen/watch yet" reply with no LLM turn spent (a caption is forwarded, framed so the model knows what it cannot see); stickers are quietly ignored; an edited message is forwarded as a correction rather than brand-new context. Text documents (txt, md, csv, json, code) are downloaded after the allowlist check and their content inlined into the turn, capped at 64KB with a visible truncation marker — binary content behind a text name is refused by the bytes, not the label.</p>
 
     <h3>HTTP API (<code>internal/api/</code>)</h3>
     <p><code>joshbot serve</code> exposes <code>POST /v1/chat/completions</code> (with SSE streaming) and <code>GET /v1/models</code> in the OpenAI chat dialect, so any client that accepts a custom base URL can drive joshbot. <strong>The served model is the agent, not a provider</strong>: every request runs the full ReAct loop &mdash; tools, memory, skills, sessions &mdash; so <code>/v1/models</code> advertises exactly one id (<code>joshbot</code>) and the request's <code>model</code> field is accepted and ignored, which keeps a client hardcoded to <code>gpt-4</code> working unchanged. The optional <code>user</code> field selects the conversation (session key <code>api:&lt;user&gt;</code>) and is validated before it can build a path.</p>
@@ -602,13 +603,13 @@ footer a:hover { text-decoration: underline; }
     <p>The same owner-only treatment covers everything else joshbot writes under <code>~/.joshbot/</code>: session JSONL files, their <code>.meta.json</code> sidecars and the log file are all <code>0600</code>, inside <code>0700</code> directories re-applied on every start, because a transcript routinely contains credentials, personal data and raw tool output. Session writes go through an atomic write with a per-writer temp name, so the gateway and a concurrent <code>joshbot agent -m</code> sharing the sessions directory cannot publish a torn file. Within one process, whole turns are serialised per session key, so two HTTP API requests carrying the same <code>user</code> queue rather than both loading the same history and overwriting each other; across processes only the atomic write applies, so that pair can still interleave. A load that meets an unreadable line skips that line rather than failing the whole session — there is one session per <code>channel:senderID</code> and a fatal parse would lock that user out permanently — and preserves the original bytes at <code>&lt;session-id&gt;.jsonl.corrupt</code> for inspection.</p>
 
     <p><code>joshbot sessions export &lt;id&gt;</code> turns a session into a Markdown transcript plus a JSON manifest for attaching to a bug report. Redaction runs before the bytes are written rather than over the finished file, so an unredacted export never exists on disk; the output is deterministic, carrying no export-time clock, so two exports of an unchanged session are byte-identical; and it does not go through the loading path, whose quarantine side effect would repair the very damage the report is capturing. The manifest records message and per-role counts, per-tool call and result tallies, the source file's size and a SHA-256 of it, and the count of unreadable lines skipped.</p>
-    <p>Sessions are inspected and cleared with <code>joshbot sessions</code> — <code>list</code>, <code>show &lt;id&gt; [--last N]</code>, <code>prune &lt;id&gt;|--older-than &lt;d&gt;</code> and <code>new &lt;id&gt;</code>. It is not a resume feature: a session is loaded automatically on every inbound message and there is exactly one per user per channel, so there is nothing to select. <code>show</code> output passes through the same redaction as the log. Destructive subcommands prompt, take <code>--force</code> for unattended use, and exit non-zero rather than block when there is no terminal.</p>
+    <p>Sessions are inspected and cleared with <code>joshbot sessions</code> — <code>list</code>, <code>show &lt;id&gt; [--last N]</code>, <code>search &lt;query&gt; [--limit N]</code> (case-insensitive across every transcript, newest first, redacted output), <code>prune &lt;id&gt;|--older-than &lt;d&gt;</code> and <code>new &lt;id&gt;</code>. The agent has the same recall through the <code>session_search</code> tool, so "what did we decide about X last week" is answered from the transcripts on any channel. <code>joshbot agent --continue</code> (<code>-c</code>) resumes the most recently updated session in headless runs, with a one-line recap on stderr. It is not a resume feature: a session is loaded automatically on every inbound message and there is exactly one per user per channel, so there is nothing to select. <code>show</code> output passes through the same redaction as the log. Destructive subcommands prompt, take <code>--force</code> for unattended use, and exit non-zero rather than block when there is no terminal.</p>
     <p>Once a session crosses <code>agents.defaults.compaction_threshold</code> it is summarized into a single compaction record stored at index 0 of the session, so the summary is computed once rather than rebuilt on every later turn. The messages it replaces are appended to an append-only <code>&lt;session-id&gt;.history.jsonl</code> archive before they leave the live session — the agent never reads that archive back, and if the append fails the compaction is abandoned, since recomputing a summary is cheaper than destroying history. The archive is not rotated or pruned, so it grows for the life of the session.</p>
   </section>
 </div>
 
 <footer>
-  <p>Last updated 2026-08-13</p>
+  <p>Last updated 2026-08-14</p>
   <p>joshbot — <a href="index.html">Home</a> &middot; <a href="https://github.com/bigknoxy/joshbot">GitHub</a> &middot; MIT License</p>
 </footer>
 

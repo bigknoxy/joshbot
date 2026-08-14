@@ -655,8 +655,11 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 
 		// Check if we have a valid response
 		if len(resp.Choices) == 0 {
+			// Same contract as empty content below: a choiceless response is
+			// a failure, and returning friendly text with a nil error let it
+			// reach scripts as exit 0 and the HTTP API as a 200.
 			a.logger.Warn("Empty response from LLM")
-			return "I didn't get a response. Please try again.", nil
+			return "", fmt.Errorf("the model returned a response with no choices — this is a provider problem, not an answer")
 		}
 
 		choice := resp.Choices[0]
@@ -674,11 +677,17 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		if len(assistantMsg.ToolCalls) == 0 {
 			content := assistantMsg.Content
 			if content == "" {
-				a.logger.Warn("Empty content from LLM - triggering fallback message",
+				// An empty reply with no tool calls is a provider problem,
+				// and it used to be papered over with "I've processed your
+				// request." — a confident non-answer that reached scripts as
+				// exit 0 and the HTTP API as a 200. Report it as the failure
+				// it is; Process wraps it into the in-band ReplyPrefix
+				// contract every caller already translates.
+				a.logger.Warn("Empty content from LLM",
 					"model", a.getModelName(),
 					"iteration", iteration+1,
 				)
-				content = "I've processed your request."
+				return "", fmt.Errorf("the model returned an empty reply (no text, no tool calls) — this is a provider problem, not an answer")
 			}
 
 			// Sanitize: strip internal context tags from response

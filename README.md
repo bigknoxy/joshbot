@@ -135,6 +135,9 @@ joshbot agent -m "run the tests" --output-format stream-json
 # Resume a prior session by the id echoed in a previous json result
 joshbot agent -m "and now lint it" --output-format json --resume <session-id>
 
+# Or just continue the most recently updated session, no id needed
+joshbot agent -m "and now lint it" --continue
+
 # Attach an image (repeatable; requires a vision-capable model)
 joshbot agent -m "what is in this screenshot?" --image ~/Desktop/shot.png
 ```

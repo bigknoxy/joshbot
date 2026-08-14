@@ -371,6 +371,7 @@ commands give you is a way to see what exists, read one back, and clear one.
 joshbot sessions list                    # ID, message count, size, age, notes
 joshbot sessions show <id>               # print the conversation (redacted)
 joshbot sessions show <id> --last 20     # just the tail
+joshbot sessions search "magic word"     # grep every transcript, newest first
 joshbot sessions prune <id>              # delete one conversation
 joshbot sessions prune --older-than 30d  # delete everything untouched for 30 days
 joshbot sessions new <id>                # archive it and start empty

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Conversation search.** `joshbot sessions search <query> [--limit N]`
+  greps every session transcript (case-insensitive, newest first, redacted
+  output, sidecars excluded), and the new `session_search` tool gives the
+  agent the same recall — "what did we decide about X last week" is now
+  answered from the transcripts, on any channel, instead of guessed.
+
 - **`joshbot agent --continue` (`-c`) resumes the most recently updated
   session** — no session id needed. A one-line recap goes to stderr so
   scripted stdout stays data-only; `--continue` with `--resume` is a

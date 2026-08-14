@@ -25,13 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-streamed answers carry `reply_to`, so an answer landing after other
   traffic stays anchored to its question. Only the first message of a turn
   threads; a 4096 rollover's continuation does not re-anchor.
-
-### Fixed
-
-- **A dropped Telegram message no longer leaves "typing…" running.** The
-  bus-full apology path now stops the keep-alive, which otherwise showed
-  typing for up to ten minutes over a message that was never processed.
-
 - **`joshbot agent --continue` (`-c`) resumes the most recently updated
   session** — no session id needed. A one-line recap goes to stderr so
   scripted stdout stays data-only; `--continue` with `--resume` is a

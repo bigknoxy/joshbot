@@ -577,23 +577,29 @@ func TestStreaming_StreamFailsToOpen(t *testing.T) {
 	}
 }
 
-// A stream that dies before producing any text must still say so.
-//
-// Suppressing the marker when nothing had been streamed yet left an empty
-// response, which reactLoop replaced with "I've processed your request." — a
-// confident non-answer standing in for a failure, and the failure mode is
-// most likely precisely when no text has arrived.
-func TestStreaming_ErrorBeforeAnyTextIsStillReported(t *testing.T) {
+// A stream that dies before producing any text is retried invisibly through
+// the non-streaming path: nothing has reached the sink, so the retry cannot
+// duplicate anything, and Chat brings the whole retry/fallback chain with it.
+// Ending the turn with a "[stream error: ...]" marker here reported a failure
+// the chain could still have answered.
+func TestStreaming_EmptyStreamDeathRetriesViaChat(t *testing.T) {
 	cfg := newStreamingConfig()
 
 	provider := &mockProvider{
 		streamFn: func(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
 			ch := make(chan providers.StreamChunk, 1)
 			// No content and no finish reason: the accumulator rejects this
-			// as a truncated stream.
+			// as a truncated stream, with nothing delivered.
 			ch <- providers.StreamChunk{Choices: []providers.StreamChoice{{}}}
 			close(ch)
 			return ch, nil
+		},
+		chatFn: func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+			return &providers.ChatResponse{
+				Choices: []providers.Choice{{
+					Message: providers.Message{Role: providers.RoleAssistant, Content: "Recovered answer."},
+				}},
+			}, nil
 		},
 	}
 
@@ -608,8 +614,43 @@ func TestStreaming_ErrorBeforeAnyTextIsStillReported(t *testing.T) {
 		t.Fatalf("Process: %v", err)
 	}
 
-	if !strings.Contains(got.String(), "stream error") {
-		t.Errorf("nothing was sent to the sink about the failure, got %q", got.String())
+	if response != "Recovered answer." {
+		t.Errorf("Process() = %q, want the Chat retry's answer", response)
+	}
+	if strings.Contains(got.String(), "stream error") {
+		t.Errorf("an invisible retry must not surface a stream-error marker, sink saw %q", got.String())
+	}
+}
+
+// When the retry also fails, the turn reports a real error — never the
+// "I've processed your request." confident non-answer that used to stand in
+// for an empty response.
+func TestStreaming_EmptyStreamDeathWithFailedRetryReportsError(t *testing.T) {
+	cfg := newStreamingConfig()
+
+	provider := &mockProvider{
+		streamFn: func(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
+			ch := make(chan providers.StreamChunk, 1)
+			ch <- providers.StreamChunk{Choices: []providers.StreamChoice{{}}}
+			close(ch)
+			return ch, nil
+		},
+		chatFn: func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+			return nil, fmt.Errorf("API error (503): still down")
+		},
+	}
+
+	agent := NewAgent(cfg, provider, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+	ctx := WithStreamSink(context.Background(), func(StreamEvent) {})
+
+	response, err := agent.Process(ctx, bus.InboundMessage{
+		SenderID: "user123", Content: "Hello", Channel: "cli", Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if ReplyError(response) == nil {
+		t.Errorf("a doubly-failed turn must report in-band error text, got %q", response)
 	}
 	if strings.Contains(response, "I've processed your request") {
 		t.Errorf("a failed stream was reported as a completed answer: %q", response)

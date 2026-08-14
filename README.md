@@ -894,11 +894,14 @@ Two limits are worth knowing before turning it on:
   message, splitting on code-fence boundaries. Message formatting (Markdown) is
   applied only on the final edit — interim edits are sent as plain text, so a
   half-written code fence can never fail with `can't parse entities`.
-- Streaming gives up the non-streaming path's **transparent provider fallback**.
-  Once the first token has been printed it cannot be unprinted, so a failure
-  part-way through appends a visible `[stream error: ...]` marker to the reply
-  rather than silently retrying against the next provider in the chain. If you
-  value the retry more than the latency, leave it off.
+- Streaming narrows the non-streaming path's **transparent provider fallback**
+  to one case. Once the first token has been printed it cannot be unprinted, so
+  a failure *after text has appeared* appends a visible `[stream error: ...]`
+  marker to the reply rather than silently retrying against the next provider.
+  A stream that dies **before any text arrived** is retried invisibly through
+  the non-streaming path — retries, `Retry-After` and the fallback chain all
+  apply — and the reply simply arrives unstreamed. If you value the mid-text
+  retry more than the latency, leave streaming off.
 
 ### Configuration Precedence
 

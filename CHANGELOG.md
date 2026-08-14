@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A stream that dies before delivering any text is retried invisibly.**
+  It used to end the turn with `[stream error: ...]` standing in for an
+  answer the provider chain could still have produced — and the most common
+  stream failure is precisely at the start, before any token arrives. The
+  retry goes through the non-streaming path (nothing has reached the screen,
+  so nothing can duplicate), which brings the same-provider retries,
+  `Retry-After` handling and the fallback chain with it; the reply arrives
+  unstreamed. A stream that dies *after* text has appeared keeps the visible
+  marker: shown text cannot be retried.
+
+### Added
+
 - **Transient provider failures are now retried on the same provider before the
   fallback chain moves on.** A single 429/5xx/network blip used to switch the
   conversation to a different provider — and therefore a different model —

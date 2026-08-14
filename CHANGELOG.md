@@ -95,13 +95,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   429 counts as authenticated (a rate limit is issued to a real key), and
   anything else reports "could not verify" rather than claiming a check that
   never ran.
-- The background services started at startup — cron, the heartbeat and the
-  memory consolidator — are now stopped on shutdown. Nothing held a handle to
-  them, and the consolidator runs its first pass immediately from a goroutine,
-  so they kept writing into the workspace after the process was on its way out.
-  The same leak made `cmd/joshbot`'s tests flaky: a consolidator writing into
-  `workspace/memory` raced `t.TempDir` cleanup and failed the run with
-  "directory not empty".
 
 ## [1.52.1] - 2026-08-14
 
@@ -124,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   found" with the interrupted task gone and no error anywhere. The failure is
   now logged with the session id, and the suggestion is withheld both when the
   save fails and when there is no session manager at all. (#244)
+- The background services started at startup — cron, the heartbeat and the
+  memory consolidator — are now stopped on shutdown. Nothing held a handle to
+  them, and the consolidator runs its first pass immediately from a goroutine,
+  so they kept writing into the workspace after the process was on its way out.
+  The same leak made `cmd/joshbot`'s tests flaky: a consolidator writing into
+  `workspace/memory` raced `t.TempDir` cleanup and failed the run with
+  "directory not empty".
 
 ## [1.52.0] - 2026-08-13
 

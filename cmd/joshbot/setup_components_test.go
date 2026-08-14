@@ -29,6 +29,12 @@ func setupConfig(t *testing.T) *config.Config {
 	cfg.Agents.Defaults.Model = "test-model"
 	// Keep MCP out of it: registerMCPServers spawns processes.
 	cfg.MCP.Servers = nil
+	// setupComponents starts background services that write into the
+	// workspace — the consolidator runs its first pass immediately — and the
+	// workspace lives under the temp home. Registering the stop here, after
+	// withTempHome, puts it ahead of the TempDir removal in cleanup order, so
+	// no goroutine is still writing while the directory is being deleted.
+	t.Cleanup(stopBackgroundServices)
 	return cfg
 }
 

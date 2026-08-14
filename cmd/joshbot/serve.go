@@ -70,6 +70,7 @@ func runServe(c *cli.Context) error {
 
 	_, _, _, agentInstance, _, _, err := setupComponents(cfg)
 	defer closeMCPServers()
+	defer stopBackgroundServices()
 	if err != nil {
 		return err
 	}

@@ -140,7 +140,7 @@ func (mp *MultiProvider) Config() Config {
 // opaque 400 that reads as a joshbot bug, and falling back to a text-only model
 // would silently answer as though no image had been sent. If that empties the
 // chain, the error names every model tried and how to change it.
-func (mp *MultiProvider) screenForImages(req ChatRequest, providers []*ProviderEntry, modelName string) ([]*ProviderEntry, error) {
+func (mp *MultiProvider) screenForImages(req ChatRequest, providers []*ProviderEntry, modelName, addressed string) ([]*ProviderEntry, error) {
 	if !RequestHasImages(req) {
 		return providers, nil
 	}
@@ -155,7 +155,7 @@ func (mp *MultiProvider) screenForImages(req ChatRequest, providers []*ProviderE
 	capable := make([]*ProviderEntry, 0, len(providers))
 	tried := make([]string, 0, len(providers))
 	for _, entry := range providers {
-		model := mp.resolveModel(entry, modelName)
+		model := mp.resolveModel(entry, modelName, entry.Name == addressed)
 		if SupportsVision(model) {
 			capable = append(capable, entry)
 			continue
@@ -177,13 +177,14 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		return nil, fmt.Errorf("no providers configured")
 	}
 
-	providers, err := mp.screenForImages(req, providers, modelName)
+	providers, err := mp.screenForImages(req, providers, modelName, providerName)
 	if err != nil {
 		return nil, err
 	}
 
 	var lastErr error
 	attempted := make([]string, 0, len(providers))
+	failures := make([]string, 0, len(providers))
 
 	for _, entry := range providers {
 		// Check context before each attempt
@@ -194,7 +195,7 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		}
 
 		tryReq := req
-		tryReq.Model = mp.resolveModel(entry, modelName)
+		tryReq.Model = mp.resolveModel(entry, modelName, entry.Name == providerName)
 
 		mp.logger.Debug("Trying provider",
 			"provider", entry.Name,
@@ -209,6 +210,7 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 
 		attempted = append(attempted, entry.Name)
 		lastErr = err
+		failures = append(failures, fmt.Sprintf("%s: %v", entry.Name, err))
 
 		mp.logger.Warn("Provider failed",
 			"provider", entry.Name,
@@ -216,13 +218,20 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 			"error", err,
 		)
 
-		// Check if we should fallback
+		// A non-fallback error from the provider the request was addressed to
+		// is the answer: nothing later in the chain can improve on it. From a
+		// fallback it is not — returning it discards the primary's failure and
+		// reports a provider the user never asked for, so keep going and let
+		// the aggregate error below name the whole chain.
 		if !IsFallbackError(err, entry.Name) {
-			mp.logger.Debug("Non-fallback error, stopping",
+			mp.logger.Debug("Non-fallback error",
 				"provider", entry.Name,
 				"error_type", fmt.Sprintf("%T", err),
 			)
-			return nil, err
+			if entry.Name == providerName {
+				return nil, err
+			}
+			continue
 		}
 
 		mp.logger.Info("Falling back to next provider",
@@ -231,8 +240,8 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		)
 	}
 
-	return nil, fmt.Errorf("all providers failed (tried: %s): %w",
-		strings.Join(attempted, " → "), lastErr)
+	return nil, fmt.Errorf("all providers failed (tried: %s; %s): %w",
+		strings.Join(attempted, " → "), strings.Join(failures, "; "), lastErr)
 }
 
 // ChatStream sends a streaming chat request with fallback.
@@ -244,12 +253,13 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		return nil, fmt.Errorf("no providers configured")
 	}
 
-	providers, err := mp.screenForImages(req, providers, modelName)
+	providers, err := mp.screenForImages(req, providers, modelName, providerName)
 	if err != nil {
 		return nil, err
 	}
 
 	var lastErr error
+	failures := make([]string, 0, len(providers))
 
 	for _, entry := range providers {
 		select {
@@ -259,7 +269,7 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		}
 
 		tryReq := req
-		tryReq.Model = mp.resolveModel(entry, modelName)
+		tryReq.Model = mp.resolveModel(entry, modelName, entry.Name == providerName)
 
 		ch, err := entry.Provider.ChatStream(ctx, tryReq)
 		if err == nil {
@@ -267,9 +277,15 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		}
 
 		lastErr = err
+		failures = append(failures, fmt.Sprintf("%s: %v", entry.Name, err))
 
+		// See the note in Chat: a fallback's non-fallback error must not stand
+		// in for the primary's.
 		if !IsFallbackError(err, entry.Name) {
-			return nil, err
+			if entry.Name == providerName {
+				return nil, err
+			}
+			continue
 		}
 
 		mp.logger.Info("Stream fallback",
@@ -278,7 +294,8 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		)
 	}
 
-	return nil, fmt.Errorf("all providers failed for stream: %w", lastErr)
+	return nil, fmt.Errorf("all providers failed for stream (%s): %w",
+		strings.Join(failures, "; "), lastErr)
 }
 
 // Transcribe delegates to the primary provider.
@@ -331,14 +348,25 @@ func (mp *MultiProvider) parseModel(modelSpec string) (providerName, modelName s
 }
 
 // resolveModel determines the model to use for a provider.
-func (mp *MultiProvider) resolveModel(entry *ProviderEntry, requestedModel string) string {
-	if requestedModel != "" {
+//
+// A model ID belongs to the provider that publishes it, so the requested model
+// is honoured only by the provider the request was addressed to. A fallback is
+// asked for its own model instead: sending openrouter's "z-ai/glm-5.2" on to
+// poolside earns a 404 ("please check the model you provided") that reads as a
+// joshbot misconfiguration and hides the rate limit that caused the fallback.
+// The requested model is still the last resort for a provider that has no model
+// of its own configured — better a wrong guess than an empty model field.
+func (mp *MultiProvider) resolveModel(entry *ProviderEntry, requestedModel string, addressed bool) string {
+	if requestedModel != "" && addressed {
 		return requestedModel
 	}
 	if entry.Model != "" {
 		return entry.Model
 	}
-	return entry.Provider.Config().Model
+	if m := entry.Provider.Config().Model; m != "" {
+		return m
+	}
+	return requestedModel
 }
 
 // getFallbackChain returns providers in fallback order, excluding disabled providers.

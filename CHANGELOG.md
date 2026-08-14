@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Provider fallback no longer hands the next provider the primary's model ID.**
+  A model ID belongs to the provider that publishes it, but the fallback chain
+  forwarded the requested model verbatim to every provider it tried. A rate
+  limit on openrouter for `z-ai/glm-5.2` therefore fell through to poolside as
+  `z-ai/glm-5.2` and came back `404 {"error":"please check the model you
+  provided"}` — a message that reads as a joshbot misconfiguration, names a
+  provider the user never selected, and completely hides the rate limit that
+  actually happened. Fallbacks are now asked for their own configured model, and
+  a fallback's non-fallback error no longer stands in for the primary's: the
+  aggregate error names every provider tried and what each returned.
+
 - Hitting the max iteration limit no longer tells you to type `/resume` when the
   checkpoint was not persisted. The save error was discarded, so a failed write
   still produced the suggestion and `/resume` then answered "No checkpoint

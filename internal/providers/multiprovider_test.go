@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -302,20 +303,20 @@ func TestMultiProvider_ResolveModel(t *testing.T) {
 	}
 
 	// Test with requested model
-	result := mp.resolveModel(entry, "requested-model")
+	result := mp.resolveModel(entry, "requested-model", true)
 	if result != "requested-model" {
 		t.Errorf("resolveModel() = %q, want %q", result, "requested-model")
 	}
 
 	// Test with entry model
-	result = mp.resolveModel(entry, "")
+	result = mp.resolveModel(entry, "", true)
 	if result != "entry-model" {
 		t.Errorf("resolveModel() = %q, want %q", result, "entry-model")
 	}
 
 	// Test with provider config model (empty entry model)
 	entry.Model = ""
-	result = mp.resolveModel(entry, "")
+	result = mp.resolveModel(entry, "", true)
 	if result != "provider-model" {
 		t.Errorf("resolveModel() = %q, want %q", result, "provider-model")
 	}
@@ -621,5 +622,123 @@ func TestMultiProvider_DefaultEnabled(t *testing.T) {
 	chain := mp.getFallbackChain("provider1")
 	if len(chain) != 1 {
 		t.Errorf("getFallbackChain() len = %d, want 1", len(chain))
+	}
+}
+
+// modelAwareProvider answers only for the models it actually hosts, the way a
+// real API does: anything else is a 404. Used to reproduce the cross-provider
+// model leak in the fallback chain.
+type modelAwareProvider struct {
+	name      string
+	config    Config
+	hosts     map[string]bool
+	openErr   error    // returned before any model check (e.g. a 429)
+	seenModel []string // every model this provider was asked for
+}
+
+func (m *modelAwareProvider) record(model string) { m.seenModel = append(m.seenModel, model) }
+
+func (m *modelAwareProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	m.record(req.Model)
+	if m.openErr != nil {
+		return nil, m.openErr
+	}
+	if !m.hosts[req.Model] {
+		return nil, fmt.Errorf(`API error (404): {"error":"please check the model you provided"}`)
+	}
+	return &ChatResponse{Model: req.Model}, nil
+}
+
+func (m *modelAwareProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
+	m.record(req.Model)
+	if m.openErr != nil {
+		return nil, m.openErr
+	}
+	if !m.hosts[req.Model] {
+		return nil, fmt.Errorf(`API error (404): {"error":"please check the model you provided"}`)
+	}
+	ch := make(chan StreamChunk, 1)
+	close(ch)
+	return ch, nil
+}
+
+func (m *modelAwareProvider) Transcribe(context.Context, []byte, string) (string, error) {
+	return "", nil
+}
+func (m *modelAwareProvider) Name() string   { return m.name }
+func (m *modelAwareProvider) Config() Config { return m.config }
+
+// A model ID belongs to the provider that publishes it. When the primary is
+// rate-limited and the chain falls back, the fallback must be asked for its own
+// model — asking poolside for "z-ai/glm-5.2" earns a 404 whose text
+// ("please check the model you provided") reads as a joshbot misconfiguration
+// and completely hides the rate limit that actually happened.
+func TestMultiProvider_FallbackUsesItsOwnModel(t *testing.T) {
+	openrouter := &modelAwareProvider{
+		name:   "openrouter",
+		hosts:  map[string]bool{"z-ai/glm-5.2": true},
+		config: Config{Model: "z-ai/glm-5.2"},
+		// What the primary actually did: rate limit, a textbook fallback trigger.
+		openErr: fmt.Errorf("API error (429): rate limit exceeded"),
+	}
+	poolside := &modelAwareProvider{
+		name:   "poolside",
+		hosts:  map[string]bool{"poolside/laguna-s-2.1": true},
+		config: Config{Model: "poolside/laguna-s-2.1"},
+	}
+
+	for _, tc := range []struct {
+		name   string
+		stream bool
+	}{
+		{"chat", false}, {"stream", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			openrouter.seenModel, poolside.seenModel = nil, nil
+			mp := NewMultiProvider(MultiProviderConfig{DefaultProvider: "openrouter"})
+			mp.Register("openrouter", openrouter, "z-ai/glm-5.2", 0, true)
+			mp.Register("poolside", poolside, "poolside/laguna-s-2.1", 1, true)
+
+			req := ChatRequest{Model: "z-ai/glm-5.2"}
+			var err error
+			if tc.stream {
+				_, err = mp.ChatStream(context.Background(), req)
+			} else {
+				_, err = mp.Chat(context.Background(), req)
+			}
+			if err != nil {
+				t.Fatalf("fallback should have succeeded on poolside, got: %v", err)
+			}
+			if len(poolside.seenModel) != 1 || poolside.seenModel[0] != "poolside/laguna-s-2.1" {
+				t.Errorf("poolside was asked for %v, want [poolside/laguna-s-2.1]", poolside.seenModel)
+			}
+		})
+	}
+}
+
+// When every provider fails, the reported error must name the whole chain —
+// the last provider's 404 alone is the least informative thing that happened.
+func TestMultiProvider_AllFailedErrorNamesEveryProvider(t *testing.T) {
+	openrouter := &modelAwareProvider{
+		name: "openrouter", hosts: map[string]bool{"z-ai/glm-5.2": true},
+		openErr: fmt.Errorf("API error (429): rate limit exceeded"),
+	}
+	poolside := &modelAwareProvider{
+		name: "poolside", hosts: map[string]bool{}, // hosts nothing: 404s
+		config: Config{Model: "poolside/laguna-s-2.1"},
+	}
+
+	mp := NewMultiProvider(MultiProviderConfig{DefaultProvider: "openrouter"})
+	mp.Register("openrouter", openrouter, "z-ai/glm-5.2", 0, true)
+	mp.Register("poolside", poolside, "poolside/laguna-s-2.1", 1, true)
+
+	_, err := mp.ChatStream(context.Background(), ChatRequest{Model: "z-ai/glm-5.2"})
+	if err == nil {
+		t.Fatal("expected an error when every provider fails")
+	}
+	for _, want := range []string{"openrouter", "429", "poolside"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }

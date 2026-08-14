@@ -214,8 +214,11 @@ func TestEditsAreThrottled(t *testing.T) {
 	}
 }
 
-// Telegram answers an unchanged edit with an error, so a no-op edit spends rate
-// limit to produce a log line and nothing else.
+// Telegram answers an unchanged edit with an error, so a no-op edit spends
+// rate limit for nothing — with one deliberate exception: the final flush
+// re-edits an unchanged buffer exactly once to apply the parse mode, because
+// interim edits render plain and Markdown is the default. Exactly once, and
+// only for formatting.
 func TestNoEditWhenTheBufferIsUnchanged(t *testing.T) {
 	tg, ed := streamTestChannel(t, time.Nanosecond)
 	s := newTestStreamer(t, tg, 9, nil)
@@ -225,8 +228,22 @@ func TestNoEditWhenTheBufferIsUnchanged(t *testing.T) {
 	if !s.Finish(nil) {
 		t.Fatal("Finish must report delivery")
 	}
+	calls := ed.snapshot()
+	extra := calls[before:]
+	if len(extra) != 1 || extra[0].mode != telebot.ModeMarkdown || extra[0].text != "hello" {
+		t.Fatalf("the unchanged final flush must be exactly one formatting edit, got %+v", extra)
+	}
+
+	// With formatting already applied (plain mode), no write at all.
+	s2 := newTestStreamer(t, tg, 10, nil)
+	s2.SetParseMode(telebot.ModeDefault)
+	s2.Delta("hello")
+	before = len(ed.snapshot())
+	if !s2.Finish(nil) {
+		t.Fatal("Finish must report delivery")
+	}
 	if got := len(ed.snapshot()); got != before {
-		t.Fatalf("an unchanged final flush issued %d extra writes", got-before)
+		t.Fatalf("a plain-mode unchanged final flush issued %d extra writes", got-before)
 	}
 }
 
@@ -289,15 +306,25 @@ func TestRolloverPastTheLengthLimitKeepsCodeFencesIntact(t *testing.T) {
 	// The per-message payload must survive the trip: rollover that mangles the
 	// remainder still produces well-formed-looking messages, so count the
 	// content rather than trusting the shape.
-	xs, msgs := 0, 0
+	// An edit replaces its message's prior content (and the final flush may
+	// re-edit the last message unchanged to apply Markdown), so the payload
+	// is the *last* text of each message, not the sum of every write.
+	var finals []string
+	msgs := 0
 	for _, c := range calls {
 		if strings.Contains(c.text, "``````") {
 			t.Fatalf("rollover duplicated a fence: %q", c.text[:min(80, len(c.text))])
 		}
 		if !c.edit {
 			msgs++
+			finals = append(finals, c.text)
+		} else if len(finals) > 0 {
+			finals[len(finals)-1] = c.text
 		}
-		xs += strings.Count(c.text, "x")
+	}
+	xs := 0
+	for _, text := range finals {
+		xs += strings.Count(text, "x")
 	}
 	if msgs > 5 {
 		t.Fatalf("3x the limit fragmented into %d messages; want at most 5", msgs)

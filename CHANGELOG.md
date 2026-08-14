@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reminders survive gateway restarts all the way to delivery.** Cron
+  jobs already persisted their due time, but the chat id their reply needed
+  lived only in memory — after a reboot, a reminder fired on schedule and
+  then failed "no valid recipient", logged and gone, until the user
+  happened to message first. The last chat id per channel is now persisted
+  (`~/.joshbot/chat_ids.json`, 0600, atomic writes), and a proactive reply
+  whose inbound carries no chat id (cron, heartbeat) resolves to the
+  channel's last known chat.
 - **Conversation search.** `joshbot sessions search <query> [--limit N]`
   greps every session transcript (case-insensitive, newest first, redacted
   output, sidecars excluded), and the new `session_search` tool gives the

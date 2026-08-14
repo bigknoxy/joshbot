@@ -3,12 +3,16 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/log"
 )
 
 // ErrNoChatID is returned when no chat ID is stored for a channel.
@@ -24,6 +28,9 @@ type BusMessageSender struct {
 	chatIDs  map[string]string
 	bus      *bus.MessageBus
 	senderID string
+	// persistPath, when set, makes the chat-id map survive restarts — see
+	// EnablePersistence.
+	persistPath string
 }
 
 // NewBusMessageSender creates a new BusMessageSender.
@@ -34,11 +41,18 @@ func NewBusMessageSender(messageBus *bus.MessageBus) *BusMessageSender {
 	}
 }
 
-// SetChatID stores a chat ID for a channel.
+// SetChatID stores a chat ID for a channel, writing through to the persisted
+// map when persistence is enabled and the value changed.
 func (s *BusMessageSender) SetChatID(channel, chatID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.chatIDs[channel] == chatID {
+		return
+	}
 	s.chatIDs[channel] = chatID
+	if err := s.persistLocked(); err != nil {
+		log.Warn("failed to persist chat ids", "error", err)
+	}
 }
 
 // GetChatID retrieves a stored chat ID for a channel.
@@ -96,4 +110,71 @@ func (s *BusMessageSender) SendMessage(ctx context.Context, channel, content str
 		}
 		return nil
 	}
+}
+
+// EnablePersistence makes the chat-id map survive restarts: existing entries
+// are loaded from path now, and every SetChatID that changes a value is
+// written through atomically (0600 — chat ids identify the operator's chats).
+//
+// This exists for cron and the heartbeat: their inbound messages carry no
+// chat id, so a proactive reply resolves the recipient from this map — which
+// used to be empty after every gateway restart until the user happened to
+// speak first, silently swallowing any reminder that fired before then.
+func (s *BusMessageSender) EnablePersistence(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persistPath = path
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read chat ids: %w", err)
+	}
+	stored := map[string]string{}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		// A damaged file must not take the gateway down; it just means no
+		// recall until the user speaks. Start fresh and overwrite on the
+		// next SetChatID.
+		return nil
+	}
+	for channel, id := range stored {
+		if _, live := s.chatIDs[channel]; !live {
+			s.chatIDs[channel] = id
+		}
+	}
+	return nil
+}
+
+// persistLocked writes the map through to disk. Callers hold s.mu. Failures
+// are returned for logging but never block the send path.
+func (s *BusMessageSender) persistLocked() error {
+	if s.persistPath == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(s.chatIDs, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.persistPath), ".chat_ids-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return os.Rename(name, s.persistPath)
 }

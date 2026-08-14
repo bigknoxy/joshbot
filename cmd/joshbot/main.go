@@ -943,6 +943,12 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 
 	// Create BusMessageSender for tools that need to send messages
 	messageSender := tools.NewBusMessageSender(msgBus)
+	// Chat ids survive restarts so a cron reminder or heartbeat alert that
+	// fires before the user's first message still knows where to go —
+	// without this, every reminder across a restart was silently dropped.
+	if err := messageSender.EnablePersistence(filepath.Join(cfg.HomeDir(), "chat_ids.json")); err != nil {
+		log.Warn("Chat-id persistence unavailable", "error", err)
+	}
 
 	// Get logger
 	logger := log.Get()
@@ -2830,6 +2836,9 @@ type gatewayDeps struct {
 	publish   func(bus.OutboundMessage) bool
 	process   func(context.Context, bus.InboundMessage) (string, error)
 	setChatID func(channel, chatID string)
+	// getChatID resolves the last known chat id for a channel, for inbound
+	// messages that carry none (cron, heartbeat).
+	getChatID func(channel string) (string, bool)
 	// newStreamer returns nil when this turn must not be streamed.
 	newStreamer func(msg bus.InboundMessage) gatewayStreamer
 }
@@ -2873,6 +2882,22 @@ func inboundMessageID(msg bus.InboundMessage) int {
 // runGateway because runGateway cannot be run in a test — it dials providers,
 // opens a Telegram long poll and blocks on a signal — while every rule that
 // decides what the user actually sees lives here.
+// resolveChannelID returns the chat to answer msg in: the id it carries, or
+// the channel's last known chat id. Cron and heartbeat inbounds carry none,
+// and before the fallback their replies failed with "no valid recipient" —
+// logged, never surfaced, and the reminder was simply gone.
+func resolveChannelID(d gatewayDeps, msg bus.InboundMessage) string {
+	if id := getChannelID(msg); id != "" {
+		return id
+	}
+	if d.getChatID != nil {
+		if id, ok := d.getChatID(msg.Channel); ok {
+			return id
+		}
+	}
+	return ""
+}
+
 func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 	return func(ctx context.Context, msg bus.InboundMessage) {
 		log.Debug("bus handler invoked", "channel", msg.Channel, "sender", msg.SenderID)
@@ -2885,15 +2910,20 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 				outbound := bus.OutboundMessage{
 					Content:   "I encountered an internal error while processing your request. Please try again.",
 					Channel:   msg.Channel,
-					ChannelID: getChannelID(msg),
+					ChannelID: resolveChannelID(d, msg),
 					Timestamp: time.Now(),
 				}
 				d.publish(outbound)
 			}
 		}()
 
-		// Store the chat ID for this channel to enable proactive messaging
-		d.setChatID(msg.Channel, getChannelID(msg))
+		// Store the chat ID for this channel to enable proactive messaging.
+		// Only when the message carries one: a cron or heartbeat inbound has
+		// none, and overwriting the stored id with "" would erase exactly the
+		// recall their replies depend on.
+		if id := getChannelID(msg); id != "" {
+			d.setChatID(msg.Channel, id)
+		}
 
 		log.Debug("Processing message",
 			"channel", msg.Channel,
@@ -2935,7 +2965,7 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			outbound := bus.OutboundMessage{
 				Content:   fmt.Sprintf("Error: %v", err),
 				Channel:   msg.Channel,
-				ChannelID: getChannelID(msg),
+				ChannelID: resolveChannelID(d, msg),
 				Timestamp: time.Now(),
 				Metadata:  replyMetadata(msg, false),
 			}
@@ -2975,8 +3005,10 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 		// default — the channel's parse-entity fallback degrades a reply
 		// Telegram rejects to plain text, never loses it — and threaded to
 		// the message that asked, so an answer landing after other traffic
-		// stays anchored to its question.
-		channelID := getChannelID(msg)
+		// stays anchored to its question. The chat id falls back to the
+		// channel's last known one for inbounds that carry none (cron,
+		// heartbeat).
+		channelID := resolveChannelID(d, msg)
 		log.Info("Publishing outbound message", "channel", msg.Channel, "channelID", channelID, "response_len", len(response))
 		outbound := bus.OutboundMessage{
 			Content:   response,
@@ -3054,6 +3086,12 @@ func runGateway(c *cli.Context) error {
 			if sender != nil {
 				sender.SetChatID(channel, chatID)
 			}
+		},
+		getChatID: func(channel string) (string, bool) {
+			if sender == nil {
+				return "", false
+			}
+			return sender.GetChatID(channel)
 		},
 		newStreamer: func(msg bus.InboundMessage) gatewayStreamer {
 			if !shouldStream(streaming, tgChannel != nil, msg) {

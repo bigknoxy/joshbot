@@ -89,7 +89,7 @@ path** from install to working multi-provider fallback.
 ### Phase 3 — session & loop polish
 
 - [x] `joshbot agent --continue` + short recap on resume
-- [ ] Session search over the JSONL store
+- [x] Session search over the JSONL store
 - [x] Empty LLM content surfaces as a provider error, not "I've processed
       your request."
 - [ ] Esc interrupts a running CLI turn, marked interrupted in the session

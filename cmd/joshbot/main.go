@@ -1050,6 +1050,12 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	asyncCallbackCh := make(chan tools.AsyncResult, 100)
 	toolsRegistry.SetAsyncCallback(asyncCallbackCh)
 	toolsRegistry.Register(tools.NewMemorySearchTool(memoryManager))
+	// Conversation recall across every channel — "what did we decide about X"
+	// answered from transcripts. Registered only with a live session manager,
+	// like the cron tool.
+	if sessionMgr != nil {
+		toolsRegistry.Register(tools.NewSessionSearchTool(sessionMgr))
+	}
 
 	// Create subagent runner for parallel and chain execution tools
 	agentModel := cfg.Agents.Defaults.Model

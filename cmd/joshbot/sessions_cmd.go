@@ -62,6 +62,18 @@ func sessionsCommand() *cli.Command {
 				Action: runSessionsShow,
 			},
 			{
+				Name:      "search",
+				Usage:     "Search every session transcript for a phrase (redacted output)",
+				ArgsUsage: "<query>",
+				Flags: []cli.Flag{
+					&cli.IntFlag{
+						Name:  "limit",
+						Usage: "Max matches to show (default 10)",
+					},
+				},
+				Action: runSessionsSearch,
+			},
+			{
 				Name:      "prune",
 				Usage:     "Delete a session, or every session older than a duration",
 				ArgsUsage: "[session id]",
@@ -476,4 +488,57 @@ func parseSessionArgs(args []string, allowLast, allowOlderThan, allowOut bool) (
 		}
 	}
 	return out, nil
+}
+
+// runSessionsSearch greps every transcript for a phrase. The query is every
+// positional argument joined, so quoting is optional; a trailing --limit is
+// parsed by hand because urfave/cli stops flag parsing at the first
+// positional (the `prune <id> --force` trap, same treatment).
+func runSessionsSearch(c *cli.Context) error {
+	limit := c.Int("limit")
+	var words []string
+	args := c.Args().Slice()
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--limit" && i+1 < len(args):
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				limit = n
+			}
+			i++
+		case strings.HasPrefix(arg, "--limit="):
+			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--limit=")); err == nil {
+				limit = n
+			}
+		default:
+			words = append(words, arg)
+		}
+	}
+	query := strings.TrimSpace(strings.Join(words, " "))
+	if query == "" {
+		return exitErrorf(exitValidation, "usage: joshbot sessions search <query> [--limit N]")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	mgr, err := sessionManagerForCLI(c)
+	if err != nil {
+		return err
+	}
+	matches, err := mgr.Search(c.Context, query, limit)
+	if err != nil {
+		return exitErrorf(exitGeneral, "search failed: %w", err)
+	}
+	out := sessionsOut()
+	if len(matches) == 0 {
+		fmt.Fprintf(out, "No matches for %q.\n", query)
+		return nil
+	}
+	for _, m := range matches {
+		fmt.Fprintf(out, "%s  %s  %s\n    %s\n",
+			m.Timestamp.Format("2006-01-02 15:04"), m.SessionID, m.Role, m.Snippet)
+	}
+	fmt.Fprintf(out, "\n%d match(es).\n", len(matches))
+	return nil
 }

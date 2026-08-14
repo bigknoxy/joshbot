@@ -811,6 +811,39 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 		// rather than deferring to an opaque "no providers configured" error
 		// the first time Chat() is called. Distinguishes an empty config from
 		// providers present but none enabled (issue #71).
+		// Registry-backed providers with no bespoke wiring above. The legacy
+		// path used to know only the six original providers, so an
+		// "anthropic" or "openai" entry in a legacy config was silently
+		// ignored at runtime while configure happily wrote it.
+		for _, name := range []string{"openai", "anthropic"} {
+			p, ok := cfg.Providers[name]
+			if !ok || p.APIKey == "" || !p.Enabled {
+				continue
+			}
+			prov, err := providers.GetProvider(name, providers.Config{
+				APIKey:       p.APIKey,
+				APIBase:      p.APIBase,
+				Model:        p.Model,
+				ExtraHeaders: p.ExtraHeaders,
+				ExtraBody:    p.ExtraBody,
+				Timeout:      p.Timeout.Duration(),
+			})
+			if err != nil {
+				log.Warn("Failed to create provider", "name", name, "error", err)
+				continue
+			}
+			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, name); idx >= 0 {
+				priority = idx
+			}
+			model := p.Model
+			if model == "" {
+				model = providers.GetDefaultModel(name)
+			}
+			multiProvider.Register(name, prov, model, priority, p.Enabled)
+			log.Info("Registered provider", "name", name, "model", model)
+		}
+
 		if len(multiProvider.GetProviderNames()) == 0 {
 			return noProvidersRegisteredError(cfg.Providers)
 		}
@@ -3249,8 +3282,11 @@ func selectProvider(existingCfg *config.Config) string {
 	fmt.Println("\n[Step 1] LLM Provider")
 	fmt.Println("Choose your LLM provider:")
 
-	// Use provider registry for display names and descriptions
-	providerList := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
+	// Every provider the menu path can finish with just a credential —
+	// hardcoding six of them taught Anthropic and OpenAI key-holders that
+	// their provider was unsupported. nvidia leads as the recommended
+	// default; azure/custom/litellm are absent because they need --api-base.
+	providerList := interactiveProviderMenu()
 	for i, key := range providerList {
 		displayName := providers.GetProviderDisplayName(key)
 		desc := providers.GetProviderDescription(key)
@@ -3276,26 +3312,23 @@ func selectProvider(existingCfg *config.Config) string {
 	fmt.Print("\nChoice [1]: ")
 	var choice string
 	fmt.Scanln(&choice)
-	if choice == "" {
-		choice = "1"
+	if idx, err := strconv.Atoi(strings.TrimSpace(choice)); err == nil && idx >= 1 && idx <= len(providerList) {
+		return providerList[idx-1]
 	}
+	return providerList[0]
+}
 
-	switch choice {
-	case "1":
-		return "nvidia"
-	case "2":
-		return "openrouter"
-	case "3":
-		return "groq"
-	case "4":
-		return "ollama"
-	case "5":
-		return "github-copilot"
-	case "6":
-		return "poolside"
-	default:
-		return "nvidia"
+// interactiveProviderMenu is the ordered provider list for the onboard and
+// configure menus: the recommended default first, then everything else the
+// guided path can set up with just a credential.
+func interactiveProviderMenu() []string {
+	list := []string{"nvidia"}
+	for _, name := range configure.InteractiveProviders() {
+		if name != "nvidia" {
+			list = append(list, name)
+		}
 	}
+	return list
 }
 
 // providerKeyURL returns the URL where a provider's API key can be obtained, or
@@ -4241,7 +4274,7 @@ func flushConfig(cfg *config.Config) error {
 
 // listProviders displays the configured providers.
 func listProviders(cfg *config.Config, format output.Format) error {
-	names := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
+	names := interactiveProviderMenu()
 	defaultProvider := cfg.ProviderDefaults.Default
 
 	doc := output.Providers{
@@ -4294,7 +4327,7 @@ func copilotAuthenticated() bool {
 
 // runConfigureWizard runs the interactive provider configuration wizard.
 func runConfigureWizard(cfg *config.Config) error {
-	providers := []string{"nvidia", "openrouter", "groq", "ollama", "github-copilot", "poolside"}
+	providers := interactiveProviderMenu()
 
 	for {
 		// Display current state
@@ -4337,46 +4370,37 @@ func runConfigureWizard(cfg *config.Config) error {
 
 		fmt.Println()
 		fmt.Println("What would you like to do?")
-		fmt.Println("  1. Configure NVIDIA NIM")
-		fmt.Println("  2. Configure OpenRouter")
-		fmt.Println("  3. Configure Groq")
-		fmt.Println("  4. Configure Ollama")
-		fmt.Println("  5. Configure GitHub Copilot")
-		fmt.Println("  6. Configure Poolside")
-		fmt.Println("  7. Set default provider")
-		fmt.Println("  8. Configure fallback order")
-		fmt.Println("  9. Done")
+		for i, name := range providers {
+			fmt.Printf("  %d. Configure %s\n", i+1, configure.GetProviderDisplayName(name))
+		}
+		defaultChoice := len(providers) + 1
+		fallbackChoice := len(providers) + 2
+		doneChoice := len(providers) + 3
+		fmt.Printf("  %d. Set default provider\n", defaultChoice)
+		fmt.Printf("  %d. Configure fallback order\n", fallbackChoice)
+		fmt.Printf("  %d. Done\n", doneChoice)
 		fmt.Println()
 
-		fmt.Print("Choice [9]: ")
+		fmt.Printf("Choice [%d]: ", doneChoice)
 
 		// On EOF (closed stdin) Scanln leaves choice empty, which takes the
 		// default and saves-and-exits — the wizard must never spin on
 		// "Invalid choice" against a stdin that will never produce one.
 		var choice string
 		fmt.Scanln(&choice)
+		idx, err := strconv.Atoi(strings.TrimSpace(choice))
 		if choice == "" {
-			choice = "9"
+			idx, err = doneChoice, nil
 		}
 
-		switch choice {
-		case "1":
-			cfg = configureProvider(cfg, "nvidia")
-		case "2":
-			cfg = configureProvider(cfg, "openrouter")
-		case "3":
-			cfg = configureProvider(cfg, "groq")
-		case "4":
-			cfg = configureProvider(cfg, "ollama")
-		case "5":
-			cfg = configureProvider(cfg, "github-copilot")
-		case "6":
-			cfg = configureProvider(cfg, "poolside")
-		case "7":
+		switch {
+		case err == nil && idx >= 1 && idx <= len(providers):
+			cfg = configureProvider(cfg, providers[idx-1])
+		case err == nil && idx == defaultChoice:
 			cfg = setDefaultProvider(cfg)
-		case "8":
+		case err == nil && idx == fallbackChoice:
 			cfg = configureFallbackOrder(cfg)
-		case "9":
+		case err == nil && idx == doneChoice:
 			// Save and exit
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("failed to save config: %w", err)
@@ -4673,6 +4697,43 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 			} else if modelInput != "" {
 				p.Model = strings.TrimSpace(modelInput)
 			}
+		}
+	default:
+		// Registry-backed providers with no bespoke prompts (openai,
+		// anthropic): API base defaults from the registry, model defaults
+		// from the registry, model listing attempted best-effort.
+		registryBase := providers.GetDefaultAPIBaseFor(provider)
+		if exists && p.APIBase != "" {
+			fmt.Printf("API base URL [%s]: ", p.APIBase)
+		} else {
+			fmt.Printf("API base URL [%s]: ", registryBase)
+		}
+		fmt.Scanln(&apiBase)
+		if apiBase = strings.TrimSpace(apiBase); apiBase != "" {
+			p.APIBase = apiBase
+		} else if p.APIBase == "" {
+			p.APIBase = registryBase
+		}
+
+		defaultModel := providers.GetDefaultModel(provider)
+		if exists && p.Model != "" {
+			defaultModel = p.Model
+		}
+		models, err := providers.ListModels(providers.Config{
+			APIKey:  p.APIKey,
+			APIBase: p.APIBase,
+		})
+		if err == nil && len(models) > 0 {
+			p.Model = promptModelSelection(models, defaultModel)
+		} else {
+			fmt.Printf("Model (default: %s): ", defaultModel)
+		}
+		var modelInput string
+		fmt.Scanln(&modelInput)
+		if modelInput == "" && p.Model == "" {
+			p.Model = defaultModel
+		} else if modelInput != "" {
+			p.Model = strings.TrimSpace(modelInput)
 		}
 	}
 

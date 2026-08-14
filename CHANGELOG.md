@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The onboard and configure menus now offer every provider the guided path
+  can set up — including Anthropic and OpenAI.** The menus hardcoded six
+  names, so the two providers a newcomer is most likely to already hold a
+  key for were missing, and running onboard reasonably read as "joshbot
+  doesn't support my provider". The menus (and `configure --list`) now
+  derive from the supported-provider registry; azure/custom/litellm stay
+  flag-only because they need `--api-base`.
+
+### Fixed
+
+- **An `anthropic` or `openai` entry in a legacy config is now actually
+  registered at runtime.** `joshbot configure --provider anthropic` happily
+  wrote the entry, but the legacy registration path only knew the six
+  original providers, so the config was silently ignored and the agent
+  reported no such provider. Registry-backed registration now covers both,
+  honouring `fallback_order`, `max_retries` and the per-provider timeout
+  like every other provider.
+
+### Added
+
 - **`joshbot configure --fallback "nvidia,poolside"`** — the first CLI path
   that writes `provider_defaults.fallback_order`; configuring the headline
   fallback feature previously required hand-editing config.json. Every name

@@ -75,10 +75,9 @@ func TestTelegramMediaHandlersForwardToTheBus(t *testing.T) {
 		wantContent string
 		wantFileID  string
 	}{
-		{kind: "voice", wantContent: "[Voice message with caption]: listen", wantFileID: "v1"},
-		{kind: "audio", wantContent: "[Audio: song - track]", wantFileID: "a1"},
-		{kind: "video", wantContent: "[Video with caption]: clip", wantFileID: "vid1"},
-		{kind: "sticker", wantContent: "[Sticker]", wantFileID: "s1"},
+		{kind: "voice", wantContent: "[The user sent a voice message you cannot hear. Its caption]: listen", wantFileID: "v1"},
+		{kind: "audio", wantContent: "[The user sent an audio file you cannot hear (song). Its caption]: track", wantFileID: "a1"},
+		{kind: "video", wantContent: "[The user sent a video you cannot watch. Its caption]: clip", wantFileID: "vid1"},
 		{kind: "edited", wantContent: "[Edited]: corrected text"},
 	}
 	for _, tc := range cases {
@@ -288,5 +287,62 @@ func TestTelegramHandleCallbackAnswersAndForwards(t *testing.T) {
 	case got := <-tg.bus.InboundChannel():
 		t.Fatalf("a disallowed sender's button press reached the agent: %q", got.Content)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A captionless voice/audio/video carries nothing the agent can perceive, so
+// the channel answers honestly itself — threaded, no agent turn — instead of
+// forwarding a placeholder the model would answer confidently about nothing.
+// A sticker is ignored outright: it accompanies conversation, it is not a
+// question, and it used to spend a full LLM turn on a confused reply.
+func TestImperceptibleMediaGetsAnHonestReplyNotAnAgentTurn(t *testing.T) {
+	cases := []struct {
+		kind     string
+		wantNote string
+	}{
+		{kind: "voice", wantNote: "can't listen to voice messages"},
+		{kind: "audio", wantNote: "can't listen to audio"},
+		{kind: "video", wantNote: "can't watch videos"},
+		{kind: "sticker", wantNote: ""}, // silent ignore
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			srv := newFakeTelegramServer(t)
+			bot := srv.bot(t)
+			tg := mediaChannel(t, "1234")
+			tg.mu.Lock()
+			tg.bot = bot
+			tg.mu.Unlock()
+
+			msg := mediaMessage(tc.kind, 1234)
+			switch tc.kind {
+			case "voice":
+				msg.Voice.Caption = ""
+			case "audio":
+				msg.Audio.Caption = ""
+			case "video":
+				msg.Video.Caption = ""
+			}
+			if err := mediaHandler(tg, tc.kind)(bot.NewContext(telebot.Update{Message: msg})); err != nil {
+				t.Fatalf("handler: %v", err)
+			}
+
+			select {
+			case got := <-tg.bus.InboundChannel():
+				t.Fatalf("an imperceptible %s reached the agent as %q", tc.kind, got.Content)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			texts := srv.texts()
+			if tc.wantNote == "" {
+				if len(texts) != 0 {
+					t.Fatalf("a sticker was answered: %v", texts)
+				}
+				return
+			}
+			if len(texts) != 1 || !strings.Contains(texts[0], tc.wantNote) {
+				t.Fatalf("honest reply = %v, want one message containing %q", texts, tc.wantNote)
+			}
+		})
 	}
 }

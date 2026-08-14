@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Imperceptible Telegram media is answered honestly, not hallucinated
+  about.** A voice message, audio file or video used to be forwarded to the
+  agent as a "[Voice message]" placeholder, which earned a confident answer
+  about content nobody heard. Captionless media now gets a direct "I can't
+  listen/watch yet" reply from the channel — threaded, no LLM turn spent —
+  and captioned media forwards the caption framed so the model knows what
+  it cannot perceive. Stickers are quietly ignored instead of spending a
+  turn on a confused reply.
+
 ## [1.54.0] - 2026-08-14
 
 ### Added

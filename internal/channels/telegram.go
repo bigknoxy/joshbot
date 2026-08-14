@@ -708,13 +708,19 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 		return nil
 	}
 
+	// A voice message the agent cannot hear must not be forwarded as a
+	// "[Voice message]" placeholder: the model answers it confidently, about
+	// nothing. Without a caption there is no content at all, so the channel
+	// answers honestly itself — no agent turn, no hallucination. With a
+	// caption, the caption is real text and is forwarded framed so the model
+	// knows what it cannot perceive.
+	voice := msg.Voice
+	if voice.Caption == "" {
+		return t.replyCannotPerceive(ctx, "🎙️ I can't listen to voice messages yet — mind typing that out?")
+	}
 	t.startTyping(ctx.Chat())
 
-	voice := msg.Voice
-	content := "[Voice message]"
-	if voice.Caption != "" {
-		content = fmt.Sprintf("[Voice message with caption]: %s", voice.Caption)
-	}
+	content := fmt.Sprintf("[The user sent a voice message you cannot hear. Its caption]: %s", voice.Caption)
 
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
@@ -810,13 +816,14 @@ func (t *TelegramChannel) handleAudio(ctx telebot.Context) error {
 		return nil
 	}
 
+	// Same honesty rule as voice: no caption, no agent turn.
+	audio := msg.Audio
+	if audio.Caption == "" {
+		return t.replyCannotPerceive(ctx, "🎵 I can't listen to audio yet.")
+	}
 	t.startTyping(ctx.Chat())
 
-	audio := msg.Audio
-	content := fmt.Sprintf("[Audio: %s]", audio.Title)
-	if audio.Caption != "" {
-		content = fmt.Sprintf("[Audio: %s - %s]", audio.Title, audio.Caption)
-	}
+	content := fmt.Sprintf("[The user sent an audio file you cannot hear (%s). Its caption]: %s", audio.Title, audio.Caption)
 
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
@@ -856,13 +863,14 @@ func (t *TelegramChannel) handleVideo(ctx telebot.Context) error {
 		return nil
 	}
 
+	// Same honesty rule as voice: no caption, no agent turn.
+	video := msg.Video
+	if video.Caption == "" {
+		return t.replyCannotPerceive(ctx, "🎬 I can't watch videos yet.")
+	}
 	t.startTyping(ctx.Chat())
 
-	video := msg.Video
-	content := "[Video]"
-	if video.Caption != "" {
-		content = fmt.Sprintf("[Video with caption]: %s", video.Caption)
-	}
+	content := fmt.Sprintf("[The user sent a video you cannot watch. Its caption]: %s", video.Caption)
 
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
@@ -902,35 +910,23 @@ func (t *TelegramChannel) handleSticker(ctx telebot.Context) error {
 		return nil
 	}
 
-	// Stickers are just acknowledged, not sent to the agent
-	content := "[Sticker]"
-
-	inbound := bus.InboundMessage{
-		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
-		Content:   content,
-		Channel:   t.name,
-		Timestamp: time.Now(),
-		Metadata: map[string]any{
-			"message_id":     msg.ID,
-			"chat_id":        msg.Chat.ID,
-			"username":       msg.Sender.Username,
-			"first_name":     msg.Sender.FirstName,
-			"last_name":      msg.Sender.LastName,
-			"media_type":     "sticker",
-			"file_id":        msg.Sticker.File.FileID,
-			"file_unique_id": msg.Sticker.File.UniqueID,
-			"emoji":          msg.Sticker.Emoji,
-			"set_name":       msg.Sticker.SetName,
-			"is_animated":    msg.Sticker.Animated,
-			"is_video":       msg.Sticker.Video,
-		},
-	}
-
-	if !t.bus.Send(inbound) {
-		log.Error("failed to send sticker message to bus", "error", "queue full")
-	}
-
+	// A sticker carries no content the agent can act on, and forwarding
+	// "[Sticker]" spent a full LLM turn on producing a confused answer.
+	// Ignore it quietly — a sticker accompanies conversation, it isn't a
+	// question.
+	log.Debug("ignoring sticker", "emoji", msg.Sticker.Emoji, "set", msg.Sticker.SetName)
 	return nil
+}
+
+// replyCannotPerceive answers a media message the agent has no way to
+// perceive (voice, audio, video) honestly from the channel itself, spending
+// no agent turn. Forwarding a "[Voice message]" placeholder instead got the
+// user a confident answer about content nobody heard. Threaded to the media
+// message; plain text on purpose (the note contains no formatting).
+func (t *TelegramChannel) replyCannotPerceive(ctx telebot.Context, note string) error {
+	t.stopTyping(ctx.Chat())
+	_, err := ctx.Bot().Send(ctx.Chat(), note, &telebot.SendOptions{ReplyTo: ctx.Message()})
+	return err
 }
 
 // handleCallback processes callback queries from inline buttons.

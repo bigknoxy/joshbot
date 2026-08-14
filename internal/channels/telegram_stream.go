@@ -19,6 +19,7 @@ import (
 type telegramEditor interface {
 	Send(to telebot.Recipient, what interface{}, opts ...interface{}) (*telebot.Message, error)
 	Edit(msg telebot.Editable, what interface{}, opts ...interface{}) (*telebot.Message, error)
+	Delete(msg telebot.Editable) error
 }
 
 // defaultStreamInterval is the minimum gap between two edits of the same
@@ -67,6 +68,12 @@ type TelegramStreamer struct {
 	nextEdit  time.Time
 	delivered bool
 	broken    bool
+	// statusShown is the tool-progress line the message currently displays,
+	// "" when the message holds (or will hold) reply text. Status text lives
+	// in the same message slot as the reply on purpose: the first content
+	// delta edits it away in place, so the chat never accumulates a trail of
+	// stale progress lines above the answer.
+	statusShown string
 }
 
 // NewStreamer returns a streamer for one turn in the chat identified by
@@ -166,6 +173,70 @@ func (s *TelegramStreamer) Delta(text string) {
 	s.flushLocked(false)
 }
 
+// Status shows a one-line tool-progress note ("⚙️ shell: go test ./...") in
+// the chat while the agent works. It is strictly best-effort: it shares the
+// edit-rate budget with content flushes and is skipped — never queued — when
+// the throttle disallows it, and it stops entirely once reply text has begun
+// arriving, because the message then belongs to the answer. Always plain
+// text: a tool summary is arbitrary content and Markdown would reject it.
+func (s *TelegramStreamer) Status(text string) {
+	if s == nil || text == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.broken || s.buf != "" || text == s.statusShown || s.now().Before(s.nextEdit) {
+		return
+	}
+	editor := s.ch.currentEditor()
+	if editor == nil {
+		return
+	}
+
+	if s.msg == nil {
+		opts := &telebot.SendOptions{}
+		if s.replyTo != nil {
+			opts.ReplyTo = s.replyTo
+		}
+		sent, err := editor.Send(s.recipient, text, opts)
+		if err != nil {
+			log.Debug("failed to send tool-progress status", "error", err)
+			return
+		}
+		// The status message claims the turn's message slot and its thread
+		// anchor; the first content delta will edit the answer into it.
+		// delivered stays false — it means reply text reached the chat, and
+		// Finish's suppression contract depends on that.
+		s.msg = sent
+		s.replyTo = nil
+	} else if _, err := editor.Edit(s.msg, text); err != nil {
+		if isFloodError(err) {
+			s.nextEdit = s.now().Add(floodRetryAfter(err))
+		}
+		log.Debug("failed to edit tool-progress status", "error", err)
+		return
+	}
+	s.statusShown = text
+	s.nextEdit = s.now().Add(s.ch.streamInterval())
+}
+
+// clearStatusLocked deletes a status message no reply ever replaced, so a
+// turn whose answer arrives through the bus fallback does not leave a stale
+// "⚙️ ..." line above it. Callers must hold s.mu.
+func (s *TelegramStreamer) clearStatusLocked() {
+	if s.statusShown == "" || s.msg == nil || s.delivered {
+		return
+	}
+	editor := s.ch.currentEditor()
+	if editor == nil {
+		return
+	}
+	if err := editor.Delete(s.msg); err != nil {
+		log.Debug("failed to delete tool-progress status", "error", err)
+	}
+	s.msg, s.statusShown = nil, ""
+}
+
 // Finish makes the final edit and reports whether the turn was delivered to
 // Telegram. False means nothing reached the chat (nothing was streamed, or
 // the very first send failed) and the caller must send the reply itself.
@@ -181,6 +252,9 @@ func (s *TelegramStreamer) Finish(procErr error) bool {
 	defer s.mu.Unlock()
 
 	if s.buf == "" || s.broken {
+		// The reply is coming through the bus fallback; a leftover status
+		// line above it would read as a second, stuck turn.
+		s.clearStatusLocked()
 		return false
 	}
 	if procErr != nil {
@@ -319,6 +393,8 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 	case err == nil, isNotModifiedError(err):
 		s.shown = s.buf
 		s.delivered = true
+		// Reply text now owns the message; any status line is gone.
+		s.statusShown = ""
 		s.nextEdit = s.now().Add(s.ch.streamInterval())
 		return true
 

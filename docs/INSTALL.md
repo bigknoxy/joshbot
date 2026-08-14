@@ -331,6 +331,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot mcp list` \| `trust <name>` \| `untrust <name>` | Review and approve MCP servers' advertised tools |
 | `joshbot configure` | Configure LLM providers and settings |
 | `joshbot configure --fallback "nvidia,poolside"` | Set the provider fallback order; `""` clears it |
+| `joshbot configure --migrate` | Convert a legacy provider config to the model-centric format (refuses lossy conversions) |
 | `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` \| `export <id>` | Inspect, manage and export stored conversations |
 | `joshbot memory status` \| `consolidate` | Inspect and run the Dream two-stage memory system (`agents.defaults.dream_mode`) |
 | `joshbot auth github-copilot [--force]` \| `status` | Manage OAuth authentication |

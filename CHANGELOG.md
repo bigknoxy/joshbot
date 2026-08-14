@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`joshbot configure --migrate` converts a legacy provider config to the
+  model-centric format.** All-or-nothing and deliberately non-lossy: a
+  provider it cannot represent faithfully (github-copilot, a per-provider
+  `timeout` or `max_retries`, a model whose provider detection would not
+  round-trip) aborts the run naming the obstacle instead of silently
+  dropping the setting. The legacy default and `fallback_order` become
+  `agent.model` and `agent.fallback`, wire models round-trip exactly, and
+  the legacy block is removed. Separately, a config with **both** formats
+  populated now logs a loud startup warning naming the ignored legacy
+  provider — filling in the `models_config` stub used to flip the entire
+  routing regime with no signal at all.
+
 ## [1.53.0] - 2026-08-14
 
 ### Added

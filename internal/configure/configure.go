@@ -2,6 +2,7 @@ package configure
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,6 +82,38 @@ func (c *Configurator) ConfigureProvider(opts ProviderOptions) error {
 		c.cfg.Agents.Defaults.Model = p.Model
 	}
 
+	return nil
+}
+
+// SetFallbackOrder writes provider_defaults.fallback_order — the order the
+// runtime dials providers when the primary fails. Every name must refer to a
+// configured, enabled provider: a typo here would silently vanish from the
+// chain at the exact moment the primary is down, which is the last place a
+// misconfiguration should first surface. An empty list clears the order.
+func (c *Configurator) SetFallbackOrder(names []string) error {
+	if len(names) == 0 {
+		c.cfg.ProviderDefaults.FallbackOrder = nil
+		return nil
+	}
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		p, ok := c.cfg.Providers[name]
+		if !ok || !p.Enabled {
+			configured := make([]string, 0, len(c.cfg.Providers))
+			for n, cp := range c.cfg.Providers {
+				if cp.Enabled {
+					configured = append(configured, n)
+				}
+			}
+			sort.Strings(configured)
+			return fmt.Errorf("provider %q is not configured and enabled; configured providers: %s", name, strings.Join(configured, ", "))
+		}
+		if seen[name] {
+			return fmt.Errorf("provider %q appears twice in the fallback order", name)
+		}
+		seen[name] = true
+	}
+	c.cfg.ProviderDefaults.FallbackOrder = names
 	return nil
 }
 

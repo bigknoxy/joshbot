@@ -453,6 +453,10 @@ func newApp() *cli.App {
 						Name:  "remove",
 						Usage: "Remove a configured provider",
 					},
+					&cli.StringFlag{
+						Name:  "fallback",
+						Usage: "Comma-separated provider fallback order (e.g. \"nvidia,poolside\"); pass \"\" to clear",
+					},
 				},
 				Action: withJSONErrors(runConfigure),
 			},
@@ -1167,6 +1171,18 @@ func defaultReminderChannel(cfg *config.Config) string {
 }
 
 // indexOf returns the index of needle in haystack, or -1 if not found.
+// splitCommaList splits a comma-separated flag value into trimmed, non-empty
+// entries; "" yields nil, which callers treat as "clear".
+func splitCommaList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 func indexOf(haystack []string, needle string) int {
 	for i, s := range haystack {
 		if s == needle {
@@ -4194,7 +4210,21 @@ func runConfigure(c *cli.Context) error {
 		fmt.Printf("Default provider set to %q with model %q.\n", provider, cfg.Agents.Defaults.Model)
 	}
 
-	if c.IsSet("provider") || c.IsSet("set-default") {
+	// --fallback is IsSet-gated rather than non-empty-gated on purpose:
+	// `--fallback ""` is the documented way to clear the order.
+	if c.IsSet("fallback") {
+		names := splitCommaList(c.String("fallback"))
+		if err := conf.SetFallbackOrder(names); err != nil {
+			return err
+		}
+		if len(names) == 0 {
+			fmt.Println("Fallback order cleared.")
+		} else {
+			fmt.Printf("Fallback order set to %s.\n", strings.Join(names, " → "))
+		}
+	}
+
+	if c.IsSet("provider") || c.IsSet("set-default") || c.IsSet("fallback") {
 		return flushConfig(cfg)
 	}
 

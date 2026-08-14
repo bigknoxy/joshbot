@@ -6,7 +6,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
 )
 
@@ -45,12 +47,14 @@ func (r *recordingDeps) out() []bus.OutboundMessage {
 // Finish reports: true means the whole answer already reached the chat.
 type fakeStreamer struct {
 	deltas    []string
+	statuses  []string
 	delivered bool
 	finishErr error
 	finished  bool
 }
 
-func (f *fakeStreamer) Delta(text string) { f.deltas = append(f.deltas, text) }
+func (f *fakeStreamer) Delta(text string)  { f.deltas = append(f.deltas, text) }
+func (f *fakeStreamer) Status(text string) { f.statuses = append(f.statuses, text) }
 func (f *fakeStreamer) Finish(procErr error) bool {
 	f.finished = true
 	f.finishErr = procErr
@@ -311,5 +315,45 @@ func TestGatewayHandlerResolvesProactiveRepliesToLastKnownChat(t *testing.T) {
 func TestResolveChannelIDNilSafe(t *testing.T) {
 	if id := resolveChannelID(gatewayDeps{}, bus.InboundMessage{Channel: "telegram"}); id != "" {
 		t.Errorf("resolveChannelID = %q, want empty", id)
+	}
+}
+
+// Tool progress reaches the chat: the handler installs a per-request progress
+// sink that renders each event as a status line on the streamer. Without it a
+// multi-tool turn is a minutes-long silence between the question and the
+// answer.
+func TestGatewayHandlerWiresToolProgressToTheStreamer(t *testing.T) {
+	rec := &recordingDeps{}
+	fs := &fakeStreamer{delivered: true}
+	d := baseDeps(rec, "done", nil)
+	d.newStreamer = func(bus.InboundMessage) gatewayStreamer { return fs }
+	d.process = func(ctx context.Context, _ bus.InboundMessage) (string, error) {
+		if progress := agent.ProgressFromContext(ctx); progress != nil {
+			progress(agent.ToolProgressEvent{Tool: "shell", Summary: "go test ./...", Phase: agent.ToolProgressStart})
+		}
+		return "done", nil
+	}
+
+	gatewayHandler(d)(context.Background(), telegramMsg("user1", "hi"))
+
+	if len(fs.statuses) != 1 || !strings.Contains(fs.statuses[0], "shell: go test ./...") {
+		t.Fatalf("statuses = %q, want one tool-progress line", fs.statuses)
+	}
+}
+
+// formatToolStatus is what the user reads while the agent works, so its three
+// shapes — running, succeeded, failed — are pinned.
+func TestFormatToolStatus(t *testing.T) {
+	start := formatToolStatus(agent.ToolProgressEvent{Tool: "shell", Summary: "ls", Phase: agent.ToolProgressStart})
+	if start != "⚙️ shell: ls" {
+		t.Errorf("start = %q", start)
+	}
+	ok := formatToolStatus(agent.ToolProgressEvent{Tool: "web", Phase: agent.ToolProgressDone, Elapsed: 1234 * time.Millisecond})
+	if ok != "✅ web (1.2s)" {
+		t.Errorf("done = %q", ok)
+	}
+	failed := formatToolStatus(agent.ToolProgressEvent{Tool: "shell", Summary: "x", Phase: agent.ToolProgressDone, Elapsed: 2 * time.Second, Err: errors.New("denied")})
+	if failed != "⚠️ shell: x failed (2s)" {
+		t.Errorf("failed = %q", failed)
 	}
 }

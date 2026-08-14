@@ -18,6 +18,7 @@ type editorCall struct {
 	text    string
 	mode    telebot.ParseMode
 	edit    bool
+	deleted bool
 	replyTo int // 0 = unthreaded
 }
 
@@ -65,6 +66,13 @@ func (f *fakeEditor) Edit(msg telebot.Editable, what interface{}, opts ...interf
 		return nil, err
 	}
 	return &telebot.Message{}, nil
+}
+
+func (f *fakeEditor) Delete(msg telebot.Editable) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, editorCall{text: "<deleted>", deleted: true})
+	return nil
 }
 
 func (f *fakeEditor) snapshot() []editorCall {
@@ -591,7 +599,7 @@ func TestFinalEditDefaultsToMarkdown(t *testing.T) {
 // SetReplyTo threads the first message of the turn to the question; a 4096
 // rollover's second message must not re-anchor.
 func TestStreamedReplyThreadsToTheQuestion(t *testing.T) {
-	tg, ed := streamTestChannel(t, 0)
+	tg, ed := streamTestChannel(t, time.Nanosecond)
 	s := newTestStreamer(t, tg, 42, nil)
 	s.SetReplyTo(777)
 
@@ -616,5 +624,129 @@ func TestStreamedReplyThreadsToTheQuestion(t *testing.T) {
 		if c.replyTo != 0 {
 			t.Errorf("rollover send re-anchored to %d; only the first message threads", c.replyTo)
 		}
+	}
+}
+
+// A tool-progress status line reaches the chat while the agent works, and the
+// reply then replaces it in the same message — the chat never accumulates a
+// trail of stale progress lines above the answer.
+func TestStatusIsReplacedInPlaceByTheReply(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 42, nil)
+	s.SetReplyTo(7)
+
+	s.Status("⚙️ shell: go test ./...")
+	s.Status("✅ shell (1.2s)")
+	s.Delta("the tests pass")
+	if !s.Finish(nil) {
+		t.Fatal("Finish reported non-delivery")
+	}
+
+	calls := ed.snapshot()
+	if len(calls) < 3 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	// First status is a send, threaded to the question; the rest are edits of
+	// that same message — including the reply text.
+	if calls[0].edit || calls[0].replyTo != 7 {
+		t.Errorf("first status call = %+v, want a send threaded to 7", calls[0])
+	}
+	for i, c := range calls[1:] {
+		if !c.edit {
+			t.Errorf("call %d = %+v, want an edit of the status message", i+1, c)
+		}
+	}
+	last := calls[len(calls)-1]
+	if last.text != "the tests pass" {
+		t.Errorf("final text = %q, want the reply", last.text)
+	}
+}
+
+// Once reply text has begun arriving the message belongs to the answer: a
+// late status must not clobber it.
+func TestStatusNeverClobbersReplyText(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 42, nil)
+
+	s.Delta("partial answer")
+	s.Status("⚙️ shell: rm -rf /")
+	if !s.Finish(nil) {
+		t.Fatal("Finish reported non-delivery")
+	}
+	for _, c := range ed.snapshot() {
+		if strings.Contains(c.text, "⚙️") {
+			t.Fatalf("a status write landed after reply text began: %+v", c)
+		}
+	}
+}
+
+// A turn whose reply never streams (broken stream, unsupported provider)
+// deletes its status message: the answer arrives via the bus fallback and a
+// leftover "⚙️ ..." line above it would read as a second, stuck turn.
+func TestFinishDeletesAnOrphanedStatusMessage(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 42, nil)
+
+	s.Status("⚙️ shell: sleep 60")
+	if s.Finish(nil) {
+		t.Fatal("Finish reported delivery for a status-only turn")
+	}
+	calls := ed.snapshot()
+	last := calls[len(calls)-1]
+	if !last.deleted {
+		t.Fatalf("the orphaned status message was not deleted: %+v", calls)
+	}
+}
+
+// Status shares the edit-rate budget and is best-effort: inside the throttle
+// window it is skipped, never queued.
+func TestStatusIsSkippedInsideTheThrottleWindow(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Hour)
+	s := newTestStreamer(t, tg, 42, nil)
+
+	s.Status("⚙️ first")
+	s.Status("⚙️ second") // inside the window — dropped
+	calls := ed.snapshot()
+	if len(calls) != 1 || calls[0].text != "⚙️ first" {
+		t.Fatalf("calls = %+v, want only the first status", calls)
+	}
+}
+
+// A turn whose reply text never lands (the final write fails with nothing
+// ever delivered) must also delete its status message — the answer arrives
+// via the bus fallback, same as the status-only case.
+func TestFailedFinalWriteStillDeletesTheStatusMessage(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 42, nil)
+
+	s.Status("⚙️ shell: sleep 60")
+	ed.mu.Lock()
+	ed.editErrs = []error{errors.New("400 chat not found")}
+	ed.mu.Unlock()
+	s.Delta("the answer")
+	if s.Finish(nil) {
+		t.Fatal("Finish reported delivery over a failed write")
+	}
+	calls := ed.snapshot()
+	if !calls[len(calls)-1].deleted {
+		t.Fatalf("stale status message was not deleted: %+v", calls)
+	}
+}
+
+// A 429 on the initial status send must back off like the edit path does:
+// ignoring retry_after just earns the next write another 429.
+func TestStatusSendFloodErrorBacksOff(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 42, nil)
+	base := time.Unix(1000, 0)
+	s.now = func() time.Time { return base }
+
+	ed.mu.Lock()
+	ed.sendErrs = []error{errors.New("telegram: retry after 30 (429)")}
+	ed.mu.Unlock()
+	s.Status("⚙️ first")
+	s.Status("⚙️ second") // inside the flood window — must be skipped
+	if n := len(ed.snapshot()); n != 1 {
+		t.Fatalf("%d writes went out during the flood window, want 1", n)
 	}
 }

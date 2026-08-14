@@ -2818,6 +2818,8 @@ func runUninstall(c *cli.Context) error {
 // a Telegram bot.
 type gatewayStreamer interface {
 	Delta(text string)
+	// Status shows a best-effort tool-progress line while the agent works.
+	Status(text string)
 	Finish(procErr error) bool
 }
 
@@ -2826,7 +2828,27 @@ type gatewayStreamer interface {
 type noStreamer struct{}
 
 func (noStreamer) Delta(string)      {}
+func (noStreamer) Status(string)     {}
 func (noStreamer) Finish(error) bool { return false }
+
+// formatToolStatus renders a tool-progress event as the one-line status shown
+// in the chat while the agent works. Start events say what is running; done
+// events say how it went, and are shown so a long gap between tools reads as
+// progress rather than a hang.
+func formatToolStatus(e agent.ToolProgressEvent) string {
+	name := e.Tool
+	if e.Summary != "" {
+		name += ": " + e.Summary
+	}
+	if e.Phase == agent.ToolProgressStart {
+		return "⚙️ " + name
+	}
+	elapsed := e.Elapsed.Round(100 * time.Millisecond).String()
+	if e.Err != nil {
+		return "⚠️ " + name + " failed (" + elapsed + ")"
+	}
+	return "✅ " + name + " (" + elapsed + ")"
+}
 
 // gatewayDeps is everything gatewayHandler needs from the running gateway.
 // Pulling them out as functions is what makes the handler testable at all:
@@ -2947,6 +2969,11 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			streamer = s
 			procCtx = agent.WithStreamSink(procCtx, func(e agent.StreamEvent) {
 				streamer.Delta(e.Delta)
+			})
+			// Tool progress rides the same per-request context as the stream
+			// sink and is delivered as a status line the reply then replaces.
+			procCtx = agent.WithSink(procCtx, func(e agent.ToolProgressEvent) {
+				streamer.Status(formatToolStatus(e))
 			})
 		}
 

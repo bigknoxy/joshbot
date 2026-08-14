@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`~/.joshbot/chat_ids.json`, 0600, atomic writes), and a proactive reply
   whose inbound carries no chat id (cron, heartbeat) resolves to the
   channel's last known chat.
+- **Tool progress in the Telegram chat.** While the agent works, a
+  best-effort status line ("⚙️ shell: go test ./...", then "✅ shell
+  (1.2s)") appears in the chat and is replaced in place by the streamed
+  answer — a multi-tool turn no longer reads as a minutes-long silence.
+  Status edits share the streaming rate budget, stop the moment reply text
+  begins, and an orphaned status line is deleted if the answer arrives
+  through the non-streaming fallback.
 - **Conversation search.** `joshbot sessions search <query> [--limit N]`
   greps every session transcript (case-insensitive, newest first, redacted
   output, sidecars excluded), and the new `session_search` tool gives the

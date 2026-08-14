@@ -303,6 +303,11 @@ func newApp() *cli.App {
 						Aliases: []string{"session"},
 						Usage:   "Resume a prior session by its id (from a previous json result)",
 					},
+					&cli.BoolFlag{
+						Name:    "continue",
+						Aliases: []string{"c"},
+						Usage:   "Resume the most recently updated session (mutually exclusive with --resume)",
+					},
 					&cli.StringFlag{
 						Name:    "message",
 						Aliases: []string{"m"},
@@ -1441,7 +1446,7 @@ func runAgent(c *cli.Context) error {
 	log.Info("Starting agent mode", "model", modelName)
 
 	// Setup components
-	_, _, _, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
+	_, _, sessionMgr, agentInstance, toolsRegistry, messageSender, err := setupComponents(cfg)
 	defer closeMCPServers()
 	defer stopBackgroundServices()
 	if err != nil {
@@ -1490,20 +1495,47 @@ func runAgent(c *cli.Context) error {
 		}
 	}()
 
+	// --continue threads onto the most recently updated session without the
+	// caller having to know its id. The recap goes to stderr so scripted
+	// stdout stays data-only. It is headless-only: the interactive loop
+	// always opens cli:cli_user, so honouring --continue there would
+	// announce one session and then talk in another.
+	resume := c.String("resume")
+	if c.Bool("continue") {
+		if resume != "" {
+			return exitErrorf(exitValidation, "--continue and --resume are mutually exclusive")
+		}
+		if !jsonMode && c.String("message") == "" {
+			return exitErrorf(exitValidation, "--continue requires -m/--message: the interactive session always continues cli:cli_user (a recap is shown on startup)")
+		}
+		info, err := latestSession(ctx, sessionMgr)
+		if err != nil {
+			return exitErrorf(exitGeneral, "--continue: %w", err)
+		}
+		resume = info.ID
+		fmt.Fprintf(os.Stderr, "Continuing session %s (%d messages, last active %s)\n",
+			info.ID, info.Messages, humanizeSince(info.UpdatedAt))
+	}
+
 	// Non-interactive JSON modes: machine-readable single turn.
 	if jsonMode {
-		err := runAgentJSON(ctx, agentInstance, c.String("message"), format, c.String("resume"), os.Stdout, os.Stderr, messageSender, images...)
+		err := runAgentJSON(ctx, agentInstance, c.String("message"), format, resume, os.Stdout, os.Stderr, messageSender, images...)
 		time.Sleep(2 * time.Second) // let async callbacks drain to stderr
 		return err
 	}
 
 	// Non-interactive text mode: send single message and exit.
 	if message := c.String("message"); message != "" {
-		err := runAgentSingleMessage(ctx, agentInstance, message, c.String("resume"), os.Stdout, messageSender, images...)
+		err := runAgentSingleMessage(ctx, agentInstance, message, resume, os.Stdout, messageSender, images...)
 		// Wait a bit for async callbacks
 		time.Sleep(2 * time.Second)
 		return err
 	}
+
+	// Interactive sessions always continue cli:cli_user, so say what is being
+	// continued: a short recap of the last exchange, the way a resumed
+	// conversation opens anywhere else. Silent for a fresh session.
+	printSessionRecap(ctx, sessionMgr, os.Stdout)
 
 	done := make(chan struct{})
 	setupGracefulShutdown(ctx, cancel, done)
@@ -1933,6 +1965,88 @@ func parseLogLevel(s string) (log.Level, error) {
 func applyNoColor() {
 	log.Get().Logger.SetColorProfile(termenv.Ascii)
 	lipgloss.SetColorProfile(termenv.Ascii)
+}
+
+// latestSession returns the most recently updated session's Info, for
+// --continue. Corrupt sessions still count: their mtime is real, and refusing
+// to continue the conversation the user just had because one line failed to
+// parse would be the wrong trade.
+func latestSession(ctx context.Context, mgr *session.Manager) (session.Info, error) {
+	infos, err := mgr.ListInfo(ctx)
+	if err != nil {
+		return session.Info{}, fmt.Errorf("could not list sessions: %w", err)
+	}
+	if len(infos) == 0 {
+		return session.Info{}, fmt.Errorf("no sessions to continue — start one with `joshbot agent -m \"...\"`")
+	}
+	latest := infos[0]
+	for _, info := range infos[1:] {
+		if info.UpdatedAt.After(latest.UpdatedAt) {
+			latest = info
+		}
+	}
+	return latest, nil
+}
+
+// humanizeSince renders a time as a coarse "2h ago" style age.
+func humanizeSince(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+// printSessionRecap opens an interactive run with a short recap of the CLI
+// session's last exchange, so continuing a conversation reads as continuing
+// one. Best-effort and silent on any failure or a fresh session — a recap is
+// never worth blocking startup for.
+func printSessionRecap(ctx context.Context, mgr *session.Manager, output io.Writer) {
+	if mgr == nil {
+		return
+	}
+	sess, err := mgr.Load(ctx, "cli:cli_user")
+	if err != nil || sess == nil || len(sess.Messages) == 0 {
+		return
+	}
+	var lastUser, lastAssistant string
+	for i := len(sess.Messages) - 1; i >= 0; i-- {
+		m := sess.Messages[i]
+		if lastAssistant == "" && m.Role == session.RoleAssistant && m.Content != "" {
+			lastAssistant = m.Content
+		}
+		if m.Role == session.RoleUser && m.Content != "" {
+			lastUser = m.Content
+			break
+		}
+	}
+	if lastUser == "" && lastAssistant == "" {
+		return
+	}
+	fmt.Fprintf(output, "Continuing conversation (%d messages). Last exchange:\n", len(sess.Messages))
+	if lastUser != "" {
+		fmt.Fprintf(output, "  you: %s\n", truncateLine(lastUser, 100))
+	}
+	if lastAssistant != "" {
+		fmt.Fprintf(output, "  joshbot: %s\n", truncateLine(lastAssistant, 100))
+	}
+	fmt.Fprintln(output, "Type /new to start fresh.")
+}
+
+// truncateLine flattens a message to one line and caps its width.
+func truncateLine(s string, width int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= width {
+		return s
+	}
+	return string(r[:width]) + "…"
 }
 
 // headlessSession resolves the (channel, senderID) pair that getSessionKey in

@@ -208,6 +208,10 @@ model comes from the provider you selected (e.g. `llama3.1:8b` for `ollama`).
 `--api-key` falls back to `JOSHBOT_PROVIDERS__<PROVIDER>__API_KEY`, and
 `azure`/`custom` also need `--api-base`.
 
+Keys for *other* providers found in the environment are offered as fallbacks:
+interactive runs ask per provider, `--force` runs add them with a printed
+notice, and `provider_defaults.fallback_order` is written primary-first.
+
 Onboarding **exits non-zero when no provider ended up configured** — including
 interactive runs with stdin closed. The config and workspace scaffold are still
 written; only the exit status reports the failure. Credential validation after

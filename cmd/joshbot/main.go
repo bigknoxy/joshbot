@@ -3186,6 +3186,14 @@ func runOnboard(c *cli.Context) error {
 		}
 		cfg.ProviderDefaults.Default = provider
 		providerConfigured = true
+
+		// The environment may hold keys for other providers — the strongest
+		// possible signal the user has them and would want a fallback chain,
+		// which otherwise needs a second command (or used to need a text
+		// editor). Interactive runs ask; --force runs add them with a printed
+		// notice, since a non-interactive run cannot ask and an env var the
+		// user exported is an explicit choice.
+		offerEnvFallbacks(cfg, provider, force)
 	}
 
 	// A non-interactive --force run that ends up with no usable provider must
@@ -3361,6 +3369,44 @@ func selectProvider(existingCfg *config.Config) string {
 		return providerList[idx-1]
 	}
 	return providerList[0]
+}
+
+// offerEnvFallbacks scans the environment for other providers' API keys and
+// wires them in as fallbacks after the primary. Interactive runs confirm per
+// provider (default yes; EOF or "n" declines); force runs add with a notice.
+// The fallback order is written explicitly — primary first — because that is
+// the feature the second key exists for.
+func offerEnvFallbacks(cfg *config.Config, primary string, force bool) {
+	var added []string
+	for _, name := range interactiveProviderMenu() {
+		if name == primary || name == "github-copilot" || name == "ollama" {
+			continue // keyless or OAuth providers have no env key to find
+		}
+		key := providerAPIKeyFromEnv(name)
+		if key == "" {
+			continue
+		}
+		if !force {
+			fmt.Printf("\nFound a %s API key in the environment. Add %s as a fallback provider? [Y/n]: ",
+				configure.GetProviderDisplayName(name), name)
+			var answer string
+			fmt.Scanln(&answer)
+			if a := strings.ToLower(strings.TrimSpace(answer)); a == "n" || a == "no" {
+				continue
+			}
+		}
+		cfg.Providers[name] = config.ProviderConfig{
+			APIKey:  key,
+			Enabled: true,
+			Model:   providers.GetDefaultModel(name),
+		}
+		added = append(added, name)
+		fmt.Printf("  + %s added as a fallback (key from environment)\n", configure.GetProviderDisplayName(name))
+	}
+	if len(added) > 0 {
+		cfg.ProviderDefaults.FallbackOrder = append([]string{primary}, added...)
+		fmt.Printf("  Fallback order: %s\n", strings.Join(cfg.ProviderDefaults.FallbackOrder, " → "))
+	}
 }
 
 // interactiveProviderMenu is the ordered provider list for the onboard and

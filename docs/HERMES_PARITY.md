@@ -74,7 +74,7 @@ path** from install to working multi-provider fallback.
       checkmark for unauthenticated `/models` endpoints)
 - [x] `joshbot configure fallback` (flag + interactive) — first CLI path that
       writes a fallback chain
-- [ ] Onboard offers fallback when a second provider key is present in env
+- [x] Onboard offers fallback when a second provider key is present in env
 - [ ] Converge on one canonical config format + `joshbot configure migrate`;
       stop serializing the empty `models_config` stub
 - [x] Full provider menu derived from `configure.SupportedProviders()`

@@ -269,3 +269,47 @@ func TestReplyMetadata(t *testing.T) {
 		t.Errorf("no-id no-markdown should be nil, got %v", m)
 	}
 }
+
+// A cron or heartbeat inbound carries no chat id; the reply resolves to the
+// channel's last known one instead of failing "no valid recipient". And the
+// empty inbound id must not clobber the stored one on the way in.
+func TestGatewayHandlerResolvesProactiveRepliesToLastKnownChat(t *testing.T) {
+	r := &recordingDeps{}
+	d := baseDeps(r, "⏰ reminder: stand up", nil)
+	d.getChatID = func(channel string) (string, bool) {
+		if channel == "telegram" {
+			return "999", true
+		}
+		return "", false
+	}
+
+	cronMsg := bus.InboundMessage{
+		Channel:  "telegram",
+		SenderID: "cron",
+		Content:  "remind the user to stand up",
+		Metadata: map[string]any{"job_id": "j1"},
+	}
+	gatewayHandler(d)(context.Background(), cronMsg)
+
+	out := r.out()
+	if len(out) != 1 {
+		t.Fatalf("published %d messages, want 1", len(out))
+	}
+	if out[0].ChannelID != "999" {
+		t.Errorf("ChannelID = %q, want the last known chat 999", out[0].ChannelID)
+	}
+	// The id-less inbound must not have stored "" over the recalled id.
+	for _, pair := range r.chatIDs {
+		if pair[1] == "" {
+			t.Errorf("an empty chat id was stored for %q", pair[0])
+		}
+	}
+}
+
+// Without a stored id the reply still publishes (the channel logs the
+// missing recipient); resolveChannelID must not panic on a nil getChatID.
+func TestResolveChannelIDNilSafe(t *testing.T) {
+	if id := resolveChannelID(gatewayDeps{}, bus.InboundMessage{Channel: "telegram"}); id != "" {
+		t.Errorf("resolveChannelID = %q, want empty", id)
+	}
+}

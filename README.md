@@ -38,7 +38,7 @@ joshbot is heavier on guarantees, lighter on your machine.
 - **Prompt Caching** - Intelligent caching of system prompts with mtime-based invalidation for faster responses
 - **Tool Use** - File operations, shell commands, web search, scheduling, and more
 - **Proactive Tasks** - Heartbeat system for autonomous task processing
-- **Scheduled Reminders** - Ask for a reminder in `30m`, `2h` or `1d`, one-off or repeating; jobs persist across restarts
+- **Scheduled Reminders** - Ask for a reminder in `30m`, `2h` or `1d`, one-off or repeating; jobs *and their delivery* persist across restarts — a reminder that fires after a reboot still reaches your chat
 
 ## Requirements
 

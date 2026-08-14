@@ -234,3 +234,39 @@ func TestConfigureProviderWizardOllamaEmptyAnswersKeepTheExistingEntry(t *testin
 		t.Error(`ollama was written without "enabled": true`)
 	}
 }
+
+// The generic default case covers registry-backed providers with no bespoke
+// prompts — anthropic and openai reached the wizard via the expanded menu and
+// must complete, not fall through the switch configuring nothing.
+func TestConfigureProviderWizardGenericBranch(t *testing.T) {
+	for _, provider := range []string{"anthropic", "openai"} {
+		t.Run(provider, func(t *testing.T) {
+			withTempHome(t)
+			base := emptyModelsServer(t).URL + "/v1"
+
+			// key, api base, model.
+			withStdinInput(t, "sk-wizard-key\n"+base+"\ngeneric-model\n")
+
+			cfg := config.Defaults()
+			cfg.Providers = nil
+			cfg.ProviderDefaults.Default = ""
+
+			var got *config.Config
+			captureStdout(t, func() { got = configureProvider(cfg, provider) })
+
+			p, ok := got.Providers[provider]
+			if !ok {
+				t.Fatalf("%s was not written to the config: %+v", provider, got.Providers)
+			}
+			if !p.Enabled || p.APIKey != "sk-wizard-key" || p.APIBase != base {
+				t.Errorf("provider = %+v", p)
+			}
+			if p.Model != "generic-model" {
+				t.Errorf("Model = %q, want generic-model", p.Model)
+			}
+			if got.ProviderDefaults.Default != provider {
+				t.Errorf("first provider should become the default, got %q", got.ProviderDefaults.Default)
+			}
+		})
+	}
+}

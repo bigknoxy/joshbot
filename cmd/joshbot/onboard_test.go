@@ -622,3 +622,66 @@ func TestRunOnboard_Force_PreservesExistingAPIKey(t *testing.T) {
 		t.Error("existing enabled provider must stay enabled")
 	}
 }
+
+// A second provider's key in the environment becomes a fallback: in --force
+// mode automatically (a non-interactive run cannot ask, and an exported env
+// var is an explicit choice), with the fallback order written primary-first.
+func TestOfferEnvFallbacksForce(t *testing.T) {
+	t.Setenv("JOSHBOT_PROVIDERS__GROQ__API_KEY", "gsk-env")
+	t.Setenv("JOSHBOT_PROVIDERS__ANTHROPIC__API_KEY", "")
+
+	cfg := config.Defaults()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"nvidia": {APIKey: "k", Enabled: true},
+	}
+	cfg.ProviderDefaults.Default = "nvidia"
+
+	captureStdout(t, func() { offerEnvFallbacks(cfg, "nvidia", true) })
+
+	p, ok := cfg.Providers["groq"]
+	if !ok || !p.Enabled || p.APIKey != "gsk-env" {
+		t.Fatalf("groq not added from env: %+v", cfg.Providers)
+	}
+	order := cfg.ProviderDefaults.FallbackOrder
+	if len(order) != 2 || order[0] != "nvidia" || order[1] != "groq" {
+		t.Errorf("FallbackOrder = %v, want [nvidia groq]", order)
+	}
+	if _, ok := cfg.Providers["anthropic"]; ok {
+		t.Error("an empty env var must not add a provider")
+	}
+}
+
+// Interactively, 'n' declines and nothing is written.
+func TestOfferEnvFallbacksInteractiveDecline(t *testing.T) {
+	t.Setenv("JOSHBOT_PROVIDERS__GROQ__API_KEY", "gsk-env")
+
+	cfg := config.Defaults()
+	cfg.Providers = map[string]config.ProviderConfig{"nvidia": {APIKey: "k", Enabled: true}}
+	cfg.ProviderDefaults.Default = "nvidia"
+
+	withStdinInput(t, "n\n")
+	captureStdout(t, func() { offerEnvFallbacks(cfg, "nvidia", false) })
+
+	if _, ok := cfg.Providers["groq"]; ok {
+		t.Error("declined provider was added anyway")
+	}
+	if cfg.ProviderDefaults.FallbackOrder != nil {
+		t.Errorf("FallbackOrder = %v, want none", cfg.ProviderDefaults.FallbackOrder)
+	}
+}
+
+// Interactively, bare Enter (and EOF) accepts — the default is yes.
+func TestOfferEnvFallbacksInteractiveDefaultYes(t *testing.T) {
+	t.Setenv("JOSHBOT_PROVIDERS__GROQ__API_KEY", "gsk-env")
+
+	cfg := config.Defaults()
+	cfg.Providers = map[string]config.ProviderConfig{"nvidia": {APIKey: "k", Enabled: true}}
+	cfg.ProviderDefaults.Default = "nvidia"
+
+	withStdinInput(t, "\n")
+	captureStdout(t, func() { offerEnvFallbacks(cfg, "nvidia", false) })
+
+	if _, ok := cfg.Providers["groq"]; !ok {
+		t.Error("bare Enter should accept the fallback")
+	}
+}

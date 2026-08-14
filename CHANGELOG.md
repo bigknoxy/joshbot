@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Onboarding builds a fallback chain from keys already in the environment.**
+  A `JOSHBOT_PROVIDERS__<NAME>__API_KEY` (or shorthand) for a provider other
+  than the one being onboarded is the strongest possible signal a fallback is
+  wanted. Interactive onboarding asks per provider (default yes);
+  `--force` runs add them with a printed notice, since a non-interactive run
+  cannot ask and an exported env var is an explicit choice. The fallback
+  order is written primary-first.
+
+### Added
+
 - **The onboard and configure menus now offer every provider the guided path
   can set up — including Anthropic and OpenAI.** The menus hardcoded six
   names, so the two providers a newcomer is most likely to already hold a

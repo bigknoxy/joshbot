@@ -550,12 +550,17 @@ footer a:hover { text-decoration: underline; }
     <div class="case-card">
       <div class="icon">📡</div>
       <h3>Scheduled &amp; Proactive</h3>
-      <p>Schedule reminders in plain durations (<code>30m</code>, <code>2h</code>, <code>1d</code>), one-off or repeating. A heartbeat scans for unchecked tasks and follows up on its own.</p>
+      <p>Schedule reminders in plain durations (<code>30m</code>, <code>2h</code>, <code>1d</code>), one-off or repeating — jobs <em>and their delivery</em> survive restarts, so a reminder set before a reboot still reaches your chat. A heartbeat scans for unchecked tasks and follows up on its own.</p>
     </div>
     <div class="case-card">
       <div class="icon">🧩</div>
       <h3>Auto Skill Creation</h3>
       <p>Observes repeated tool-use patterns and generates reusable skills. Common tasks become one-command operations.</p>
+    </div>
+    <div class="case-card">
+      <div class="icon">🔎</div>
+      <h3>Conversation Search</h3>
+      <p><code>joshbot sessions search "that thing"</code> greps every transcript — case-insensitive, newest first, redacted output — and the agent has the same recall via the <code>session_search</code> tool, so "what did we decide last week" is answered from the record, on any channel. <code>joshbot agent --continue</code> resumes the latest session headlessly with a recap.</p>
     </div>
     <div class="case-card">
       <div class="icon">🤖</div>
@@ -585,7 +590,7 @@ footer a:hover { text-decoration: underline; }
     <div class="case-card">
       <div class="icon">📱</div>
       <h3>Telegram &amp; Discord</h3>
-      <p>Chat from anywhere via Telegram or Discord. Full skill and memory access from your phone. Telegram uses long-polling, Discord an outbound gateway websocket — no webhooks or inbound ports either way. Both channels fail closed — an empty allowlist rejects everyone. Enable one at a time: the bus has a single outbound channel that both read competitively, so running them together has them steal each other's replies.</p>
+      <p>Chat from anywhere via Telegram or Discord. Full skill and memory access from your phone. On Telegram, replies render as Markdown and thread to the message that asked, a live status line shows what tool is running mid-turn, reminders survive restarts, text files you send are actually read, and a voice message gets an honest "I can't listen yet" instead of a confident guess. Telegram uses long-polling, Discord an outbound gateway websocket — no webhooks or inbound ports either way. Both fail closed — an empty allowlist rejects everyone. Enable one at a time: the bus has a single outbound channel both read competitively.</p>
     </div>
     <div class="case-card">
       <div class="icon">🖼️</div>

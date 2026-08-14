@@ -88,3 +88,30 @@ func TestTruncateLineFlattensAndCaps(t *testing.T) {
 		t.Errorf("cap = %q (len %d)", got, len([]rune(got)))
 	}
 }
+
+func TestHumanizeSince(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		age  time.Duration
+		want string
+	}{
+		{30 * time.Second, "just now"},
+		{5 * time.Minute, "5m ago"},
+		{3 * time.Hour, "3h ago"},
+		{72 * time.Hour, "3d ago"},
+	}
+	for _, tc := range cases {
+		if got := humanizeSince(now.Add(-tc.age)); got != tc.want {
+			t.Errorf("humanizeSince(-%v) = %q, want %q", tc.age, got, tc.want)
+		}
+	}
+}
+
+func TestSplitCommaList(t *testing.T) {
+	if got := splitCommaList(" a, b ,,c "); len(got) != 3 || got[0] != "a" || got[2] != "c" {
+		t.Errorf("splitCommaList = %v", got)
+	}
+	if got := splitCommaList(""); got != nil {
+		t.Errorf("empty should be nil, got %v", got)
+	}
+}

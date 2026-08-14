@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ProviderEntry represents a single provider in the fallback chain.
@@ -14,6 +15,10 @@ type ProviderEntry struct {
 	Model    string   // Default model for this provider
 	Priority int      // Fallback order (0 = primary, higher = later fallback)
 	Enabled  bool     // Whether this provider is enabled for fallback
+	// MaxRetries is the same-provider retry budget for fallback-class
+	// failures. Zero (the default here) means fail over immediately; the
+	// joshbot binary raises it to DefaultMaxRetries at registration time.
+	MaxRetries int
 }
 
 // MultiProviderConfig holds configuration for the multi-provider.
@@ -29,6 +34,14 @@ type MultiProvider struct {
 	orderedEntries  []*ProviderEntry
 	defaultProvider string
 	logger          Logger
+	// health tracks consecutive failures per provider so a known-dead
+	// provider is deprioritized instead of re-dialled (and timed out) on
+	// every turn. Process-local by design.
+	health map[string]*providerHealth
+	// now and sleep are injection points for tests; production uses
+	// time.Now and sleepCtx.
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // NewMultiProvider creates a new MultiProvider.
@@ -46,6 +59,9 @@ func NewMultiProvider(cfg MultiProviderConfig) *MultiProvider {
 		orderedEntries:  make([]*ProviderEntry, 0),
 		defaultProvider: cfg.DefaultProvider,
 		logger:          cfg.Logger,
+		health:          make(map[string]*providerHealth),
+		now:             time.Now,
+		sleep:           sleepCtx,
 	}
 }
 
@@ -203,9 +219,20 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 			"attempt", len(attempted)+1,
 		)
 
-		resp, err := entry.Provider.Chat(ctx, tryReq)
+		var resp *ChatResponse
+		err := mp.tryWithRetry(ctx, entry.Name, func() error {
+			r, callErr := entry.Provider.Chat(ctx, tryReq)
+			if callErr == nil {
+				resp = r
+			}
+			return callErr
+		})
 		if err == nil {
+			mp.markSuccess(entry.Name)
 			return resp, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 
 		attempted = append(attempted, entry.Name)
@@ -234,6 +261,7 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 			continue
 		}
 
+		mp.markFailure(entry.Name, err)
 		mp.logger.Info("Falling back to next provider",
 			"failed_provider", entry.Name,
 			"reason", ClassifyError(err),
@@ -271,9 +299,20 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		tryReq := req
 		tryReq.Model = mp.resolveModel(entry, modelName, entry.Name == providerName)
 
-		ch, err := entry.Provider.ChatStream(ctx, tryReq)
+		var ch <-chan StreamChunk
+		err := mp.tryWithRetry(ctx, entry.Name, func() error {
+			c, callErr := entry.Provider.ChatStream(ctx, tryReq)
+			if callErr == nil {
+				ch = c
+			}
+			return callErr
+		})
 		if err == nil {
+			mp.markSuccess(entry.Name)
 			return ch, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 
 		lastErr = err
@@ -288,6 +327,7 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 			continue
 		}
 
+		mp.markFailure(entry.Name, err)
 		mp.logger.Info("Stream fallback",
 			"failed_provider", entry.Name,
 			"error", err,
@@ -369,29 +409,84 @@ func (mp *MultiProvider) resolveModel(entry *ProviderEntry, requestedModel strin
 	return requestedModel
 }
 
-// getFallbackChain returns providers in fallback order, excluding disabled providers.
+// tryWithRetry runs call up to 1 + the provider's retry budget times,
+// retrying only fallback-class errors and pacing each retry by the upstream
+// Retry-After when given, otherwise jittered exponential backoff. Returns the
+// last error; a cancelled context ends the retries immediately.
+func (mp *MultiProvider) tryWithRetry(ctx context.Context, name string, call func() error) error {
+	maxRetries := mp.maxRetriesFor(name)
+
+	var err error
+	for attempt := 0; ; attempt++ {
+		err = call()
+		if err == nil {
+			return nil
+		}
+		if attempt >= maxRetries || !IsFallbackError(err, name) {
+			return err
+		}
+		delay, ok := retryDelay(err, attempt)
+		if !ok {
+			// The upstream asked for a longer wait than a turn should
+			// stall for: hand the error back so the caller cools this
+			// provider down and moves along the chain now.
+			return err
+		}
+		mp.logger.Info("Retrying provider after transient error",
+			"provider", name,
+			"attempt", attempt+1,
+			"max_retries", maxRetries,
+			"delay", delay.String(),
+			"reason", ClassifyError(err),
+		)
+		if sleepErr := mp.sleep(ctx, delay); sleepErr != nil {
+			return err
+		}
+	}
+}
+
+// getFallbackChain returns providers in fallback order, excluding disabled
+// providers. Providers in cooldown are moved to the end of the chain rather
+// than dropped: a healthy fallback answers first, but a chain that is all
+// cooling still gets dialled — a cooldown costs latency, never availability.
 func (mp *MultiProvider) getFallbackChain(startProvider string) []*ProviderEntry {
 	mp.mu.RLock()
 	defer mp.mu.RUnlock()
 
-	result := make([]*ProviderEntry, 0, len(mp.orderedEntries))
+	ordered := make([]*ProviderEntry, 0, len(mp.orderedEntries))
 	seen := make(map[string]bool)
 
 	// Start with specified provider (only if enabled)
 	if entry, exists := mp.entries[startProvider]; exists && entry.Enabled {
-		result = append(result, entry)
+		ordered = append(ordered, entry)
 		seen[startProvider] = true
 	}
 
 	// Add remaining enabled providers by priority
 	for _, entry := range mp.orderedEntries {
 		if !seen[entry.Name] && entry.Enabled {
-			result = append(result, entry)
+			ordered = append(ordered, entry)
 			seen[entry.Name] = true
 		}
 	}
 
-	return result
+	now := mp.now()
+	result := make([]*ProviderEntry, 0, len(ordered))
+	cooling := make([]*ProviderEntry, 0)
+	for _, entry := range ordered {
+		if h := mp.health[entry.Name]; h != nil && now.Before(h.coolUntil) {
+			cooling = append(cooling, entry)
+			continue
+		}
+		result = append(result, entry)
+	}
+	for _, entry := range cooling {
+		mp.logger.Debug("Provider in cooldown, deprioritized",
+			"provider", entry.Name,
+			"cool_until", mp.health[entry.Name].coolUntil.Format(time.RFC3339),
+		)
+	}
+	return append(result, cooling...)
 }
 
 // GetProviderNames returns all registered provider names.

@@ -127,6 +127,11 @@ type ProviderConfig struct {
 	// string ("600s", "10m") or a bare number of seconds; see config.Duration
 	// for why a bare number needs a rule at all.
 	Timeout Duration `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	// MaxRetries is the same-provider retry budget for transient failures
+	// (429/5xx/network) before the fallback chain moves on. A pointer so
+	// that absent means "use the default" (2) while an explicit 0 means
+	// "fail over immediately" — a plain int cannot tell those apart.
+	MaxRetries *int `mapstructure:"max_retries" json:"max_retries,omitempty" yaml:"max_retries,omitempty"`
 }
 
 // ProviderDefaults holds default provider settings
@@ -1185,6 +1190,9 @@ func (c *Config) Validate() error {
 	for name, p := range c.Providers {
 		if err := validateTimeout("providers."+name+".timeout", p.Timeout); err != nil {
 			return err
+		}
+		if p.MaxRetries != nil && (*p.MaxRetries < 0 || *p.MaxRetries > 10) {
+			return fmt.Errorf("providers.%s.max_retries must be between 0 and 10, got %d", name, *p.MaxRetries)
 		}
 	}
 

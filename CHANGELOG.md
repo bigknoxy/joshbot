@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Transient provider failures are now retried on the same provider before the
+  fallback chain moves on.** A single 429/5xx/network blip used to switch the
+  conversation to a different provider — and therefore a different model —
+  immediately. `MultiProvider` now retries the addressed provider with jittered
+  exponential backoff, honouring an upstream `Retry-After` header, up to
+  `providers.<name>.max_retries` times (default 2, `0` restores immediate
+  failover, validated 0–10).
+- **Provider health tracking with cooldown.** A provider that keeps failing —
+  or that asks for a `Retry-After` longer than a turn should stall for (20s) —
+  is deprioritized to the end of the fallback chain for a cooldown window
+  (seeded from `Retry-After` when present, exponential otherwise, capped at
+  5m) instead of being re-dialled and timed out on every turn. Cooldown
+  deprioritizes, never drops: a chain that is all cooling is still dialled.
+  Any success resets a provider's record. The in-chat `/status` command shows
+  consecutive failures and remaining cooldown per provider.
+
 ## [1.52.1] - 2026-08-14
 
 ### Fixed

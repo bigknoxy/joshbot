@@ -811,6 +811,19 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 			return noProvidersRegisteredError(cfg.Providers)
 		}
 	}
+
+	// providers.<name>.max_retries: same-provider retry budget for transient
+	// failures. Every registered provider gets the default; a configured
+	// value overrides it. Applied here rather than in Register so a bare
+	// MultiProvider (tests, library use) stays retry-free unless asked.
+	for _, name := range multiProvider.GetProviderNames() {
+		multiProvider.SetMaxRetries(name, providers.DefaultMaxRetries)
+	}
+	for name, p := range cfg.Providers {
+		if p.MaxRetries != nil {
+			multiProvider.SetMaxRetries(name, *p.MaxRetries)
+		}
+	}
 	return nil
 }
 

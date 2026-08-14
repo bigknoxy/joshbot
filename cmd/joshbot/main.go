@@ -457,6 +457,10 @@ func newApp() *cli.App {
 						Name:  "fallback",
 						Usage: "Comma-separated provider fallback order (e.g. \"nvidia,poolside\"); pass \"\" to clear",
 					},
+					&cli.BoolFlag{
+						Name:  "migrate",
+						Usage: "Convert a legacy provider config to the model-centric format (refuses lossy conversions)",
+					},
 				},
 				Action: withJSONErrors(runConfigure),
 			},
@@ -605,6 +609,17 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 	if cfg.UseModelsConfig() {
 		// Use new model-centric configuration
 		log.Info("Using model-centric configuration")
+		// Both formats populated is almost always an accident — a legacy
+		// operator filled in the models_config stub — and the flip is
+		// silent: the legacy block simply stops being read. Say so.
+		for name, p := range cfg.Providers {
+			if p.APIKey != "" && p.Enabled {
+				log.Warn("Both models_config and legacy providers are populated; the legacy block is ignored",
+					"ignored_provider", name,
+					"hint", "run `joshbot configure --migrate` on a legacy config, or empty models_config.models")
+				break
+			}
+		}
 
 		resolvedModels := cfg.GetAllModelConfigs()
 		for i, resolved := range resolvedModels {
@@ -4284,6 +4299,17 @@ func runConfigure(c *cli.Context) error {
 	}
 
 	conf := configure.New(cfg)
+
+	if c.Bool("migrate") {
+		report, err := conf.MigrateToModelsConfig()
+		if err != nil {
+			return err
+		}
+		for _, line := range report {
+			fmt.Println("  " + line)
+		}
+		return flushConfig(cfg)
+	}
 
 	if c.Bool("list") {
 		format, err := outputFormat(c)

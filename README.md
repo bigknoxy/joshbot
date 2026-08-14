@@ -101,6 +101,7 @@ joshbot mcp list    # Review MCP servers and the tools they advertise
 joshbot mcp trust <name>    # Approve an MCP server's tool manifest
 joshbot configure # Configure LLM providers and settings
 joshbot configure --fallback "nvidia,poolside" # Set the provider fallback order ("" clears)
+joshbot configure --migrate # Convert a legacy provider config to the model-centric format
 joshbot auth github-copilot # Authenticate with GitHub Copilot
 joshbot service install # Install joshbot as a system service
 joshbot update # Update to the latest release

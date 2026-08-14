@@ -75,8 +75,12 @@ path** from install to working multi-provider fallback.
 - [x] `joshbot configure fallback` (flag + interactive) — first CLI path that
       writes a fallback chain
 - [x] Onboard offers fallback when a second provider key is present in env
-- [ ] Converge on one canonical config format + `joshbot configure migrate`;
-      stop serializing the empty `models_config` stub
+- [x] `joshbot configure --migrate` converts a legacy config to model-centric
+      (all-or-nothing, refuses lossy conversions), and a config with both
+      formats populated warns loudly at startup naming the ignored block
+- [ ] Stop serializing the empty `models_config` stub (blocked on
+      `encoding/json` having no omitempty for struct values; needs a pointer
+      or custom marshal)
 - [x] Full provider menu derived from `configure.SupportedProviders()`
 - [x] Actionable error mapping at the `Process` boundary (401 → configure
       hint, 429-all-failed → fallback hint, model 404 → `/model`/preflight,

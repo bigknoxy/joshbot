@@ -187,6 +187,7 @@ func (mp *MultiProvider) screenForImages(req ChatRequest, providers []*ProviderE
 // Chat sends a chat request with automatic fallback.
 func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	providerName, modelName := mp.parseModel(req.Model)
+	providerName = mp.effectiveAddressed(providerName)
 	providers := mp.getFallbackChain(providerName)
 
 	if len(providers) == 0 {
@@ -201,6 +202,10 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 	var lastErr error
 	attempted := make([]string, 0, len(providers))
 	failures := make([]string, 0, len(providers))
+	// addressedErrClass records why the addressed provider failed this turn,
+	// for the fallback notice. Empty means it was never dialled before a
+	// fallback answered (deprioritized by cooldown).
+	addressedErrClass := ""
 
 	for _, entry := range providers {
 		// Check context before each attempt
@@ -229,10 +234,14 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		})
 		if err == nil {
 			mp.markSuccess(entry.Name)
+			notifyFallback(ctx, providerName, entry.Name, tryReq.Model, addressedErrClass)
 			return resp, nil
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if entry.Name == providerName {
+			addressedErrClass = ClassifyError(err)
 		}
 
 		attempted = append(attempted, entry.Name)
@@ -275,6 +284,7 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 // ChatStream sends a streaming chat request with fallback.
 func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
 	providerName, modelName := mp.parseModel(req.Model)
+	providerName = mp.effectiveAddressed(providerName)
 	providers := mp.getFallbackChain(providerName)
 
 	if len(providers) == 0 {
@@ -288,6 +298,9 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 
 	var lastErr error
 	failures := make([]string, 0, len(providers))
+	// See the note in Chat: empty means the addressed provider was never
+	// dialled before a fallback answered.
+	addressedErrClass := ""
 
 	for _, entry := range providers {
 		select {
@@ -309,10 +322,14 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		})
 		if err == nil {
 			mp.markSuccess(entry.Name)
+			notifyFallback(ctx, providerName, entry.Name, tryReq.Model, addressedErrClass)
 			return ch, nil
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if entry.Name == providerName {
+			addressedErrClass = ClassifyError(err)
 		}
 
 		lastErr = err
@@ -407,6 +424,28 @@ func (mp *MultiProvider) resolveModel(entry *ProviderEntry, requestedModel strin
 		return m
 	}
 	return requestedModel
+}
+
+// effectiveAddressed resolves which provider a request is considered
+// addressed to. An unregistered or disabled name — a stale
+// provider_defaults.default, or the constructor's "openrouter" default in a
+// config that never registered openrouter — must not become the addressed
+// provider: the fallback notice would blame a provider that does not exist,
+// and the addressed-only rules (honouring the requested model, returning a
+// non-fallback error immediately) would apply to nobody. The
+// highest-priority enabled entry stands in.
+func (mp *MultiProvider) effectiveAddressed(name string) string {
+	mp.mu.RLock()
+	defer mp.mu.RUnlock()
+	if e, ok := mp.entries[name]; ok && e.Enabled {
+		return name
+	}
+	for _, e := range mp.orderedEntries {
+		if e.Enabled {
+			return e.Name
+		}
+	}
+	return name
 }
 
 // tryWithRetry runs call up to 1 + the provider's retry budget times,

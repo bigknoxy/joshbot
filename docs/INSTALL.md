@@ -534,7 +534,9 @@ The old format is still supported for backward compatibility:
 > same provider with exponential backoff (an upstream `Retry-After` header is
 > honoured) before the fallback chain moves to the next provider. `0` means fail
 > over immediately. A provider that keeps failing is deprioritized in the chain
-> for a cooldown window rather than re-dialled on every turn.
+> for a cooldown window rather than re-dialled on every turn. When a fallback
+> answers, the reply opens with a one-line notice naming the failed provider and
+> who answered; `agents.defaults.quiet_fallback: true` suppresses it.
 > Raise the agent timeout for a slow local
 > model. Anything under a second is rejected at load, naming the key. A value
 > written by an older joshbot is a raw nanosecond count (`900000000000`); it is

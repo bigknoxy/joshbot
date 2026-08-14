@@ -107,3 +107,120 @@ func TestProcess_FallbackDoesNotLeakPrimaryModel(t *testing.T) {
 		t.Errorf("Process() = %q, want the fallback provider's answer", got)
 	}
 }
+
+// The user is told when a fallback answered: the reply opens with a one-line
+// notice naming the failed provider, the reason, and who answered.
+func TestProcess_FallbackNoticePrependedToReply(t *testing.T) {
+	openrouter := &hostedModelProvider{
+		name:    "openrouter",
+		hosts:   map[string]bool{"z-ai/glm-5.2": true},
+		openErr: fmt.Errorf("API error (429): rate limit exceeded"),
+	}
+	poolside := &hostedModelProvider{
+		name:  "poolside",
+		hosts: map[string]bool{"poolside/laguna-s-2.1": true},
+		reply: "Answer from the backup.",
+	}
+
+	mp := providers.NewMultiProvider(providers.MultiProviderConfig{DefaultProvider: "openrouter"})
+	mp.Register("openrouter", openrouter, "z-ai/glm-5.2", 0, true)
+	mp.Register("poolside", poolside, "poolside/laguna-s-2.1", 1, true)
+
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Model = "z-ai/glm-5.2"
+
+	a := NewAgent(cfg, mp, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+
+	got, err := a.Process(context.Background(), bus.InboundMessage{
+		SenderID: "josh", Content: "hello", Channel: "cli", Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Process() failed: %v", err)
+	}
+	for _, want := range []string{"openrouter unavailable", "rate_limit", "answered by poolside", "Answer from the backup."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reply missing %q: %q", want, got)
+		}
+	}
+	if !strings.HasPrefix(got, "⚠️ openrouter unavailable") {
+		t.Errorf("notice should open the reply, got %q", got)
+	}
+}
+
+// quiet_fallback suppresses the notice, nothing else.
+func TestProcess_QuietFallbackSuppressesNotice(t *testing.T) {
+	openrouter := &hostedModelProvider{
+		name:    "openrouter",
+		hosts:   map[string]bool{"z-ai/glm-5.2": true},
+		openErr: fmt.Errorf("API error (429): rate limit exceeded"),
+	}
+	poolside := &hostedModelProvider{
+		name:  "poolside",
+		hosts: map[string]bool{"poolside/laguna-s-2.1": true},
+		reply: "Answer from the backup.",
+	}
+
+	mp := providers.NewMultiProvider(providers.MultiProviderConfig{DefaultProvider: "openrouter"})
+	mp.Register("openrouter", openrouter, "z-ai/glm-5.2", 0, true)
+	mp.Register("poolside", poolside, "poolside/laguna-s-2.1", 1, true)
+
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Model = "z-ai/glm-5.2"
+	cfg.Agents.Defaults.QuietFallback = true
+
+	a := NewAgent(cfg, mp, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+
+	got, err := a.Process(context.Background(), bus.InboundMessage{
+		SenderID: "josh", Content: "hello", Channel: "cli", Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Process() failed: %v", err)
+	}
+	if strings.Contains(got, "unavailable") {
+		t.Errorf("quiet_fallback should suppress the notice: %q", got)
+	}
+	if !strings.Contains(got, "Answer from the backup.") {
+		t.Errorf("reply lost: %q", got)
+	}
+}
+
+// Streaming: the notice is delivered through the sink before the content, and
+// the returned reply text matches what the sink saw.
+func TestProcess_FallbackNoticeStreamsBeforeContent(t *testing.T) {
+	openrouter := &hostedModelProvider{
+		name:    "openrouter",
+		hosts:   map[string]bool{"z-ai/glm-5.2": true},
+		openErr: fmt.Errorf("API error (503): down"),
+	}
+	poolside := &hostedModelProvider{
+		name:  "poolside",
+		hosts: map[string]bool{"poolside/laguna-s-2.1": true},
+		reply: "Streamed answer.",
+	}
+
+	mp := providers.NewMultiProvider(providers.MultiProviderConfig{DefaultProvider: "openrouter"})
+	mp.Register("openrouter", openrouter, "z-ai/glm-5.2", 0, true)
+	mp.Register("poolside", poolside, "poolside/laguna-s-2.1", 1, true)
+
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Model = "z-ai/glm-5.2"
+	cfg.Agents.Defaults.Streaming = true
+
+	a := NewAgent(cfg, mp, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+
+	var streamed strings.Builder
+	ctx := WithStreamSink(context.Background(), func(ev StreamEvent) { streamed.WriteString(ev.Delta) })
+
+	got, err := a.Process(ctx, bus.InboundMessage{
+		SenderID: "josh", Content: "hello", Channel: "cli", Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Process() failed: %v", err)
+	}
+	if !strings.HasPrefix(streamed.String(), "⚠️ openrouter unavailable") {
+		t.Errorf("sink should see the notice first, got %q", streamed.String())
+	}
+	if got != streamed.String() {
+		t.Errorf("reply text %q diverges from streamed text %q", got, streamed.String())
+	}
+}

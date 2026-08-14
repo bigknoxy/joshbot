@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Onboarding no longer prints "✓ credentials validated" for a key that
+  would fail the first real request.** Validation listed the provider's
+  models, but several providers' `/models` endpoint is unauthenticated —
+  OpenRouter answers 200 to *any* Authorization header — so a typo'd key
+  earned a checkmark and then greeted the user's first message with a raw
+  401. Validation is now a one-token chat completion: 401/403 reports
+  "credential rejected" with the upstream text and the provider's key URL, a
+  429 counts as authenticated (a rate limit is issued to a real key), and
+  anything else reports "could not verify" rather than claiming a check that
+  never ran.
+
 ### Added
 
 - **Transient provider failures are now retried on the same provider before the

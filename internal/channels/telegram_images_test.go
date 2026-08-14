@@ -324,3 +324,19 @@ func TestOversizedTextDocumentIsTruncatedWithAMarker(t *testing.T) {
 		t.Fatal("the truncated document never reached the bus")
 	}
 }
+
+// An oversized *binary* file must be refused, not trimmed to nothing: an
+// unbounded rune-boundary trim on invalid-UTF-8 content used to eat the whole
+// buffer and inline an empty "document" carrying only the truncation marker.
+func TestOversizedBinaryFileIsRefusedNotEmptied(t *testing.T) {
+	big := bytes.Repeat([]byte{0xFF, 0xFE}, (telegramTextDocMaxBytes/2)+100)
+	tg, mb, _ := imageChannel(t, []string{"1234"}, big, nil)
+	if err := tg.handleDocument(docMsg("blob.txt", "text/plain", "", int64(len(big)))); err != nil {
+		t.Fatalf("handleDocument: %v", err)
+	}
+	select {
+	case m := <-mb.InboundChannel():
+		t.Fatalf("oversized binary reached the agent as %q", m.Content)
+	default:
+	}
+}

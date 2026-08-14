@@ -88,8 +88,11 @@ func (t *TelegramChannel) readTextDocument(doc *telebot.Document, sizeHint int64
 	truncated := len(data) > telegramTextDocMaxBytes
 	if truncated {
 		data = data[:telegramTextDocMaxBytes]
-		// Do not cut a rune in half at the boundary.
-		for len(data) > 0 && !utf8.Valid(data) {
+		// Do not cut a rune in half at the boundary — but back off at most
+		// UTFMax-1 bytes. An unbounded trim on a binary file (invalid UTF-8
+		// throughout) would eat the whole buffer and pass the text check
+		// below vacuously, inlining nothing but the truncation marker.
+		for i := 0; i < utf8.UTFMax-1 && len(data) > 0 && !utf8.Valid(data); i++ {
 			data = data[:len(data)-1]
 		}
 	}

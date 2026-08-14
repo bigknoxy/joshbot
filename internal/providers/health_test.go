@@ -374,3 +374,36 @@ func TestRetryAfterEndToEndOverHTTP(t *testing.T) {
 		t.Errorf("slept %v, want exactly the wire Retry-After of 2s", fc.slept)
 	}
 }
+
+// A provider down for a very long time must keep its cooldown: the backoff
+// shift is clamped so the duration cannot overflow negative (~40 consecutive
+// failures) and silently drop the cooldown for the most persistently-down
+// provider.
+func TestCooldownSurvivesManyConsecutiveFailures(t *testing.T) {
+	p := &countingProvider{
+		name:     "dead",
+		failWith: &FallbackError{StatusCode: 503, Message: "down", Provider: "dead"},
+		failFor:  1 << 30,
+	}
+	mp := NewMultiProvider(MultiProviderConfig{DefaultProvider: "dead"})
+	fc := installFastClock(mp)
+	mp.Register("dead", p, "model-a", 0, true)
+
+	for i := 0; i < 60; i++ {
+		if i > 0 {
+			fc.now = fc.now.Add(10 * time.Minute) // past any cooldown, so every turn dials
+		}
+		_, _ = mp.Chat(context.Background(), ChatRequest{Model: "dead"})
+	}
+	infos := mp.HealthSnapshot()
+	if len(infos) != 1 || infos[0].Failures != 60 {
+		t.Fatalf("snapshot = %+v", infos)
+	}
+	cool := infos[0].CoolUntil.Sub(fc.now)
+	if cool <= 0 {
+		t.Fatalf("cooldown lost after many failures: %v", cool)
+	}
+	if cool > cooldownMax {
+		t.Errorf("cooldown %v exceeds cap %v", cool, cooldownMax)
+	}
+}

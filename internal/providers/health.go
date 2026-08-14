@@ -100,7 +100,16 @@ func (mp *MultiProvider) markFailure(name string, err error) {
 	if ra := RetryAfterFromError(err); ra > 0 {
 		cool = ra
 	} else if h.failures >= cooldownThreshold {
-		cool = cooldownBase << (h.failures - cooldownThreshold)
+		// The shift is clamped before shifting, not only the result: an
+		// unbounded exponent overflows the int64 duration negative at ~40
+		// consecutive failures, and a negative cool would silently drop the
+		// cooldown for exactly the provider that is most persistently down.
+		// 15s << 5 already exceeds cooldownMax, so 5 loses nothing.
+		shift := h.failures - cooldownThreshold
+		if shift > 5 {
+			shift = 5
+		}
+		cool = cooldownBase << shift
 	}
 	if cool > cooldownMax {
 		cool = cooldownMax

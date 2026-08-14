@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`joshbot configure --fallback "nvidia,poolside"`** — the first CLI path
+  that writes `provider_defaults.fallback_order`; configuring the headline
+  fallback feature previously required hand-editing config.json. Every name
+  must be a configured, enabled provider (a typo would silently vanish from
+  the chain at the exact moment the primary is down); the error names the
+  providers that are configured. `--fallback ""` clears the order.
+
 ### Fixed
 
 - **Onboarding no longer prints "✓ credentials validated" for a key that

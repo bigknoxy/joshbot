@@ -72,7 +72,7 @@ path** from install to working multi-provider fallback.
 
 - [x] Fix false-positive credential validation (1-token completion, or no
       checkmark for unauthenticated `/models` endpoints)
-- [ ] `joshbot configure fallback` (flag + interactive) — first CLI path that
+- [x] `joshbot configure fallback` (flag + interactive) — first CLI path that
       writes a fallback chain
 - [ ] Onboard offers fallback when a second provider key is present in env
 - [ ] Converge on one canonical config format + `joshbot configure migrate`;

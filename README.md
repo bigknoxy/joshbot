@@ -100,6 +100,7 @@ joshbot skills trust <name> # Approve a workspace skill after reviewing it
 joshbot mcp list    # Review MCP servers and the tools they advertise
 joshbot mcp trust <name>    # Approve an MCP server's tool manifest
 joshbot configure # Configure LLM providers and settings
+joshbot configure --fallback "nvidia,poolside" # Set the provider fallback order ("" clears)
 joshbot auth github-copilot # Authenticate with GitHub Copilot
 joshbot service install # Install joshbot as a system service
 joshbot update # Update to the latest release
@@ -1371,8 +1372,13 @@ Debug output will show:
 
 Rate limits (HTTP 429) and transient server errors are retried on the same
 provider with backoff before falling over — `providers.<name>.max_retries`
-(default 2) controls how many times. If you see persistent 429s, configure
-fallback providers in your config for resilience.
+(default 2) controls how many times. If you see persistent 429s, add a fallback
+chain from the CLI — no config editing needed:
+
+```bash
+joshbot configure --provider groq --api-key "$GROQ_API_KEY"
+joshbot configure --fallback "nvidia,groq"
+```
 
 ## License
 

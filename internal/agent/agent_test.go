@@ -92,7 +92,12 @@ type mockSessionManager struct {
 	// reachable through the real manager without breaking the filesystem, and
 	// the checkpoint path branches on it (#244).
 	saveErr error
-	mu      sync.Mutex
+	// saveCount records every successful Save. The agent is expected to
+	// persist a turn even when the turn's budget expired (the real
+	// Manager.Save refuses a dead context, so it cannot be tested through a
+	// manager that ignores it).
+	saveCount int
+	mu        sync.Mutex
 }
 
 func newMockSessionManager() *mockSessionManager {
@@ -120,8 +125,22 @@ func (m *mockSessionManager) Save(ctx context.Context, sess *session.Session) er
 	if m.saveErr != nil {
 		return m.saveErr
 	}
+	// Mirror the real Manager.Save, which refuses a spent context: the
+	// whole point of the persistence-context fix is that a dead turn context
+	// must not take the session with it.
+	if ctx.Err() != nil {
+		return session.ErrContextCancelled
+	}
 	m.sessions[sess.ID] = sess
+	m.saveCount++
 	return nil
+}
+
+// saves returns how many times Save completed successfully.
+func (m *mockSessionManager) saves() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.saveCount
 }
 
 func (m *mockSessionManager) Load(ctx context.Context, key string) (*session.Session, error) {

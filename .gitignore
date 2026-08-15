@@ -56,3 +56,8 @@ htmlcov/
 # gstack skill scratch artifacts
 .gstack/
 .dogfood/
+
+# opencode tooling artifacts (.opencode/ is local-only; the npm lockfile is
+# generated, not project-owned)
+.opencode/package-lock.json
+.opencode/node_modules/

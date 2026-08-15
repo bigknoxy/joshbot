@@ -3138,17 +3138,24 @@ func runGateway(c *cli.Context) error {
 	// not after: the bus handler runs on its own goroutine, and assigning to a
 	// variable it has already captured is a data race even though no message
 	// can arrive before Start.
+	// Voice transcription is a startup-or-never decision: a misconfigured
+	// stt block must fail here, naming the key, not surface as a per-message
+	// error the operator only hears about second-hand. Validated whenever the
+	// block is set — even with Telegram disabled, or the operator would only
+	// learn about the mistake when they enable it later.
+	var transcriber func(context.Context, []byte, string) (string, error)
+	if cfg.STT.Provider != "" {
+		var err error
+		transcriber, err = buildTranscriber(cfg)
+		if err != nil {
+			return fmt.Errorf("stt: %w", err)
+		}
+	}
+
 	var tgChannel *channels.TelegramChannel
 	if cfg.Channels.Telegram.Enabled && cfg.Channels.Telegram.Token != "" {
 		tgChannel = channels.NewTelegramChannel(msgBus, &cfg.Channels.Telegram)
-		// Voice transcription is a startup-or-never decision: a misconfigured
-		// stt block must fail here, naming the key, not surface as a
-		// per-message error the operator only hears about second-hand.
-		if cfg.STT.Provider != "" {
-			transcriber, err := buildTranscriber(cfg)
-			if err != nil {
-				return fmt.Errorf("stt: %w", err)
-			}
+		if transcriber != nil {
 			tgChannel.SetTranscriber(transcriber)
 		}
 	}

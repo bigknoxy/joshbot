@@ -515,26 +515,29 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &compaction)
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
+		// A spent turn budget must not take the accumulated conversation with
+		// it. The session already holds every message and tool result the loop
+		// accumulated, and it used to be dropped on every error path because
+		// the return happened before the save at the end of Process. This
+		// covers both expiry (DeadlineExceeded) and a client-disconnect
+		// cancellation (Canceled, e.g. a dropped HTTP request) — the real
+		// Manager.Save refuses a spent context, so a fresh one is required.
+		if ctx.Err() != nil {
+			persistCtx, pcancel := a.persistenceCtx(ctx)
+			defer pcancel()
+			if err := a.sessions.Save(persistCtx, sess); err != nil {
+				a.logger.Warn("Failed to save session after a spent-budget turn", "session", sess.ID, "error", err)
+			}
+		}
 		// Check for timeout
 		if ctx.Err() == context.DeadlineExceeded {
 			reply := "I'm sorry, but processing your request took too long. Please try again or simplify your request."
-			// The reply must reach the stream sink: a turn that already
-			// streamed narration has made every consumer's delivery decision
-			// ("did anything stream?") true, and a plain-text return is then
-			// suppressed — the timeout notice reached nobody (#283).
-			if sink := streamSinkFromContext(ctx); sink != nil {
-				sink(StreamEvent{Delta: reply})
-			}
-			// Persist the turn before returning. The session already holds
-			// every message and tool result the loop accumulated, and it used
-			// to be dropped on this path because the return happened before
-			// the save at the end of Process. A fresh context is required:
-			// the turn context is spent and the real Manager.Save refuses it.
-			persistCtx, pcancel := context.WithTimeout(context.Background(), persistenceWriteTimeout)
-			defer pcancel()
-			if err := a.sessions.Save(persistCtx, sess); err != nil {
-				a.logger.Warn("Failed to save session after timeout", "session", sess.ID, "error", err)
-			}
+			// The reply must reach the stream sink: every consumer decides
+			// "was the answer shown?" by "did anything stream this turn?", so
+			// a turn that already sent any delta (narration, a progress line)
+			// has made that true and a plain-text return is then suppressed —
+			// the timeout notice reached nobody (#283).
+			emitThroughSink(ctx, reply)
 			return reply, nil
 		}
 		reply := fmt.Sprintf("Error processing request: %v", err)
@@ -899,13 +902,13 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	if checkpointSaved {
 		resp += "\nTo continue, type `/resume` and I'll pick up where we left off."
 	}
-	// The reply must reach the stream sink. The loop has already streamed
-	// narration to it, so every consumer's delivery decision ("did anything
-	// stream?") is true and a plain-text return is suppressed — the reply
-	// that explains why the turn stopped reached nobody (#283).
-	if sink := streamSinkFromContext(ctx); sink != nil {
-		sink(StreamEvent{Delta: resp})
-	}
+	// The reply must reach the stream sink. Every consumer decides "was the
+	// answer shown?" by "did anything stream this turn?" — the sink exists
+	// before the first delta, so even a tool-call-only turn (or one where
+	// only narration streamed) counts — and a plain-text return is then
+	// suppressed. The reply that explains why the turn stopped must ride the
+	// sink, or it reaches nobody (#283).
+	emitThroughSink(ctx, resp)
 	return resp, nil
 }
 

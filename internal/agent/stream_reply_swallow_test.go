@@ -19,6 +19,7 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/providers"
+	"github.com/bigknoxy/joshbot/internal/session"
 )
 
 // maxIterationStreamingProvider always answers with a tool call that never
@@ -141,6 +142,72 @@ func TestTimeoutTurnPersistsSession(t *testing.T) {
 	if saves := sessions.saves(); saves == 0 {
 		t.Fatal("a timed-out turn saved no session — the conversation was lost")
 	}
+	// The save must have carried the turn's own message, not just happened:
+	// saving an empty session file would still look like persistence.
+	saved, err := sessions.Load(context.Background(), "cli:user123")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !hasUserMessage(saved, "hello") {
+		t.Errorf("saved session is missing the user's message — the turn content was lost")
+	}
+}
+
+// A client that disconnects mid-turn cancels the turn's context. The docs
+// claim persistence "covers cancellation as well as expiry" — before this
+// regression test the Canceled case fell through to the generic error branch,
+// which returned before the save at the end of Process, dropping the whole
+// accumulated turn on exactly the kind of interruption that needs saving most.
+func TestCancelledTurnPersistsSession(t *testing.T) {
+	cfg := newNonStreamingConfig()
+
+	sessions := newMockSessionManager()
+	agent := NewAgent(cfg, newHangingProvider(), &mockToolExecutor{}, sessions, newMockLogger(),
+		WithTimeout(5*time.Second))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Simulate a dropped client: cancel the turn's parent context while the
+	// provider is mid-turn.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	response, err := agent.Process(ctx, bus.InboundMessage{
+		SenderID: "user123", Content: "hello", Channel: "cli", Timestamp: time.Now(),
+	})
+	<-done
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if strings.Contains(strings.ToLower(response), "took too long") {
+		t.Errorf("Process() = %q, want the generic in-band error, not the timeout reply", response)
+	}
+
+	if saves := sessions.saves(); saves == 0 {
+		t.Fatal("a cancelled turn saved no session — the conversation was lost")
+	}
+	saved, err := sessions.Load(context.Background(), "cli:user123")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !hasUserMessage(saved, "hello") {
+		t.Errorf("saved session is missing the user's message — the turn content was lost")
+	}
+}
+
+// hasUserMessage reports whether the session holds a user message with the
+// given content.
+func hasUserMessage(s *session.Session, content string) bool {
+	for _, m := range s.Messages {
+		if m.Role == session.RoleUser && m.Content == content {
+			return true
+		}
+	}
+	return false
 }
 
 // A max-iteration turn that crosses the deadline mid-turn (a slow tool) must

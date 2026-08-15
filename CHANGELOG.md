@@ -24,8 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exceeded` — the transcript was empty on exactly the turns that needed saving
   most, and `/resume` had nothing to resume. Persistence now runs on
   `persistenceCtx`, which swaps a fired turn context for a fresh 10-second one,
-  so the accumulated messages, checkpoint and topic are saved. This covers
-  client-disconnect cancellation too.
+  so the accumulated messages, checkpoint and topic are saved. The error path
+  persists on *any* spent turn budget — a deadline **or** a client-disconnect
+  cancellation (dropped HTTP request), which previously fell to the generic
+  error branch and returned before the save. The 10-second bound is enforced at
+  the save's entry; a hung filesystem can still exceed it inside the write.
 
 ### Changed
 

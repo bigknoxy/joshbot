@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A streamed turn's synthesized replies reach the user (#283).** The
+  max-iteration reply and the timeout reply were returned as plain text with a
+  nil error *after* streaming, and every consumer decides "was the answer
+  shown?" by "did anything stream this turn?" — so a turn that streamed
+  narration and then hit a limit or deadline showed the user **nothing**: no
+  timeout notice, no "hit the max iteration limit", no `/resume` hint. Both
+  replies are now emitted through the stream sink, and the CLI and Telegram
+  delivery gating is unchanged (the sink emission is what makes it true).
+- **A failed or truncated turn no longer loses its session (#283).** The
+  pure-timeout path returned before the session save, and every post-loop write
+  (checkpoint, history, compaction, session, topic) inherited the spent turn
+  context and failed instantly with `context cancelled` / `context deadline
+  exceeded` — the transcript was empty on exactly the turns that needed saving
+  most, and `/resume` had nothing to resume. Persistence now runs on
+  `persistenceCtx`, which swaps a fired turn context for a fresh 10-second one,
+  so the accumulated messages, checkpoint and topic are saved. The error path
+  persists on *any* spent turn budget — a deadline **or** a client-disconnect
+  cancellation (dropped HTTP request), which previously fell to the generic
+  error branch and returned before the save. The 10-second bound is enforced at
+  the save's entry; a hung filesystem can still exceed it inside the write.
+
+### Changed
+
+- **The system prompt tells the model to act before it narrates**: "run the
+  tools, then report what you found. Never reply with an intention ('I'll dig
+  into this') instead of doing it." Pinned by a prompt-lint test in
+  `internal/agent/prompt_eval_test.go`.
+
 ## [1.55.0] - 2026-08-15
 
 ### Added

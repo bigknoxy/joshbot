@@ -111,6 +111,18 @@ func streamSinkFromContext(ctx context.Context) StreamSink {
 	return nil
 }
 
+// emitThroughSink delivers a synthesized reply (timeout, max-iteration) to
+// the stream sink when one is attached. Every streaming consumer decides "was
+// the answer shown?" by "did anything stream this turn?", so any reply the
+// loop synthesizes *after* the sink exists must ride the sink or the consumer
+// suppresses it — the synthesized replies that explain why a turn stopped are
+// exactly the ones that used to reach nobody (#283). A nil sink is a no-op.
+func emitThroughSink(ctx context.Context, text string) {
+	if sink := streamSinkFromContext(ctx); sink != nil {
+		sink(StreamEvent{Delta: text})
+	}
+}
+
 // WithUsageSink attaches a per-request token-usage callback to the context.
 // When the context already carries a sink, the new usage callback replaces
 // the existing one. Passing nil clears the usage callback while preserving

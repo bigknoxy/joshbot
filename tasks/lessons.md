@@ -51,3 +51,9 @@ Model: c.provider.Config().Model,        // CORRECT: gofmt standard
 - CI must pass for ALL commits on main before cutting a release tag
 - Release tags must only be pushed AFTER CI on the corresponding main commit is green
 - Never push a tag and main commit simultaneously — wait for CI confirmation first
+
+## 2026-08-15 dogfooding session
+- **Failure mode**: pointed joshbot at a sandbox with `JOSHBOT_HOME` and it silently used `~/.joshbot` instead — the home lever is `HOME` (`DefaultHome = $HOME/.joshbot`, config.go:106). `JOSHBOT_*` vars are only an env-override namespace for config keys, never for the home dir. **Detection**: model read paths under `/root/.joshbot/workspace` and logs showed `cron_jobs_file=~/.joshbot/workspace`. **Prevention**: to sandbox joshbot, set `HOME`; verify with the "Background services started cron_jobs_file=..." log line.
+- **Failure mode**: `grep -o 'sk-or-[A-Za-z0-9]*'` truncated the key at the first hyphen, and a `GET /models` 200 was read as proof the key was valid. **Detection**: POST /chat/completions 401 "User not found". **Prevention**: extract keys with `sk-or-v1-[A-Za-z0-9_-]+`; probe keys with a chat completion, never `/models` (OpenRouter's /models is unauthenticated — the AGENTS.md gotcha, hit for real).
+- **Failure mode**: used the dead OpenRouter key to dogfood the production model and burned two turns on 401s. **Prevention**: check which key a config will actually use (`joshbot preflight` / `configure --list`) before a repro that needs the network.
+- **Verification**: streaming bugs do NOT reproduce via `agent -m` (no TTY ⇒ no stream sink). Always allocate a pty with `script -qec` when the symptom is a streaming/delivery issue.

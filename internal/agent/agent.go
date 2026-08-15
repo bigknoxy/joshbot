@@ -515,9 +515,30 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &compaction)
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
+		// A spent turn budget must not take the accumulated conversation with
+		// it. The session already holds every message and tool result the loop
+		// accumulated, and it used to be dropped on every error path because
+		// the return happened before the save at the end of Process. This
+		// covers both expiry (DeadlineExceeded) and a client-disconnect
+		// cancellation (Canceled, e.g. a dropped HTTP request) — the real
+		// Manager.Save refuses a spent context, so a fresh one is required.
+		if ctx.Err() != nil {
+			persistCtx, pcancel := a.persistenceCtx(ctx)
+			defer pcancel()
+			if err := a.sessions.Save(persistCtx, sess); err != nil {
+				a.logger.Warn("Failed to save session after a spent-budget turn", "session", sess.ID, "error", err)
+			}
+		}
 		// Check for timeout
 		if ctx.Err() == context.DeadlineExceeded {
-			return "I'm sorry, but processing your request took too long. Please try again or simplify your request.", nil
+			reply := "I'm sorry, but processing your request took too long. Please try again or simplify your request."
+			// The reply must reach the stream sink: every consumer decides
+			// "was the answer shown?" by "did anything stream this turn?", so
+			// a turn that already sent any delta (narration, a progress line)
+			// has made that true and a plain-text return is then suppressed —
+			// the timeout notice reached nobody (#283).
+			emitThroughSink(ctx, reply)
+			return reply, nil
 		}
 		reply := fmt.Sprintf("Error processing request: %v", err)
 		// A raw provider error tells the user what broke, never what to do
@@ -530,11 +551,19 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 		return reply, nil
 	}
 
+	// The writes below (history, compaction, session, topic) must survive a
+	// spent turn budget. A max-iteration turn whose last tool ran past the
+	// deadline needs its checkpoint and session saved more than any other
+	// turn, and every write used to inherit the dead turn context and fail
+	// instantly (#283).
+	pctx, pcancel := a.persistenceCtx(ctx)
+	defer pcancel()
+
 	if a.history != nil {
 		newMessages := sess.Messages[startSessionLen:]
 		if shouldRecordSignificantTurn(newMessages, msg.Content, responseContent) {
 			entry := formatHistoryEntry(msg.Content, responseContent, newMessages)
-			if err := a.history.AppendHistory(ctx, entry); err != nil {
+			if err := a.history.AppendHistory(pctx, entry); err != nil {
 				a.logger.Warn("Failed to append history", "error", err)
 			}
 		}
@@ -543,10 +572,10 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	// Fold in any compaction produced during the turn. This runs after the
 	// history append above, which slices sess.Messages from startSessionLen —
 	// shrinking the session before that point would slice out of range.
-	a.applyCompaction(ctx, sess, compaction)
+	a.applyCompaction(pctx, sess, compaction)
 
 	// Save session
-	if err := a.sessions.Save(ctx, sess); err != nil {
+	if err := a.sessions.Save(pctx, sess); err != nil {
 		a.logger.Warn("Failed to save session", "error", err)
 	}
 
@@ -555,7 +584,7 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 		updatedTopic := updateTopic(sess.ConversationTopic, msg.Content, responseContent)
 		if updatedTopic != "" {
 			sess.ConversationTopic = updatedTopic
-			if err := a.sessions.Save(ctx, sess); err != nil {
+			if err := a.sessions.Save(pctx, sess); err != nil {
 				a.logger.Warn("Failed to save updated topic", "error", err)
 			}
 		}
@@ -853,10 +882,15 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			CreatedAt:     time.Now(),
 			UserMessage:   userMessage,
 		}
-		// Save the session so the checkpoint survives across requests.
-		saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		// Save the session so the checkpoint survives across requests. The
+		// save must not inherit a spent turn context: a max-iteration turn
+		// whose last tool outran the deadline is exactly when the checkpoint
+		// is needed, and a dead context fails the write instantly.
+		saveParent, pcancel := a.persistenceCtx(ctx)
+		saveCtx, cancel := context.WithTimeout(saveParent, 5*time.Second)
 		err := a.sessions.Save(saveCtx, sess)
 		cancel()
+		pcancel()
 		if err != nil {
 			a.logger.Error("Failed to save checkpoint", "session", sess.ID, "error", err)
 		}
@@ -868,6 +902,13 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	if checkpointSaved {
 		resp += "\nTo continue, type `/resume` and I'll pick up where we left off."
 	}
+	// The reply must reach the stream sink. Every consumer decides "was the
+	// answer shown?" by "did anything stream this turn?" — the sink exists
+	// before the first delta, so even a tool-call-only turn (or one where
+	// only narration streamed) counts — and a plain-text return is then
+	// suppressed. The reply that explains why the turn stopped must ride the
+	// sink, or it reaches nobody (#283).
+	emitThroughSink(ctx, resp)
 	return resp, nil
 }
 
@@ -1141,6 +1182,25 @@ type compactionState struct {
 	prefixLen int
 	// active reports whether a compaction happened at all this turn.
 	active bool
+}
+
+// persistenceWriteTimeout bounds the fresh context given to session/history
+// writes once a turn's budget has been spent.
+const persistenceWriteTimeout = 10 * time.Second
+
+// persistenceCtx returns a context for persistence writes (session, history,
+// checkpoint) that must complete even when the turn's budget has already been
+// spent. The turn context is a deadline: once it fires, every child write
+// fails instantly and the whole conversation is lost on exactly the turns that
+// need saving most — a timeout, or a max-iteration turn whose last tool ran
+// past the limit. When the turn context is still live it is returned
+// unchanged, so a genuine cancellation still aborts the write; when it is
+// already done, a fresh bounded context takes over.
+func (a *Agent) persistenceCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() != nil {
+		return context.WithTimeout(context.Background(), persistenceWriteTimeout)
+	}
+	return ctx, func() {}
 }
 
 // applyCompaction folds a turn's compaction into the session, replacing the

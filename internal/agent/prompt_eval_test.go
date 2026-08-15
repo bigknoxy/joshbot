@@ -145,3 +145,22 @@ func TestCoreIdentityActionableInstructions(t *testing.T) {
 		}
 	}
 }
+
+// The announce-without-doing failure mode (issue #283): on several providers
+// the model replied with an intention ("Let me dig into...", "I'd be happy to
+// check...") and then stopped, having called no tools. The system prompt must
+// carry an explicit act-before-narrating rule so the turn ends on a result
+// (or a concrete blocker), never on an intention.
+func TestCoreIdentityActDontAnnounce(t *testing.T) {
+	prompt := buildCoreIdentity()
+
+	for _, check := range []string{
+		"Act before you narrate",
+		"run the tools, then report",
+		"Never reply with an intention",
+	} {
+		if !strings.Contains(prompt, check) {
+			t.Errorf("prompt lacks the act-don't-announce rule containing %q", check)
+		}
+	}
+}

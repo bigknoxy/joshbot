@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.56.0] - 2026-08-15
+
 ### Fixed
 
 - **A streamed turn's synthesized replies reach the user (#283).** The

@@ -2811,6 +2811,47 @@ func runUninstall(c *cli.Context) error {
 	return nil
 }
 
+// buildTranscriber turns the stt config block into a transcription callback
+// for the Telegram channel. The named provider's credential and endpoint are
+// reused — there is no second credential store — so every failure here names
+// the config key to fix. Called only when stt.provider is set.
+func buildTranscriber(cfg *config.Config) (func(ctx context.Context, audio []byte, filename string) (string, error), error) {
+	name := cfg.STT.Provider
+	p, ok := cfg.Providers[name]
+	if !ok {
+		return nil, fmt.Errorf("stt.provider %q is not a configured provider", name)
+	}
+	if !p.Enabled {
+		return nil, fmt.Errorf("stt.provider %q is configured but not enabled", name)
+	}
+	if p.APIKey == "" {
+		return nil, fmt.Errorf("stt.provider %q has no API key", name)
+	}
+	apiBase := p.APIBase
+	if apiBase == "" {
+		apiBase = providers.GetDefaultAPIBaseFor(name)
+	}
+	if apiBase == "" {
+		return nil, fmt.Errorf("stt.provider %q has no API base URL; set providers.%s.api_base", name, name)
+	}
+	model := cfg.STT.Model
+	if model == "" {
+		model = config.DefaultSTTModel(name)
+	}
+	if model == "" {
+		return nil, fmt.Errorf("no default transcription model for provider %q; set stt.model", name)
+	}
+	tc := providers.TranscribeConfig{
+		APIBase: apiBase,
+		APIKey:  p.APIKey,
+		Model:   model,
+		Timeout: cfg.STT.Timeout.Duration(),
+	}
+	return func(ctx context.Context, audio []byte, filename string) (string, error) {
+		return providers.TranscribeAudio(ctx, tc, audio, filename)
+	}, nil
+}
+
 // runGateway executes the gateway (Telegram + channels) mode.
 // gatewayStreamer is the part of *channels.TelegramStreamer the gateway
 // handler uses. It is an interface so the suppression rule below — the one
@@ -3097,9 +3138,26 @@ func runGateway(c *cli.Context) error {
 	// not after: the bus handler runs on its own goroutine, and assigning to a
 	// variable it has already captured is a data race even though no message
 	// can arrive before Start.
+	// Voice transcription is a startup-or-never decision: a misconfigured
+	// stt block must fail here, naming the key, not surface as a per-message
+	// error the operator only hears about second-hand. Validated whenever the
+	// block is set — even with Telegram disabled, or the operator would only
+	// learn about the mistake when they enable it later.
+	var transcriber func(context.Context, []byte, string) (string, error)
+	if cfg.STT.Provider != "" {
+		var err error
+		transcriber, err = buildTranscriber(cfg)
+		if err != nil {
+			return fmt.Errorf("stt: %w", err)
+		}
+	}
+
 	var tgChannel *channels.TelegramChannel
 	if cfg.Channels.Telegram.Enabled && cfg.Channels.Telegram.Token != "" {
 		tgChannel = channels.NewTelegramChannel(msgBus, &cfg.Channels.Telegram)
+		if transcriber != nil {
+			tgChannel.SetTranscriber(transcriber)
+		}
 	}
 	streaming := cfg.Agents.Defaults.Streaming
 

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Telegram voice messages are transcribed.** With `stt.provider` set to a
+  configured provider exposing an OpenAI-compatible `/audio/transcriptions`
+  endpoint (groq, openai — their existing key and endpoint are reused, no
+  second credential), a voice note is downloaded after the allowlist check,
+  transcribed, and answered like any text message, framed as
+  `[Voice message, transcribed]: ...`. Voice over 10 minutes or 20 MB is
+  refused from declared metadata before any transfer; audio is never
+  stored; a failed transcription ends the turn with an error in the chat;
+  a misconfigured `stt` block is a startup error naming the key. With no
+  `stt` configured the honest refusal stands, now naming how to enable it.
+  (#276)
+
 - **Telegram text documents are read, not named.** A text-like document
   (txt, md, csv, json, code — by MIME, or by extension when Telegram
   declares `application/octet-stream`) is downloaded after the allowlist

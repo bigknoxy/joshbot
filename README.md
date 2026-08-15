@@ -148,10 +148,11 @@ joshbot agent -m "what is in this screenshot?" --image ~/Desktop/shot.png
 requires `-m`/`--message` — an image with no question attached has nothing to
 answer. Telegram photos and image documents are attached automatically, and
 text documents (txt, md, csv, json, code) are read and inlined into the
-message, capped at 64KB with a visible truncation marker. Media
-the agent cannot perceive — voice messages, audio, video — gets an honest
-"I can't listen/watch yet" reply instead of a confident answer about content
-nobody heard; a caption on such media is forwarded as the message text,
+message, capped at 64KB with a visible truncation marker. Voice
+messages are transcribed and answered when `stt` is configured (see Voice
+message transcription); media the agent cannot perceive — untranscribed
+voice, audio, video — gets an honest "I can't listen/watch yet" reply instead
+of a confident answer about content nobody heard; a caption on such media is forwarded as the message text,
 framed so the model knows what it cannot see. Stickers are quietly ignored.
 
 Three things are enforced, in this order, and all of them before any provider
@@ -1073,6 +1074,36 @@ a direct message, so they work identically in the Telegram menu and the CLI.
 
 While the agent is working, the "typing…" indicator is refreshed every 4 seconds
 until the reply is sent, so it stays visible for the whole turn.
+
+### Voice message transcription
+
+Voice notes can be transcribed and answered like any text message. It is off by
+default — a voice message gets an honest "I can't listen yet" reply — and is
+enabled by naming which configured provider to transcribe through:
+
+```json
+{
+  "stt": {
+    "provider": "groq"
+  }
+}
+```
+
+`stt.provider` reuses that provider's existing API key and endpoint — there is
+no second credential to manage. It must be a provider with an OpenAI-compatible
+`/audio/transcriptions` endpoint: `groq` (default model
+`whisper-large-v3-turbo`) and `openai` (default model `whisper-1`) work out of
+the box; any other provider needs an explicit `stt.model` and an `api_base`.
+`stt.timeout` bounds one transcription request (default 60s, same duration
+grammar as every other timeout). A misconfigured `stt` block is a startup
+error naming the key, never a per-message failure.
+
+Limits: voice notes over 10 minutes (by Telegram's declared duration) or 20 MB
+are refused before any download. The audio is sent to the transcription
+provider and is never stored — only the transcript enters the session, framed
+as `[Voice message, transcribed]: ...` so the model knows how it arrived. A
+failed transcription ends the turn with an error in the chat rather than
+guessing.
 
 ## Discord Setup
 

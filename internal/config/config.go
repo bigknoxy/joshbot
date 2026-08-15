@@ -371,6 +371,36 @@ type APIConfig struct {
 	APIKeys []string `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
 }
 
+// STTConfig configures voice-message transcription. The zero value means
+// disabled — a voice message gets an honest "I can't listen yet" refusal.
+// Provider names one of the configured LLM providers (its credential and
+// endpoint are reused; there is no second credential store), which must
+// expose an OpenAI-compatible POST /audio/transcriptions endpoint — groq and
+// openai do. Provider is a string whose empty value disables the feature on
+// purpose: a config bool has no omitempty here and can never have its default
+// flipped without a schema migration (the streaming v4→v5 lesson).
+type STTConfig struct {
+	Provider string `mapstructure:"provider" json:"provider,omitempty" yaml:"provider,omitempty"`
+	// Model is the transcription model id. Empty picks a per-provider
+	// default (groq: whisper-large-v3-turbo, openai: whisper-1); any other
+	// provider requires an explicit model.
+	Model string `mapstructure:"model" json:"model,omitempty" yaml:"model,omitempty"`
+	// Timeout bounds one transcription request (default 60s).
+	Timeout Duration `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
+}
+
+// DefaultSTTModel returns the transcription model to use for a provider when
+// the config names none, or "" when the provider has no known default.
+func DefaultSTTModel(provider string) string {
+	switch provider {
+	case "groq":
+		return "whisper-large-v3-turbo"
+	case "openai":
+		return "whisper-1"
+	}
+	return ""
+}
+
 // HeartbeatConfig configures the HEARTBEAT.md proactive task scanner.
 type HeartbeatConfig struct {
 	// Interval is how often HEARTBEAT.md is scanned for unchecked tasks, as a Go
@@ -421,8 +451,10 @@ type Config struct {
 	Gateway   GatewayConfig   `mapstructure:"gateway" json:"gateway" yaml:"gateway"`
 	API       APIConfig       `mapstructure:"api" json:"api,omitempty" yaml:"api,omitempty"`
 	Heartbeat HeartbeatConfig `mapstructure:"heartbeat" json:"heartbeat,omitempty" yaml:"heartbeat,omitempty"`
-	LogLevel  string          `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
-	User      UserConfig      `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+	// STT configures voice-message transcription; zero value = disabled.
+	STT      STTConfig  `mapstructure:"stt" json:"stt,omitempty" yaml:"stt,omitempty"`
+	LogLevel string     `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User     UserConfig `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
 
 	// MCP configures Model Context Protocol servers whose tools are exposed to
 	// the agent. Declaring a server here is a privileged, operator-only act:
@@ -1191,6 +1223,9 @@ func (c *Config) Validate() error {
 	// it here names the key and the value it parsed to, at load, instead of at
 	// the first request (#240).
 	if err := validateTimeout("agents.defaults.timeout", c.Agents.Defaults.Timeout); err != nil {
+		return err
+	}
+	if err := validateTimeout("stt.timeout", c.STT.Timeout); err != nil {
 		return err
 	}
 	for name, p := range c.Providers {

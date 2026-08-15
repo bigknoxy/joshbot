@@ -68,6 +68,12 @@ type TelegramChannel struct {
 	// Only tests set it; in production it stays nil and t.bot.File is used.
 	download func(*telebot.File) (io.ReadCloser, error)
 
+	// transcriber turns a downloaded voice note into text. Nil means voice
+	// transcription is not configured and a voice message gets the honest
+	// refusal instead. Set once at wiring time via SetTranscriber, before
+	// Start — it is read without the lock on the hot path.
+	transcriber func(ctx context.Context, audio []byte, filename string) (string, error)
+
 	// editor overrides the bot for streaming sends and edits, and
 	// streamEditInterval overrides the minimum gap between two edits of the
 	// same streamed message. Only tests set either; in production the bot and
@@ -708,19 +714,34 @@ func (t *TelegramChannel) handleVoice(ctx telebot.Context) error {
 		return nil
 	}
 
-	// A voice message the agent cannot hear must not be forwarded as a
-	// "[Voice message]" placeholder: the model answers it confidently, about
-	// nothing. Without a caption there is no content at all, so the channel
-	// answers honestly itself — no agent turn, no hallucination. With a
-	// caption, the caption is real text and is forwarded framed so the model
+	// With a transcriber wired, the voice note is downloaded (after the
+	// allowlist check above, like every attachment) and transcribed, and the
+	// transcript runs through the normal agent pipeline. Without one, the
+	// honesty rules from the imperceptible-media pass apply: a captionless
+	// voice message must not be forwarded as a "[Voice message]" placeholder
+	// — the model answers it confidently, about nothing — so the channel
+	// answers honestly itself; a caption is forwarded framed so the model
 	// knows what it cannot perceive.
 	voice := msg.Voice
-	if voice.Caption == "" {
-		return t.replyCannotPerceive(ctx, "🎙️ I can't listen to voice messages yet — mind typing that out?")
-	}
+	// Typing starts before the transcription round-trip, which takes seconds;
+	// the refusal path stops it again via replyCannotPerceive.
 	t.startTyping(ctx.Chat())
-
-	content := fmt.Sprintf("[The user sent a voice message you cannot hear. Its caption]: %s", voice.Caption)
+	var content string
+	switch {
+	case t.transcriber != nil:
+		transcript, ok := t.attachVoiceTranscript(ctx, voice)
+		if !ok {
+			return nil
+		}
+		content = fmt.Sprintf("[Voice message, transcribed]: %s", transcript)
+		if voice.Caption != "" {
+			content += fmt.Sprintf("\n[Its caption]: %s", voice.Caption)
+		}
+	case voice.Caption == "":
+		return t.replyCannotPerceive(ctx, "🎙️ I can't listen to voice messages — the operator can enable transcription with the stt config. Mind typing that out?")
+	default:
+		content = fmt.Sprintf("[The user sent a voice message you cannot hear. Its caption]: %s", voice.Caption)
+	}
 
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),

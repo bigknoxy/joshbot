@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Interactive TUI no longer clobbers the prompt with log lines.** In
+  `joshbot agent` TTY mode the logger stayed on stdout, so INFO/WARN lines
+  (Processing message, Message processed, tool execution, skills review) wrote
+  straight into the terminal mid-edit. The interactive path now routes logs to
+  stderr, the same way JSON modes already did; only non-interactive
+  `-m/--message` text keeps logs on stdout so tool output and logs share one
+  capture stream.
+- **Typing no longer reprints the prompt on every keystroke.** `lineEditor.render`
+  moved the cursor up `rows-1` after the trailing `\r\n`, but the real cursor
+  sits `rows` lines below the view's top — the off-by-one left it one line low,
+  so the next `hide()` could not clear the prompt line and each keypress
+  emitted a fresh `● model ❯` duplicate. The up-sequence now uses
+  `rows - cursorRow`.
+- **The streamed answer is separated from the last tool line.** When a turn
+  ran a tool and then streamed, the reply glued onto the trailing `⎿ ok` line
+  with no blank. The first streamed delta after a tool-progress line is now
+  preceded by a blank line (per-turn, reset on each input).
+
 ## [1.56.0] - 2026-08-15
 
 ### Fixed

@@ -553,3 +553,25 @@ func TestStreamedFlagIsPerTurnNotPerConfig(t *testing.T) {
 func TestApplyMaxIterationsOverride_NilAgentDoesNotPanic(t *testing.T) {
 	applyMaxIterationsOverride(nil, 50)
 }
+
+// A turn that ran a tool must separate the streamed answer from the last
+// `⎿ ok` line with a blank line; a turn with no tool call must not emit one.
+func TestCLIProgressStreamEventSeparatesFromToolLine(t *testing.T) {
+	var out bytes.Buffer
+	p := newCLIProgress(&out)
+	p.beginTurn()
+	p.onToolEvent(agent.ToolProgressEvent{Tool: "shell", Summary: "ls", Phase: agent.ToolProgressStart})
+	p.onToolEvent(agent.ToolProgressEvent{Tool: "shell", Summary: "ls", Phase: agent.ToolProgressDone, Elapsed: time.Second})
+	p.onStreamEvent(agent.StreamEvent{Delta: "answer"})
+	if got := out.String(); !strings.Contains(got, "s)\n\nanswer") {
+		t.Errorf("tool turn should separate answer with a blank line, got %q", got)
+	}
+
+	var plain bytes.Buffer
+	p2 := newCLIProgress(&plain)
+	p2.beginTurn()
+	p2.onStreamEvent(agent.StreamEvent{Delta: "answer"})
+	if got := plain.String(); strings.Contains(got, "\n\n") {
+		t.Errorf("no-tool turn must not add a blank line, got %q", got)
+	}
+}

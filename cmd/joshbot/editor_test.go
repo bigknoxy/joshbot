@@ -357,3 +357,26 @@ func TestBuildEditorPrompt(t *testing.T) {
 		t.Fatalf("prompt without model unexpectedly mentions a model: %q", without)
 	}
 }
+
+// TestEditor_RenderCursorUpIsSingleRow verifies the render() cursor math:
+// after printing rows each followed by \r\n the real cursor sits one line
+// below the view, so a single-row view must move up exactly one line back to
+// the prompt row. An off-by-one here leaves the cursor below the view and the
+// next hide() fails to clear the prompt line, so every keystroke reprints the
+// `● model ❯` line above the new one.
+func TestEditor_RenderCursorUpIsSingleRow(t *testing.T) {
+	var out bytes.Buffer
+	r := newChanKeyReader()
+	e := newTestEditor(&out, r, nil)
+	e.prompt = "❯ "
+	e.buf = []rune("hi")
+	e.cursor = 2
+
+	e.render()
+	got := out.String()
+	// The cursor-up sequence must move exactly one line back up to the prompt
+	// row (rows=1, cursorRow=0 -> up=1). Missing it is the off-by-one bug.
+	if !strings.Contains(got, "\x1b[1A") {
+		t.Fatalf("render output missing cursor-up-to-prompt escape:\n%q", got)
+	}
+}

@@ -1544,6 +1544,16 @@ func runAgent(c *cli.Context) error {
 		return err
 	}
 
+	// Interactive sessions drive a full-screen TUI on stdout, so every log
+	// line must go to stderr — an INFO/WARN landing on stdout mid-editing
+	// corrupts the prompt view. JSON modes redirect above; text interactive
+	// must too, and for the same reason. Non-interactive -m/--message text
+	// keeps the log on stdout so tool output and logs share the capture the
+	// operator redirected.
+	if isTTY(os.Stdout) {
+		log.Get().Logger.SetOutput(os.Stderr)
+	}
+
 	// Interactive sessions always continue cli:cli_user, so say what is being
 	// continued: a short recap of the last exchange, the way a resumed
 	// conversation opens anywhere else. Silent for a fresh session.
@@ -1616,6 +1626,10 @@ type cliProgress struct {
 	spinDone   chan struct{}
 	// streamed reports whether the stream sink delivered any text this turn.
 	streamed bool
+	// toolShown reports whether any tool-progress line was printed this turn.
+	// The first streamed delta is then preceded by a blank line so the answer
+	// does not glue onto the last `⎿ ok` line.
+	toolShown bool
 }
 
 func newCLIProgress(out io.Writer) *cliProgress {
@@ -1637,6 +1651,7 @@ func (p *cliProgress) onToolEvent(e agent.ToolProgressEvent) {
 			label = fmt.Sprintf("%s(%s)", e.Tool, e.Summary)
 		}
 		fmt.Fprintf(p.out, "⏺ %s\n", label)
+		p.toolShown = true
 	case agent.ToolProgressDone:
 		status := "ok"
 		if e.Err != nil {
@@ -1664,6 +1679,12 @@ func (p *cliProgress) onStreamEvent(e agent.StreamEvent) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.streamed = true
+	// Separate the answer from the trailing `⎿ ok` tool line with a blank
+	// line, so the transcript reads as two blocks instead of one glued line.
+	if p.toolShown {
+		fmt.Fprint(p.out, "\n")
+		p.toolShown = false
+	}
 	fmt.Fprint(p.out, e.Delta)
 }
 
@@ -1684,6 +1705,7 @@ func (p *cliProgress) beginTurn() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.streamed = false
+	p.toolShown = false
 }
 
 // didStream reports whether any text reached the terminal through the stream

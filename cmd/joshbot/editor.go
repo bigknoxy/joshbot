@@ -711,8 +711,11 @@ func (e *lineEditor) render() {
 	e.rendered = true
 
 	// After the trailing \r\n the terminal cursor is one line below the last
-	// row; move up to the cursor row and then right to the cursor column.
-	if up := e.rows - 1 - view.cursorRow; up > 0 {
+	// row (line N+rows); move up to the cursor row (line N+cursorRow) and then
+	// right to the cursor column. The gap is rows - cursorRow, not rows-1:
+	// an off-by-one here leaves the cursor on the line below the view, so the
+	// next hide() never clears the prompt line and each keystroke reprints it.
+	if up := e.rows - view.cursorRow; up > 0 {
 		fmt.Fprintf(e.out, "\x1b[%dA", up)
 	}
 	if view.cursorCol > 0 {

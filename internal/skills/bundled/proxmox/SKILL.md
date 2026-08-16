@@ -48,10 +48,10 @@ pvesh get /nodes/<node>/services
 pvesh post /nodes/<node>/services/pvedaemon --action=restart
 
 # Check task log for errors
-pvesh get /nodes/<node>/tasks --errors_only=true
+pvesh get /nodes/<node>/tasks --errors 1
 
 # System journal for a specific service
-pvesh get /nodes/<node>/tasks --type=service
+pvesh get /nodes/<node>/tasks --typefilter service
 ```
 
 ## Creating Resources (VMs and Containers)
@@ -60,7 +60,7 @@ pvesh get /nodes/<node>/tasks --type=service
 
 ```bash
 # Create an LXC container
-pct create <vmid> <node> <template> \
+pct create <vmid> <ostemplate> \
   --hostname <name> \
   --password <password> \
   --net0 name=eth0,bridge=vmbr0,ip=dhcp \
@@ -129,34 +129,36 @@ qm destroy <template-vmid>
 vzdump <vmid> \
   --compress gzip \
   --storage <storage> \
-  --mode snapshot \
-  --name <backup-name>
+  --mode snapshot
 
-# Scheduled backup via API
-pvesh create /nodes/<node>/vzdump \
+# Scheduled backup via API (recurring job on the cluster)
+pvesh create /cluster/backup \
   --schedule "0 2 * * *" \
-  --mailto admin@example.com
+  --mailto admin@example.com \
+  --vmid <vmid> \
+  --storage <storage> \
+  --mode snapshot
 ```
 
 ### Listing and Restoring
 
 ```bash
 # List all backups
-pvesh get /nodes/<node>/storage/<storage>/backup
+pvesh get /nodes/<node>/storage/<storage>/content --content backup
 
 # Restore a VM backup
 qmrestore <storage>:backup/vzdump-qemu-<vmid>.tar.gz <vmid>
 
 # Restore a container backup
-pctrestore <storage>:backup/vzdump-ct-<vmid>.tar.gz <vmid>
+pct restore <storage>:backup/vzdump-ct-<vmid>.tar.gz <vmid>
 ```
 
 ### Backup Management
 
 ```bash
 # Remove old backups
-pvesh get /nodes/<node>/storage/<storage>/backup --content=backup
-pvesh delete /nodes/<node>/storage/<storage>/backup/<file>
+pvesh get /nodes/<node>/storage/<storage>/content --content backup
+pvesh delete /nodes/<node>/storage/<storage>/content/<volume>
 
 # Check backup job status
 pvesh get /cluster/backup
@@ -168,35 +170,33 @@ pvesh get /cluster/backup
 
 ```bash
 # Create a Linux bridge
-pvesh create /nodes/<node>/network -interface vmbr0 \
+pvesh create /nodes/<node>/network --iface vmbr0 \
   --type bridge \
   --address 192.168.1.1/24 \
   --autostart=true
 
 # Add a VLAN-aware bridge
-pvesh create /nodes/<node>/network -interface vmbr0 \
+pvesh create /nodes/<node>/network --iface vmbr0 \
   --type bridge \
   --bridge_vlan_aware yes
 
-# Apply network changes (requires restart)
-pvesh post /nodes/<node>/network --restart
+# Apply network changes (PUT reloads the config)
+pvesh put /nodes/<node>/network
 ```
 
 ### Firewall
 
 ```bash
 # Enable firewall at node level
-pvesh post /nodes/<node>/firewall --enabled=1
+pvesh put /nodes/<node>/firewall/options --enable 1
 
 # Create a firewall rule
 pvesh create /nodes/<node>/firewall/rules \
-  --type accept \
+  --type in \
+  --action ACCEPT \
   --dport 22 \
-  --action accept \
+  --proto tcp \
   --comment "SSH access"
-
-# Apply firewall rules
-pvesh post /nodes/<node>/firewall --apply
 ```
 
 ### DNS and Hosts
@@ -206,13 +206,12 @@ pvesh post /nodes/<node>/firewall --apply
 pvesh put /nodes/<node>/dns \
   --dns1 8.8.8.8 \
   --dns2 1.1.1.1 \
-  --searchdomain example.com
+  --search example.com
 
-# Add a hosts entry
+# Add a hosts entry (data is the full /etc/hosts content)
 pvesh get /nodes/<node>/hosts
 pvesh post /nodes/<node>/hosts \
-  --ip 192.168.1.10 \
-  --hostname host1.example.com
+  --data "192.168.1.10 host1.example.com host1"
 ```
 
 ## Best Practices

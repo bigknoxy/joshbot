@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **New bundled skill: Proxmox VE management.** Adds `internal/skills/bundled/proxmox/SKILL.md` covering VM/container lifecycle, backups and restores, network, firewall, DNS, and hosts management via `pvesh`/`pct`/`qm`/`vzdump`. Commands were verified against the official Proxmox API docs (closes #248).
+
 ### Fixed
 
 - **Interactive TUI no longer clobbers the prompt with log lines.** In

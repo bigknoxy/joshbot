@@ -572,6 +572,27 @@ func TestWebTool_RemoveTag(t *testing.T) {
 			want: `plain text`,
 		},
 		{
+			// Tag names are case-insensitive in HTML and the page picks the
+			// case, so a case-sensitive strip is a bypass the untrusted side
+			// controls: <SCRIPT>…</SCRIPT> would reach the model intact.
+			name: "uppercase script element is removed with its body",
+			html: `keep<SCRIPT>var x="LEAKED";</SCRIPT>keep2`,
+			open: "<script", close: "</script>",
+			want: `keepkeep2`,
+		},
+		{
+			name: "mixed-case script element is removed with its body",
+			html: `keep<Script src="a.js">LEAKED</ScRiPt>keep2`,
+			open: "<script", close: "</script>",
+			want: `keepkeep2`,
+		},
+		{
+			name: "uppercase style element is removed with its body",
+			html: `keep<STYLE>body{color:LEAKED}</STYLE>keep2`,
+			open: "<style", close: "</style>",
+			want: `keepkeep2`,
+		},
+		{
 			name: "unterminated opening tag drops remainder",
 			html: `text<script`,
 			open: "<script", close: "</script>",

@@ -1145,14 +1145,19 @@ func (t *WebTool) extractHTMLContent(urlStr string, body []byte) ToolResult {
 // both work with the same logic:
 //   - closeTag is found in `rest` (everything from the start of openTag on)
 //   - if no closeTag is found, the remainder drops out (dangling = untrusted)
+//
+// Matching is ASCII case-insensitive: tag names are case-insensitive in HTML,
+// so a case-sensitive search leaves <SCRIPT>…</SCRIPT> bodies intact — and the
+// case is chosen by the page, which is exactly the untrusted party this strip
+// defends against. Do not narrow this back to strings.Index.
 func (t *WebTool) removeTag(html string, openTag, closeTag string) string {
 	for {
-		start := strings.Index(html, openTag)
+		start := indexFold(html, openTag)
 		if start == -1 {
 			break
 		}
 		rest := html[start:]
-		closePos := strings.Index(rest, closeTag)
+		closePos := indexFold(rest, closeTag)
 		if closePos == -1 {
 			// No closing tag found: drop everything from the open tag onward.
 			html = html[:start]

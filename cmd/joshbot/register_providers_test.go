@@ -234,3 +234,70 @@ func TestRegisterProvidersRegistersModelCentricEntriesByName(t *testing.T) {
 		}
 	}
 }
+
+// TestRegisterProvidersRegistersOpenAICentricProviders is the #235 regression
+// test. Before the generic arm, legacy config silently ignored every provider
+// with no bespoke branch — openai, anthropic, azure and litellm in particular,
+// all of which `joshbot configure --provider` will write — so a valid, enabled,
+// keyed entry produced no running provider and joshbot reported the operator's
+// own "enabled": true as the cause. A legacy config carrying exactly those four
+// must now register all four.
+func TestRegisterProvidersRegistersOpenAICentricProviders(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"openai":    {APIKey: "sk-openai", Enabled: true},
+		"anthropic": {APIKey: "sk-ant", Enabled: true},
+		"azure":     {APIKey: "azure-key", APIBase: "https://example.azure.com/v1", Enabled: true},
+		"litellm":   {APIKey: "litellm-key", APIBase: "https://litellm.local/v1", Enabled: true},
+		"custom":    {APIKey: "custom-key", APIBase: "https://custom.local/v1", Enabled: true},
+	})
+	m := mp("openrouter")
+
+	if err := registerProviders(cfg, m); err != nil {
+		t.Fatalf("registerProviders: %v", err)
+	}
+
+	// Exactly the providers the bespoke arms used to skip — a regression means a
+	// branch was deleted or the generic arm disabled.
+	for _, name := range []string{"openai", "anthropic", "azure", "litellm", "custom"} {
+		if !m.HasProvider(name) {
+			t.Errorf("%s was configured, enabled and keyed but is not in the chain (#235)", name)
+		}
+	}
+}
+
+// The generic arm must not swallow the fail-fast: a name the registry cannot dial
+// is a user mistake, so a config of only unsupported names still errors rather
+// than quietly leaving the operator with nothing usable.
+func TestRegisterProvidersUnknownNameStillFails(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"not-a-provider": {APIKey: "whatever", Enabled: true},
+	})
+	m := mp("openrouter")
+
+	if err := registerProviders(cfg, m); err == nil {
+		t.Fatal("a config of an unknown provider name registered as if usable")
+	}
+	if n := len(m.GetProviderNames()); n != 0 {
+		t.Errorf("%d provider(s) registered for an unknown name, want 0", n)
+	}
+}
+
+// The generic arm respects the enabled flag just like the bespoke arms: a
+// disabled openai must not register, or the "enabled": true gate is meaningless.
+func TestRegisterProvidersGenericArmRespectsDisabled(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"openai": {APIKey: "sk-openai", Enabled: false},
+		"groq":   {APIKey: "gsk-live", Enabled: true},
+	})
+	m := mp("openrouter")
+
+	if err := registerProviders(cfg, m); err != nil {
+		t.Fatalf("registerProviders: %v", err)
+	}
+	if m.HasProvider("openai") {
+		t.Error("a disabled openai registered via the generic arm")
+	}
+	if !m.HasProvider("groq") {
+		t.Error("groq (a bespoke arm) failed to register")
+	}
+}

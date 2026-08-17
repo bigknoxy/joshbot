@@ -23,6 +23,13 @@ var (
 	ErrInvalidSessionID = errors.New("invalid session ID")
 	// ErrContextCancelled is returned when the context is cancelled.
 	ErrContextCancelled = errors.New("context cancelled")
+	// ErrKeyLockBusy is returned when a session key already has
+	// MaxConcurrentTurnsPerKey turns in flight and a further turn would exceed
+	// that cap. It is the backpressure a key's per-turn lock applies to a flood
+	// on one conversation, rather than that one sender queuing an unbounded
+	// number of waiters and stalling the bus dispatcher for every other user
+	// (issue #245).
+	ErrKeyLockBusy = errors.New("session key has too many concurrent turns in flight")
 )
 
 // Manager handles session persistence.

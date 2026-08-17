@@ -422,6 +422,17 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 				a.logger.Error("Rejected an invalid session id", "session", sessionKey, "error", err)
 				return ReplyPrefix + fmt.Sprintf("invalid session id: %v", err), nil
 			}
+			// A key over its per-turn cap gets clean backpressure, not the generic
+			// lock-failure text: the session is healthy, it is just busy. Still in
+			// band (ReplyPrefix) so `agent -m` exits 1 and the HTTP API answers 502 —
+			// a turn that did not run is a failure, not an answer (#245).
+			if errors.Is(err, session.ErrKeyLockBusy) {
+				a.logger.Warn("Session key over its concurrent-turn cap; applying backpressure",
+					"session", sessionKey, "cap", session.MaxConcurrentTurnsPerKey, "waited", time.Since(waitStart))
+				return ReplyPrefix + fmt.Sprintf(
+					"This conversation already has too many turns in flight (cap %d); please wait for the current turn to finish and try again.",
+					session.MaxConcurrentTurnsPerKey), nil
+			}
 			a.logger.Error("Failed to acquire session lock",
 				"session", sessionKey, "waited", time.Since(waitStart), "error", err)
 			// ReplyPrefix, not a prefix of its own: Process reports failures in

@@ -225,3 +225,58 @@ func TestResumeDoesNotDeadlockAgainstItsOwnSessionLock(t *testing.T) {
 		t.Fatal("/resume deadlocked on its own session lock")
 	}
 }
+
+// busySession is a SessionManager that reports the per-key cap as hit for every
+// turn, so Agent.Process's #245 backpressure translation is testable without
+// driving eight concurrent turns through the real lock.
+type busySession struct {
+	*session.Manager
+}
+
+// LockSession always reports the cap is full, so a Process turn bounces off the
+// per-key cap on its first attempt at the key.
+func (s *busySession) LockSession(ctx context.Context, id string) (func(), error) {
+	return nil, session.ErrKeyLockBusy
+}
+
+// TestBusyKeyIsReportedAsABandReply pins #245 at the Agent boundary: a turn that
+// the per-key cap refuses must surface as an in-band failure, not as a confident
+// answer about a session that was never touched. agent -m turns that into an exit
+// code and the HTTP API into a 502 (both via ReplyError), so a bare string would
+// be reported to a caller as a successful reply.
+func TestBusyKeyIsReportedAsABandReply(t *testing.T) {
+	InvalidatePromptCache()
+
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	a := NewAgent(cfg, &slowEchoProvider{}, &mockToolExecutor{}, &busySession{mgr}, newMockLogger())
+
+	done := make(chan string, 1)
+	go func() {
+		resp, err := a.Process(context.Background(), bus.InboundMessage{
+			Channel: "api", SenderID: "busy-user", Content: "hello", Timestamp: time.Now(),
+		})
+		if err != nil {
+			t.Errorf("Process returned a hard error, want in-band: %v", err)
+			return
+		}
+		done <- resp
+	}()
+
+	select {
+	case resp := <-done:
+		if ReplyError(resp) == nil {
+			t.Errorf("a refused turn was reported as a successful reply: %q", resp)
+		}
+		if !strings.Contains(resp, "too many turns in flight") {
+			t.Errorf("refused turn did not carry the per-key backpressure message, got: %q", resp)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Process ignored its deadline handling the busy key")
+	}
+}

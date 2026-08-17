@@ -130,6 +130,17 @@ func UnregisterProvider(name string) {
 	delete(registry, normalizeProviderName(name))
 }
 
+// CanonicalProviderName maps a configured provider name onto the name the
+// registry actually dials. Every lookup here (GetProvider, IsProviderRegistered,
+// GetDefaultModel) normalizes, so any caller that keys its own table on a raw
+// config name must normalize too or the two disagree: a config key of "local",
+// "nim" or "Ollama" is registry-registered but does not match an exact-match
+// skip list, which is how registerProviders came to register a second chain
+// entry for a provider one of its bespoke arms already owned.
+func CanonicalProviderName(name string) string {
+	return normalizeProviderName(name)
+}
+
 // normalizeProviderName normalizes a provider name to lowercase for case-insensitive lookup.
 // Also maps common aliases to canonical names.
 func normalizeProviderName(name string) string {

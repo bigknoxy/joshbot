@@ -802,68 +802,90 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 			}
 		}
 
-		// Register Custom OpenAI-compatible (if configured)
-		if p, ok := cfg.Providers["custom"]; ok && p.APIKey != "" && p.Enabled {
-			customProvider, err := providers.GetProvider("custom", providers.Config{
+		// Generic registration for every registry-backed provider no bespoke arm
+		// above owns -- today openai, anthropic, azure, custom and litellm, and any
+		// that join providers.IsProviderRegistered later.
+		//
+		// Before this loop the legacy path turned a hard-coded subset of providers
+		// into a running chain, so an entry that configure had happily written for
+		// openai, anthropic, azure or litellm was silently ignored at start-up:
+		// the operator's key did nothing and the fail-fast diagnostic blamed the
+		// "enabled" flag -- the one setting that was actually true (issue #235).
+		// Gating on the runtime registry instead of a hand-written switch keeps this
+		// arm complete: a provider that joins the registry but not the bespoke arms
+		// is never silently dropped, and a configured name the registry cannot dial
+		// is left for noProvidersRegisteredError to name.
+		//
+		// The bespoke arms own the providers whose registration carries per-provider
+		// logic the generic form cannot express, so they are skipped here or the arm
+		// would double-register them: openrouter (the default), nvidia/groq (fallback
+		// priority), poolside (a default model), ollama (a default base + 300s
+		// timeout) and github-copilot (token auth). openai, anthropic, azure, custom
+		// and litellm all share the registry-backed LiteLLM factory, so this single
+		// arm handles them with the full configuration a bespoke arm would carry.
+		handledGeneric := map[string]bool{
+			"openrouter":     true,
+			"nvidia":         true,
+			"groq":           true,
+			"poolside":       true,
+			"ollama":         true,
+			"github-copilot": true,
+		}
+		for name, p := range cfg.Providers {
+			// Match the skip list on the *canonical* name, not the raw config key:
+			// the registry aliases and lowercases ("local" -> ollama, "nim" ->
+			// nvidia, "Ollama" -> ollama), so an exact-match skip would let those
+			// spellings past and register a second chain entry for a provider a
+			// bespoke arm already owns — without that arm's default base or timeout.
+			canonical := providers.CanonicalProviderName(name)
+			if handledGeneric[canonical] {
+				continue
+			}
+			// Mirror the bespoke arms' gates: only an enabled, keyed provider the
+			// registry can actually dial. A configured-but-unknown name is left for
+			// noProvidersRegisteredError to name, exactly as before.
+			if !p.Enabled || p.APIKey == "" || !providers.IsProviderRegistered(canonical) {
+				continue
+			}
+			base := p.APIBase
+			if base == "" {
+				base = providers.GetDefaultAPIBaseFor(canonical)
+			}
+			model := p.Model
+			if model == "" {
+				model = providers.GetDefaultModel(canonical)
+			}
+			// The fallback order is operator-written too, so it is matched by
+			// canonical name for the same reason.
+			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
+			for idx, entry := range cfg.ProviderDefaults.FallbackOrder {
+				if providers.CanonicalProviderName(entry) == canonical {
+					priority = idx + 1
+					break
+				}
+			}
+			prov, err := providers.GetProvider(canonical, providers.Config{
 				APIKey:       p.APIKey,
-				APIBase:      p.APIBase,
+				APIBase:      base,
 				ExtraHeaders: p.ExtraHeaders,
+				ExtraBody:    p.ExtraBody,
 				Timeout:      p.Timeout.Duration(),
-				Model:        p.Model,
+				Model:        model,
+				MaxTokens:    cfg.Agents.Defaults.MaxTokens,
+				Temperature:  cfg.Agents.Defaults.Temperature,
 			})
 			if err != nil {
-				log.Warn("Failed to create custom provider", "error", err)
-			} else {
-				priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
-				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "custom"); idx >= 0 {
-					priority = idx + 1
-				}
-				model := p.Model
-				if model == "" {
-					model = p.Model
-				}
-				multiProvider.Register("custom", customProvider, model, priority, p.Enabled)
-				log.Info("Registered custom provider", "api_base", p.APIBase)
+				log.Warn("Failed to create provider", "name", canonical, "error", err)
+				continue
 			}
+			multiProvider.Register(canonical, prov, model, priority, p.Enabled)
+			log.Info("Registered provider", "name", canonical, "model", model, "priority", priority)
 		}
 
 		// Fail fast if the legacy provider map produced zero usable providers,
 		// rather than deferring to an opaque "no providers configured" error
 		// the first time Chat() is called. Distinguishes an empty config from
 		// providers present but none enabled (issue #71).
-		// Registry-backed providers with no bespoke wiring above. The legacy
-		// path used to know only the six original providers, so an
-		// "anthropic" or "openai" entry in a legacy config was silently
-		// ignored at runtime while configure happily wrote it.
-		for _, name := range []string{"openai", "anthropic"} {
-			p, ok := cfg.Providers[name]
-			if !ok || p.APIKey == "" || !p.Enabled {
-				continue
-			}
-			prov, err := providers.GetProvider(name, providers.Config{
-				APIKey:       p.APIKey,
-				APIBase:      p.APIBase,
-				Model:        p.Model,
-				ExtraHeaders: p.ExtraHeaders,
-				ExtraBody:    p.ExtraBody,
-				Timeout:      p.Timeout.Duration(),
-			})
-			if err != nil {
-				log.Warn("Failed to create provider", "name", name, "error", err)
-				continue
-			}
-			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
-			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, name); idx >= 0 {
-				priority = idx
-			}
-			model := p.Model
-			if model == "" {
-				model = providers.GetDefaultModel(name)
-			}
-			multiProvider.Register(name, prov, model, priority, p.Enabled)
-			log.Info("Registered provider", "name", name, "model", model)
-		}
-
 		if len(multiProvider.GetProviderNames()) == 0 {
 			return noProvidersRegisteredError(cfg.Providers)
 		}

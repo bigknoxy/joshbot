@@ -234,3 +234,122 @@ func TestRegisterProvidersRegistersModelCentricEntriesByName(t *testing.T) {
 		}
 	}
 }
+
+// TestRegisterProvidersRegistersOpenAICentricProviders is the #235 regression
+// test. Before the generic arm, legacy config silently ignored every provider
+// with no bespoke branch — openai, anthropic, azure and litellm in particular,
+// all of which `joshbot configure --provider` will write — so a valid, enabled,
+// keyed entry produced no running provider and joshbot reported the operator's
+// own "enabled": true as the cause. A legacy config carrying exactly those four
+// must now register all four.
+func TestRegisterProvidersRegistersOpenAICentricProviders(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"openai":    {APIKey: "sk-openai", Enabled: true},
+		"anthropic": {APIKey: "sk-ant", Enabled: true},
+		"azure":     {APIKey: "azure-key", APIBase: "https://example.azure.com/v1", Enabled: true},
+		"litellm":   {APIKey: "litellm-key", APIBase: "https://litellm.local/v1", Enabled: true},
+		"custom":    {APIKey: "custom-key", APIBase: "https://custom.local/v1", Enabled: true},
+	})
+	m := mp("openrouter")
+
+	if err := registerProviders(cfg, m); err != nil {
+		t.Fatalf("registerProviders: %v", err)
+	}
+
+	// Exactly the providers the bespoke arms used to skip — a regression means a
+	// branch was deleted or the generic arm disabled.
+	for _, name := range []string{"openai", "anthropic", "azure", "litellm", "custom"} {
+		if !m.HasProvider(name) {
+			t.Errorf("%s was configured, enabled and keyed but is not in the chain (#235)", name)
+		}
+	}
+}
+
+// The generic arm must not swallow the fail-fast: a name the registry cannot dial
+// is a user mistake, so a config of only unsupported names still errors rather
+// than quietly leaving the operator with nothing usable.
+func TestRegisterProvidersUnknownNameStillFails(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"not-a-provider": {APIKey: "whatever", Enabled: true},
+	})
+	m := mp("openrouter")
+
+	if err := registerProviders(cfg, m); err == nil {
+		t.Fatal("a config of an unknown provider name registered as if usable")
+	}
+	if n := len(m.GetProviderNames()); n != 0 {
+		t.Errorf("%d provider(s) registered for an unknown name, want 0", n)
+	}
+}
+
+// The generic arm respects the enabled flag just like the bespoke arms: a
+// disabled openai must not register, or the "enabled": true gate is meaningless.
+func TestRegisterProvidersGenericArmRespectsDisabled(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"openai": {APIKey: "sk-openai", Enabled: false},
+		"groq":   {APIKey: "gsk-live", Enabled: true},
+	})
+	m := mp("openrouter")
+
+	if err := registerProviders(cfg, m); err != nil {
+		t.Fatalf("registerProviders: %v", err)
+	}
+	if m.HasProvider("openai") {
+		t.Error("a disabled openai registered via the generic arm")
+	}
+	if !m.HasProvider("groq") {
+		t.Error("groq (a bespoke arm) failed to register")
+	}
+}
+
+// The registry aliases and lowercases provider names ("local" -> ollama, "nim"
+// -> nvidia, "Ollama" -> ollama), but the generic arm's skip list is a plain
+// map lookup. Keyed on the raw config name it misses every one of those
+// spellings, so the generic arm registers a *second* chain entry for a provider
+// a bespoke arm already owns — built without that arm's default base and 300s
+// ollama timeout, and sitting in the fallback chain under a name no other code
+// path refers to. Neither duplicate errors, so nothing surfaces it but a bill.
+func TestRegisterProvidersSkipListMatchesAliasAndCaseVariants(t *testing.T) {
+	for _, spelling := range []string{"local", "Ollama", "OLLAMA"} {
+		t.Run(spelling, func(t *testing.T) {
+			cfg := legacyCfg(t, map[string]config.ProviderConfig{
+				"ollama": {APIKey: "x", Enabled: true, APIBase: "http://localhost:11434/v1"},
+				spelling: {APIKey: "x", Enabled: true},
+			})
+			m := mp("ollama")
+
+			if err := registerProviders(cfg, m); err != nil {
+				t.Fatalf("registerProviders: %v", err)
+			}
+			names := m.GetProviderNames()
+			count := 0
+			for _, n := range names {
+				if providers.CanonicalProviderName(n) == "ollama" {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Errorf("%q produced %d ollama entries in the chain (%v), want exactly 1", spelling, count, names)
+			}
+		})
+	}
+}
+
+// The same normalization applies to a provider the generic arm does own: a
+// mixed-case key must register under the canonical name, or nothing that looks
+// the provider up by its real name (the fallback order, /status, HasProvider)
+// can find it.
+func TestRegisterProvidersGenericArmRegistersUnderCanonicalName(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"OpenAI": {APIKey: "sk-o", Enabled: true, APIBase: "https://example.invalid/v1"},
+	})
+	cfg.ProviderDefaults.FallbackOrder = []string{"openai"}
+	m := mp("openai")
+
+	if err := registerProviders(cfg, m); err != nil {
+		t.Fatalf("registerProviders: %v", err)
+	}
+	if !m.HasProvider("openai") {
+		t.Errorf("config key %q did not register as \"openai\"; chain is %v", "OpenAI", m.GetProviderNames())
+	}
+}

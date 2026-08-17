@@ -301,3 +301,55 @@ func TestRegisterProvidersGenericArmRespectsDisabled(t *testing.T) {
 		t.Error("groq (a bespoke arm) failed to register")
 	}
 }
+
+// The registry aliases and lowercases provider names ("local" -> ollama, "nim"
+// -> nvidia, "Ollama" -> ollama), but the generic arm's skip list is a plain
+// map lookup. Keyed on the raw config name it misses every one of those
+// spellings, so the generic arm registers a *second* chain entry for a provider
+// a bespoke arm already owns — built without that arm's default base and 300s
+// ollama timeout, and sitting in the fallback chain under a name no other code
+// path refers to. Neither duplicate errors, so nothing surfaces it but a bill.
+func TestRegisterProvidersSkipListMatchesAliasAndCaseVariants(t *testing.T) {
+	for _, spelling := range []string{"local", "Ollama", "OLLAMA"} {
+		t.Run(spelling, func(t *testing.T) {
+			cfg := legacyCfg(t, map[string]config.ProviderConfig{
+				"ollama": {APIKey: "x", Enabled: true, APIBase: "http://localhost:11434/v1"},
+				spelling: {APIKey: "x", Enabled: true},
+			})
+			m := mp("ollama")
+
+			if err := registerProviders(cfg, m); err != nil {
+				t.Fatalf("registerProviders: %v", err)
+			}
+			names := m.GetProviderNames()
+			count := 0
+			for _, n := range names {
+				if providers.CanonicalProviderName(n) == "ollama" {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Errorf("%q produced %d ollama entries in the chain (%v), want exactly 1", spelling, count, names)
+			}
+		})
+	}
+}
+
+// The same normalization applies to a provider the generic arm does own: a
+// mixed-case key must register under the canonical name, or nothing that looks
+// the provider up by its real name (the fallback order, /status, HasProvider)
+// can find it.
+func TestRegisterProvidersGenericArmRegistersUnderCanonicalName(t *testing.T) {
+	cfg := legacyCfg(t, map[string]config.ProviderConfig{
+		"OpenAI": {APIKey: "sk-o", Enabled: true, APIBase: "https://example.invalid/v1"},
+	})
+	cfg.ProviderDefaults.FallbackOrder = []string{"openai"}
+	m := mp("openai")
+
+	if err := registerProviders(cfg, m); err != nil {
+		t.Fatalf("registerProviders: %v", err)
+	}
+	if !m.HasProvider("openai") {
+		t.Errorf("config key %q did not register as \"openai\"; chain is %v", "OpenAI", m.GetProviderNames())
+	}
+}

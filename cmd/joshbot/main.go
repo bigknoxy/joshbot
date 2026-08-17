@@ -832,28 +832,39 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 			"github-copilot": true,
 		}
 		for name, p := range cfg.Providers {
-			if handledGeneric[name] {
+			// Match the skip list on the *canonical* name, not the raw config key:
+			// the registry aliases and lowercases ("local" -> ollama, "nim" ->
+			// nvidia, "Ollama" -> ollama), so an exact-match skip would let those
+			// spellings past and register a second chain entry for a provider a
+			// bespoke arm already owns — without that arm's default base or timeout.
+			canonical := providers.CanonicalProviderName(name)
+			if handledGeneric[canonical] {
 				continue
 			}
 			// Mirror the bespoke arms' gates: only an enabled, keyed provider the
 			// registry can actually dial. A configured-but-unknown name is left for
 			// noProvidersRegisteredError to name, exactly as before.
-			if !p.Enabled || p.APIKey == "" || !providers.IsProviderRegistered(name) {
+			if !p.Enabled || p.APIKey == "" || !providers.IsProviderRegistered(canonical) {
 				continue
 			}
 			base := p.APIBase
 			if base == "" {
-				base = providers.GetDefaultAPIBaseFor(name)
+				base = providers.GetDefaultAPIBaseFor(canonical)
 			}
 			model := p.Model
 			if model == "" {
-				model = providers.GetDefaultModel(name)
+				model = providers.GetDefaultModel(canonical)
 			}
+			// The fallback order is operator-written too, so it is matched by
+			// canonical name for the same reason.
 			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1
-			if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, name); idx >= 0 {
-				priority = idx + 1
+			for idx, entry := range cfg.ProviderDefaults.FallbackOrder {
+				if providers.CanonicalProviderName(entry) == canonical {
+					priority = idx + 1
+					break
+				}
 			}
-			prov, err := providers.GetProvider(name, providers.Config{
+			prov, err := providers.GetProvider(canonical, providers.Config{
 				APIKey:       p.APIKey,
 				APIBase:      base,
 				ExtraHeaders: p.ExtraHeaders,
@@ -864,18 +875,17 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				Temperature:  cfg.Agents.Defaults.Temperature,
 			})
 			if err != nil {
-				log.Warn("Failed to create "+name+" provider", "name", name, "error", err)
+				log.Warn("Failed to create provider", "name", canonical, "error", err)
 				continue
 			}
-			multiProvider.Register(name, prov, model, priority, p.Enabled)
-			log.Info("Registered provider", "name", name, "model", model, "priority", priority)
+			multiProvider.Register(canonical, prov, model, priority, p.Enabled)
+			log.Info("Registered provider", "name", canonical, "model", model, "priority", priority)
 		}
 
 		// Fail fast if the legacy provider map produced zero usable providers,
 		// rather than deferring to an opaque "no providers configured" error
 		// the first time Chat() is called. Distinguishes an empty config from
 		// providers present but none enabled (issue #71).
-
 		if len(multiProvider.GetProviderNames()) == 0 {
 			return noProvidersRegisteredError(cfg.Providers)
 		}

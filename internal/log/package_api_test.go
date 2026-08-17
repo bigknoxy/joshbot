@@ -166,18 +166,18 @@ func TestContextLoggersAttachATraceID(t *testing.T) {
 		t.Errorf("WithContext minted no trace ID for a bare context: %q", lines["minted"])
 	}
 
-	// ContextLogger differs on purpose and the difference is easy to "fix" into
-	// a duplicate field: it prepends a trace ID only when the context has none.
-	// When the context already carries one, the caller is expected to have put
-	// it on the record already, so ContextLogger adds nothing.
+	// ContextLogger always stamps a trace ID: the caller's when the context has
+	// one, a freshly generated one when it does not. It differs from WithContext
+	// only in that it also merges in the caller's keyValues — but both always
+	// put the trace ID on the returned logger.
 	if !strings.Contains(lines["clmint"], "trace_id=trace-") {
 		t.Errorf("ContextLogger minted no trace ID for a bare context: %q", lines["clmint"])
 	}
+	if !strings.Contains(lines["clcarried"], "trace_id=trace-cl") {
+		t.Errorf("ContextLogger dropped the context's trace ID: %q", lines["clcarried"])
+	}
 	if !strings.Contains(lines["clmint"], "k=v") || !strings.Contains(lines["clcarried"], "k=v") {
 		t.Errorf("ContextLogger dropped the caller's key-values:\n%s", content)
-	}
-	if strings.Contains(lines["clcarried"], "trace_id=") {
-		t.Errorf("ContextLogger added a trace ID the context already carried: %q", lines["clcarried"])
 	}
 }
 

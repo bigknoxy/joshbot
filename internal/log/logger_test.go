@@ -404,16 +404,28 @@ func TestLoggerWithContext(t *testing.T) {
 	globalOnce = sync.Once{}
 	global = nil
 
+	tmpFile := filepath.Join(t.TempDir(), "log.txt")
 	cfg := DefaultConfig()
 	cfg.Pretty = false
 	cfg.Level = DebugLevel
+	cfg.File = tmpFile
 	Init(cfg)
 
 	ctx := ContextWithTraceID(context.Background(), "test-trace")
 
-	logger := ContextLogger(ctx, "key", "value")
-	if logger == nil {
-		t.Fatal("ContextLogger returned nil")
+	// Before the fix the append was inside the `if !ok || traceID == ""`
+	// branch, so a context that already carried a trace ID produced a logger
+	// with no trace_id field at all — inverted. Writing through the logger
+	// and reading the file back asserts the field is present both when the
+	// context already holds the ID and when it must be generated.
+	ContextLogger(ctx).Info("trace-bearing-ctx")
+
+	raw, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("reading log file: %v", err)
+	}
+	if !strings.Contains(string(raw), "test-trace") {
+		t.Errorf("trace_id from context not found in log output:\n%s", raw)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -88,10 +87,40 @@ func sanitizeMCPDescription(desc string) string {
 	return desc
 }
 
-// indexFold is strings.Index with ASCII case folding. The tag names are ASCII
-// by construction, so a full Unicode case fold would buy nothing.
+// indexFold is strings.Index with ASCII case-insensitive matching. It walks
+// bytes rather than lowercasing the haystack because unicode.ToLower can change
+// a string's byte length (İ is two bytes, its lowercase is three), which would
+// make the returned offset wrong for the caller slicing the original string.
+// Only ASCII letters fold, which is all HTML tag names and comment markers use.
 func indexFold(s, substr string) int {
-	return strings.Index(strings.ToLower(s), strings.ToLower(substr))
+	if substr == "" {
+		return 0
+	}
+	if len(substr) > len(s) {
+		return -1
+	}
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if hasPrefixFoldAt(s, substr, i) {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasPrefixFoldAt(s, substr string, off int) bool {
+	for j := 0; j < len(substr); j++ {
+		if lowerASCII(s[off+j]) != lowerASCII(substr[j]) {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerASCII(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }
 
 // rawSchemaProvider lets a tool supply a JSON Schema for its parameters

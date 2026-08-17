@@ -254,8 +254,8 @@ func ContextLogger(ctx context.Context, keyValues ...any) *Logger {
 		} else {
 			traceID = generateTraceID()
 		}
-		keyValues = append([]any{"trace_id", traceID}, keyValues...)
 	}
+	keyValues = append([]any{"trace_id", traceID}, keyValues...)
 	return &Logger{
 		Logger: Get().Logger.With(keyValues...),
 		cfg:    Get().cfg,

@@ -1081,9 +1081,9 @@ func (t *WebTool) extractHTMLContent(urlStr string, body []byte) ToolResult {
 
 	// Simple extraction: remove scripts, styles, and comments
 	// This is a basic implementation
-	html = t.removeTag(html, "<script")
-	html = t.removeTag(html, "<style")
-	html = t.removeTag(html, "<!--")
+	html = t.removeTag(html, "<script", "</script>")
+	html = t.removeTag(html, "<style", "</style>")
+	html = t.removeTag(html, "<!--", "-->")
 
 	// Get title
 	title := ""
@@ -1136,18 +1136,34 @@ func (t *WebTool) extractHTMLContent(urlStr string, body []byte) ToolResult {
 	return ToolResult{Output: output.String()}
 }
 
-// removeTag removes all instances of a tag from HTML.
-func (t *WebTool) removeTag(html, tag string) string {
+// removeTag removes all complete instances of an HTML element or comment.
+// It finds openTag, then the matching closeTag in the rest of the string
+// and deletes the whole span — so the body (script source, CSS, comment
+// text) never reaches the model context.
+//
+// XML-style elements (<script>…</script>) and HTML comments (<!--…-->)
+// both work with the same logic:
+//   - closeTag is found in `rest` (everything from the start of openTag on)
+//   - if no closeTag is found, the remainder drops out (dangling = untrusted)
+//
+// Matching is ASCII case-insensitive: tag names are case-insensitive in HTML,
+// so a case-sensitive search leaves <SCRIPT>…</SCRIPT> bodies intact — and the
+// case is chosen by the page, which is exactly the untrusted party this strip
+// defends against. Do not narrow this back to strings.Index.
+func (t *WebTool) removeTag(html string, openTag, closeTag string) string {
 	for {
-		start := strings.Index(html, tag)
+		start := indexFold(html, openTag)
 		if start == -1 {
 			break
 		}
-		end := strings.Index(html[start:], ">")
-		if end == -1 {
+		rest := html[start:]
+		closePos := indexFold(rest, closeTag)
+		if closePos == -1 {
+			// No closing tag found: drop everything from the open tag onward.
+			html = html[:start]
 			break
 		}
-		html = html[:start] + html[start+end+1:]
+		html = html[:start] + rest[closePos+len(closeTag):]
 	}
 	return html
 }

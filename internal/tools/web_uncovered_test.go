@@ -199,13 +199,14 @@ func TestWebTool_FetchHTMLExtractsTitleAndStripsScripts(t *testing.T) {
 		t.Errorf("HTML markup must be stripped:\n%s", res.Output)
 	}
 
-	// Known limitation, pinned deliberately rather than wished away: removeTag
-	// deletes the *tag* and not the element's body, so script and style text
-	// still reaches the model as prose. This assertion documents the current
-	// contract — if extraction is ever tightened to drop element bodies, this
-	// is the test to update, and until then nobody should believe otherwise.
-	if !strings.Contains(res.Output, "SCRIPTSECRET") {
-		t.Log("script bodies are now stripped; extraction improved — update this test's expectation")
+	// Script and style bodies must be fully stripped — removeTag now removes
+	// the complete element, not just the opening tag. Neither a leaked script
+	// var nor a style body must reach the model context.
+	if strings.Contains(res.Output, "SCRIPTSECRET") {
+		t.Errorf("script bodies must be stripped:\n%s", res.Output)
+	}
+	if strings.Contains(res.Output, "STYLESECRET") {
+		t.Errorf("style bodies must be stripped:\n%s", res.Output)
 	}
 	if strings.Contains(res.Output, "COMMENTSECRET") {
 		t.Errorf("HTML comment bodies must not reach the model:\n%s", res.Output)
@@ -532,16 +533,82 @@ func TestParseExaResults(t *testing.T) {
 func TestWebTool_RemoveTag(t *testing.T) {
 	tool := &WebTool{}
 	tests := []struct {
-		name, html, tag, want string
+		name, html, open, close, want string
 	}{
-		{"removes every occurrence", `a<script src="x">b<script>c`, "<script", "abc"},
-		{"absent tag is a no-op", `plain text`, "<script", "plain text"},
-		{"unterminated tag stops rather than looping", `a<script`, "<script", "a<script"},
+		{
+			name: "removes script element with body",
+			html: `before<script>var secret = 42;</script>after`,
+			open: "<script", close: "</script>",
+			want: `beforeafter`,
+		},
+		{
+			name: "removes style element with body",
+			html: `pre<style>body{color:red}</style>post`,
+			open: "<style", close: "</style>",
+			want: `prepost`,
+		},
+		{
+			name: "removes comment with body",
+			html: `<!-- secret -->visible`,
+			open: "<!--", close: "-->",
+			want: `visible`,
+		},
+		{
+			name: "removes multiple occurrences",
+			html: `<script>a</script>mid<script>b</script>`,
+			open: "<script", close: "</script>",
+			want: `mid`,
+		},
+		{
+			name: "script with attributes",
+			html: `<script src="x.js">code</script>rest`,
+			open: "<script", close: "</script>",
+			want: `rest`,
+		},
+		{
+			name: "absent tag is a no-op",
+			html: `plain text`,
+			open: "<script", close: "</script>",
+			want: `plain text`,
+		},
+		{
+			// Tag names are case-insensitive in HTML and the page picks the
+			// case, so a case-sensitive strip is a bypass the untrusted side
+			// controls: <SCRIPT>…</SCRIPT> would reach the model intact.
+			name: "uppercase script element is removed with its body",
+			html: `keep<SCRIPT>var x="LEAKED";</SCRIPT>keep2`,
+			open: "<script", close: "</script>",
+			want: `keepkeep2`,
+		},
+		{
+			name: "mixed-case script element is removed with its body",
+			html: `keep<Script src="a.js">LEAKED</ScRiPt>keep2`,
+			open: "<script", close: "</script>",
+			want: `keepkeep2`,
+		},
+		{
+			name: "uppercase style element is removed with its body",
+			html: `keep<STYLE>body{color:LEAKED}</STYLE>keep2`,
+			open: "<style", close: "</style>",
+			want: `keepkeep2`,
+		},
+		{
+			name: "unterminated opening tag drops remainder",
+			html: `text<script`,
+			open: "<script", close: "</script>",
+			want: `text`,
+		},
+		{
+			name: "no closing tag drops orphan body",
+			html: `keep<script>orphan body`,
+			open: "<script", close: "</script>",
+			want: `keep`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tool.removeTag(tt.html, tt.tag); got != tt.want {
-				t.Errorf("removeTag(%q, %q) = %q, want %q", tt.html, tt.tag, got, tt.want)
+			if got := tool.removeTag(tt.html, tt.open, tt.close); got != tt.want {
+				t.Errorf("removeTag(%q, %q, %q) = %q, want %q", tt.html, tt.open, tt.close, got, tt.want)
 			}
 		})
 	}

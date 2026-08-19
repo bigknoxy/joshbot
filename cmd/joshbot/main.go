@@ -1613,9 +1613,11 @@ type modelReporter interface {
 }
 
 // cliCommandNames are the slash commands offered by the TUI editor's Tab
-// completion. They mirror what the agent's /help lists for CLI sessions plus
-// the CLI-only commands the buffered prompt still supports (/clear, /history).
-var cliCommandNames = []string{"start", "new", "status", "model", "personality", "compact", "help", "clear", "history", "exit"}
+// completion. Every entry must have a handler: /clear and /history were listed
+// here for a buffered prompt that never implemented them, so Tab completed a
+// command the agent then answered as ordinary prose. /exit is handled by the
+// loop itself, not by the agent.
+var cliCommandNames = []string{"start", "new", "status", "model", "personality", "compact", "help", "resume", "exit"}
 
 // isTTY reports whether w is connected to an interactive terminal. It is a
 // variable (not a plain function) so tests can inject deterministic
@@ -1933,7 +1935,9 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 			continue
 		}
 
-		if strings.EqualFold(inputLine, "exit") {
+		// Both spellings: the editor's Tab completion offers "/exit", and a
+		// bare "exit" is what the pre-editor prompt accepted.
+		if strings.EqualFold(inputLine, "exit") || strings.EqualFold(inputLine, "/exit") {
 			cancel()
 			return nil
 		}

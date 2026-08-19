@@ -95,6 +95,13 @@ type TelegramChannel struct {
 	// self-hosted telegram-bot-api server in production (channels.telegram.api_url,
 	// issue #280), or a stub in tests. offline is tests only. Empty/false means
 	// the real api.telegram.org.
+	// callbackHandlers routes an inline-button press by its envelope namespace.
+	// A press with a registered namespace is handled here and never becomes an
+	// LLM turn; anything else falls through to the bus as before. Guarded by mu
+	// because RegisterCallback runs at wiring time and presses arrive on the
+	// poller goroutine.
+	callbackHandlers map[string]CallbackHandler
+
 	apiURL  string
 	offline bool
 }
@@ -151,18 +158,19 @@ func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *Telegr
 	}
 
 	return &TelegramChannel{
-		name:          "telegram",
-		bus:           bus,
-		cfg:           cfg,
-		apiURL:        cfg.APIURL,
-		stopCh:        make(chan struct{}),
-		allowIDs:      allowIDs,
-		allowNames:    allowNames,
-		maxRetries:    3,
-		retryDelay:    500 * time.Millisecond,
-		maxRetryDelay: 5 * time.Second,
-		pollTimeout:   60 * time.Second,
-		typingStop:    make(map[string]chan struct{}),
+		name:             "telegram",
+		bus:              bus,
+		cfg:              cfg,
+		apiURL:           cfg.APIURL,
+		stopCh:           make(chan struct{}),
+		allowIDs:         allowIDs,
+		allowNames:       allowNames,
+		maxRetries:       3,
+		retryDelay:       500 * time.Millisecond,
+		maxRetryDelay:    5 * time.Second,
+		pollTimeout:      60 * time.Second,
+		callbackHandlers: make(map[string]CallbackHandler),
+		typingStop:       make(map[string]chan struct{}),
 		// Telegram clears a chat action after 5s; re-send just under that.
 		typingInterval: 4 * time.Second,
 		// Longer than any sane agent turn, short enough to not leak forever.
@@ -985,12 +993,80 @@ func (t *TelegramChannel) replyCannotPerceive(ctx telebot.Context, note string) 
 	return err
 }
 
+// RegisterCallback binds a handler to a callback namespace. It is called at
+// wiring time, before Start, and refuses a duplicate rather than silently
+// replacing one: two features quietly sharing a namespace is how a press ends
+// up in the wrong handler.
+func (t *TelegramChannel) RegisterCallback(namespace string, h CallbackHandler) error {
+	if namespace == "" {
+		return errors.New("callback namespace is empty")
+	}
+	if strings.Contains(namespace, callbackSep) {
+		return fmt.Errorf("callback namespace %q contains %q", namespace, callbackSep)
+	}
+	if h == nil {
+		return fmt.Errorf("callback handler for %q is nil", namespace)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.callbackHandlers == nil {
+		t.callbackHandlers = make(map[string]CallbackHandler)
+	}
+	if _, exists := t.callbackHandlers[namespace]; exists {
+		return fmt.Errorf("callback namespace %q is already registered", namespace)
+	}
+	t.callbackHandlers[namespace] = h
+	return nil
+}
+
+// callbackHandler looks up a namespace's handler.
+func (t *TelegramChannel) callbackHandler(namespace string) (CallbackHandler, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	h, ok := t.callbackHandlers[namespace]
+	return h, ok
+}
+
 // handleCallback processes callback queries from inline buttons.
+//
+// A press whose data decodes to a registered namespace is dispatched to that
+// handler and stops here. Everything else — data from an older joshbot, or
+// from a producer that never adopted the envelope — is forwarded to the agent
+// as the synthetic "[Callback: ...]" message it always was, so nothing that
+// worked before stops working. The distinction matters because the legacy path
+// spends a full ReAct turn to interpret a string the channel already knows the
+// meaning of.
 func (t *TelegramChannel) handleCallback(ctx telebot.Context) error {
 	cb := ctx.Callback()
 
 	if !t.IsAllowed(int64(cb.Sender.ID), cb.Sender.Username, cb.Sender.FirstName, cb.Sender.LastName) {
 		return nil
+	}
+
+	// Answer the callback first either way: Telegram spins the button until it
+	// is answered, and a handler that takes a second should not look hung.
+	if err := ctx.Bot().Respond(cb); err != nil {
+		log.Warn("failed to answer callback", "error", err)
+	}
+
+	if action, err := DecodeCallback(cb.Data); err == nil {
+		if h, ok := t.callbackHandler(action.Namespace); ok {
+			press := CallbackPress{
+				Action:     action,
+				CallbackID: cb.ID,
+				ChatID:     cb.Message.Chat.ID,
+				MessageID:  cb.Message.ID,
+				SenderID:   int64(cb.Sender.ID),
+				Username:   cb.Sender.Username,
+			}
+			if err := h(context.Background(), press); err != nil {
+				log.Error("callback handler failed",
+					"namespace", action.Namespace,
+					"action", action.Action,
+					"error", err)
+			}
+			return nil
+		}
 	}
 
 	content := fmt.Sprintf("[Callback: %s]", cb.Data)
@@ -1010,11 +1086,6 @@ func (t *TelegramChannel) handleCallback(ctx telebot.Context) error {
 			"callback_data": cb.Data,
 			"media_type":    "callback",
 		},
-	}
-
-	// Answer the callback
-	if err := ctx.Bot().Respond(cb); err != nil {
-		log.Warn("failed to answer callback", "error", err)
 	}
 
 	if !t.bus.Send(inbound) {
@@ -1364,7 +1435,19 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 					partOpts.ReplyTo = &telebot.Message{ID: int(id)}
 				}
 			}
-			if markup, ok := msg.Metadata["reply_markup"].(map[string]any); ok {
+			// A typed *Keyboard is checked first: it is the only form that
+			// can validate its callback envelopes, and Build reporting an
+			// error here is the whole point of the type. The map form stays
+			// for metadata that arrived as decoded JSON.
+			switch markup := msg.Metadata["reply_markup"].(type) {
+			case *Keyboard:
+				rm, err := markup.Build()
+				if err != nil {
+					log.Error("dropping invalid inline keyboard", "error", err)
+				} else {
+					partOpts.ReplyMarkup = rm
+				}
+			case map[string]any:
 				partOpts.ReplyMarkup = t.buildReplyMarkup(markup)
 			}
 		}
@@ -1613,12 +1696,46 @@ func isRetryable(err error) bool {
 	return true
 }
 
+// normalizeKeyboardRows coerces a metadata keyboard into rows of buttons.
+//
+// It accepts both the in-process Go shape ([][]map[string]any) and the shape
+// JSON decodes to ([]any of []any of map[string]any). Only the first was
+// accepted before, and nothing in joshbot produced it — so the type assertion
+// could never succeed and both keyboard paths were dead code that returned an
+// empty markup without an error.
+func normalizeKeyboardRows(v any) ([][]map[string]any, bool) {
+	switch rows := v.(type) {
+	case [][]map[string]any:
+		return rows, true
+	case []any:
+		out := make([][]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			buttons, ok := row.([]any)
+			if !ok {
+				return nil, false
+			}
+			outRow := make([]map[string]any, 0, len(buttons))
+			for _, b := range buttons {
+				button, ok := b.(map[string]any)
+				if !ok {
+					return nil, false
+				}
+				outRow = append(outRow, button)
+			}
+			out = append(out, outRow)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 // buildReplyMarkup builds a ReplyMarkup from metadata.
 func (t *TelegramChannel) buildReplyMarkup(markup map[string]any) *telebot.ReplyMarkup {
 	rm := &telebot.ReplyMarkup{}
 
 	// Handle inline keyboard
-	if keyboard, ok := markup["inline_keyboard"].([][]map[string]any); ok {
+	if keyboard, ok := normalizeKeyboardRows(markup["inline_keyboard"]); ok {
 		var rows [][]telebot.InlineButton
 
 		for _, row := range keyboard {
@@ -1647,7 +1764,7 @@ func (t *TelegramChannel) buildReplyMarkup(markup map[string]any) *telebot.Reply
 	}
 
 	// Handle keyboard (reply keyboard)
-	if keyboard, ok := markup["keyboard"].([][]map[string]any); ok {
+	if keyboard, ok := normalizeKeyboardRows(markup["keyboard"]); ok {
 		var rows [][]telebot.ReplyButton
 
 		for _, row := range keyboard {

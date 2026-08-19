@@ -62,6 +62,10 @@ type TelegramChannel struct {
 	// Typing keep-alive. Telegram clears a chat action after 5 seconds, so a
 	// long agent turn needs the action re-sent on a timer. One entry per chat,
 	// guarded by mu; the channel in it stops that chat's keep-alive.
+	// ackPending maps a chat to the inbound message id awaiting a completion
+	// reaction (issue #314). Guarded by mu.
+	ackPending map[string]int
+
 	typingStop     map[string]chan struct{}
 	typingInterval time.Duration
 	// typingMaxDuration bounds a keep-alive. Nothing calls stopTyping if the
@@ -105,6 +109,7 @@ type TelegramChannel struct {
 type telegramNotifier interface {
 	Notify(to telebot.Recipient, action telebot.ChatAction, threadID ...int) error
 	SetCommands(opts ...interface{}) error
+	React(to telebot.Recipient, msg telebot.Editable, opts ...telebot.ReactionOptions) error
 }
 
 // botCommands is the command menu shown in the Telegram UI. Every entry here
@@ -517,6 +522,10 @@ func (t *TelegramChannel) handleMessage(ctx telebot.Context) (err error) {
 		_, err := ctx.Bot().Send(ctx.Sender(), "Sorry, I couldn't process your message. Please try again.")
 		return err
 	}
+
+	// The turn is admitted, so acknowledge it on the user's own message
+	// (issue #314). Best effort and off the reply path.
+	t.ackAdmitted(ctx.Chat(), msg.ID)
 
 	return nil
 }
@@ -1308,6 +1317,9 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 	// The reply is on its way, so the "typing…" keep-alive for this chat has
 	// done its job.
 	t.stopTyping(recipient)
+	// Same moment, same reason: replace the "heard you" reaction with the
+	// completion one.
+	t.ackDone(recipient)
 
 	parseMode := telebot.ModeDefault
 	if pm, ok := msg.Metadata["parse_mode"].(string); ok {

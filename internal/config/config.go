@@ -295,6 +295,13 @@ type TelegramConfig struct {
 	// carries omitempty so it is absent from every config joshbot has already
 	// saved, which is what lets it be added with no schema migration.
 	APIURL string `mapstructure:"api_url" json:"api_url,omitempty" yaml:"api_url"`
+	// Reactions turns on the reactions-as-acknowledgement signal (issue
+	// #314): 👀 on the inbound message the moment the turn is admitted to the
+	// bus, 👍 when the reply is on its way. It is opt-in and carries
+	// omitempty, because a bool without omitempty is written into every saved
+	// config and its default can then never be flipped without a schema
+	// migration (the streaming v4→v5 trap).
+	Reactions bool `mapstructure:"reactions" json:"reactions,omitempty" yaml:"reactions"`
 }
 
 // DiscordConfig holds Discord channel configuration.

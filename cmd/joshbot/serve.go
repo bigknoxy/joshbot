@@ -23,6 +23,9 @@ func serveCommand() *cli.Command {
 			"POST /v1/audio/transcriptions is also served when stt.provider is set. It is\n" +
 			"not the agent: it transcribes an upload with the configured speech-to-text\n" +
 			"provider and returns the text. Without stt.provider it answers 501.\n\n" +
+			"POST /v1/embeddings is served when embeddings.provider is set, using the\n" +
+			"configured embeddings.model. It is not the agent either. Without\n" +
+			"embeddings.provider it answers 501.\n\n" +
 			"Authentication is mandatory and there is no unauthenticated mode: set\n" +
 			"api.api_keys in config.json, or JOSHBOT_API__API_KEYS as a comma-separated\n" +
 			"list. The default bind address is loopback, because a caller reaching this\n" +
@@ -92,10 +95,23 @@ func runServe(c *cli.Context) error {
 		transcriber = t
 	}
 
+	// A broken embeddings block is fatal for the same reason: an operator who
+	// configured the route their way out of a 501 must not be silently left on
+	// the 501.
+	var embedder api.Embedder
+	if cfg.Embeddings.Provider != "" {
+		e, eerr := buildEmbedder(cfg)
+		if eerr != nil {
+			return fmt.Errorf("embeddings config: %w", eerr)
+		}
+		embedder = e
+	}
+
 	srv, err := api.New(agentInstance, api.Options{
 		Listen:      listen,
 		APIKeys:     cfg.API.APIKeys,
 		Transcriber: transcriber,
+		Embedder:    embedder,
 	})
 	if err != nil {
 		return err

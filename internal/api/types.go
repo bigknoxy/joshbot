@@ -12,7 +12,11 @@
 // There is no unauthenticated mode.
 package api
 
-import "github.com/bigknoxy/joshbot/internal/providers"
+import (
+	"encoding/json"
+
+	"github.com/bigknoxy/joshbot/internal/providers"
+)
 
 // ModelID is the single model this server advertises. joshbot chooses its own
 // backing provider and model from config, so there is nothing for the caller to
@@ -125,4 +129,33 @@ type errorBody struct {
 // documented shape for response_format=json, so there is nothing else to send.
 type transcriptionResponse struct {
 	Text string `json:"text"`
+}
+
+// embeddingsRequest is the subset of the OpenAI embeddings request joshbot acts
+// on. Input is held raw because the field is a string in some SDKs and an array
+// of strings in others, and both are real traffic.
+type embeddingsRequest struct {
+	// Model is accepted and ignored, for the same drop-in reason ModelID
+	// documents: the configured embeddings.model is what is used.
+	Model          string          `json:"model"`
+	Input          json.RawMessage `json:"input"`
+	EncodingFormat string          `json:"encoding_format"`
+	User           string          `json:"user"`
+}
+
+// embeddingsResponse is an OpenAI list-of-embeddings object.
+type embeddingsResponse struct {
+	Object string            `json:"object"`
+	Data   []embeddingObject `json:"data"`
+	Model  string            `json:"model"`
+	Usage  usage             `json:"usage"`
+}
+
+// embeddingObject carries one vector. Embedding is `any` because
+// encoding_format decides whether it serializes as an array of numbers or as a
+// base64 string, and both are the documented shape of this field.
+type embeddingObject struct {
+	Object    string `json:"object"`
+	Index     int    `json:"index"`
+	Embedding any    `json:"embedding"`
 }

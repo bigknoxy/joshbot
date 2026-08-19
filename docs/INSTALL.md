@@ -321,7 +321,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot onboard` | First-time setup wizard |
 | `joshbot agent` | Interactive CLI chat mode |
 | `joshbot gateway` | Start all channels (Telegram, Discord) |
-| `joshbot serve [--listen host:port]` | Serve the OpenAI-compatible HTTP API (`POST /v1/chat/completions`, `GET /v1/models`, and `POST /v1/audio/transcriptions` when `stt.provider` is set) |
+| `joshbot serve [--listen host:port]` | Serve the OpenAI-compatible HTTP API (`POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/audio/transcriptions` when `stt.provider` is set, and `POST /v1/embeddings` when `embeddings.provider` is set) |
 | `joshbot status` | Show configuration and status |
 | `joshbot preflight` | Check the config would work, without calling any provider (exits non-zero if it would not) |
 | `joshbot --output json <cmd>` | Machine-readable form of `preflight`, `status`, `skills list`, `mcp list`, `profiles list`, `auth status` and `configure --list` |
@@ -849,7 +849,6 @@ curl http://127.0.0.1:18791/v1/chat/completions \
 
 Set `"stream": true` for `text/event-stream` frames ending in `data: [DONE]`. The
 optional `user` field picks the session (`api:<user>`, default `default`).
-`/v1/embeddings` is not implemented.
 
 `POST /v1/audio/transcriptions` transcribes a `multipart/form-data` upload with
 the provider configured under `stt` — it is not the agent, so there is no loop,
@@ -863,6 +862,34 @@ curl http://127.0.0.1:18791/v1/audio/transcriptions \
 
 The upload is capped at 25 MiB and sniffed by content (flac, mp3, mp4/m4a, ogg,
 wav, webm), so a text file named `voice.mp3` is refused before it costs anything.
+
+`POST /v1/embeddings` embeds text with the provider configured under
+`embeddings` — also not the agent. Without `embeddings.provider` it answers 501
+naming the key.
+
+```json
+{
+  "embeddings": {
+    "provider": "ollama",
+    "model": "nomic-embed-text",
+    "timeout": "60s"
+  }
+}
+```
+
+```bash
+curl http://127.0.0.1:18791/v1/embeddings \
+  -H "Authorization: Bearer $JOSHBOT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":["dog","puppy"]}'
+```
+
+The provider's key and `api_base` are reused, and no key is required (ollama is
+keyless). `embeddings.model` defaults to `nomic-embed-text` for `ollama` and
+`text-embedding-3-small` for `openai`; any other provider must set it.
+`input` takes a string or an array of strings, `encoding_format` takes `float`
+(default) or `base64`, and a request is refused before the provider is dialled
+if it carries more than 128 inputs or any input over 64 KiB.
 
 ### Skill Approval
 

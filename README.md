@@ -28,7 +28,7 @@ joshbot is heavier on guarantees, lighter on your machine.
 - **Context Compression** - Summarizes old context to stay within token limits; works well with small local models
 - **Skill Self-Creation** - Creates new capabilities for itself as markdown files, with auto-detection from conversation patterns and LLM-based extraction
 - **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
-- **OpenAI-Compatible API** - `joshbot serve` exposes the agent at `/v1/chat/completions` (streaming included) and `/v1/models`, plus `/v1/audio/transcriptions` when `stt` is configured, so any OpenAI client can drive it; authentication is mandatory and it binds loopback by default
+- **OpenAI-Compatible API** - `joshbot serve` exposes the agent at `/v1/chat/completions` (streaming included) and `/v1/models`, plus `/v1/audio/transcriptions` when `stt` is configured and `/v1/embeddings` when `embeddings` is configured, so any OpenAI client can drive it; authentication is mandatory and it binds loopback by default
 - **Telegram & Discord** - Chat from your phone with full media support; both fail closed on an empty allowlist
 - **Scriptable / Non-Interactive** - Every command runs headless; `agent -m` for one-shot, `--output-format json`/`stream-json` for machine-readable output, `--resume` to thread sessions, and a stable exit-code contract for CI
 - **Interactive CLI** - Rich terminal interface with markdown rendering
@@ -1153,6 +1153,7 @@ joshbot serve --listen 127.0.0.1:9000
 | `/v1/chat/completions` | POST | Run a turn. Supports `"stream": true` (SSE). |
 | `/v1/models` | GET | List the served model. |
 | `/v1/audio/transcriptions` | POST | Transcribe an audio upload. Needs `stt.provider`. |
+| `/v1/embeddings` | POST | Embed one or more texts. Needs `embeddings.provider`. |
 | `/healthz` | GET | Liveness. The only route needing no credential. |
 
 **The model *is* the agent.** A request runs the full ReAct loop — tools, memory,
@@ -1217,6 +1218,58 @@ curl http://127.0.0.1:18791/v1/audio/transcriptions \
 - A provider failure is a 502 with the upstream text redacted, for the same reason
   chat errors are.
 
+#### Embeddings
+
+`POST /v1/embeddings` is the other route that is **not** the agent. It embeds one
+or more texts with the provider configured under `embeddings` and returns the
+vectors — no ReAct loop, no session, no memory. joshbot does not consume
+embeddings itself (`memory_search` is lexical), so this exists to give a client
+one endpoint and one credential store for both chat and retrieval.
+
+```json
+{
+  "embeddings": {
+    "provider": "ollama",
+    "model": "nomic-embed-text",
+    "timeout": "60s"
+  }
+}
+```
+
+`embeddings.provider` must name a configured, enabled provider with an
+OpenAI-compatible `/embeddings` endpoint, and reuses that provider's API key and
+`api_base` — there is no second credential. Unlike `stt`, **no API key is
+required**: ollama is keyless and is the main local case. `embeddings.model`
+defaults per provider (`ollama` → `nomic-embed-text`, `openai` →
+`text-embedding-3-small`); any other provider must set it explicitly.
+`embeddings.timeout` bounds one request (default 60s, same duration grammar as
+every other timeout — `"60s"`, `"2m"`, or a bare number of seconds). A broken
+`embeddings` block is a startup error naming the key, never a per-request
+failure.
+
+```bash
+curl http://127.0.0.1:18791/v1/embeddings \
+  -H "Authorization: Bearer $JOSHBOT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":["dog","puppy"]}'
+```
+
+- Without `embeddings.provider` the route answers **501** naming the config key.
+- `input` accepts a bare string or an array of strings, since both are real SDK
+  traffic. `model` is accepted and ignored — the model comes from
+  `embeddings.model`.
+- `encoding_format` accepts `float` (default) and `base64` (raw little-endian
+  float32 bytes, what `numpy.frombuffer(..., dtype="float32")` expects). Anything
+  else is a 400.
+- Limits, all enforced **before** the provider is dialled: at most 128 inputs, at
+  most 64 KiB per input, and the whole body under the shared 1 MiB request cap.
+- Vectors are returned in **input order**, placed by the response's `index` field
+  rather than by array position. A provider that answers out of order is handled;
+  one that answers with a duplicate, out-of-range or missing index is an error,
+  not a silently mismatched vector.
+- A provider failure is a 502 with the upstream text redacted, for the same reason
+  chat errors are.
+
 ### Authentication and exposure
 
 **Authentication is mandatory and there is no unauthenticated mode.** A caller
@@ -1271,8 +1324,8 @@ One limit worth knowing. A client that disconnects mid-turn cancels the request
 context, so that turn is not saved to the session — the conversation resumes from
 the last completed turn.
 
-> Embeddings (`/v1/embeddings`) are not implemented — joshbot has no embedding
-> provider interface, and `memory_search` does not use one.
+> `memory_search` is lexical and does not use embeddings. `/v1/embeddings` is
+> served for callers, not consumed by joshbot itself.
 
 ## MCP Servers (experimental)
 

@@ -19,10 +19,12 @@ import (
 // fakeNotifier records typing actions and command registrations without any
 // network access.
 type fakeNotifier struct {
-	mu       sync.Mutex
-	actions  []string
-	cmdCalls [][]interface{}
-	cmdErr   error
+	mu        sync.Mutex
+	actions   []string
+	cmdCalls  [][]interface{}
+	cmdErr    error
+	reactions []string
+	reactErr  error
 }
 
 func (f *fakeNotifier) Notify(to telebot.Recipient, action telebot.ChatAction, threadID ...int) error {
@@ -37,6 +39,24 @@ func (f *fakeNotifier) SetCommands(opts ...interface{}) error {
 	defer f.mu.Unlock()
 	f.cmdCalls = append(f.cmdCalls, opts)
 	return f.cmdErr
+}
+
+func (f *fakeNotifier) React(to telebot.Recipient, msg telebot.Editable, opts ...telebot.ReactionOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, _ := msg.MessageSig()
+	emoji := ""
+	if len(opts) > 0 && len(opts[0].Reactions) > 0 {
+		emoji = opts[0].Reactions[0].Emoji
+	}
+	f.reactions = append(f.reactions, fmt.Sprintf("%s:%s:%s", to.Recipient(), id, emoji))
+	return f.reactErr
+}
+
+func (f *fakeNotifier) reactionList() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.reactions...)
 }
 
 func (f *fakeNotifier) count() int {

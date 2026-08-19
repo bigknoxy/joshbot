@@ -1127,6 +1127,37 @@ per PDF), because those bound what a model is billed to read, not what Telegram
 will carry.
 
 
+#### Reaction acknowledgements (`reactions`)
+
+`channels.telegram.reactions` turns on an emoji acknowledgement placed on **your
+own message**, so you get a "it heard me" signal before the first token of the
+reply exists — and it costs no message slot, which matters in a group.
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "123456789:ABCdef...",
+      "allow_from": ["123456789"],
+      "reactions": true
+    }
+  }
+}
+```
+
+👀 goes on the moment the turn is admitted to the bus, and 👍 replaces it when
+the reply is on its way. Telegram's `setMessageReaction` *sets* rather than
+appends, so the second write clears the first with no extra call. The completion
+emoji is 👍 and not ✅ because ✅ is not in Telegram's free reaction set — a
+premium-only emoji is rejected with `REACTION_INVALID` and the acknowledgement
+would silently never appear.
+
+It is **off by default** and opt-in: a bot in a group without permission to react
+would otherwise log a failure on every single turn. A reaction is an ornament on
+the turn and never part of it, so a failure is logged at debug and the reply is
+unaffected. A sender the allowlist rejects is never acknowledged.
+
 On startup joshbot registers its command menu with Telegram (`/start`, `/new`,
 `/status`, `/model`, `/personality`, `/compact`, `/help`), so they appear behind
 the menu button and autocomplete as you type. If Telegram rejects the

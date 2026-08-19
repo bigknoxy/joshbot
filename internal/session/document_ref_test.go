@@ -9,8 +9,8 @@ import (
 )
 
 // TestDocumentRefSurvivesRoundTripWithoutTheBytes is the twin of
-// TestImageRefSurvivesRoundTripWithoutTheBytes, and the argument is if anything
-// stronger for documents: a PDF is more sensitive than a photo, not less.
+// TestImageRefSurvivesRoundTripWithoutTheBytes, and the same argument applies
+// unchanged: what is stored is a descriptor, never the content.
 //
 // Session JSONL is deliberately exempt from redaction and protected only by its
 // 0600 mode, so persisting megabytes of base64 PDF would be a large amount of

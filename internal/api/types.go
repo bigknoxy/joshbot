@@ -120,3 +120,9 @@ type errorBody struct {
 	Type    string `json:"type"`
 	Code    string `json:"code,omitempty"`
 }
+
+// transcriptionResponse is the OpenAI transcription object. `text` is the whole
+// documented shape for response_format=json, so there is nothing else to send.
+type transcriptionResponse struct {
+	Text string `json:"text"`
+}

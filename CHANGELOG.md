@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`POST /v1/audio/transcriptions` on the HTTP API (#234, transcriptions half).** `joshbot serve` now transcribes a `multipart/form-data` upload with the speech-to-text provider already configured under `stt`, so a client speaking the OpenAI audio dialect reaches the same transcriber Telegram voice notes use, with one credential store rather than two. It is the one route that is not the agent: no ReAct loop, no session, no memory. Without `stt.provider` it answers **501 naming the config key**, because a 404 reads as "joshbot cannot do this" and a 200 with an empty transcript cannot be told apart from silence; a broken `stt` block is fatal at `serve` startup rather than at the first request. The body is read through `r.MultipartReader` rather than `ParseMultipartForm`, which spills past its memory budget to temp files — streaming keeps the audio off disk and denies an authenticated caller a disk-fill primitive. Uploads are capped at 25 MiB (`providers.MaxAudioBytes`, matching what the upstream endpoint enforces, so joshbot refuses locally and names the limit instead of spending the transfer) and read through a `LimitReader` at cap+1 so over-limit is distinguishable from truncated. **Content decides the type**, exactly as it does for images: `providers.SniffAudio` checks the bytes for flac, mp3, mp4/m4a, ogg, wav or webm, because the multipart filename and its declared Content-Type are both written by the caller — a 25 MiB text file named `voice.mp3` would otherwise be uploaded and billed before anything noticed. `model`, `language`, `prompt` and `temperature` are accepted and ignored for drop-in compatibility; `response_format` honours `json` (default) and `text`. A provider failure is a 502 with the upstream text redacted, per the #238 origin split, since an API caller is authenticated but is not the operator. The `/v1/embeddings` half of #234 is deliberately not built: `memory_search` does not use embeddings, so it would be a service offered to callers rather than something joshbot consumes.
+
+### Fixed
+
+- **Docs claimed audio transcription did not exist.** `README.md`, `docs/INSTALL.md` and `site/architecture.html` all still said `/v1/audio/transcriptions` was "not implemented" and that joshbot "has no ... audio provider interface yet" — false since voice transcription shipped in #276, and doubly false now.
+
 ## [1.57.1] - 2026-08-17
 
 ### Fixed

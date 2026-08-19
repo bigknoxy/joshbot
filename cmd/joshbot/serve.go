@@ -17,9 +17,12 @@ func serveCommand() *cli.Command {
 		Name:  "serve",
 		Usage: "Start the OpenAI-compatible HTTP API",
 		Description: "Serves POST /v1/chat/completions and GET /v1/models so any client that\n" +
-			"speaks the OpenAI chat API can use joshbot as a backend. A request runs the\n" +
-			"full agent — tools, memory and skills — so the answer is joshbot's, not a\n" +
+			"speaks the OpenAI chat API can use joshbot as a backend. A chat request runs\n" +
+			"the full agent — tools, memory and skills — so the answer is joshbot's, not a\n" +
 			"pass-through of an upstream provider.\n\n" +
+			"POST /v1/audio/transcriptions is also served when stt.provider is set. It is\n" +
+			"not the agent: it transcribes an upload with the configured speech-to-text\n" +
+			"provider and returns the text. Without stt.provider it answers 501.\n\n" +
 			"Authentication is mandatory and there is no unauthenticated mode: set\n" +
 			"api.api_keys in config.json, or JOSHBOT_API__API_KEYS as a comma-separated\n" +
 			"list. The default bind address is loopback, because a caller reaching this\n" +
@@ -77,9 +80,22 @@ func runServe(c *cli.Context) error {
 
 	// New fails when no API key is configured, before anything is listening —
 	// so a misconfigured server never accepts a single unauthenticated request.
+	// Transcription is optional. A broken stt block is fatal — the same rule
+	// runGateway applies — because an ignored misconfiguration leaves the
+	// operator on a 501 they configured their way out of.
+	var transcriber api.Transcriber
+	if cfg.STT.Provider != "" {
+		t, terr := buildTranscriber(cfg)
+		if terr != nil {
+			return fmt.Errorf("speech-to-text config: %w", terr)
+		}
+		transcriber = t
+	}
+
 	srv, err := api.New(agentInstance, api.Options{
-		Listen:  listen,
-		APIKeys: cfg.API.APIKeys,
+		Listen:      listen,
+		APIKeys:     cfg.API.APIKeys,
+		Transcriber: transcriber,
 	})
 	if err != nil {
 		return err

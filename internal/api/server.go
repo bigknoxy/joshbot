@@ -73,8 +73,9 @@ type Server struct {
 	// Nil answers an empty transcript, never an error: a browser with no
 	// history is the normal first-load case.
 	transcript TranscriptReader
-	// webuiSessions holds logged-in browsers. Nil when webui is false, which is
-	// what makes a cookie unhonourable on a server that does not serve the page.
+	// webuiSessions holds logged-in browsers. It is allocated unconditionally,
+	// so the webui flag is the single gate a cookie is checked against: see
+	// webuiSessionFor. Gating on a nil map would be gating by accident.
 	webuiSessions *webuiSessions
 	// served latches the one run this Server gets. http.Server cannot be
 	// restarted after Shutdown: a second Serve would bind the port, take

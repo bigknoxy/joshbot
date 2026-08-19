@@ -23,19 +23,26 @@ const (
 // same rule inbound images follow (providers.NewImage). A ".png" holding prose
 // is a document, and a ".dat" holding a PNG is a photo.
 //
-// Data carries the bytes for anything at or under AttachmentLimits.InlineMaxBytes
-// so the send needs no second read of a file that may have changed underneath
-// it. Above that the bytes would be a large, pointless copy through the bus, so
-// only Path is carried and the channel streams from disk. Path is always set:
-// it is what a channel with no native attachment support names instead of
-// silently dropping the file.
+// Data is always populated for a valid attachment, and it is the only source of
+// outbound bytes. There is deliberately no second route: the bytes are read once
+// through the workspace containment walk that validated the path, and everything
+// downstream sends exactly those bytes. An earlier design carried an absolute
+// path for larger files and let the channel re-open it, which was CVE-shaped —
+// the contained walk validated one file while an uncontained os.Open on the
+// channel goroutine, after a bus hop and again on every retry, sent whatever the
+// leaf pointed at by then.
 type Attachment struct {
 	Filename string
 	MIME     string
 	Kind     AttachmentKind
 	Size     int64
 	Data     []byte
-	Path     string
+	// SourcePath is a workspace-relative label for humans — what a channel with
+	// no native attachment support names instead of silently dropping the file.
+	// Nothing opens it, ever. It is relative rather than absolute both because
+	// re-opening it is not a thing any code may do, and because it is printed
+	// into chat, where an absolute path discloses the operator's home directory.
+	SourcePath string
 }
 
 // String keeps attachment bytes out of logs, the way providers.Image does.
@@ -43,17 +50,20 @@ func (a Attachment) String() string {
 	return fmt.Sprintf("attachment(%s, %s, %s, %d B)", a.Filename, a.Kind, a.MIME, a.Size)
 }
 
-// Default outbound attachment sizes, in bytes. The photo and document values
-// are the Telegram Bot API's own upload limits, which are the binding
-// constraint today; they are reachable through AttachmentLimits rather than
-// referenced directly at each use site so a future per-channel or per-api_url
-// override (issue #280, a self-hosted Bot API server raises both) has one
-// place to land.
+// Default outbound attachment sizes, in bytes. They are reachable through
+// AttachmentLimits rather than referenced directly at each use site so a future
+// per-channel or per-api_url override (issue #280, a self-hosted Bot API server
+// raises them) has one place to land.
 const (
-	DefaultPhotoMaxBytes    int64 = 10 << 20
-	DefaultDocumentMaxBytes int64 = 50 << 20
-	// DefaultInlineMaxBytes is the point above which the bytes stay on disk.
-	DefaultInlineMaxBytes int64 = 10 << 20
+	DefaultPhotoMaxBytes int64 = 10 << 20
+	// DefaultDocumentMaxBytes is 10 MiB, well under Telegram's own 50 MiB
+	// ceiling for a document. That is deliberate and is a memory bound, not a
+	// protocol bound: every outbound byte must come from the single contained
+	// read, so the whole payload is held in memory from the tool call until the
+	// channel finishes uploading it. Raising this under issue #280 raises peak
+	// memory use with it — that is the tradeoff taken knowingly, in exchange for
+	// there being no second, uncontained way to put bytes on the wire.
+	DefaultDocumentMaxBytes int64 = 10 << 20
 )
 
 // AttachmentLimits bounds what may be sent out. A zero field means "use the
@@ -61,7 +71,6 @@ const (
 type AttachmentLimits struct {
 	PhotoMaxBytes    int64
 	DocumentMaxBytes int64
-	InlineMaxBytes   int64
 }
 
 // DefaultAttachmentLimits returns the built-in limits.
@@ -69,7 +78,6 @@ func DefaultAttachmentLimits() AttachmentLimits {
 	return AttachmentLimits{
 		PhotoMaxBytes:    DefaultPhotoMaxBytes,
 		DocumentMaxBytes: DefaultDocumentMaxBytes,
-		InlineMaxBytes:   DefaultInlineMaxBytes,
 	}
 }
 
@@ -81,9 +89,6 @@ func (l AttachmentLimits) WithDefaults() AttachmentLimits {
 	}
 	if l.DocumentMaxBytes <= 0 {
 		l.DocumentMaxBytes = d.DocumentMaxBytes
-	}
-	if l.InlineMaxBytes <= 0 {
-		l.InlineMaxBytes = d.InlineMaxBytes
 	}
 	return l
 }

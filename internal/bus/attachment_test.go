@@ -10,14 +10,11 @@ func TestAttachmentLimits_WithDefaultsFillsOnlyZeroFields(t *testing.T) {
 	if got.DocumentMaxBytes != DefaultDocumentMaxBytes {
 		t.Errorf("DocumentMaxBytes = %d, want the default", got.DocumentMaxBytes)
 	}
-	if got.InlineMaxBytes != DefaultInlineMaxBytes {
-		t.Errorf("InlineMaxBytes = %d, want the default", got.InlineMaxBytes)
-	}
 }
 
 func TestDefaultAttachmentLimitsAreNonZero(t *testing.T) {
 	l := DefaultAttachmentLimits()
-	if l.PhotoMaxBytes <= 0 || l.DocumentMaxBytes <= 0 || l.InlineMaxBytes <= 0 {
+	if l.PhotoMaxBytes <= 0 || l.DocumentMaxBytes <= 0 {
 		t.Fatalf("a zero default would refuse every file: %+v", l)
 	}
 	if l.PhotoMaxBytes > l.DocumentMaxBytes {

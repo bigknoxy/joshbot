@@ -1264,3 +1264,52 @@ func TestSystemPromptNoConversationSummaryReference(t *testing.T) {
 		t.Errorf("system prompt must not mention 'ctx_compress' to avoid priming the LLM: %q", prompt)
 	}
 }
+
+// B2: send_file takes no recipient argument — it reads the turn's channel off
+// the request context. That only works if `process` puts it there before the
+// ReAct loop runs, so every tool call in the turn sees it. Without this the
+// tool has no address at all and refuses, which is the failure the hardcoded
+// "cli" default used to hide.
+func TestProcessPutsTheTurnsChannelOnTheToolContext(t *testing.T) {
+	var seen string
+	var calls int
+	exec := &mockToolExecutor{
+		executeFn: func(ctx context.Context, name string, args map[string]any) (string, error) {
+			calls++
+			seen = tools.ChannelFromContext(ctx)
+			return "ok", nil
+		},
+	}
+
+	turn := 0
+	provider := &mockProvider{
+		chatFn: func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+			turn++
+			if turn == 1 {
+				return &providers.ChatResponse{Choices: []providers.Choice{{
+					Message: providers.Message{Role: "assistant", ToolCalls: []providers.ToolCall{{
+						ID: "1", Type: "function",
+						Function: providers.FunctionCall{Name: "send_file", Arguments: `{"path":"a.png"}`},
+					}}},
+				}}}, nil
+			}
+			return &providers.ChatResponse{Choices: []providers.Choice{{
+				Message: providers.Message{Role: "assistant", Content: "done"},
+			}}}, nil
+		},
+	}
+
+	a := NewAgent(config.Defaults(), provider, exec, newMockSessionManager(), newMockLogger())
+	if _, err := a.Process(context.Background(), bus.InboundMessage{
+		Channel: "telegram", SenderID: "u1", Content: "send it",
+	}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	if calls == 0 {
+		t.Fatal("the tool never ran; the test proves nothing")
+	}
+	if seen != "telegram" {
+		t.Errorf("tool saw channel %q, want the turn's own channel", seen)
+	}
+}

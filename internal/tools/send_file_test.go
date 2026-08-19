@@ -27,6 +27,12 @@ func pngBytes(n int) []byte {
 	return b
 }
 
+// sendFileCtx is the context an ordinary turn carries: the recipient comes
+// from the turn, and Execute refuses without one.
+func sendFileCtx() context.Context {
+	return WithChannel(context.Background(), "telegram")
+}
+
 func writeWS(t *testing.T, ws, name string, data []byte) string {
 	t.Helper()
 	p := filepath.Join(ws, name)
@@ -43,7 +49,7 @@ func TestSendFile_ImageIsSentAsPhotoWithInlineBytes(t *testing.T) {
 	tool, ms, ws := sendFileFixture(t)
 	writeWS(t, ws, "chart.png", pngBytes(32))
 
-	res := tool.Execute(context.Background(), map[string]any{"path": "chart.png", "caption": "here"})
+	res := tool.Execute(sendFileCtx(), map[string]any{"path": "chart.png", "caption": "here"})
 	if res.Error != nil {
 		t.Fatalf("Execute: %v", res.Error)
 	}
@@ -62,8 +68,8 @@ func TestSendFile_ImageIsSentAsPhotoWithInlineBytes(t *testing.T) {
 	if ms.fileCaption != "here" {
 		t.Errorf("caption = %q, want here", ms.fileCaption)
 	}
-	if ms.file.Path == "" {
-		t.Error("Path must always be set so a channel without attachment support can name the file")
+	if ms.file.SourcePath != "chart.png" {
+		t.Errorf("SourcePath = %q, want the workspace-relative label", ms.file.SourcePath)
 	}
 }
 
@@ -72,7 +78,7 @@ func TestSendFile_TextNamedPNGIsADocument(t *testing.T) {
 	tool, ms, ws := sendFileFixture(t)
 	writeWS(t, ws, "notes.png", []byte("this is prose, not an image at all"))
 
-	if res := tool.Execute(context.Background(), map[string]any{"path": "notes.png"}); res.Error != nil {
+	if res := tool.Execute(sendFileCtx(), map[string]any{"path": "notes.png"}); res.Error != nil {
 		t.Fatalf("Execute: %v", res.Error)
 	}
 	if ms.file.Kind != bus.AttachmentDocument {
@@ -87,7 +93,7 @@ func TestSendFile_JPEGNamedDatIsAPhoto(t *testing.T) {
 	tool, ms, ws := sendFileFixture(t)
 	writeWS(t, ws, "blob.dat", append([]byte("\xff\xd8\xff"), make([]byte, 64)...))
 
-	if res := tool.Execute(context.Background(), map[string]any{"path": "blob.dat"}); res.Error != nil {
+	if res := tool.Execute(sendFileCtx(), map[string]any{"path": "blob.dat"}); res.Error != nil {
 		t.Fatalf("Execute: %v", res.Error)
 	}
 	if ms.file.Kind != bus.AttachmentPhoto {
@@ -99,7 +105,7 @@ func TestSendFile_CaptionlessSendSucceeds(t *testing.T) {
 	tool, ms, ws := sendFileFixture(t)
 	writeWS(t, ws, "chart.png", pngBytes(16))
 
-	if res := tool.Execute(context.Background(), map[string]any{"path": "chart.png"}); res.Error != nil {
+	if res := tool.Execute(sendFileCtx(), map[string]any{"path": "chart.png"}); res.Error != nil {
 		t.Fatalf("a file with no caption must send: %v", res.Error)
 	}
 	if ms.fileCaption != "" {
@@ -128,7 +134,7 @@ func TestSendFile_PathOutsideWorkspaceSendsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := tool.Execute(context.Background(), map[string]any{"path": outside})
+	res := tool.Execute(sendFileCtx(), map[string]any{"path": outside})
 	if res.Error == nil {
 		t.Fatal("want an error for a path outside the workspace")
 	}
@@ -157,7 +163,7 @@ func TestSendFile_IntermediateSymlinkEscapeSendsNothing(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	res := tool.Execute(context.Background(), map[string]any{"path": "sub/secret.txt"})
+	res := tool.Execute(sendFileCtx(), map[string]any{"path": "sub/secret.txt"})
 	if res.Error == nil {
 		t.Fatal("want an error for an escape through an intermediate symlink")
 	}
@@ -185,10 +191,10 @@ func isContainmentError(err error) bool {
 
 func TestSendFile_OversizeNamesTheLimitAndSendsNothing(t *testing.T) {
 	tool, ms, ws := sendFileFixture(t)
-	tool.SetLimits(bus.AttachmentLimits{PhotoMaxBytes: 4, DocumentMaxBytes: 8, InlineMaxBytes: 4})
+	tool.SetLimits(bus.AttachmentLimits{PhotoMaxBytes: 4, DocumentMaxBytes: 8})
 	writeWS(t, ws, "big.bin", make([]byte, 64))
 
-	res := tool.Execute(context.Background(), map[string]any{"path": "big.bin"})
+	res := tool.Execute(sendFileCtx(), map[string]any{"path": "big.bin"})
 	if res.Error == nil {
 		t.Fatal("want an error for an over-limit file")
 	}
@@ -204,10 +210,10 @@ func TestSendFile_OversizeNamesTheLimitAndSendsNothing(t *testing.T) {
 // it outright would be a worse answer than a downloadable file.
 func TestSendFile_ImageOverPhotoLimitBecomesADocument(t *testing.T) {
 	tool, ms, ws := sendFileFixture(t)
-	tool.SetLimits(bus.AttachmentLimits{PhotoMaxBytes: 16, DocumentMaxBytes: 1 << 20, InlineMaxBytes: 1 << 20})
+	tool.SetLimits(bus.AttachmentLimits{PhotoMaxBytes: 16, DocumentMaxBytes: 1 << 20})
 	writeWS(t, ws, "huge.png", pngBytes(512))
 
-	if res := tool.Execute(context.Background(), map[string]any{"path": "huge.png"}); res.Error != nil {
+	if res := tool.Execute(sendFileCtx(), map[string]any{"path": "huge.png"}); res.Error != nil {
 		t.Fatalf("Execute: %v", res.Error)
 	}
 	if ms.file.Kind != bus.AttachmentDocument {
@@ -218,21 +224,96 @@ func TestSendFile_ImageOverPhotoLimitBecomesADocument(t *testing.T) {
 	}
 }
 
-// Above the inline threshold the bytes stay on disk and the channel streams
-// from Path; copying a 50 MiB file through the bus is what this avoids.
-func TestSendFile_LargeFileCarriesPathNotBytes(t *testing.T) {
+// B1: there is no second egress route. A file over the document limit is
+// refused outright — it is never published with a path for something
+// downstream to open, because that open would be uncontained.
+func TestSendFile_OverDocumentLimitIsRefusedNotPathPublished(t *testing.T) {
 	tool, ms, ws := sendFileFixture(t)
-	tool.SetLimits(bus.AttachmentLimits{PhotoMaxBytes: 1 << 20, DocumentMaxBytes: 1 << 20, InlineMaxBytes: 8})
+	tool.SetLimits(bus.AttachmentLimits{PhotoMaxBytes: 8, DocumentMaxBytes: 16})
 	writeWS(t, ws, "big.bin", make([]byte, 64))
 
-	if res := tool.Execute(context.Background(), map[string]any{"path": "big.bin"}); res.Error != nil {
+	res := tool.Execute(sendFileCtx(), map[string]any{"path": "big.bin"})
+	if res.Error == nil {
+		t.Fatal("a file over DocumentMaxBytes must be refused")
+	}
+	if ms.fileCalls != 0 {
+		t.Fatalf("sender called %d times, want 0 — nothing may be published over the limit", ms.fileCalls)
+	}
+}
+
+// B1: every attachment that is published carries its bytes, and its label is
+// never an absolute path. Both halves are the fix: bytes present means nothing
+// downstream needs to re-open anything, and a relative label means nothing
+// downstream *could* meaningfully re-open it either.
+func TestSendFile_EveryAttachmentCarriesBytesAndARelativeLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{"chart.png", pngBytes(32)},
+		{"notes.txt", []byte("prose, not an image at all, quite long here")},
+		{"nested/deep/report.bin", make([]byte, 4096)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, ms, ws := sendFileFixture(t)
+			writeWS(t, ws, tc.name, tc.data)
+
+			if res := tool.Execute(sendFileCtx(), map[string]any{"path": tc.name}); res.Error != nil {
+				t.Fatalf("Execute: %v", res.Error)
+			}
+			if len(ms.file.Data) == 0 {
+				t.Fatal("attachment carries no bytes; the contained read is the only egress route")
+			}
+			if int64(len(ms.file.Data)) != ms.file.Size {
+				t.Errorf("carried %d bytes for a %d byte file", len(ms.file.Data), ms.file.Size)
+			}
+			if filepath.IsAbs(ms.file.SourcePath) {
+				t.Errorf("SourcePath = %q is absolute; it is a human label and is printed into chat", ms.file.SourcePath)
+			}
+			if ms.file.SourcePath == "" {
+				t.Error("SourcePath must name the file for a channel that cannot attach it")
+			}
+		})
+	}
+}
+
+// B2: the recipient is a property of the turn. No channel on the context is a
+// refusal, never a default — a silent wrong recipient is worse than a failure.
+func TestSendFile_NoChannelOnTheTurnIsRefused(t *testing.T) {
+	tool, ms, ws := sendFileFixture(t)
+	writeWS(t, ws, "chart.png", pngBytes(16))
+
+	res := tool.Execute(context.Background(), map[string]any{"path": "chart.png"})
+	if res.Error == nil {
+		t.Fatal("want an error when the turn carries no channel")
+	}
+	if !strings.Contains(res.Error.Error(), "channel") {
+		t.Errorf("error %q must say which precondition failed", res.Error)
+	}
+	if ms.fileCalls != 0 {
+		t.Errorf("sender called %d times, want 0", ms.fileCalls)
+	}
+}
+
+// B2: the model cannot address the file. The tool declares no channel
+// parameter, and one passed anyway is ignored rather than honoured.
+func TestSendFile_ModelCannotChooseTheRecipient(t *testing.T) {
+	tool, ms, ws := sendFileFixture(t)
+	writeWS(t, ws, "chart.png", pngBytes(16))
+
+	for _, p := range tool.Parameters() {
+		if p.Name == "channel" {
+			t.Fatal("send_file must not expose a recipient parameter")
+		}
+	}
+
+	ctx := WithChannel(context.Background(), "telegram")
+	if res := tool.Execute(ctx, map[string]any{"path": "chart.png", "channel": "discord"}); res.Error != nil {
 		t.Fatalf("Execute: %v", res.Error)
 	}
-	if ms.file.Data != nil {
-		t.Errorf("carried %d bytes inline, want none above the threshold", len(ms.file.Data))
-	}
-	if ms.file.Path == "" {
-		t.Error("Path must be set when the bytes are not carried, or nothing can send the file")
+	if ms.fileChannel != "telegram" {
+		t.Errorf("delivered to %q, want the turn's own channel", ms.fileChannel)
 	}
 }
 
@@ -244,7 +325,7 @@ func TestSendFile_DirectoryAndEmptyFileAreRefused(t *testing.T) {
 	writeWS(t, ws, "empty.txt", nil)
 
 	for _, p := range []string{"dir", "empty.txt"} {
-		if res := tool.Execute(context.Background(), map[string]any{"path": p}); res.Error == nil {
+		if res := tool.Execute(sendFileCtx(), map[string]any{"path": p}); res.Error == nil {
 			t.Errorf("%s: want an error", p)
 		}
 	}
@@ -260,7 +341,7 @@ func TestSendFile_SenderErrorPropagates(t *testing.T) {
 		return errors.New("queue full")
 	}
 
-	res := tool.Execute(context.Background(), map[string]any{"path": "chart.png"})
+	res := tool.Execute(sendFileCtx(), map[string]any{"path": "chart.png"})
 	if res.Error == nil || !strings.Contains(res.Error.Error(), "queue full") {
 		t.Fatalf("error = %v, want the sender's failure surfaced", res.Error)
 	}
@@ -271,7 +352,7 @@ func TestSendFile_WorkspaceFromContextWins(t *testing.T) {
 	other := t.TempDir()
 	writeWS(t, other, "chart.png", pngBytes(16))
 
-	ctx := context.WithValue(context.Background(), ContextKeyWorkspace, other)
+	ctx := context.WithValue(sendFileCtx(), ContextKeyWorkspace, other)
 	if res := tool.Execute(ctx, map[string]any{"path": "chart.png"}); res.Error != nil {
 		t.Fatalf("Execute: %v", res.Error)
 	}
@@ -282,7 +363,7 @@ func TestSendFile_WorkspaceFromContextWins(t *testing.T) {
 
 func TestSendFile_NoSenderIsAnError(t *testing.T) {
 	tool := NewSendFileTool(nil, FilesystemToolConfig{Workspace: t.TempDir(), Restrict: true})
-	if res := tool.Execute(context.Background(), map[string]any{"path": "x"}); res.Error == nil {
+	if res := tool.Execute(sendFileCtx(), map[string]any{"path": "x"}); res.Error == nil {
 		t.Fatal("want an error with no sender wired")
 	}
 }
@@ -294,7 +375,7 @@ func TestSendFile_LimitsAccessorFillsZeroFields(t *testing.T) {
 	if got.PhotoMaxBytes != 7 {
 		t.Errorf("PhotoMaxBytes = %d, want the override", got.PhotoMaxBytes)
 	}
-	if got.DocumentMaxBytes != bus.DefaultDocumentMaxBytes || got.InlineMaxBytes != bus.DefaultInlineMaxBytes {
+	if got.DocumentMaxBytes != bus.DefaultDocumentMaxBytes {
 		t.Errorf("a zero field must fall back to the default, got %+v", got)
 	}
 }

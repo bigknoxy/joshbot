@@ -23,7 +23,8 @@ whenever the user wants the file itself — an image, a report, a log, an export
   photos, everything else as a downloadable document. The filename never
   decides — a text file named `.png` arrives as a document.
 - `caption` is optional. A file with no caption sends fine; do not invent one.
-- `channel` defaults to the channel you are talking on.
+- There is no recipient argument. The file goes to the conversation you are
+  replying to; you cannot address it anywhere else.
 
 ## Limits
 
@@ -31,5 +32,6 @@ Oversize files are refused with an error naming the limit, rather than being
 truncated. If a file is too large, say so and offer to send a summary or a
 smaller extract instead.
 
-Channels with no attachment support receive the caption plus the file's path,
-so the user is told where the file is rather than being told it was sent.
+Channels with no attachment support receive the caption plus the file's
+workspace-relative path, so the user is told where the file is rather than
+being told it was sent.

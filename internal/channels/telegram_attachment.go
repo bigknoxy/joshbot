@@ -88,8 +88,8 @@ func (t *TelegramChannel) sendOneAttachment(editor telegramEditor, recipient tel
 		return fmt.Errorf("%s is %s, over the %s telegram limit for a %s",
 			att.Filename, humanBytes(att.Size), humanBytes(max), att.Kind)
 	}
-	if len(att.Data) == 0 && att.Path == "" {
-		return fmt.Errorf("attachment %s carries neither bytes nor a path", att.Filename)
+	if len(att.Data) == 0 {
+		return fmt.Errorf("attachment %s carries no bytes", att.Filename)
 	}
 
 	var lastErr error
@@ -134,11 +134,13 @@ func (t *TelegramChannel) sendOneAttachment(editor telegramEditor, recipient tel
 // telegramMedia builds the telebot payload for one attachment. Kind was
 // decided by sniffing the bytes, never the extension, so a text file named
 // .png goes out as a document rather than as a photo Telegram would reject.
+//
+// The payload is always reader-backed. A disk-backed one (telebot.FromDisk)
+// would be a second, uncontained open on the channel goroutine — after a bus
+// hop, and again on every retry — sending bytes the workspace containment walk
+// never validated.
 func telegramMedia(att bus.Attachment, caption string) interface{} {
-	file := telebot.FromDisk(att.Path)
-	if len(att.Data) > 0 {
-		file = telebot.FromReader(bytes.NewReader(att.Data))
-	}
+	file := telebot.FromReader(bytes.NewReader(att.Data))
 	if att.Kind == bus.AttachmentPhoto {
 		return &telebot.Photo{File: file, Caption: caption}
 	}

@@ -802,7 +802,7 @@ func describeUnsentAttachments(content string, attachments []bus.Attachment) str
 	}
 	b.WriteString("\n[attachment not supported on this channel]")
 	for _, att := range attachments {
-		fmt.Fprintf(&b, "\n%s (%s) — %s", att.Filename, humanBytes(att.Size), att.Path)
+		fmt.Fprintf(&b, "\n%s (%s) — %s", att.Filename, humanBytes(att.Size), att.SourcePath)
 	}
 	return b.String()
 }

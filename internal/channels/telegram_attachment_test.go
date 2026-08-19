@@ -2,7 +2,6 @@ package channels
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -76,12 +75,12 @@ func attachmentTestChannel(t *testing.T) (*TelegramChannel, *mediaEditor) {
 
 func photoAttachment() bus.Attachment {
 	return bus.Attachment{
-		Filename: "chart.png",
-		MIME:     "image/png",
-		Kind:     bus.AttachmentPhoto,
-		Size:     4,
-		Data:     []byte("\x89PNG"),
-		Path:     "/ws/chart.png",
+		Filename:   "chart.png",
+		MIME:       "image/png",
+		Kind:       bus.AttachmentPhoto,
+		Size:       4,
+		Data:       []byte("\x89PNG"),
+		SourcePath: "charts/chart.png",
 	}
 }
 
@@ -125,12 +124,12 @@ func TestSendAttachments_DocumentKeepsFilenameAndMIME(t *testing.T) {
 	tg, ed := attachmentTestChannel(t)
 
 	att := bus.Attachment{
-		Filename: "notes.png", // named .png, sniffed as text: must be a document
-		MIME:     "text/plain",
-		Kind:     bus.AttachmentDocument,
-		Size:     5,
-		Data:     []byte("hello"),
-		Path:     "/ws/notes.png",
+		Filename:   "notes.png", // named .png, sniffed as text: must be a document
+		MIME:       "text/plain",
+		Kind:       bus.AttachmentDocument,
+		Size:       5,
+		Data:       []byte("hello"),
+		SourcePath: "notes.png",
 	}
 	if err := tg.Send(bus.OutboundMessage{ChannelID: "1", Attachments: []bus.Attachment{att}}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -248,27 +247,41 @@ func TestSendAttachments_LongCaptionBecomesItsOwnMessage(t *testing.T) {
 	}
 }
 
-func TestSendAttachments_PathOnlyAttachmentStreamsFromDisk(t *testing.T) {
-	tg, ed := attachmentTestChannel(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "big.bin")
-	if err := os.WriteFile(path, []byte("data"), 0600); err != nil {
-		t.Fatal(err)
+// B1: the payload is always reader-backed. A disk-backed telebot file would be
+// a second, uncontained open on the channel goroutine — after the bus hop, and
+// again on every retry — sending bytes the containment walk never saw. Asserting
+// on telebot's own fields is the point: FileLocal is what FromDisk sets.
+func TestTelegramMedia_NeverProducesADiskBackedFile(t *testing.T) {
+	cases := []bus.Attachment{
+		photoAttachment(),
+		{Filename: "notes.bin", MIME: "application/octet-stream", Kind: bus.AttachmentDocument, Size: 4, Data: []byte("data"), SourcePath: "notes.bin"},
 	}
-	att := bus.Attachment{Filename: "big.bin", MIME: "application/octet-stream", Kind: bus.AttachmentDocument, Size: 4, Path: path}
-
-	if err := tg.Send(bus.OutboundMessage{ChannelID: "1", Attachments: []bus.Attachment{att}}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	doc := ed.snapshot()[0].(*telebot.Document)
-	if doc.FileLocal != path {
-		t.Errorf("FileLocal = %q, want %q", doc.FileLocal, path)
+	for _, att := range cases {
+		t.Run(string(att.Kind), func(t *testing.T) {
+			var file telebot.File
+			switch m := telegramMedia(att, "cap").(type) {
+			case *telebot.Photo:
+				file = m.File
+			case *telebot.Document:
+				file = m.File
+			default:
+				t.Fatalf("payload is %T", m)
+			}
+			if file.FileLocal != "" {
+				t.Errorf("FileLocal = %q — the payload would be re-opened from disk, uncontained", file.FileLocal)
+			}
+			if file.FileReader == nil {
+				t.Error("FileReader is nil; the contained bytes are the only thing that may be uploaded")
+			}
+		})
 	}
 }
 
-func TestSendAttachments_NeitherBytesNorPathIsRefused(t *testing.T) {
+// An attachment with no bytes is refused: there is no path to fall back to,
+// by design.
+func TestSendAttachments_ByteslessAttachmentIsRefused(t *testing.T) {
 	tg, ed := attachmentTestChannel(t)
-	att := bus.Attachment{Filename: "ghost.png", Kind: bus.AttachmentPhoto, Size: 4}
+	att := bus.Attachment{Filename: "ghost.png", Kind: bus.AttachmentPhoto, Size: 4, SourcePath: "ghost.png"}
 
 	if err := tg.Send(bus.OutboundMessage{ChannelID: "1", Attachments: []bus.Attachment{att}}); err == nil {
 		t.Fatal("want an error for an attachment with no content")
@@ -283,8 +296,13 @@ func TestDescribeUnsentAttachments(t *testing.T) {
 		t.Errorf("with no attachments the text must be untouched, got %q", got)
 	}
 	got := describeUnsentAttachments("chart is ready", []bus.Attachment{photoAttachment()})
-	if !strings.Contains(got, "/ws/chart.png") {
-		t.Errorf("degraded text must name the path, got %q", got)
+	if !strings.Contains(got, "charts/chart.png") {
+		t.Errorf("degraded text must name the file, got %q", got)
+	}
+	// F3: the label goes into chat, so it must not disclose the operator's
+	// filesystem layout.
+	if strings.Contains(got, string(filepath.Separator)+"Users") || strings.Contains(got, "/home/") {
+		t.Errorf("degraded text leaked an absolute path: %q", got)
 	}
 	if !strings.Contains(got, "chart is ready") {
 		t.Errorf("degraded text must keep the reply, got %q", got)

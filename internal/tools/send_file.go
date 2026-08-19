@@ -81,13 +81,6 @@ func (t *SendFileTool) Parameters() []Parameter {
 			Description: "Optional text to show with the file",
 			Required:    false,
 		},
-		{
-			Name:        "channel",
-			Type:        ParamString,
-			Description: "Target channel: telegram, cli, or same",
-			Required:    false,
-			Default:     "same",
-		},
 	}
 }
 
@@ -110,9 +103,14 @@ func (t *SendFileTool) Execute(ctx interface{}, args map[string]any) ToolResult 
 
 	path, _ := args["path"].(string)
 	caption, _ := args["caption"].(string)
-	channel, _ := args["channel"].(string)
-	if channel == "" || channel == "same" {
-		channel = "cli"
+
+	// The recipient comes from the inbound turn, never from the model: the tool
+	// has no address argument at all. A default here would be a silent
+	// wrong-recipient send, which is strictly worse than a failure — so an
+	// unattached turn is refused.
+	channel := ChannelFromContext(execCtx)
+	if channel == "" {
+		return ToolResult{Error: errors.New("no channel on this turn: send_file can only reply to the conversation it was called from")}
 	}
 
 	att, err := t.buildAttachment(workspace, path)
@@ -172,10 +170,10 @@ func (t *SendFileTool) buildAttachment(workspace, path string) (Attachment, erro
 	head = head[:n]
 
 	att := Attachment{
-		Filename: filepath.Base(resolved),
-		MIME:     sniffAttachmentMIME(head),
-		Size:     size,
-		Path:     resolved,
+		Filename:   filepath.Base(resolved),
+		MIME:       sniffAttachmentMIME(head),
+		Size:       size,
+		SourcePath: relativeLabel(workspace, resolved),
 	}
 
 	// Content decides the routing, never the extension: a .png holding prose
@@ -189,21 +187,35 @@ func (t *SendFileTool) buildAttachment(workspace, path string) (Attachment, erro
 		att.Kind = bus.AttachmentDocument
 	}
 
-	// Bytes ride the message when they are small enough to be worth copying;
-	// above that the channel streams from Path. Either way the file has
-	// already been proven reachable through the contained walk above.
-	if size <= limits.InlineMaxBytes {
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return Attachment{}, fmt.Errorf("read %s: %w", path, err)
-		}
-		data, err := io.ReadAll(io.LimitReader(f, size))
-		if err != nil {
-			return Attachment{}, fmt.Errorf("read %s: %w", path, err)
-		}
-		att.Data = data
+	// The bytes always ride the message, read from the same handle the
+	// contained walk opened. This is the only outbound read there is: nothing
+	// downstream re-opens the path, so a leaf swapped for a symlink after this
+	// point changes nothing about what is sent. The size ceiling above is what
+	// bounds the memory this costs.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return Attachment{}, fmt.Errorf("read %s: %w", path, err)
 	}
+	data, err := io.ReadAll(io.LimitReader(f, size))
+	if err != nil {
+		return Attachment{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	att.Data = data
 
 	return att, nil
+}
+
+// relativeLabel renders a resolved path as a workspace-relative label. It is
+// never opened — it exists so a channel that cannot carry attachments can name
+// the file — so an absolute path here would only leak the operator's home
+// directory into chat. filepath.Rel can fail (different volumes, an
+// allowed_paths file outside the workspace); the basename is the honest
+// fallback, and the absolute path is never published either way.
+func relativeLabel(workspace, resolved string) string {
+	rel, err := filepath.Rel(workspace, resolved)
+	if err == nil && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return filepath.Base(resolved)
 }
 
 // SetSender sets the message sender.

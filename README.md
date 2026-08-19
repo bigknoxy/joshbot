@@ -1453,7 +1453,7 @@ reaches the prompt.
 **Security defaults:**
 - `web_fetch` and `web_search` block localhost, private IP ranges, and metadata hosts (SSRF protection), enforced at dial time.
 - `restrict_to_workspace` limits file and shell operations to the workspace unless explicitly allowed.
-- `send_file` is an egress path — it moves workspace bytes out of the process — so it resolves its path through the same two containment layers as the `filesystem` tool and refuses anything outside the workspace, including an escape via an intermediate symlink.
+- `send_file` is an egress path — it moves workspace bytes out of the process — so it resolves its path through the same two containment layers as the `filesystem` tool and refuses anything outside the workspace, including an escape via an intermediate symlink. The bytes are read once through that contained handle and carried on the message; nothing re-opens the path afterwards. The recipient is the channel the turn arrived on — the tool takes no address, so the model cannot choose where a file goes.
 - Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
 - `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock on Linux, Seatbelt on macOS) — see [Shell Sandbox](#shell-sandbox) below. On platforms with no sandbox, the shell tool falls back to allowlist-only by default.
 - `tools.shell_approval` asks before each shell command runs — see [Shell Approval](#shell-approval). Only the interactive CLI can prompt; unattended turns (gateway, cron, heartbeat) are denied rather than left blocking.

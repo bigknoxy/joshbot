@@ -20,7 +20,33 @@ const (
 	ContextKeyWorkspace ContextKey = "workspace"
 	// ContextKeyLogger is the context key for the logger.
 	ContextKeyLogger ContextKey = "logger"
+	// ContextKeyChannel is the context key for the channel the current turn
+	// arrived on. It rides the request context, the way WithApprover does, so
+	// concurrent turns on different channels cannot cross-deliver: a struct
+	// field would be one shared slot for every in-flight turn.
+	ContextKeyChannel ContextKey = "channel"
 )
+
+// WithChannel attaches the current turn's channel to the request context. It is
+// what lets send_file resolve a recipient without taking an address from the
+// model — the recipient is a property of the turn, not an argument.
+func WithChannel(ctx context.Context, name string) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return context.WithValue(ctx, ContextKeyChannel, name)
+}
+
+// ChannelFromContext returns the turn's channel, or "" when there is none. An
+// empty result is a refusal at the call site, never a default: a wrong
+// recipient is silent, and a failure is not.
+func ChannelFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	name, _ := ctx.Value(ContextKeyChannel).(string)
+	return name
+}
 
 // FilesystemTool provides file system operations.
 type FilesystemTool struct {

@@ -303,8 +303,11 @@ joshbot: [document] report.pdf (412 KB)
 - **The bytes decide the type**, not the extension: an image is sent as a photo
   (rendered inline), anything else as a document. A text file named `.png` is a
   document; a JPEG named `.dat` is a photo.
-- Limits: 10 MB sent as a photo, 50 MB as a document. Files at or under 10 MB
-  are read into the message; larger ones are streamed from disk at send time.
+- Limits: 10 MiB as a photo, 10 MiB as a document. Every file is read once
+  through the containment walk and carried on the message, which is why the
+  document limit is below Telegram's own 50 MiB ceiling — it is a memory bound.
+- **You cannot ask joshbot to send a file somewhere else.** The file goes to the
+  conversation you asked in; the tool has no recipient argument.
 - An optional caption is sent with the file. A caption over Telegram's
   1,024-character limit is sent as its own following message rather than cut.
 - On a channel with no attachment support (Discord today) joshbot appends the

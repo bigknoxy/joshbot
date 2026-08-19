@@ -2896,6 +2896,50 @@ func buildTranscriber(cfg *config.Config) (func(ctx context.Context, audio []byt
 	}, nil
 }
 
+// buildEmbedder turns the embeddings config block into an embedding callback
+// for the HTTP API. Like buildTranscriber it reuses the named provider's
+// credential and endpoint — there is no second credential store — so every
+// failure here names the config key to fix. Called only when
+// embeddings.provider is set.
+//
+// One deliberate deviation from buildTranscriber: an API key is NOT required.
+// ollama is keyless and running a local embedding model is the main use case
+// for this route; demanding a key would make the supported configuration
+// impossible to express.
+func buildEmbedder(cfg *config.Config) (func(ctx context.Context, inputs []string) ([][]float32, providers.Usage, error), error) {
+	name := cfg.Embeddings.Provider
+	p, ok := cfg.Providers[name]
+	if !ok {
+		return nil, fmt.Errorf("embeddings.provider %q is not a configured provider", name)
+	}
+	if !p.Enabled {
+		return nil, fmt.Errorf("embeddings.provider %q is configured but not enabled", name)
+	}
+	apiBase := p.APIBase
+	if apiBase == "" {
+		apiBase = providers.GetDefaultAPIBaseFor(name)
+	}
+	if apiBase == "" {
+		return nil, fmt.Errorf("embeddings.provider %q has no API base URL; set providers.%s.api_base", name, name)
+	}
+	model := cfg.Embeddings.Model
+	if model == "" {
+		model = config.DefaultEmbeddingModel(name)
+	}
+	if model == "" {
+		return nil, fmt.Errorf("no default embedding model for provider %q; set embeddings.model", name)
+	}
+	ec := providers.EmbedConfig{
+		APIBase: apiBase,
+		APIKey:  p.APIKey,
+		Model:   model,
+		Timeout: cfg.Embeddings.Timeout.Duration(),
+	}
+	return func(ctx context.Context, inputs []string) ([][]float32, providers.Usage, error) {
+		return providers.Embed(ctx, ec, inputs)
+	}, nil
+}
+
 // runGateway executes the gateway (Telegram + channels) mode.
 // gatewayStreamer is the part of *channels.TelegramStreamer the gateway
 // handler uses. It is an interface so the suppression rule below — the one

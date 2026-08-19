@@ -401,6 +401,41 @@ func DefaultSTTModel(provider string) string {
 	return ""
 }
 
+// EmbeddingsConfig configures the POST /v1/embeddings route of the HTTP API.
+// The zero value means disabled — the route answers 501 naming the key rather
+// than a 404, so a caller can tell "not configured" from "not supported".
+// Provider names one of the configured LLM providers (its credential and
+// endpoint are reused; there is no second credential store), which must expose
+// an OpenAI-compatible POST /embeddings endpoint — ollama, openai and most
+// gateways do. Provider is a string whose empty value disables the feature on
+// purpose, for the same reason STTConfig.Provider is: a config bool has no
+// omitempty and can never have its default flipped without a schema migration.
+type EmbeddingsConfig struct {
+	Provider string `mapstructure:"provider" json:"provider,omitempty" yaml:"provider,omitempty"`
+	// Model is the embedding model id. Empty picks a per-provider default
+	// (ollama: nomic-embed-text, openai: text-embedding-3-small); any other
+	// provider requires an explicit model.
+	Model string `mapstructure:"model" json:"model,omitempty" yaml:"model,omitempty"`
+	// Timeout bounds one embeddings request (default 60s). It is a
+	// config.Duration, never a time.Duration: a plain time.Duration decodes as
+	// nanoseconds, which is #240.
+	Timeout Duration `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
+}
+
+// DefaultEmbeddingModel returns the embedding model to use for a provider when
+// the config names none, or "" when the provider has no known default — which
+// is what makes buildEmbedder tell the operator to set embeddings.model rather
+// than guess a model id that 404s at the first request.
+func DefaultEmbeddingModel(provider string) string {
+	switch provider {
+	case "ollama":
+		return "nomic-embed-text"
+	case "openai":
+		return "text-embedding-3-small"
+	}
+	return ""
+}
+
 // HeartbeatConfig configures the HEARTBEAT.md proactive task scanner.
 type HeartbeatConfig struct {
 	// Interval is how often HEARTBEAT.md is scanned for unchecked tasks, as a Go
@@ -452,9 +487,11 @@ type Config struct {
 	API       APIConfig       `mapstructure:"api" json:"api,omitempty" yaml:"api,omitempty"`
 	Heartbeat HeartbeatConfig `mapstructure:"heartbeat" json:"heartbeat,omitempty" yaml:"heartbeat,omitempty"`
 	// STT configures voice-message transcription; zero value = disabled.
-	STT      STTConfig  `mapstructure:"stt" json:"stt,omitempty" yaml:"stt,omitempty"`
-	LogLevel string     `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
-	User     UserConfig `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+	STT STTConfig `mapstructure:"stt" json:"stt,omitempty" yaml:"stt,omitempty"`
+	// Embeddings configures POST /v1/embeddings; zero value = disabled.
+	Embeddings EmbeddingsConfig `mapstructure:"embeddings" json:"embeddings,omitempty" yaml:"embeddings,omitempty"`
+	LogLevel   string           `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User       UserConfig       `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
 
 	// MCP configures Model Context Protocol servers whose tools are exposed to
 	// the agent. Declaring a server here is a privileged, operator-only act:
@@ -1226,6 +1263,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateTimeout("stt.timeout", c.STT.Timeout); err != nil {
+		return err
+	}
+	if err := validateTimeout("embeddings.timeout", c.Embeddings.Timeout); err != nil {
 		return err
 	}
 	for name, p := range c.Providers {

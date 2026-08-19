@@ -17,6 +17,7 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
@@ -56,8 +57,11 @@ type Server struct {
 	// when `stt` is unset. Nil is meaningful: /v1/audio/transcriptions answers
 	// 501 naming the config key rather than pretending to work.
 	transcriber Transcriber
-	keys        [][]byte
-	http        *http.Server
+	// embedder is the operator's configured embeddings callback, or nil when
+	// the `embeddings` block is unset. Nil is meaningful — see Embedder.
+	embedder Embedder
+	keys     [][]byte
+	http     *http.Server
 	// served latches the one run this Server gets. http.Server cannot be
 	// restarted after Shutdown: a second Serve would bind the port, take
 	// ErrServerClosed straight back, and — since that error is mapped to nil —
@@ -109,6 +113,12 @@ var ErrServerReused = errors.New("api: server already served; construct a new on
 // credential and one configured model.
 type Transcriber func(ctx context.Context, audio []byte, filename string) (string, error)
 
+// Embedder turns texts into vectors. It is the callback cmd/joshbot builds from
+// the `embeddings` config block, so the route and any future in-process caller
+// share one credential and one configured model. Nil disables the work, not the
+// route: /v1/embeddings answers 501 naming the config key.
+type Embedder func(ctx context.Context, inputs []string) ([][]float32, providers.Usage, error)
+
 // Options configures a Server.
 type Options struct {
 	// Listen is the bind address, host:port.
@@ -120,6 +130,9 @@ type Options struct {
 	// route's work but not the route: it answers 501 naming the config key,
 	// which is more useful to a client than a 404.
 	Transcriber Transcriber
+	// Embedder enables POST /v1/embeddings. Nil answers 501 naming the config
+	// key, which is more useful to a client than a 404.
+	Embedder Embedder
 }
 
 // New builds a Server. It fails when no usable API key is configured.
@@ -148,7 +161,7 @@ func New(a Processor, opts Options) (*Server, error) {
 		return nil, errors.New("api: listen address is required")
 	}
 
-	s := &Server{agent: a, transcriber: opts.Transcriber, keys: keys}
+	s := &Server{agent: a, transcriber: opts.Transcriber, embedder: opts.Embedder, keys: keys}
 	s.http = &http.Server{
 		Addr:    opts.Listen,
 		Handler: s.routes(),
@@ -183,6 +196,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/v1/chat/completions", s.requireAuth(s.handleChatCompletions))
 	mux.HandleFunc("/v1/models", s.requireAuth(s.handleModels))
 	mux.HandleFunc("/v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions))
+	mux.HandleFunc("/v1/embeddings", s.requireAuth(s.handleEmbeddings))
 	// Health is deliberately unauthenticated and returns no information about
 	// the configuration — it exists so a process supervisor or container
 	// healthcheck does not need a credential.

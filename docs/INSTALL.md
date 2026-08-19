@@ -321,7 +321,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot onboard` | First-time setup wizard |
 | `joshbot agent` | Interactive CLI chat mode |
 | `joshbot gateway` | Start all channels (Telegram, Discord) |
-| `joshbot serve [--listen host:port]` | Serve the OpenAI-compatible HTTP API (`POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/audio/transcriptions` when `stt.provider` is set, and `POST /v1/embeddings` when `embeddings.provider` is set) |
+| `joshbot serve [--listen host:port]` | Serve the OpenAI-compatible HTTP API (`POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/audio/transcriptions` when `stt.provider` is set, and `POST /v1/embeddings` when `embeddings.provider` is set, plus a browser chat UI at `/` when `api.webui` is true) |
 | `joshbot status` | Show configuration and status |
 | `joshbot preflight` | Check the config would work, without calling any provider (exits non-zero if it would not) |
 | `joshbot --output json <cmd>` | Machine-readable form of `preflight`, `status`, `skills list`, `mcp list`, `profiles list`, `auth status` and `configure --list` |
@@ -835,6 +835,7 @@ and ignored.
 |---|---|---|
 | `api.listen` | `127.0.0.1:18791` | Bind address. `--listen` overrides it for one run. |
 | `api.api_keys` | none | Accepted bearer tokens. Empty means the server refuses to start. |
+| `api.webui` | `false` | Serve the browser chat UI at `/`. Off means those routes 404. |
 
 Authentication is mandatory: a caller reaching this endpoint reaches the shell
 and filesystem tools, so there is no unauthenticated mode and no default key. The
@@ -849,6 +850,21 @@ curl http://127.0.0.1:18791/v1/chat/completions \
 
 Set `"stream": true` for `text/event-stream` frames ending in `data: [DONE]`. The
 optional `user` field picks the session (`api:<user>`, default `default`).
+
+Set `api.webui` to `true` to also serve a browser chat page at `/`; `joshbot
+serve` then prints its URL at startup. It is off by default because the page is a
+login form that accepts an `api.api_keys` value, and that key reaches the shell
+and filesystem tools — such a form must not appear on every existing bind at
+upgrade. With it off, `/`, `/webui/static/...`, `/webui/login`, `/webui/logout`,
+`/webui/config` and `/webui/session` all answer 404.
+
+The flow: open the URL, paste a configured API key, and the server exchanges it
+for an `HttpOnly` `SameSite=Strict` session cookie (12-hour expiry, in memory
+only, so a restart signs you out). Writes on the cookie path additionally require
+the `X-Joshbot-CSRF` header the page reads from `GET /webui/config`. The
+`Authorization: Bearer` path is checked first and is unaffected, so existing
+OpenAI clients keep working. The page is embedded in the binary and loads nothing
+from the network.
 
 `POST /v1/audio/transcriptions` transcribes a `multipart/form-data` upload with
 the provider configured under `stt` — it is not the agent, so there is no loop,

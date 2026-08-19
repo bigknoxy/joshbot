@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/urfave/cli/v2"
@@ -10,6 +11,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/api"
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/session"
 )
 
 func serveCommand() *cli.Command {
@@ -29,7 +31,10 @@ func serveCommand() *cli.Command {
 			"Authentication is mandatory and there is no unauthenticated mode: set\n" +
 			"api.api_keys in config.json, or JOSHBOT_API__API_KEYS as a comma-separated\n" +
 			"list. The default bind address is loopback, because a caller reaching this\n" +
-			"endpoint reaches the shell and filesystem tools.",
+			"endpoint reaches the shell and filesystem tools.\n\n" +
+			"A browser chat UI is served at / when api.webui is true. It is off by\n" +
+			"default: the page is a login form that accepts an api_keys value, and that\n" +
+			"key reaches the shell and filesystem tools. With it off those routes 404.",
 		Flags: []cli.Flag{
 			profileFlag(),
 			&cli.StringFlag{
@@ -74,7 +79,7 @@ func runServe(c *cli.Context) error {
 
 	listen := resolveListen(c.String("listen"), cfg.API.Listen)
 
-	_, _, _, agentInstance, _, _, err := setupComponents(cfg)
+	_, _, sessions, agentInstance, _, _, err := setupComponents(cfg)
 	defer closeMCPServers()
 	defer stopBackgroundServices()
 	if err != nil {
@@ -112,6 +117,9 @@ func runServe(c *cli.Context) error {
 		APIKeys:     cfg.API.APIKeys,
 		Transcriber: transcriber,
 		Embedder:    embedder,
+		WebUI:       cfg.API.WebUI,
+		Version:     Version,
+		Transcript:  transcriptReader(sessions),
 	})
 	if err != nil {
 		return err
@@ -135,6 +143,9 @@ func runServe(c *cli.Context) error {
 	fmt.Println("║        joshbot API server running         ║")
 	fmt.Printf("║  Listen: %-32s ║\n", listen)
 	fmt.Printf("║  Model:  %-32s ║\n", api.ModelID)
+	if cfg.API.WebUI {
+		fmt.Printf("║  Web UI: %-32s ║\n", webUIURL(listen))
+	}
 	fmt.Println("║                                           ║")
 	fmt.Println("║  Press Ctrl+C to stop                     ║")
 	fmt.Println("╚═══════════════════════════════════════════╝")
@@ -145,4 +156,56 @@ func runServe(c *cli.Context) error {
 	}
 	log.Info("API server stopped")
 	return nil
+}
+
+// transcriptReader adapts the session manager to the read-only view the web UI
+// needs. It returns nil when there is no manager, which the server reads as "no
+// history", not as an error.
+//
+// It is read-only on purpose: the UI has no delete route, so "New conversation"
+// in the browser mints a fresh session key and leaves the old transcript where
+// `joshbot sessions` can still show it. A button that silently destroyed history
+// is not something to reach through a cookie.
+func transcriptReader(mgr *session.Manager) api.TranscriptReader {
+	if mgr == nil {
+		return nil
+	}
+	return func(user string) ([]api.TranscriptMessage, error) {
+		sess, err := mgr.Load(context.Background(), api.ChannelName+":"+user)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]api.TranscriptMessage, 0, len(sess.Messages))
+		for _, m := range sess.Messages {
+			// Only the turns a person said or was told. Tool and system
+			// messages are the agent's internals, a compaction record is an
+			// envelope the model reads and not something a human wrote, and an
+			// empty assistant message is a tool-call carrier with no text.
+			if m.Role != session.RoleUser && m.Role != session.RoleAssistant {
+				continue
+			}
+			if m.Compaction || strings.TrimSpace(m.Content) == "" {
+				continue
+			}
+			out = append(out, api.TranscriptMessage{Role: string(m.Role), Content: m.Content})
+		}
+		return out, nil
+	}
+}
+
+// webUIURL turns a bind address into something an operator can click. A wildcard
+// bind is rewritten to loopback rather than printed as "0.0.0.0:8080", which is
+// not an address a browser resolves.
+func webUIURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://" + listen + "/"
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	// net.JoinHostPort adds the brackets an IPv6 literal needs; SplitHostPort
+	// already removed them, so wrapping by hand here double-brackets it.
+	return "http://" + net.JoinHostPort(host, port) + "/"
 }

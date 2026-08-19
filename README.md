@@ -28,7 +28,7 @@ joshbot is heavier on guarantees, lighter on your machine.
 - **Context Compression** - Summarizes old context to stay within token limits; works well with small local models
 - **Skill Self-Creation** - Creates new capabilities for itself as markdown files, with auto-detection from conversation patterns and LLM-based extraction
 - **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
-- **OpenAI-Compatible API** - `joshbot serve` exposes the agent at `/v1/chat/completions` (streaming included) and `/v1/models`, so any OpenAI client can drive it; authentication is mandatory and it binds loopback by default
+- **OpenAI-Compatible API** - `joshbot serve` exposes the agent at `/v1/chat/completions` (streaming included) and `/v1/models`, plus `/v1/audio/transcriptions` when `stt` is configured, so any OpenAI client can drive it; authentication is mandatory and it binds loopback by default
 - **Telegram & Discord** - Chat from your phone with full media support; both fail closed on an empty allowlist
 - **Scriptable / Non-Interactive** - Every command runs headless; `agent -m` for one-shot, `--output-format json`/`stream-json` for machine-readable output, `--resume` to thread sessions, and a stable exit-code contract for CI
 - **Interactive CLI** - Rich terminal interface with markdown rendering
@@ -1152,6 +1152,7 @@ joshbot serve --listen 127.0.0.1:9000
 |---|---|---|
 | `/v1/chat/completions` | POST | Run a turn. Supports `"stream": true` (SSE). |
 | `/v1/models` | GET | List the served model. |
+| `/v1/audio/transcriptions` | POST | Transcribe an audio upload. Needs `stt.provider`. |
 | `/healthz` | GET | Liveness. The only route needing no credential. |
 
 **The model *is* the agent.** A request runs the full ReAct loop — tools, memory,
@@ -1186,6 +1187,35 @@ print(client.chat.completions.create(
     messages=[{"role": "user", "content": "hello"}],
 ).choices[0].message.content)
 ```
+
+#### Transcription
+
+`POST /v1/audio/transcriptions` is the one route that is **not** the agent. It
+transcribes a `multipart/form-data` upload with the speech-to-text provider
+configured under `stt` and returns the text — no ReAct loop, no session, no
+memory. It exists so a client that speaks the OpenAI audio API can reach the same
+transcriber joshbot uses for Telegram voice notes, without a second credential
+store.
+
+```bash
+curl http://127.0.0.1:18791/v1/audio/transcriptions \
+  -H "Authorization: Bearer $JOSHBOT_API_KEY" \
+  -F file=@voice.ogg \
+  -F response_format=json
+```
+
+- Without `stt.provider` the route answers **501** naming the config key, rather
+  than a 404 or a 200 carrying an empty transcript.
+- `response_format` accepts `json` (default, `{"text": "..."}`) and `text`
+  (`text/plain`). `model`, `language`, `prompt` and `temperature` are accepted and
+  ignored — the model comes from `stt.model`, the same way `/v1/chat/completions`
+  ignores `model`.
+- The upload is capped at 25 MiB and its **content** is sniffed: flac, mp3,
+  mp4/m4a, ogg, wav and webm. A text file named `voice.mp3` is a 400 and never
+  reaches the provider, because a filename and a declared Content-Type are both
+  written by the caller.
+- A provider failure is a 502 with the upstream text redacted, for the same reason
+  chat errors are.
 
 ### Authentication and exposure
 
@@ -1241,9 +1271,8 @@ One limit worth knowing. A client that disconnects mid-turn cancels the request
 context, so that turn is not saved to the session — the conversation resumes from
 the last completed turn.
 
-> Embeddings (`/v1/embeddings`) and audio transcription
-> (`/v1/audio/transcriptions`) are not implemented — joshbot has no embedding or
-> audio provider interface yet.
+> Embeddings (`/v1/embeddings`) are not implemented — joshbot has no embedding
+> provider interface, and `memory_search` does not use one.
 
 ## MCP Servers (experimental)
 

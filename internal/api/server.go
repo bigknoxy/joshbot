@@ -52,8 +52,12 @@ var ErrNoAPIKey = errors.New("no API key configured: set api.api_keys in config.
 // Server is the OpenAI-compatible HTTP server.
 type Server struct {
 	agent Processor
-	keys  [][]byte
-	http  *http.Server
+	// transcriber is the operator's configured speech-to-text callback, or nil
+	// when `stt` is unset. Nil is meaningful: /v1/audio/transcriptions answers
+	// 501 naming the config key rather than pretending to work.
+	transcriber Transcriber
+	keys        [][]byte
+	http        *http.Server
 	// served latches the one run this Server gets. http.Server cannot be
 	// restarted after Shutdown: a second Serve would bind the port, take
 	// ErrServerClosed straight back, and — since that error is mapped to nil —
@@ -100,6 +104,11 @@ func (l *limiter) note() (int, bool) {
 // ErrServerReused reports a second Serve on a Server that has already run.
 var ErrServerReused = errors.New("api: server already served; construct a new one")
 
+// Transcriber turns audio bytes into text. It is the same callback the Telegram
+// channel uses for voice notes, so the endpoint and the chat share one
+// credential and one configured model.
+type Transcriber func(ctx context.Context, audio []byte, filename string) (string, error)
+
 // Options configures a Server.
 type Options struct {
 	// Listen is the bind address, host:port.
@@ -107,6 +116,10 @@ type Options struct {
 	// APIKeys are the accepted bearer credentials. At least one non-empty key
 	// is required.
 	APIKeys []string
+	// Transcriber enables POST /v1/audio/transcriptions. Nil disables the
+	// route's work but not the route: it answers 501 naming the config key,
+	// which is more useful to a client than a 404.
+	Transcriber Transcriber
 }
 
 // New builds a Server. It fails when no usable API key is configured.
@@ -135,7 +148,7 @@ func New(a Processor, opts Options) (*Server, error) {
 		return nil, errors.New("api: listen address is required")
 	}
 
-	s := &Server{agent: a, keys: keys}
+	s := &Server{agent: a, transcriber: opts.Transcriber, keys: keys}
 	s.http = &http.Server{
 		Addr:    opts.Listen,
 		Handler: s.routes(),
@@ -150,6 +163,12 @@ func New(a Processor, opts Options) (*Server, error) {
 		// minutes, while a streamed *answer* legitimately outlives any deadline.
 		// Without it an authenticated client can hold a goroutine open
 		// indefinitely by sending one byte of body at a time.
+		//
+		// The transcription route is the one request that is legitimately large
+		// — 25 MiB does not arrive in 60s on a slow link — so it extends its own
+		// read deadline (audioReadDeadline in audio.go) rather than this value
+		// being raised for every route, which would hand the slow-drip client
+		// back the minutes this deadline exists to deny.
 		ReadTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second,
 	}
@@ -163,6 +182,7 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", s.requireAuth(s.handleChatCompletions))
 	mux.HandleFunc("/v1/models", s.requireAuth(s.handleModels))
+	mux.HandleFunc("/v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions))
 	// Health is deliberately unauthenticated and returns no information about
 	// the configuration — it exists so a process supervisor or container
 	// healthcheck does not need a credential.

@@ -11,6 +11,21 @@ import (
 	"gopkg.in/telebot.v3"
 )
 
+// Outbound attachment sizes when channels.telegram.api_url points at a
+// self-hosted Bot API server, which accepts up to 2 GB (issue #280).
+//
+// These are 50 MiB rather than 2 GB on purpose, and the bound is memory, not
+// protocol: an outbound attachment is read once through the single contained
+// read and held whole in memory from the tool call until the upload finishes
+// (see bus.DefaultDocumentMaxBytes). 50 MiB is Telegram's own public document
+// ceiling, so it is the largest raise that buys real headroom without letting
+// one send hold hundreds of megabytes of heap. Lifting it further needs the
+// fd-carrying rework tracked in issue #305, not a bigger constant.
+const (
+	LocalAPIPhotoMaxBytes    int64 = 50 << 20
+	LocalAPIDocumentMaxBytes int64 = 50 << 20
+)
+
 // AttachmentLimits returns the outbound file sizes this channel enforces.
 //
 // It is a method rather than constants read at the use site so a self-hosted
@@ -20,7 +35,21 @@ import (
 // attachment could be published by anything, so the transport enforces its own
 // limit rather than trusting the producer's.
 func (t *TelegramChannel) AttachmentLimits() bus.AttachmentLimits {
-	return bus.DefaultAttachmentLimits()
+	return TelegramAttachmentLimitsFor(t.apiURL)
+}
+
+// TelegramAttachmentLimitsFor is the one place the api_url raise is decided.
+// It is exported because send_file enforces the same ceiling independently and
+// must be given the same answer: two copies of this rule would drift, and the
+// symptom is a tool refusing a send the transport would have accepted.
+func TelegramAttachmentLimitsFor(apiURL string) bus.AttachmentLimits {
+	if apiURL == "" {
+		return bus.DefaultAttachmentLimits()
+	}
+	return bus.AttachmentLimits{
+		PhotoMaxBytes:    LocalAPIPhotoMaxBytes,
+		DocumentMaxBytes: LocalAPIDocumentMaxBytes,
+	}
 }
 
 // sendAttachments delivers each attachment on an outbound message. The message

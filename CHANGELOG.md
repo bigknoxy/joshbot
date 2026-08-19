@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`channels.telegram.api_url`: self-hosted Bot API server support (#280).** Points the Telegram channel at a local [`telegram-bot-api`](https://github.com/tdlib/telegram-bot-api) instead of `api.telegram.org`. Empty means the public Bot API, so it needs no schema migration — the field carries `omitempty` and is absent from every config joshbot has already saved. A value that is not an `http`/`https` URL with a host is a **fatal** config error, not an ordinary validation failure: `config.Load` answers an ordinary one by substituting `Defaults()`, which would silently take every provider, API key and allowlist with it, so this follows `validateTimeout`'s `fatalConfigError` precedent. Setting it raises the **outbound** attachment cap for `send_file` from 10 MiB to 50 MiB through **one shared rule** (`channels.TelegramAttachmentLimitsFor`) that both the tool and the transport read — a second copy would drift, and the symptom is a tool refusing a send the transport would have accepted. The raise is gated on `channels.telegram.enabled`, so an `api_url` left in a config with Telegram switched off does not raise a cap toward a transport that will never accept the bytes. The ceiling is 50 MiB rather than the local server's 2 GB because the whole payload is held in memory from the tool call until the upload finishes — the cap is a memory bound, and raising it needs the file-descriptor-carrying rework tracked in #305. **Nothing inbound moves**: `providers.MaxImageBytes` (5 MiB) and `providers.MaxDocumentBytes` (8 MiB) bound what a model is billed to read, which a self-hosted Bot API server does not change.
+
 ## [1.59.0] - 2026-08-19
 
 ### Added

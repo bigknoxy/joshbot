@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -289,6 +290,11 @@ type TelegramConfig struct {
 	Token     string   `mapstructure:"token" json:"token" yaml:"token"`
 	AllowFrom []string `mapstructure:"allow_from" json:"allow_from" yaml:"allow_from"`
 	Proxy     string   `mapstructure:"proxy" json:"proxy" yaml:"proxy"`
+	// APIURL points at a self-hosted telegram-bot-api server instead of
+	// api.telegram.org (issue #280). Empty means the public Bot API. It
+	// carries omitempty so it is absent from every config joshbot has already
+	// saved, which is what lets it be added with no schema migration.
+	APIURL string `mapstructure:"api_url" json:"api_url,omitempty" yaml:"api_url"`
 }
 
 // DiscordConfig holds Discord channel configuration.
@@ -1289,6 +1295,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := validateTelegramAPIURL(c.Channels.Telegram.APIURL); err != nil {
+		return err
+	}
+
 	// Validate gateway port is valid
 	if c.Gateway.Port <= 0 || c.Gateway.Port > 65535 {
 		return errors.New("gateway port must be between 1 and 65535")
@@ -1666,4 +1676,31 @@ func (c *Config) String() string {
 		c.Gateway.Host,
 		c.Gateway.Port,
 	)
+}
+
+// validateTelegramAPIURL screens channels.telegram.api_url before it can reach
+// telebot, which takes it as an opaque base and would otherwise fail at the
+// first poll with a URL error naming neither the key nor the value.
+//
+// The failure is fatal, not ordinary: Load answers an ordinary validation error
+// by logging "Config unusable, using defaults" and substituting Defaults(),
+// which would take every provider, key and allowlist with it — the same reason
+// validateTimeout returns a fatalConfigError (#240).
+func validateTelegramAPIURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fatalConfigError{fmt.Errorf("channels.telegram.api_url is not a valid URL: %w", err)}
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fatalConfigError{fmt.Errorf(
+			"channels.telegram.api_url must be an http:// or https:// URL, got %q", raw)}
+	}
+	if u.Host == "" {
+		return fatalConfigError{fmt.Errorf(
+			"channels.telegram.api_url has no host, got %q", raw)}
+	}
+	return nil
 }

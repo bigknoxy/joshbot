@@ -1529,6 +1529,18 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		if i > 0 {
 			content = fmt.Sprintf("\n\n— *Part %d of %d* —\n\n", i+1, len(parts)) + part
 		}
+		// Markdown is what callers ask for and HTML is what gets sent: the
+		// legacy Markdown parser rejects ordinary prose (snake_case, a bare
+		// asterisk, an unclosed backtick) with a 400, and the recovery path
+		// re-sends with all formatting stripped. Converting per part, after
+		// splitMessage has already made its fence-aware cut, means no tag can
+		// straddle a part boundary and the 4096 limit still holds -- Telegram
+		// counts length after entities parsing, and conversion only shortens.
+		plain := content
+		if parseMode == telebot.ModeMarkdown {
+			content = MarkdownToHTML(content)
+			partOpts.ParseMode = telebot.ModeHTML
+		}
 
 		var lastErr error
 		delay := t.retryDelay
@@ -1550,6 +1562,11 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 					"part", i+1, "total_parts", len(parts), "error", err,
 				)
 				partOpts.ParseMode = telebot.ModeDefault
+				// The plain-text retry sends the pre-conversion text: an HTML
+				// body delivered with no parse mode renders its entity
+				// references literally, so the reader sees "&lt;" and "&amp;"
+				// instead of the characters the model wrote.
+				content = plain
 				if _, fallbackErr := bot.Send(recipient, content, &partOpts); fallbackErr == nil {
 					lastErr = nil
 					break

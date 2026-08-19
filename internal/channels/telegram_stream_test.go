@@ -238,7 +238,9 @@ func TestNoEditWhenTheBufferIsUnchanged(t *testing.T) {
 	}
 	calls := ed.snapshot()
 	extra := calls[before:]
-	if len(extra) != 1 || extra[0].mode != telebot.ModeMarkdown || extra[0].text != "hello" {
+	// Markdown is what the streamer is set to and HTML is what goes on the
+	// wire; "hello" carries no markup, so the text is unchanged.
+	if len(extra) != 1 || extra[0].mode != telebot.ModeHTML || extra[0].text != "hello" {
 		t.Fatalf("the unchanged final flush must be exactly one formatting edit, got %+v", extra)
 	}
 
@@ -301,8 +303,11 @@ func TestRolloverPastTheLengthLimitKeepsCodeFencesIntact(t *testing.T) {
 	}
 	sends := 0
 	for _, c := range calls {
-		if len(c.text) > TelegramMaxMessageLen {
-			t.Fatalf("a write of %d bytes exceeds Telegram's %d limit", len(c.text), TelegramMaxMessageLen)
+		// Telegram measures a message after entities parsing, so the
+		// rendered length is the one that has to fit -- the HTML the final
+		// edit sends is longer in bytes and shorter on screen.
+		if renderedLen(c.text) > TelegramMaxMessageLen {
+			t.Fatalf("a write of %d rendered characters exceeds Telegram's %d limit", renderedLen(c.text), TelegramMaxMessageLen)
 		}
 		if !c.edit {
 			sends++
@@ -587,8 +592,13 @@ func TestFinalEditDefaultsToMarkdown(t *testing.T) {
 	}
 	calls := ed.snapshot()
 	last := calls[len(calls)-1]
-	if last.mode != telebot.ModeMarkdown {
-		t.Errorf("final edit mode = %q, want Markdown by default", last.mode)
+	// The default is Markdown in, HTML out: the legacy Markdown parser
+	// rejects ordinary prose, so the source is converted before it is sent.
+	if last.mode != telebot.ModeHTML {
+		t.Errorf("final edit mode = %q, want HTML by default", last.mode)
+	}
+	if last.text != "some <code>code</code> here" {
+		t.Errorf("final edit text = %q, want the converted HTML", last.text)
 	}
 	// Interim sends stay plain: a partial stream splits fences mid-way.
 	if calls[0].mode != telebot.ModeDefault {

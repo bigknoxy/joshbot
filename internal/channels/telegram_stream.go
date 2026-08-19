@@ -397,6 +397,16 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 	if final {
 		mode = s.parseMode
 	}
+	// The final edit asks for Markdown and sends HTML: the legacy Markdown
+	// parser rejects ordinary prose with a 400, and the recovery below then
+	// strips every bit of formatting off the whole answer. s.buf and s.shown
+	// stay the Markdown source, so Finish's shown == buf suppression rule is
+	// unaffected -- only the bytes on the wire change.
+	payload := s.buf
+	if mode == telebot.ModeMarkdown {
+		payload = MarkdownToHTML(payload)
+		mode = telebot.ModeHTML
+	}
 	opts := &telebot.SendOptions{ParseMode: mode}
 	if s.msg == nil && s.replyTo != nil {
 		opts.ReplyTo = s.replyTo
@@ -405,7 +415,7 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 	var err error
 	if s.msg == nil {
 		var sent *telebot.Message
-		sent, err = editor.Send(s.recipient, s.buf, opts)
+		sent, err = editor.Send(s.recipient, payload, opts)
 		if err == nil {
 			s.msg = sent
 			// Only the first message of the turn threads to the question; a
@@ -413,7 +423,7 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 			s.replyTo = nil
 		}
 	} else {
-		_, err = editor.Edit(s.msg, s.buf, opts)
+		_, err = editor.Edit(s.msg, payload, opts)
 	}
 
 	// A formatting rejection must degrade to plain text rather than lose the

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bigknoxy/joshbot/internal/providers"
 )
@@ -39,6 +40,16 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	// message and an upload is an upload. MaxBytesReader bounds the whole
 	// request so multipart headers cannot be used to smuggle past the file cap.
 	r.Body = http.MaxBytesReader(w, r.Body, providers.MaxAudioBytes+multipartOverheadBytes)
+
+	// The server-wide ReadTimeout is sized for a chat message; a 25 MiB upload
+	// needs ~3.5 Mbit/s sustained to land inside it, so a slow but honest
+	// client would be cut off mid-body with no error the caller can act on.
+	// Extend the deadline for this route only — the size cap above is what
+	// bounds the request, and raising ReadTimeout globally would give a
+	// slow-drip client the minutes that deadline exists to deny. A server with
+	// no deadline support (a test using httptest.NewRecorder, an intermediary)
+	// reports ErrNotSupported, which is not fatal: the request is still capped.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(audioReadDeadline))
 
 	audio, filename, format, err := readAudioUpload(r)
 	if err != nil {
@@ -75,6 +86,11 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, transcriptionResponse{Text: text})
 }
+
+// audioReadDeadline is how long a client has to finish sending the upload,
+// measured from the moment the route is entered. It is generous on purpose: the
+// byte cap, not the clock, is what bounds this request.
+const audioReadDeadline = 5 * time.Minute
 
 // multipartOverheadBytes is the slack allowed for multipart boundaries, part
 // headers and the other form fields on top of the audio itself. Without it a

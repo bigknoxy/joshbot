@@ -163,6 +163,12 @@ func New(a Processor, opts Options) (*Server, error) {
 		// minutes, while a streamed *answer* legitimately outlives any deadline.
 		// Without it an authenticated client can hold a goroutine open
 		// indefinitely by sending one byte of body at a time.
+		//
+		// The transcription route is the one request that is legitimately large
+		// — 25 MiB does not arrive in 60s on a slow link — so it extends its own
+		// read deadline (audioReadDeadline in audio.go) rather than this value
+		// being raised for every route, which would hand the slow-drip client
+		// back the minutes this deadline exists to deny.
 		ReadTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second,
 	}

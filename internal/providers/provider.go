@@ -24,6 +24,21 @@ type Content struct {
 	Text string `json:"text,omitempty"`
 	// ImageURL is the image URL (for image_url type)
 	ImageURL *ImageURL `json:"image_url,omitempty"`
+	// File is the attached file (for file type)
+	File *FileContent `json:"file,omitempty"`
+}
+
+// FileContent represents a file attached to message content.
+//
+// The shape is OpenAI's Chat Completions "file" content part: a `file` object
+// carrying `filename` and `file_data`, where `file_data` is a data: URL. See
+// https://developers.openai.com/api/docs/api-reference/chat/create. Every
+// provider joshbot talks to is dialled through this one OpenAI-compatible
+// serialization point, Anthropic included, so there is deliberately no
+// per-provider document path.
+type FileContent struct {
+	Filename string `json:"filename,omitempty"`
+	FileData string `json:"file_data,omitempty"`
 }
 
 // ImageURL represents an image URL in message content.
@@ -49,31 +64,39 @@ type Message struct {
 	// format is not "a field next to content" — an image turns content itself
 	// from a string into an array of parts.
 	Images []Image `json:"-"`
+	// Documents are non-image attachments carried alongside Content, excluded
+	// from the struct tags for exactly the same reason as Images: a document
+	// turns content itself from a string into an array of parts.
+	Documents []Document `json:"-"`
 }
 
 // MarshalJSON serialises a message in the OpenAI-compatible shape.
 //
-// A message with no images must produce byte-identical JSON to what it produced
+// A message with no attachments must produce byte-identical JSON to what it produced
 // before images existed: every provider joshbot talks to receives this, and a
 // stray field or a content array where a string was expected is a 400 on every
 // request rather than a visible failure here. That is why the no-image path is
 // the zero-work path — it marshals the plain struct through an alias and adds
 // nothing.
 //
-// With images, content becomes an array of parts: the text first (omitted
+// With attachments, content becomes an array of parts: the text first (omitted
 // entirely when empty, since a part with an empty string is not valid), then
-// one image_url part per attachment carrying a data: URL.
+// one image_url part per image carrying a data: URL, then one file part per
+// document carrying the same.
 func (m Message) MarshalJSON() ([]byte, error) {
 	type wireMessage Message // alias: no MarshalJSON, so no recursion
-	if len(m.Images) == 0 {
+	if len(m.Images) == 0 && len(m.Documents) == 0 {
 		return json.Marshal(wireMessage(m))
 	}
-	parts := make([]Content, 0, len(m.Images)+1)
+	parts := make([]Content, 0, len(m.Images)+len(m.Documents)+1)
 	if m.Content != "" {
 		parts = append(parts, Content{Type: "text", Text: m.Content})
 	}
 	for _, im := range m.Images {
 		parts = append(parts, Content{Type: "image_url", ImageURL: &ImageURL{URL: im.DataURL()}})
+	}
+	for _, d := range m.Documents {
+		parts = append(parts, Content{Type: "file", File: &FileContent{Filename: d.Filename(), FileData: d.DataURL()}})
 	}
 	return json.Marshal(struct {
 		wireMessage

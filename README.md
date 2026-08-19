@@ -147,9 +147,10 @@ joshbot agent -m "what is in this screenshot?" --image ~/Desktop/shot.png
 
 `--image <path>` attaches a picture to the message. It is repeatable, and it
 requires `-m`/`--message` — an image with no question attached has nothing to
-answer. Telegram photos and image documents are attached automatically, and
-text documents (txt, md, csv, json, code) are read and inlined into the
-message, capped at 64KB with a visible truncation marker. Voice
+answer. Telegram photos and image documents are attached automatically,
+**PDFs sent on Telegram ride the turn as a document attachment** and are read
+by the model itself, and text documents (txt, md, csv, json, code) are read and
+inlined into the message, capped at 64KB with a visible truncation marker. Voice
 messages are transcribed and answered when `stt` is configured (see Voice
 message transcription); media the agent cannot perceive — untranscribed
 voice, audio, video — gets an honest "I can't listen/watch yet" reply instead
@@ -171,6 +172,34 @@ Sessions record that an image was sent — its type, size and SHA-256 — and no
 the bytes. Session files are exempt from redaction and are protected only by
 their `0600` mode, and re-sending stored images would re-bill them on every
 later turn in the memory window.
+
+### PDF documents
+
+A PDF sent on Telegram is downloaded after the allowlist check and carried on
+the turn as a document attachment, so the model reads the file rather than its
+name. The same three rules apply, in the same order, all before any provider is
+called:
+
+- **Type is decided by content**: the bytes must start with `%PDF-`. A PNG named
+  `report.pdf` is refused, and a PDF named `shot.png` is not smuggled through
+  the image path.
+- **Size**: 8 MiB per document, 16 MiB per request
+  (`providers.MaxDocumentBytes` / `MaxTotalDocumentBytes`). An over-limit file is
+  refused from its *declared* size before any transfer; the download itself is
+  read through a `LimitReader` at cap+1, so a file that lies about its size is
+  refused rather than silently truncated.
+- **Capability**: document reading is a narrower capability than vision (a model
+  that reads images does not necessarily parse PDFs), so it has its own list. If
+  no configured model is known to accept documents, the request fails before any
+  provider call with an error **naming the models tried**. Unknown models are
+  treated as *not* document-capable.
+
+Sessions record a `DocumentRef` — label, type, size and SHA-256 — never the
+bytes, for the same reason images are not stored.
+
+Office formats (docx, xlsx, pptx) are still not supported, and the refusal now
+says what is: PDFs, text files and images. There is no `--document` CLI flag;
+this is a Telegram inbound path only.
 
 `--image` paths are deliberately **not** workspace-contained: they come from
 the operator's own command line, not from the model, so

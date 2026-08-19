@@ -800,6 +800,7 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 	// file nobody opened. Claims decide only whether to spend the download —
 	// the bytes decide what they are.
 	var images []providers.Image
+	var documents []providers.Document
 	switch {
 	case providers.IsSupportedImageMIME(doc.MIME):
 		img, ok := t.attachImage(ctx, doc.File, doc.FileName, int64(doc.FileSize))
@@ -807,6 +808,12 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 			return nil
 		}
 		images = []providers.Image{img}
+	case isPDFDocument(doc.MIME, doc.FileName):
+		pdf, ok := t.attachPDFDocument(ctx, doc)
+		if !ok {
+			return nil
+		}
+		documents = []providers.Document{pdf}
 	case isTextLikeDocument(doc.MIME, doc.FileName):
 		text, ok := t.attachTextDocument(ctx, doc)
 		if !ok {
@@ -814,9 +821,9 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 		}
 		content = fmt.Sprintf("%s\n%s", content, text)
 	case doc.Caption == "":
-		return t.replyCannotPerceive(ctx, fmt.Sprintf("📄 I can't open %q yet — I can read text files (txt, md, csv, json, code) and images.", doc.FileName))
+		return t.replyCannotPerceive(ctx, fmt.Sprintf("📄 I can't open %q yet — I can read PDFs, text files (txt, md, csv, json, code) and images. Office formats like docx, xlsx and pptx aren't supported yet.", doc.FileName))
 	default:
-		content = fmt.Sprintf("[The user sent a file you cannot open (%s). Its caption]: %s", doc.FileName, doc.Caption)
+		content = fmt.Sprintf("[The user sent a file you cannot open (%s) — PDFs, text files and images are supported; Office formats are not. Its caption]: %s", doc.FileName, doc.Caption)
 	}
 
 	inbound := bus.InboundMessage{
@@ -841,6 +848,7 @@ func (t *TelegramChannel) handleDocument(ctx telebot.Context) error {
 	}
 
 	inbound.Images = images
+	inbound.Documents = documents
 
 	if !t.bus.Send(inbound) {
 		log.Error("failed to send document message to bus", "error", "queue full")

@@ -184,6 +184,42 @@ func (mp *MultiProvider) screenForImages(req ChatRequest, providers []*ProviderE
 	return capable, nil
 }
 
+// screenForDocuments applies the document rules that can only be checked once
+// the fallback chain is known, before any request is dialled.
+//
+// It is deliberately a separate function from screenForImages rather than a
+// branch inside it: reading an image and reading a PDF are different model
+// capabilities (llava reads images and no documents), so the two chains are
+// filtered against two different lists and either can empty the chain on its
+// own with its own error.
+func (mp *MultiProvider) screenForDocuments(req ChatRequest, providers []*ProviderEntry, modelName, addressed string) ([]*ProviderEntry, error) {
+	if !RequestHasDocuments(req) {
+		return providers, nil
+	}
+	var docs []Document
+	for _, m := range req.Messages {
+		docs = append(docs, m.Documents...)
+	}
+	if err := ValidateDocuments(docs); err != nil {
+		return nil, err
+	}
+
+	capable := make([]*ProviderEntry, 0, len(providers))
+	tried := make([]string, 0, len(providers))
+	for _, entry := range providers {
+		model := mp.resolveModel(entry, modelName, entry.Name == addressed)
+		if SupportsDocuments(model) {
+			capable = append(capable, entry)
+			continue
+		}
+		tried = append(tried, model)
+	}
+	if len(capable) == 0 {
+		return nil, &ErrDocumentsUnsupported{Models: tried}
+	}
+	return capable, nil
+}
+
 // Chat sends a chat request with automatic fallback.
 func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	providerName, modelName := mp.parseModel(req.Model)
@@ -195,6 +231,11 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 	}
 
 	providers, err := mp.screenForImages(req, providers, modelName, providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	providers, err = mp.screenForDocuments(req, providers, modelName, providerName)
 	if err != nil {
 		return nil, err
 	}
@@ -292,6 +333,11 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 	}
 
 	providers, err := mp.screenForImages(req, providers, modelName, providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	providers, err = mp.screenForDocuments(req, providers, modelName, providerName)
 	if err != nil {
 		return nil, err
 	}

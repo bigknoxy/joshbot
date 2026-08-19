@@ -47,3 +47,41 @@ func attachImages(messages []providers.Message, images []providers.Image) {
 		}
 	}
 }
+
+// documentRefs converts this turn's document attachments to the descriptors the
+// session persists. The bytes are deliberately dropped here: see
+// session.DocumentRef for why the session stores a record rather than the file.
+func documentRefs(docs []providers.Document) []session.DocumentRef {
+	if len(docs) == 0 {
+		return nil
+	}
+	refs := make([]session.DocumentRef, 0, len(docs))
+	for _, d := range docs {
+		sum := sha256.Sum256(d.Data)
+		refs = append(refs, session.DocumentRef{
+			Label:  d.Label,
+			MIME:   d.MIME,
+			Bytes:  len(d.Data),
+			SHA256: hex.EncodeToString(sum[:]),
+		})
+	}
+	return refs
+}
+
+// attachDocuments puts this turn's documents on the last user message of the
+// request, for exactly the reasons attachImages targets that message: the
+// caption and the attachment belong to the same turn, and a lone attachment
+// message is a 400 on providers that require alternating roles. With no user
+// message left in the memory window they are dropped rather than forced
+// somewhere they do not belong; the capability gate has already run.
+func attachDocuments(messages []providers.Message, docs []providers.Document) {
+	if len(docs) == 0 {
+		return
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == providers.RoleUser {
+			messages[i].Documents = docs
+			return
+		}
+	}
+}

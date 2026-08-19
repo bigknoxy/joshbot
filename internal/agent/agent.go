@@ -509,6 +509,7 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 		Content:   msg.Content,
 		Timestamp: time.Now(),
 		Images:    imageRefs(msg.Images),
+		Documents: documentRefs(msg.Documents),
 	}
 	sess.AddMessage(userMsg)
 
@@ -525,6 +526,7 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	// are deliberately not in the session — only a descriptor is (see
 	// session.ImageRef) — so they are carried here for this request alone.
 	attachImages(messages, msg.Images)
+	attachDocuments(messages, msg.Documents)
 
 	// Run ReAct loop with channel info for async callbacks
 	channelID := msg.SenderID // Use SenderID as the channel identifier

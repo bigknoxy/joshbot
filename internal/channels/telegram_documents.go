@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/providers"
 	"gopkg.in/telebot.v3"
 )
 
@@ -125,4 +126,93 @@ func (t *TelegramChannel) attachTextDocument(ctx telebot.Context, doc *telebot.D
 		}
 	}
 	return "", false
+}
+
+// telegramBotDownloadMaxBytes is the Telegram Bot API's own ceiling on what a
+// bot may download (getFile / file download is documented as "at most 20MB in
+// size"). It is recorded here so the effective cap below is visibly the smaller
+// of joshbot's limit and Telegram's, rather than a number that happens to work.
+const telegramBotDownloadMaxBytes = 20 * 1000 * 1000
+
+// telegramDocumentMaxLoad is the effective per-document cap: the smaller of
+// joshbot's own limit and Telegram's. joshbot's is the smaller of the two, and
+// the compile-time assertion below keeps that true — converting a negative
+// difference to uint is a compile error, so raising MaxDocumentBytes past
+// Telegram's ceiling fails the build rather than producing downloads Telegram
+// will refuse.
+const telegramDocumentMaxLoad = providers.MaxDocumentBytes
+
+const _ = uint(telegramBotDownloadMaxBytes - telegramDocumentMaxLoad)
+
+// telegramDocumentMaxDownload reads one byte past the cap, which is what
+// distinguishes "at the limit" from "over it", exactly as on the image path.
+const telegramDocumentMaxDownload = telegramDocumentMaxLoad + 1
+
+// readPDFDocument downloads one Telegram document and validates it as a PDF.
+//
+// The caller must have run the allowlist check first, for the same reason as
+// fetchImage: this issues a Bot API request carrying the file id on the
+// sender's behalf and confirms the bot is live.
+//
+// sizeHint is Telegram's declared FileSize. It refuses an obviously over-limit
+// file before any transfer; it is never trusted as the real size, which is
+// measured from the bytes actually read. And the declared MIME type decided
+// only that this path was worth taking — providers.NewDocument sniffs the
+// bytes, so a PNG declared application/pdf is refused here rather than sent.
+func (t *TelegramChannel) readPDFDocument(doc *telebot.Document, sizeHint int64) (providers.Document, error) {
+	if sizeHint > telegramDocumentMaxLoad {
+		return providers.Document{}, fmt.Errorf("document is %d bytes, over the %d byte limit",
+			sizeHint, telegramDocumentMaxLoad)
+	}
+
+	open := t.download
+	if open == nil {
+		if t.bot == nil {
+			return providers.Document{}, fmt.Errorf("no bot available to download %s", doc.FileName)
+		}
+		open = t.bot.File
+	}
+	rc, err := open(&doc.File)
+	if err != nil {
+		return providers.Document{}, fmt.Errorf("download %s: %w", doc.FileName, err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(rc, int64(telegramDocumentMaxDownload)))
+	if err != nil {
+		return providers.Document{}, fmt.Errorf("read %s: %w", doc.FileName, err)
+	}
+	return providers.NewDocument(doc.FileName, data)
+}
+
+// attachPDFDocument reads a PDF for an inbound message and reports whether the
+// message should still be forwarded — the same (value, bool) contract as
+// attachTextDocument and attachImage, for the same reason: a document that
+// silently degrades to "[Document: report.pdf]" gets a confident answer about a
+// file nobody opened.
+func (t *TelegramChannel) attachPDFDocument(ctx telebot.Context, doc *telebot.Document) (providers.Document, bool) {
+	pdf, err := t.readPDFDocument(doc, int64(doc.FileSize))
+	if err == nil {
+		return pdf, true
+	}
+
+	log.Error("failed to read telegram pdf", "file", doc.FileName, "error", err)
+	t.stopTyping(ctx.Chat())
+	if b := ctx.Bot(); b != nil {
+		if _, serr := b.Send(ctx.Sender(), "I couldn't read that file: "+err.Error()); serr != nil {
+			log.Error("failed to report document error", "error", serr)
+		}
+	}
+	return providers.Document{}, false
+}
+
+// isPDFDocument reports whether a document claims to be a PDF, by declared MIME
+// type or (for the application/octet-stream default Telegram often sends) by
+// filename extension. The claim decides only whether the download is worth
+// spending — providers.NewDocument sniffs the bytes for the real type.
+func isPDFDocument(mime, name string) bool {
+	if providers.IsSupportedDocumentMIME(mime) {
+		return true
+	}
+	return strings.EqualFold(filepath.Ext(name), ".pdf")
 }

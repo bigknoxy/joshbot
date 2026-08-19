@@ -57,6 +57,28 @@ type Message struct {
 	// worth knowing: a reloaded session remembers that an image was sent and
 	// what it was, but cannot re-send it to the model.
 	Images []ImageRef `json:"images,omitempty"`
+
+	// Documents records the document attachments that arrived with this
+	// message, on exactly the terms Images does: descriptors, never the bytes.
+	// A PDF is more sensitive than a photo, not less — session JSONL is
+	// deliberately exempt from redaction and relies on its 0600 mode — so the
+	// rule is if anything stricter here.
+	Documents []DocumentRef `json:"documents,omitempty"`
+}
+
+// DocumentRef is the persisted record of a document attachment: enough to show
+// what was sent and to reason about it later, without the bytes. It is the
+// sibling of ImageRef and carries the same fields for the same reasons.
+type DocumentRef struct {
+	// Label is what the sender called it — a filename, usually. It is
+	// untrusted text and never used to open anything.
+	Label string `json:"label,omitempty"`
+	// MIME is the type detected by sniffing the content when it arrived.
+	MIME string `json:"mime"`
+	// Bytes is the decoded size, so the record stays meaningful for limits.
+	Bytes int `json:"bytes"`
+	// SHA256 identifies the document across turns without storing it.
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // ImageRef is the persisted record of an image attachment: enough to show what

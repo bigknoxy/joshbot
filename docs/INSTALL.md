@@ -386,6 +386,14 @@ request; and if no configured model is known to accept images the run fails
 before any provider call, naming the models tried. Telegram photos and image
 documents are attached the same way.
 
+A **PDF** sent on Telegram is carried on the turn as a document attachment and
+read by the model. There is no CLI flag for it. The bytes must start with
+`%PDF-` (the filename and declared MIME decide only whether a download is worth
+spending), limits are 8 MiB per document and 16 MiB per request, and if no
+configured model is known to read documents the request fails before any
+provider call, naming the models tried. Document capability is a separate,
+narrower list than vision. Office formats (docx, xlsx, pptx) remain refused.
+
 ---
 
 ## Configuration

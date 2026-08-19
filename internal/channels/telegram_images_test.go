@@ -154,19 +154,20 @@ func TestFailedDownloadIsNotForwardedAsTextOnly(t *testing.T) {
 }
 
 // TestNonImageDocumentIsNeverDownloaded — a binary document the agent cannot
-// open must not be downloaded at all. Captionless it is refused honestly (no
+// open must not be downloaded at all. PDFs left this class in #278, so the
+// example here is an Office format, which is still unsupported. Captionless it is refused honestly (no
 // agent turn); with a caption the caption is forwarded, framed so the model
 // knows what it cannot open.
 func TestNonImageDocumentIsNeverDownloaded(t *testing.T) {
-	pdf := func(caption string) *telebot.Message {
+	office := func(caption string) *telebot.Message {
 		return &telebot.Message{
 			ID:     8,
 			Sender: &telebot.User{ID: 1234},
 			Chat:   &telebot.Chat{ID: 42},
 			Document: &telebot.Document{
 				File:     telebot.File{FileID: "d1", FileSize: 1000},
-				FileName: "report.pdf",
-				MIME:     "application/pdf",
+				FileName: "budget.xlsx",
+				MIME:     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 				Caption:  caption,
 			},
 		}
@@ -174,7 +175,7 @@ func TestNonImageDocumentIsNeverDownloaded(t *testing.T) {
 
 	t.Run("captionless is refused, no agent turn", func(t *testing.T) {
 		tg, mb, downloads := imageChannel(t, []string{"1234"}, testPNG(t), nil)
-		if err := tg.handleDocument(&fakeCtx{msg: pdf("")}); err != nil {
+		if err := tg.handleDocument(&fakeCtx{msg: office("")}); err != nil {
 			t.Fatalf("handleDocument: %v", err)
 		}
 		if *downloads != 0 {
@@ -189,7 +190,7 @@ func TestNonImageDocumentIsNeverDownloaded(t *testing.T) {
 
 	t.Run("caption is forwarded framed, still no download", func(t *testing.T) {
 		tg, mb, downloads := imageChannel(t, []string{"1234"}, testPNG(t), nil)
-		if err := tg.handleDocument(&fakeCtx{msg: pdf("summarize this")}); err != nil {
+		if err := tg.handleDocument(&fakeCtx{msg: office("summarize this")}); err != nil {
 			t.Fatalf("handleDocument: %v", err)
 		}
 		if *downloads != 0 {
@@ -198,7 +199,7 @@ func TestNonImageDocumentIsNeverDownloaded(t *testing.T) {
 		select {
 		case m := <-mb.InboundChannel():
 			if len(m.Images) != 0 {
-				t.Fatalf("a PDF was attached as an image: %+v", m.Images)
+				t.Fatalf("an office document was attached as an image: %+v", m.Images)
 			}
 			if !strings.Contains(m.Content, "cannot open") || !strings.Contains(m.Content, "summarize this") {
 				t.Fatalf("Content = %q, want the framed caption", m.Content)

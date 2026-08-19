@@ -33,6 +33,12 @@ type InboundMessage struct {
 	// to the provider request and stores a descriptor, never the bytes, in the
 	// session (see session.ImageRef).
 	Images []providers.Image
+
+	// Documents are document attachments that arrived with this message,
+	// already validated and type-sniffed by whichever channel received them.
+	// They are carried as decoded bytes for the duration of the turn only, on
+	// the same terms as Images (see session.DocumentRef).
+	Documents []providers.Document
 }
 
 // OutboundMessage represents a message to be sent to a chat channel.

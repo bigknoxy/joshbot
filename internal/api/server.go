@@ -62,6 +62,21 @@ type Server struct {
 	embedder Embedder
 	keys     [][]byte
 	http     *http.Server
+
+	// webui gates the browser UI. False means the routes are never registered,
+	// so they 404 as if absent — see the rationale on the constants in webui.go.
+	webui bool
+	// version is the real build version, served to the page so it can show what
+	// it is talking to instead of a hardcoded badge.
+	version string
+	// transcript reads a stored session for the page to render after a reload.
+	// Nil answers an empty transcript, never an error: a browser with no
+	// history is the normal first-load case.
+	transcript TranscriptReader
+	// webuiSessions holds logged-in browsers. It is allocated unconditionally,
+	// so the webui flag is the single gate a cookie is checked against: see
+	// webuiSessionFor. Gating on a nil map would be gating by accident.
+	webuiSessions *webuiSessions
 	// served latches the one run this Server gets. http.Server cannot be
 	// restarted after Shutdown: a second Serve would bind the port, take
 	// ErrServerClosed straight back, and — since that error is mapped to nil —
@@ -133,6 +148,17 @@ type Options struct {
 	// Embedder enables POST /v1/embeddings. Nil answers 501 naming the config
 	// key, which is more useful to a client than a 404.
 	Embedder Embedder
+	// WebUI serves the browser UI, its login route and its assets. It comes
+	// from api.webui and defaults to false: the page is an HTML form that
+	// accepts a key granting shell and filesystem access through the agent, and
+	// it must not appear on every existing `joshbot serve` bind at upgrade.
+	WebUI bool
+	// Version is the running build version, shown by the UI. Empty renders as
+	// "unknown" rather than as a fabricated number.
+	Version string
+	// Transcript reads a stored session transcript for the UI. Read-only by
+	// construction: there is no write or delete side on the HTTP surface.
+	Transcript TranscriptReader
 }
 
 // New builds a Server. It fails when no usable API key is configured.
@@ -161,7 +187,19 @@ func New(a Processor, opts Options) (*Server, error) {
 		return nil, errors.New("api: listen address is required")
 	}
 
-	s := &Server{agent: a, transcriber: opts.Transcriber, embedder: opts.Embedder, keys: keys}
+	s := &Server{
+		agent:       a,
+		transcriber: opts.Transcriber,
+		embedder:    opts.Embedder,
+		keys:        keys,
+		webui:       opts.WebUI,
+		version:     opts.Version,
+		transcript:  opts.Transcript,
+	}
+	// The store is allocated unconditionally so the `webui` flag is the single
+	// gate a cookie is checked against — a nil map would gate it by accident,
+	// and an accident is not a guard.
+	s.webuiSessions = newWebUISessions()
 	s.http = &http.Server{
 		Addr:    opts.Listen,
 		Handler: s.routes(),
@@ -204,6 +242,11 @@ func (s *Server) routes() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	// The browser UI is registered only when enabled. An operator who has not
+	// asked for it gets 404s, not a login form.
+	if s.webui {
+		s.registerWebUI(mux)
+	}
 	return mux
 }
 
@@ -239,7 +282,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
-// requireAuth wraps a handler with bearer-token authentication.
+// requireAuth wraps a handler with authentication.
 //
 // The comparison is constant-time and every configured key is checked even
 // after a match, so the time taken does not reveal which key matched or how
@@ -247,8 +290,16 @@ func (s *Server) Serve(ctx context.Context) error {
 // body says only that the key is missing or invalid.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Bearer first, and that path is completely un-gated by anything the
+		// WebUI added: no CSRF header, no Origin check, no cookie. Every
+		// existing OpenAI client keeps working unchanged, and the browser's
+		// extra requirements cannot leak onto it.
 		presented := bearerToken(r.Header.Get("Authorization"))
-		if presented == "" || !s.keyMatches([]byte(presented)) {
+		if presented != "" && s.keyMatches([]byte(presented)) {
+			next(w, r)
+			return
+		}
+		if !s.cookieAuthOK(r) {
 			if n, ok := s.rejections.note(); ok {
 				log.Warn("API request rejected", "path", r.URL.Path, "remote", remoteHost(r),
 					"since_last_log", n)

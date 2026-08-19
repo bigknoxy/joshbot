@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>joshbot</title>
+<link rel="icon" type="image/svg+xml" href="/webui/static/icon.svg">
+<link rel="stylesheet" href="/webui/static/app.css">
+<script src="/webui/static/app.js" defer></script>
+</head>
+<body>
+
+<a class="sr" href="#input">Skip to composer</a>
+
+<!-- ============================ LOGIN ============================ -->
+<div class="gate" id="gate" hidden>
+  <form class="card" id="login-form">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">jb</div>
+      <div class="name">josh<b>bot</b></div>
+    </div>
+    <h1>Sign in</h1>
+    <p>Present one of the API keys from <code class="mono">api.api_keys</code>. It is
+      exchanged for a session cookie the page cannot read.</p>
+    <label for="key">API key</label>
+    <input id="key" name="key" type="password" autocomplete="current-password"
+           spellcheck="false" autocapitalize="off" required>
+    <button class="go" id="btn-login" type="submit">Sign in</button>
+    <div class="bad" id="login-error" role="alert" hidden></div>
+    <p class="why">This key reaches the shell and filesystem tools. Anyone who can reach
+      this page can try it, so treat the bind address as part of the credential.</p>
+  </form>
+</div>
+
+<!-- ============================= APP ============================= -->
+<div class="app" id="app" hidden>
+
+  <nav class="rail" id="rail" aria-label="Session">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">jb</div>
+      <div class="name">josh<b>bot</b></div>
+    </div>
+
+    <div class="rail-pad">
+      <button class="btn-new" id="btn-new" type="button">
+        <span class="plus" aria-hidden="true">+</span>
+        New conversation
+        <kbd>⌘⇧O</kbd>
+      </button>
+    </div>
+
+    <div class="rail-body">
+      <div class="rail-note">
+        <b>New conversation</b> starts a fresh server-side session under a new name.
+        It deletes nothing — old sessions are removed with
+        <code>joshbot sessions prune</code>.
+      </div>
+    </div>
+
+    <div class="rail-foot">
+      <div class="stat"><span class="dot" aria-hidden="true"></span><span class="v" id="stat-endpoint">connected</span></div>
+      <div class="stat"><span class="k">model</span><span class="v" id="stat-model">joshbot</span></div>
+      <div class="stat"><span class="k">session</span><span class="v" id="stat-session">—</span></div>
+      <div class="stat"><span class="k">build</span><span class="v" id="stat-version">—</span></div>
+      <div class="row">
+        <button class="mini" id="btn-theme" type="button" aria-label="Switch theme">◐ theme</button>
+        <button class="mini" id="btn-logout" type="button">⏻ sign out</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="scrim" id="scrim" hidden></div>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn drawer-btn" id="btn-drawer" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="rail">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+      <div class="thread">
+        <span class="t">joshbot</span>
+        <span class="s" id="thread-sub">—</span>
+      </div>
+      <div class="spacer"></div>
+      <span class="pill model">● joshbot</span>
+      <button class="icon-btn" id="btn-theme-top" type="button" aria-label="Switch theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 000 16z" fill="currentColor" stroke="none"/></svg>
+      </button>
+    </header>
+
+    <main class="scroll" id="scroll" tabindex="0">
+      <section class="log" id="empty-view">
+        <div class="empty">
+          <h1 class="hi">joshbot ready<span class="c">.</span></h1>
+          <p class="sub">Your agent, your machine. It can read and write the workspace,
+            run allow-listed shell, search the web, remember things, and schedule reminders.</p>
+          <div class="chips" id="chips">
+            <button class="chip" type="button"><span class="t">Summarise today's HISTORY.md</span><span class="d">memory · filesystem</span></button>
+            <button class="chip" type="button"><span class="t">Remind me in 90 minutes</span><span class="d">cron · delay:90m</span></button>
+            <button class="chip" type="button"><span class="t">What is in my workspace?</span><span class="d">filesystem</span></button>
+            <button class="chip" type="button"><span class="t">What's new in Go 1.24?</span><span class="d">web search</span></button>
+          </div>
+          <p class="foot">
+            Shell approval prompts are not available in the browser, so commands that
+            need approval are denied — the same as cron and the HTTP API.
+          </p>
+        </div>
+      </section>
+
+      <section class="log" id="log-view" role="log" aria-live="polite" aria-label="Conversation" hidden></section>
+    </main>
+
+    <div class="dock">
+      <div class="dock-inner">
+        <div class="stopbar" id="stopbar" hidden>
+          <button class="stop" id="btn-stop" type="button"><span class="sq" aria-hidden="true"></span> Stop generating <kbd>Esc</kbd></button>
+        </div>
+
+        <form class="composer" id="composer">
+          <label class="sr" for="input">Message joshbot</label>
+          <textarea id="input" rows="1" placeholder="Message joshbot…"></textarea>
+          <button class="send" id="btn-send" type="submit" aria-label="Send message" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M12 5l7 7-7 7"/></svg>
+          </button>
+        </form>
+
+        <div class="hints">
+          <span class="k-hint"><kbd>Enter</kbd> send</span>
+          <span class="k-hint"><kbd>⇧Enter</kbd> newline</span>
+          <span class="k-hint"><kbd>⌘K</kbd> focus</span>
+          <span class="spacer"></span>
+          <span class="warn"><b>●</b> tools live · a stopped turn is discarded, not saved</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

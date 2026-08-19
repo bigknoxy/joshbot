@@ -369,6 +369,18 @@ type APIConfig struct {
 	// `joshbot serve` refuses to start without one, because an unauthenticated
 	// endpoint that reaches the shell tool is remote code execution.
 	APIKeys []string `mapstructure:"api_keys" json:"api_keys,omitempty" yaml:"api_keys,omitempty"`
+	// WebUI serves the browser chat UI at "/" alongside the OpenAI-compatible
+	// routes. Default false, and deliberately so: the page is an HTML login
+	// form that accepts an api_keys value, and that key reaches the shell and
+	// filesystem tools through the agent. Enabling it at upgrade for every
+	// existing `joshbot serve` bind would publish that form to whatever the
+	// server is already listening on. Off means the UI routes are not
+	// registered at all — they 404 as if the feature did not exist.
+	//
+	// omitempty is what keeps this flippable later: a Config bool without it is
+	// written into every saved config as `false`, and a stored false beats a new
+	// default, which is why `streaming` needed a v4 -> v5 schema migration.
+	WebUI bool `mapstructure:"webui" json:"webui,omitempty" yaml:"webui,omitempty"`
 }
 
 // STTConfig configures voice-message transcription. The zero value means

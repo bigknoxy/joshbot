@@ -28,6 +28,7 @@ joshbot is heavier on guarantees, lighter on your machine.
 - **Context Compression** - Summarizes old context to stay within token limits; works well with small local models
 - **Skill Self-Creation** - Creates new capabilities for itself as markdown files, with auto-detection from conversation patterns and LLM-based extraction
 - **Subagent Delegation** - Spawns focused subagents for complex multi-step tasks
+- **Browser chat UI** - optional, off by default: set `api.webui` to `true` and `joshbot serve` also serves a self-contained dark-mode chat page at `/`, embedded in the binary, behind a cookie login that exchanges an `api.api_keys` value for a session
 - **OpenAI-Compatible API** - `joshbot serve` exposes the agent at `/v1/chat/completions` (streaming included) and `/v1/models`, plus `/v1/audio/transcriptions` when `stt` is configured and `/v1/embeddings` when `embeddings` is configured, so any OpenAI client can drive it; authentication is mandatory and it binds loopback by default
 - **Telegram & Discord** - Chat from your phone with full media support; both fail closed on an empty allowlist
 - **Scriptable / Non-Interactive** - Every command runs headless; `agent -m` for one-shot, `--output-format json`/`stream-json` for machine-readable output, `--resume` to thread sessions, and a stable exit-code contract for CI
@@ -1269,6 +1270,57 @@ curl http://127.0.0.1:18791/v1/embeddings \
   not a silently mismatched vector.
 - A provider failure is a 502 with the upstream text redacted, for the same reason
   chat errors are.
+
+### Web UI
+
+`joshbot serve` can also serve a browser chat page at `/`. It is **off by
+default** — set `api.webui` to `true` to enable it:
+
+```json
+{
+  "api": {
+    "listen": "127.0.0.1:18791",
+    "api_keys": ["<a long random string>"],
+    "webui": true
+  }
+}
+```
+
+With it on, `joshbot serve` prints the URL in its startup banner. With it off,
+every web UI route (`/`, `/webui/static/...`, `/webui/login`, `/webui/logout`,
+`/webui/config`, `/webui/session`) answers 404 as if the feature did not exist.
+The default is false on purpose: the page is a login form that accepts an
+`api.api_keys` value, and that key reaches the shell and filesystem tools — a
+form like that must not appear on every existing `joshbot serve` bind the moment
+someone upgrades.
+
+The page is served from the binary (`//go:embed`), uses system fonts and loads
+nothing from a CDN, so it works with no network beyond joshbot itself.
+
+**How it signs in.** A browser page cannot ship a key against a fail-closed
+server, and a `?key=` in the URL leaks into history, proxy logs and `Referer`, so
+`POST /webui/login` takes an `api.api_keys` value and exchanges it for a session
+cookie: 32 random bytes, `HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure`
+when the request arrived over TLS. The key is checked through the same
+constant-time comparison and the same rate-limited rejection logging the bearer
+header uses. Sessions live in memory only, expire after 12 hours and are bounded,
+so they vanish on restart — that is a logout, not a bug. `POST /webui/logout`
+clears one.
+
+The bearer path is untouched: `Authorization: Bearer <key>` is checked first and
+is not subject to any of the cookie rules, so existing OpenAI clients keep working
+unchanged. Only the cookie path requires an `X-Joshbot-CSRF` header (served by
+`GET /webui/config`, compared in constant time) on non-GET requests, plus a
+same-origin check.
+
+**What it does and does not do.** Chat with streaming, over the same
+`POST /v1/chat/completions` every other client uses; the transcript survives a
+reload via a read-only `GET /webui/session`. "New conversation" mints a fresh
+session key in the browser — it does not delete anything, and the old transcript
+is still there for `joshbot sessions`. There is deliberately **no** model picker
+(the API is agent-as-model; there is nothing to choose — #296), **no** settings
+panel (editing config over HTTP is shell-grade privilege escalation — #297), and
+**no** tool-progress lines (the API does not emit them today — #298).
 
 ### Authentication and exposure
 

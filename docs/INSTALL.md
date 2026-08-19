@@ -284,6 +284,35 @@ Gateway mode enables:
 - Background task processing
 - Heartbeat service for proactive tasks
 - Scheduled reminders (`cron` tool — durations like `30m`, `2h`, `1d`)
+- Outbound file attachments on Telegram (`send_file` tool)
+
+#### Sending files out (`send_file`)
+
+Ask joshbot for a file and it arrives in the chat as a real attachment rather
+than a path you cannot open:
+
+```
+you: render the weekly report and send it to me
+joshbot: [document] report.pdf (412 KB)
+```
+
+- The file must be **inside the workspace**. The path is resolved through the
+  same containment walk the `filesystem` tool uses, so a path outside it — or
+  one that escapes through a symlink at any component — errors and sends
+  nothing.
+- **The bytes decide the type**, not the extension: an image is sent as a photo
+  (rendered inline), anything else as a document. A text file named `.png` is a
+  document; a JPEG named `.dat` is a photo.
+- Limits: 10 MiB as a photo, 10 MiB as a document. Every file is read once
+  through the containment walk and carried on the message, which is why the
+  document limit is below Telegram's own 50 MiB ceiling — it is a memory bound.
+- **You cannot ask joshbot to send a file somewhere else.** The file goes to the
+  conversation you asked in; the tool has no recipient argument.
+- An optional caption is sent with the file. A caption over Telegram's
+  1,024-character limit is sent as its own following message rather than cut.
+- On a channel with no attachment support (Discord today) joshbot appends the
+  file's name, size and path to the message under an explicit
+  `[attachment not supported on this channel]` marker — never a silent drop.
 
 ### Check Status
 

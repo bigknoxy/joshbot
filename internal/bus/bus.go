@@ -43,6 +43,14 @@ type OutboundMessage struct {
 	Timestamp time.Time      // When the message is being sent
 	Metadata  map[string]any // Additional context (reply to, parse mode, etc.)
 	SenderID  string         // Original sender ID for reference
+
+	// Attachments are files to deliver alongside Content, which becomes the
+	// caption. They are a typed slice rather than an entry in Metadata: a
+	// mistyped map key would send the text and silently drop the file, and
+	// nothing downstream could tell that apart from a message that never had
+	// an attachment. A channel with no native attachment support must name
+	// the paths in the text rather than drop them.
+	Attachments []Attachment
 }
 
 // MessageHandler is a function that processes inbound messages.

@@ -484,6 +484,12 @@ func (d *DiscordChannel) Send(msg bus.OutboundMessage) error {
 
 	stopCh := d.stopChan()
 
+	// Discord has no native attachment path here yet (the session interface is
+	// text-only). Degrade honestly by naming the files in the message rather
+	// than dropping them: an agent that reports "sent you the chart" while
+	// nothing arrives is worse than one that tells the user where it is.
+	msg.Content = describeUnsentAttachments(msg.Content, msg.Attachments)
+
 	// Parts after the first carry a "— Part N of M —" header. Re-split with
 	// that reserved so header+part still fits.
 	const partHeaderOverhead = 35
@@ -781,3 +787,22 @@ func (d *DiscordChannel) Stop() error {
 
 // Ensure DiscordChannel implements Channel interface.
 var _ Channel = (*DiscordChannel)(nil)
+
+// describeUnsentAttachments appends a note naming each attachment a channel
+// could not deliver natively. It returns content unchanged when there are
+// none, so the ordinary text path is byte-for-byte unaffected.
+func describeUnsentAttachments(content string, attachments []bus.Attachment) string {
+	if len(attachments) == 0 {
+		return content
+	}
+	var b strings.Builder
+	b.WriteString(content)
+	if content != "" {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n[attachment not supported on this channel]")
+	for _, att := range attachments {
+		fmt.Fprintf(&b, "\n%s (%s) — %s", att.Filename, humanBytes(att.Size), att.SourcePath)
+	}
+	return b.String()
+}

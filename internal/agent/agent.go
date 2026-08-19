@@ -453,6 +453,12 @@ func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, er
 // would deadlock on the lock this goroutine already holds.
 func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, error) {
 	startTime := time.Now()
+
+	// The turn's channel rides the context for the whole turn, so every tool
+	// call in it sees the same recipient. send_file resolves its address from
+	// here rather than taking one from the model.
+	ctx = tools.WithChannel(ctx, msg.Channel)
+
 	a.logger.Info("Processing message",
 		"channel", msg.Channel,
 		"sender", msg.SenderID,

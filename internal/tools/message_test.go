@@ -9,6 +9,24 @@ import (
 // mockSender implements MessageSender for testing.
 type mockSender struct {
 	sendFn func(ctx context.Context, channel, content string) error
+
+	// sendFileFn and the recorded fields cover the SendFile half of the
+	// interface; a nil sendFileFn succeeds so message-tool tests need no
+	// attachment setup.
+	sendFileFn  func(ctx context.Context, channel string, att Attachment, caption string) error
+	fileChannel string
+	fileCaption string
+	file        Attachment
+	fileCalls   int
+}
+
+func (m *mockSender) SendFile(ctx context.Context, channel string, att Attachment, caption string) error {
+	m.fileCalls++
+	m.fileChannel, m.file, m.fileCaption = channel, att, caption
+	if m.sendFileFn != nil {
+		return m.sendFileFn(ctx, channel, att, caption)
+	}
+	return nil
 }
 
 func (m *mockSender) SendMessage(ctx context.Context, channel, content string) error {

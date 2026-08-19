@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -214,5 +215,39 @@ func TestBusMessageSender_SendMessage_WithCanceledContext(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error with canceled context when queue is full")
+	}
+}
+
+func TestBusMessageSender_SendFilePublishesTheAttachment(t *testing.T) {
+	mb := bus.NewMessageBus()
+	s := NewBusMessageSender(mb)
+	s.SetChatID("telegram", "555")
+
+	att := Attachment{Filename: "chart.png", Kind: bus.AttachmentPhoto, Size: 4, Data: []byte("\x89PNG")}
+	if err := s.SendFile(context.Background(), "telegram", att, "here"); err != nil {
+		t.Fatalf("SendFile: %v", err)
+	}
+
+	select {
+	case msg := <-mb.OutboundChannel():
+		if len(msg.Attachments) != 1 || msg.Attachments[0].Filename != "chart.png" {
+			t.Fatalf("attachments = %+v", msg.Attachments)
+		}
+		if msg.Content != "here" {
+			t.Errorf("content = %q, want the caption", msg.Content)
+		}
+		if msg.ChannelID != "555" {
+			t.Errorf("ChannelID = %q, want the stored chat id", msg.ChannelID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nothing published")
+	}
+}
+
+func TestBusMessageSender_SendFileWithoutAChatIDFails(t *testing.T) {
+	s := NewBusMessageSender(bus.NewMessageBus())
+	err := s.SendFile(context.Background(), "telegram", Attachment{Filename: "a.png"}, "")
+	if !errors.Is(err, ErrNoChatID) {
+		t.Fatalf("err = %v, want ErrNoChatID", err)
 	}
 }

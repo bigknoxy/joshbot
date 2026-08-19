@@ -5,11 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/bigknoxy/joshbot/internal/bus"
 )
 
+// Attachment is one outbound file. It is an alias for bus.Attachment rather
+// than a second type, so a file crosses the tool boundary and the bus boundary
+// as the same value with no lossy conversion in between.
+type Attachment = bus.Attachment
+
 // MessageSender is an interface for sending messages.
+//
+// SendFile is a separate method rather than an extra argument on SendMessage
+// because the two have different failure modes and different limits, and every
+// existing caller of SendMessage must keep compiling unchanged. A caption-less
+// file send passes an empty att.Caption equivalent via content.
 type MessageSender interface {
 	SendMessage(ctx context.Context, channel, content string) error
+	SendFile(ctx context.Context, channel string, att Attachment, caption string) error
 }
 
 // MessageTool allows the agent to send messages to channels.

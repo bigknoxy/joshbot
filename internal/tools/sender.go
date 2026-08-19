@@ -90,6 +90,11 @@ func (s *BusMessageSender) SendMessage(ctx context.Context, channel, content str
 		SenderID:  senderID,
 	}
 
+	return s.publish(ctx, msg)
+}
+
+// publish is the one delivery path every proactive send takes.
+func (s *BusMessageSender) publish(ctx context.Context, msg bus.OutboundMessage) error {
 	// Try non-blocking publish first
 	if s.bus.Publish(msg) {
 		return nil
@@ -110,6 +115,32 @@ func (s *BusMessageSender) SendMessage(ctx context.Context, channel, content str
 		}
 		return nil
 	}
+}
+
+// SendFile publishes an outbound message carrying one attachment, with caption
+// as its text. It is deliberately the same publish path as SendMessage — the
+// queue-full handling, the chat-id lookup and the sender id are identical, and
+// only the payload differs — so an attachment can never take a delivery route
+// that has not been exercised by ordinary text.
+func (s *BusMessageSender) SendFile(ctx context.Context, channel string, att Attachment, caption string) error {
+	s.mu.RLock()
+	chatID, ok := s.chatIDs[channel]
+	senderID := s.senderID
+	s.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNoChatID, channel)
+	}
+
+	return s.publish(ctx, bus.OutboundMessage{
+		Content:     caption,
+		Channel:     channel,
+		ChannelID:   chatID,
+		Timestamp:   time.Now(),
+		Metadata:    make(map[string]any),
+		SenderID:    senderID,
+		Attachments: []bus.Attachment{att},
+	})
 }
 
 // EnablePersistence makes the chat-id map survive restarts: existing entries

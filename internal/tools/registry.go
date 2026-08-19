@@ -461,6 +461,17 @@ func RegistryWithDefaults(
 
 		channelTool := NewChannelMessageTool(messageSender)
 		_ = registry.Register(channelTool)
+
+		// Outbound media. Contained exactly like the filesystem tool: the
+		// bytes leave the process, so "the agent may only send what it could
+		// legitimately read" has to be enforced by the same walk, not by a
+		// second, weaker path check.
+		sendFileTool := NewSendFileTool(messageSender, FilesystemToolConfig{
+			Workspace:    workspace,
+			Restrict:     restrictToWorkspace,
+			AllowedPaths: filesystemAllowedPaths,
+		})
+		_ = registry.Register(sendFileTool)
 	}
 
 	// Skill registry tool (optional)

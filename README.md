@@ -352,6 +352,7 @@ Skills are markdown files that extend joshbot's capabilities without code change
 | `skill-creator` | How to create new skills |
 | `github` | GitHub CLI patterns (requires `gh` binary) |
 | `cron` | Scheduling guidance for the `cron` tool |
+| `sharing` | Sending workspace files to the user with the `send_file` tool |
 
 ### Creating Custom Skills
 
@@ -1442,6 +1443,7 @@ reaches the prompt.
 | `web_search` | Search the web (exa-cli / Exa MCP / DuckDuckGo — no key required) |
 | `web_fetch` | Fetch and extract web page content |
 | `message` | Send messages to other channels |
+| `send_file` | Send a workspace file to the chat as a native attachment (photo or document; type decided by sniffing the bytes) |
 | `memory_search` | Search stored facts by keyword, category, or tags, plus Dream consolidated insights when `dream_mode` is on |
 | `skill_registry` | List, create, and delete skills (workspace skills need `joshbot skills trust` before use) |
 | `parallel_subagent` | Run multiple subagent tasks in parallel |
@@ -1451,6 +1453,7 @@ reaches the prompt.
 **Security defaults:**
 - `web_fetch` and `web_search` block localhost, private IP ranges, and metadata hosts (SSRF protection), enforced at dial time.
 - `restrict_to_workspace` limits file and shell operations to the workspace unless explicitly allowed.
+- `send_file` is an egress path — it moves workspace bytes out of the process — so it resolves its path through the same two containment layers as the `filesystem` tool and refuses anything outside the workspace, including an escape via an intermediate symlink.
 - Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
 - `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock on Linux, Seatbelt on macOS) — see [Shell Sandbox](#shell-sandbox) below. On platforms with no sandbox, the shell tool falls back to allowlist-only by default.
 - `tools.shell_approval` asks before each shell command runs — see [Shell Approval](#shell-approval). Only the interactive CLI can prompt; unattended turns (gateway, cron, heartbeat) are denied rather than left blocking.

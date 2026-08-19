@@ -27,6 +27,12 @@ import (
 // TelegramMaxMessageLen is the maximum message length allowed by Telegram Bot API.
 const TelegramMaxMessageLen = 4096
 
+// TelegramMaxCaptionLen is the Bot API's cap on a media caption. It is far
+// below the text limit, so a long caption is sent as its own message after the
+// file rather than truncated — losing the end of an explanation because it
+// happened to accompany a chart is not an acceptable trade.
+const TelegramMaxCaptionLen = 1024
+
 // TelegramChannel implements the Channel interface for Telegram.
 type TelegramChannel struct {
 	name    string
@@ -1262,9 +1268,10 @@ func (t *TelegramChannel) Stop() error {
 func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 	t.mu.RLock()
 	bot := t.bot
+	editor := t.currentEditorLocked()
 	t.mu.RUnlock()
 
-	if bot == nil {
+	if bot == nil && editor == nil {
 		return fmt.Errorf("bot not initialized")
 	}
 
@@ -1299,6 +1306,22 @@ func (t *TelegramChannel) Send(msg bus.OutboundMessage) error {
 		case "html":
 			parseMode = telebot.ModeHTML
 		}
+	}
+
+	// Attachments branch before the text path and return. Everything below —
+	// splitMessage, the "Part N of M" headers, the parse-entity retry — is
+	// specific to text: a photo has no parts to split into, and a media send
+	// that failed on its caption's formatting must be retried as the same
+	// bytes with the caption plain, not as a second copy of the file.
+	if len(msg.Attachments) > 0 {
+		if editor == nil {
+			return fmt.Errorf("bot not initialized")
+		}
+		return t.sendAttachments(editor, recipient, msg, parseMode)
+	}
+
+	if bot == nil {
+		return fmt.Errorf("bot not initialized")
 	}
 
 	// Parts after the first carry a "— Part N of M —" header. Re-split with

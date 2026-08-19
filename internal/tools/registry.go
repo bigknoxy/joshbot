@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/cron"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/skills"
@@ -347,6 +348,7 @@ type registrySettings struct {
 	approval           ApprovalMode
 	cronService        *cron.Service
 	cronDefaultChannel string
+	attachmentLimits   *bus.AttachmentLimits
 }
 
 // RegistryOption adjusts optional registry behaviour. Options are used rather
@@ -377,6 +379,17 @@ func WithCronService(svc *cron.Service, defaultChannel string) RegistryOption {
 	return func(s *registrySettings) {
 		s.cronService = svc
 		s.cronDefaultChannel = defaultChannel
+	}
+}
+
+// WithAttachmentLimits overrides the outbound file sizes send_file enforces.
+// It exists so a self-hosted Telegram Bot API server (channels.telegram.api_url,
+// issue #280) raises the tool's cap as well as the channel's: the two check
+// independently — the bus is a public boundary — so leaving the tool on the
+// defaults would refuse the send before the raised transport ever saw it.
+func WithAttachmentLimits(limits bus.AttachmentLimits) RegistryOption {
+	return func(s *registrySettings) {
+		s.attachmentLimits = &limits
 	}
 }
 
@@ -471,6 +484,9 @@ func RegistryWithDefaults(
 			Restrict:     restrictToWorkspace,
 			AllowedPaths: filesystemAllowedPaths,
 		})
+		if settings.attachmentLimits != nil {
+			sendFileTool.SetLimits(*settings.attachmentLimits)
+		}
 		_ = registry.Register(sendFileTool)
 	}
 

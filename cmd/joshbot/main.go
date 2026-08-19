@@ -1056,6 +1056,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		tools.WithShellSandbox(sandboxMode, cfg.Tools.ShellSandboxAllowNetwork),
 		tools.WithShellApproval(approvalMode),
 		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
+		tools.WithAttachmentLimits(outboundAttachmentLimits(cfg)),
 	)
 
 	// Connect any configured MCP servers and register their tools. Fail-soft by
@@ -6078,4 +6079,19 @@ func showPersonalityPreview(choice string) {
 	fmt.Printf("\n  ✓ %s style selected\n", label)
 	fmt.Printf("    Sample: %s\n", preview)
 	fmt.Println()
+}
+
+// outboundAttachmentLimits decides the send_file ceiling from the configured
+// channels. A self-hosted Telegram Bot API server raises it (#280); the tool
+// and the channel check independently, so both must be told.
+//
+// The raise is gated on Telegram being enabled: with the channel off, api_url
+// points at nothing that would ever accept the bytes, and an oversized send
+// should be refused by the tool rather than published to a bus no transport
+// will take it off.
+func outboundAttachmentLimits(cfg *config.Config) bus.AttachmentLimits {
+	if !cfg.Channels.Telegram.Enabled {
+		return bus.DefaultAttachmentLimits()
+	}
+	return channels.TelegramAttachmentLimitsFor(cfg.Channels.Telegram.APIURL)
 }

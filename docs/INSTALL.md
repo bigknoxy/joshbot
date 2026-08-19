@@ -802,6 +802,40 @@ Separately, spawned shell commands no longer inherit joshbot's own environment â
 
 > **Security Note:** `allow_from` is enforced deny-by-default: an empty or unset list rejects **every** sender and the channel logs a startup warning naming the key to set. Add your numeric Telegram user ID (as a string) before the bot will answer you.
 
+#### Self-hosted Bot API server (`api_url`)
+
+`channels.telegram.api_url` points joshbot at a [self-hosted `telegram-bot-api`
+server](https://github.com/tdlib/telegram-bot-api) instead of `api.telegram.org`.
+Leave it unset for the public Bot API. Only `http` and `https` URLs are accepted,
+and a malformed value is a **fatal** config error rather than a silent fallback.
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "123456789:ABCdef...",
+      "allow_from": ["123456789"],
+      "api_url": "http://127.0.0.1:8081"
+    }
+  }
+}
+```
+
+Setting it raises the **outbound** attachment cap for `send_file` from 10 MiB to
+50 MiB, on both the tool and the transport, from one shared rule so the two
+cannot disagree. The ceiling is 50 MiB and not the local server's 2 GB because
+the whole payload is held in memory from the tool call until the upload
+finishes â€” the cap is a memory bound, and raising it further needs the
+file-descriptor rework tracked in
+[#305](https://github.com/bigknoxy/joshbot/issues/305).
+
+It changes **nothing inbound**: what joshbot downloads from a chat and forwards
+to a provider is still bounded by the provider limits (5 MiB per image, 8 MiB
+per PDF), because those bound what a model is billed to read, not what Telegram
+will carry.
+
+
 ---
 
 ## Workspace Structure

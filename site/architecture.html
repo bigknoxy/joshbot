@@ -550,6 +550,7 @@ footer a:hover { text-decoration: underline; }
 
     <h3>Channels (<code>internal/channels/</code>)</h3>
     <p><code>Channel</code> is the interface; Telegram (<code>telebot</code>, long-polling) and Discord (<code>discordgo</code>, an outbound gateway websocket) implement it. Neither needs an inbound port or a public webhook URL. Both split long replies on a code-fence-aware boundary (4096 chars for Telegram, 2000 for Discord), keep a typing indicator alive for the length of an agent turn, and enforce the allowlist <strong>deny-by-default</strong>: an empty or unset <code>allow_from</code> rejects every sender and the channel logs an actionable startup warning naming the config key. The interactive CLI is not a <code>Channel</code> — it is <code>runAgentLoop</code> in <code>cmd/joshbot/main.go</code>.</p>
+    <p><code>channels.telegram.api_url</code> points the Telegram channel at a self-hosted <code>telegram-bot-api</code> server instead of <code>api.telegram.org</code>; empty means the public Bot API, and a non-<code>http(s)</code> or unparseable value is a fatal config error rather than a silent fallback. Setting it raises the <em>outbound</em> attachment cap from 10 MiB to 50 MiB through one shared rule (<code>channels.TelegramAttachmentLimitsFor</code>) that both the <code>send_file</code> tool and the transport read, so the producer cannot refuse a send the transport would accept. The 50 MiB ceiling is a memory bound, not a protocol one — the payload is held in memory for the length of the upload. Inbound limits are untouched: what is downloaded and forwarded to a provider is still bounded by <code>providers.MaxImageBytes</code> and <code>providers.MaxDocumentBytes</code>.</p>
     <p><strong>Enable one chat channel at a time.</strong> The bus exposes a single outbound channel that channel implementations read competitively, so Telegram and Discord running together steal each other's replies — about half of each conversation's answers are delivered to the other service, silently. Per-channel fan-out in the bus is the fix; until then <code>channels.telegram.enabled</code> and <code>channels.discord.enabled</code> should not both be true.</p>
     <p><strong>Telegram UX.</strong> Replies render as Markdown by default (anything Telegram rejects degrades to plain text, never gets lost) and thread to the message that asked. While the agent works, the chat shows a live tool-progress status line ("⚙️ shell: go test ./...") that the streamed answer replaces in place. The last chat id per channel is persisted (<code>~/.joshbot/chat_ids.json</code>, <code>0600</code>, atomic writes), so a cron reminder fired after a restart still knows where to go. Voice notes are transcribed when <code>stt.provider</code> names a configured provider with an OpenAI-compatible <code>/audio/transcriptions</code> endpoint (groq, openai — key and endpoint reused, audio never stored, over-limit refused from declared metadata before download). Media the agent cannot perceive — untranscribed voice, audio, video — gets an honest "I can't listen/watch yet" reply with no LLM turn spent (a caption is forwarded, framed so the model knows what it cannot see); stickers are quietly ignored; an edited message is forwarded as a correction rather than brand-new context. Text documents (txt, md, csv, json, code) are downloaded after the allowlist check and their content inlined into the turn, capped at 64KB with a visible truncation marker — binary content behind a text name is refused by the bytes, not the label. PDFs are downloaded on the same terms and carried as document attachments, refused from their declared size before any transfer and read through a <code>LimitReader</code> at cap+1 so a lying declaration is refused rather than truncated; Office formats (docx, xlsx, pptx) stay refused, with the refusal listing what is supported.</p>
 
@@ -595,7 +596,7 @@ footer a:hover { text-decoration: underline; }
     "nvidia":     { "api_key": "...", "enabled": true }
   },
   "channels": {
-    "telegram": { "enabled": false, "token": "", "allow_from": ["123456789"] },
+    "telegram": { "enabled": false, "token": "", "allow_from": ["123456789"], "api_url": "" },
     "discord":  { "enabled": false, "token": "", "allow_from": ["123456789"] }
   }
 }</div>
@@ -619,7 +620,7 @@ footer a:hover { text-decoration: underline; }
 </div>
 
 <footer>
-  <p>Last updated 2026-08-18</p>
+  <p>Last updated 2026-08-19</p>
   <p>joshbot — <a href="index.html">Home</a> &middot; <a href="https://github.com/bigknoxy/joshbot">GitHub</a> &middot; MIT License</p>
 </footer>
 

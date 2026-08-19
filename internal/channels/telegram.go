@@ -91,8 +91,10 @@ type TelegramChannel struct {
 	// Only tests set it; in production it stays nil and the bot is used.
 	notifier telegramNotifier
 
-	// apiURL and offline point createBot at a stub Bot API. Only tests set
-	// them; empty/false means the real api.telegram.org.
+	// apiURL points createBot at a Bot API other than api.telegram.org: a
+	// self-hosted telegram-bot-api server in production (channels.telegram.api_url,
+	// issue #280), or a stub in tests. offline is tests only. Empty/false means
+	// the real api.telegram.org.
 	apiURL  string
 	offline bool
 }
@@ -152,6 +154,7 @@ func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *Telegr
 		name:          "telegram",
 		bus:           bus,
 		cfg:           cfg,
+		apiURL:        cfg.APIURL,
 		stopCh:        make(chan struct{}),
 		allowIDs:      allowIDs,
 		allowNames:    allowNames,

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,6 +122,11 @@ type telegramNotifier interface {
 	Notify(to telebot.Recipient, action telebot.ChatAction, threadID ...int) error
 	SetCommands(opts ...interface{}) error
 	React(to telebot.Recipient, msg telebot.Editable, opts ...telebot.ReactionOptions) error
+	// DeleteCommands is required because SetCommands cannot clear a menu:
+	// telebot's CommandParams.Commands carries `json:"commands,omitempty"`,
+	// so an empty slice omits the field entirely and the Bot API rejects the
+	// call. Clearing a scope is deleteMyCommands or nothing.
+	DeleteCommands(opts ...interface{}) error
 }
 
 // botCommands is the command menu shown in the Telegram UI. Every entry here
@@ -1307,16 +1313,67 @@ func notifyTyping(notifier telegramNotifier, recipient telebot.Recipient) {
 	}
 }
 
-// registerCommands publishes the command menu so Telegram shows the menu
-// button and autocompletes commands in private chats.
+// registerCommands publishes the command menu, scoped as tightly as the
+// allowlist allows.
+//
+// A numeric allowlist entry is a chat id, so each one gets its own
+// BotCommandScopeChat menu and the global all-private-chats menu is deleted:
+// a stranger who finds the bot sees no menu at all. Username-shaped entries
+// cannot be turned into chat ids without the user speaking first, so if any
+// exist the global menu is kept — an operator allowlisted by username would
+// otherwise see nothing.
+//
+// This completes command names only. Telegram has no mechanism to complete
+// paths or arguments, so it does not close the gap with the TUI's Tab
+// completion.
 func (t *TelegramChannel) registerCommands(notifier telegramNotifier) error {
 	if notifier == nil {
 		return fmt.Errorf("no bot available to register commands")
 	}
-	return notifier.SetCommands(
-		botCommands,
-		telebot.CommandScope{Type: telebot.CommandScopeAllPrivateChats},
-	)
+
+	// allowIDs/allowNames are built in NewTelegramChannel and never mutated,
+	// so they are read without the lock here as they are elsewhere.
+	ids := make([]string, 0, len(t.allowIDs))
+	for id := range t.allowIDs {
+		ids = append(ids, id)
+	}
+	namedCount := len(t.allowNames)
+	// Sorted so the call order is deterministic for tests and logs.
+	sort.Strings(ids)
+
+	var firstErr error
+	for _, raw := range ids {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			continue
+		}
+		err = notifier.SetCommands(
+			botCommands,
+			telebot.CommandScope{Type: telebot.CommandScopeChat, ChatID: id},
+		)
+		if err != nil {
+			// Expected for an allowlisted user who has never started the
+			// bot: Telegram answers "chat not found". One such user must
+			// not cost every other user their menu, so log and continue.
+			log.Debug("failed to register per-chat Telegram command menu", "chat_id", raw, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+	}
+
+	globalScope := telebot.CommandScope{Type: telebot.CommandScopeAllPrivateChats}
+	var err error
+	if namedCount > 0 {
+		err = notifier.SetCommands(botCommands, globalScope)
+	} else {
+		err = notifier.DeleteCommands(globalScope)
+	}
+	if err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // registerCommandsBestEffort registers the command menu, logging rather than

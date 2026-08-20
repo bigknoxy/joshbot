@@ -1159,14 +1159,27 @@ the turn and never part of it, so a failure is logged at debug and the reply is
 unaffected. A sender the allowlist rejects is never acknowledged.
 
 On startup joshbot registers its command menu with Telegram (`/start`, `/new`,
-`/status`, `/model`, `/personality`, `/compact`, `/help`), so they appear behind
-the menu button and autocomplete as you type. If Telegram rejects the
-registration it is logged and the bot starts anyway. A command that does not
+`/status`, `/model`, `/personality`, `/compact`, `/resume`, `/help`), so they
+appear behind the menu button and autocomplete as you type. If Telegram rejects
+the registration it is logged and the bot starts anyway. A command that does not
 exist gets an "Unknown command" reply listing the real ones instead of silence.
 
+The menu is **scoped to the allowlist**. Every numeric `allow_from` entry is a
+chat id, so each one gets its own per-chat menu and the global all-private-chats
+menu is deleted: a stranger who finds the bot sees no menu at all. If any
+`allow_from` entry is a username instead, the global menu is kept, because a
+username cannot be turned into a chat id until that user speaks — an operator
+allowlisted by name would otherwise see nothing. With an empty allowlist (which
+denies everyone) the menu is simply deleted. An allowlisted user who has never
+started the bot makes Telegram answer "chat not found" for their scope; that is
+logged and the remaining users still get their menus.
+
 The commands whose behaviour lives in the agent (`/status`, `/model`,
-`/personality`, `/compact`) are forwarded to it with the same allowlist gate as
-a direct message, so they work identically in the Telegram menu and the CLI.
+`/personality`, `/compact`, `/resume`) are forwarded to it with the same
+allowlist gate as a direct message, so they work identically in the Telegram
+menu and the CLI. This completes **command names only** — Telegram has no
+mechanism to complete paths or arguments, so it does not match the TUI's Tab
+completion for those.
 
 While the agent is working, the "typing…" indicator is refreshed every 4 seconds
 until the reply is sent, so it stays visible for the whole turn.

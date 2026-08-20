@@ -22,9 +22,14 @@ type fakeNotifier struct {
 	mu        sync.Mutex
 	actions   []string
 	cmdCalls  [][]interface{}
+	delCalls  [][]interface{}
 	cmdErr    error
 	reactions []string
 	reactErr  error
+	// cmdErrFor, when set, fails SetCommands only for that chat ID —
+	// Telegram answers "chat not found" for an allowlisted user who has
+	// never started the bot.
+	cmdErrFor int64
 }
 
 func (f *fakeNotifier) Notify(to telebot.Recipient, action telebot.ChatAction, threadID ...int) error {
@@ -38,6 +43,12 @@ func (f *fakeNotifier) SetCommands(opts ...interface{}) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cmdCalls = append(f.cmdCalls, opts)
+	if f.cmdErrFor != 0 {
+		if sc := scopeOf(opts); sc != nil && sc.ChatID == f.cmdErrFor {
+			return fmt.Errorf("chat not found")
+		}
+		return nil
+	}
 	return f.cmdErr
 }
 
@@ -57,6 +68,34 @@ func (f *fakeNotifier) reactionList() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.reactions...)
+}
+
+func (f *fakeNotifier) DeleteCommands(opts ...interface{}) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.delCalls = append(f.delCalls, opts)
+	return f.cmdErr
+}
+
+// scopeOf extracts the CommandScope from a telebot variadic options slice.
+func scopeOf(opts []interface{}) *telebot.CommandScope {
+	for _, opt := range opts {
+		if v, ok := opt.(telebot.CommandScope); ok {
+			s := v
+			return &s
+		}
+	}
+	return nil
+}
+
+// commandsOf extracts the command slice from a telebot variadic options slice.
+func commandsOf(opts []interface{}) []telebot.Command {
+	for _, opt := range opts {
+		if v, ok := opt.([]telebot.Command); ok {
+			return v
+		}
+	}
+	return nil
 }
 
 func (f *fakeNotifier) count() int {
@@ -501,10 +540,134 @@ func TestTelegramChannel_SendDoesNotFallBackOnUnrelatedError(t *testing.T) {
 	}
 }
 
-// The command menu must be registered with Telegram, scoped to private chats,
-// and must list exactly the commands that have handlers.
-func TestTelegramChannel_RegisterCommands(t *testing.T) {
+// A numeric allowlist entry is a chat id, so each allowlisted operator gets
+// their own BotCommandScopeChat menu and the global menu is deleted — a
+// stranger who finds the bot sees no menu at all.
+func TestTelegramChannel_RegisterCommandsScopesPerAllowedChat(t *testing.T) {
+	tg := newTestTelegramChannel("777", "111")
+	fake := &fakeNotifier{}
+
+	if err := tg.registerCommands(fake); err != nil {
+		t.Fatalf("registerCommands returned %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if len(fake.cmdCalls) != 2 {
+		t.Fatalf("expected one SetCommands per allowlisted id, got %d calls", len(fake.cmdCalls))
+	}
+	// Sorted, so the order is deterministic.
+	wantIDs := []int64{111, 777}
+	for i, call := range fake.cmdCalls {
+		sc := scopeOf(call)
+		if sc == nil || sc.Type != telebot.CommandScopeChat {
+			t.Fatalf("call %d must use a chat scope, got %+v", i, sc)
+		}
+		if sc.ChatID != wantIDs[i] {
+			t.Fatalf("call %d scoped to chat %d, want %d", i, sc.ChatID, wantIDs[i])
+		}
+		if len(commandsOf(call)) != len(botCommands) {
+			t.Fatalf("call %d registered %d commands, want %d", i, len(commandsOf(call)), len(botCommands))
+		}
+	}
+
+	if len(fake.delCalls) != 1 {
+		t.Fatalf("the global menu must be deleted so strangers see none, got %d DeleteCommands calls", len(fake.delCalls))
+	}
+	sc := scopeOf(fake.delCalls[0])
+	if sc == nil || sc.Type != telebot.CommandScopeAllPrivateChats {
+		t.Fatalf("DeleteCommands must target the all-private-chats scope, got %+v", sc)
+	}
+}
+
+// A username-shaped allowlist entry cannot be turned into a chat id without
+// the user speaking first, so the global menu has to stay or that operator
+// would see no menu at all.
+func TestTelegramChannel_RegisterCommandsKeepsGlobalMenuForUsernames(t *testing.T) {
+	tg := newTestTelegramChannel("@josh", "777")
+	fake := &fakeNotifier{}
+
+	if err := tg.registerCommands(fake); err != nil {
+		t.Fatalf("registerCommands returned %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	if len(fake.delCalls) != 0 {
+		t.Fatalf("global menu must not be deleted while a username entry exists, got %d DeleteCommands calls", len(fake.delCalls))
+	}
+	var sawGlobal, sawChat bool
+	for _, call := range fake.cmdCalls {
+		switch sc := scopeOf(call); {
+		case sc == nil:
+			t.Fatal("every SetCommands call must carry a scope")
+		case sc.Type == telebot.CommandScopeAllPrivateChats:
+			sawGlobal = true
+		case sc.Type == telebot.CommandScopeChat && sc.ChatID == 777:
+			sawChat = true
+		}
+	}
+	if !sawGlobal {
+		t.Fatal("a username-shaped allowlist entry requires the global menu")
+	}
+	if !sawChat {
+		t.Fatal("the numeric entry must still get its own chat-scoped menu")
+	}
+}
+
+// An allowlisted user who has never started the bot makes setMyCommands fail
+// with "chat not found". That must not cost every other allowlisted user
+// their menu.
+func TestTelegramChannel_RegisterCommandsContinuesPastChatNotFound(t *testing.T) {
+	tg := newTestTelegramChannel("111", "777")
+	fake := &fakeNotifier{cmdErrFor: 111}
+
+	err := tg.registerCommands(fake)
+	if err == nil {
+		t.Fatal("the failure must be surfaced to the caller, not swallowed")
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	var sawSecond bool
+	for _, call := range fake.cmdCalls {
+		if sc := scopeOf(call); sc != nil && sc.ChatID == 777 {
+			sawSecond = true
+		}
+	}
+	if !sawSecond {
+		t.Fatal("a chat-not-found on the first id aborted the loop; every later user lost their menu")
+	}
+	if len(fake.delCalls) != 1 {
+		t.Fatalf("the global delete must still run after a per-chat failure, got %d calls", len(fake.delCalls))
+	}
+}
+
+// An empty allowlist denies every sender (IsAllowed returns false), so
+// publishing a global menu advertises a bot nobody may use.
+func TestTelegramChannel_RegisterCommandsDeletesMenuWhenAllowlistEmpty(t *testing.T) {
 	tg := newTestTelegramChannel()
+	fake := &fakeNotifier{}
+
+	if err := tg.registerCommands(fake); err != nil {
+		t.Fatalf("registerCommands returned %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.cmdCalls) != 0 {
+		t.Fatalf("no menu may be published when every sender is denied, got %d SetCommands calls", len(fake.cmdCalls))
+	}
+	if len(fake.delCalls) != 1 {
+		t.Fatalf("expected the global menu to be deleted, got %d DeleteCommands calls", len(fake.delCalls))
+	}
+}
+
+// Every menu entry must have a description and match the handler set.
+func TestTelegramChannel_RegisterCommands(t *testing.T) {
+	tg := newTestTelegramChannel("777")
 	fake := &fakeNotifier{}
 
 	if err := tg.registerCommands(fake); err != nil {
@@ -517,23 +680,8 @@ func TestTelegramChannel_RegisterCommands(t *testing.T) {
 		t.Fatalf("expected exactly one SetCommands call, got %d", len(fake.cmdCalls))
 	}
 
-	var cmds []telebot.Command
-	var scope *telebot.CommandScope
-	for _, opt := range fake.cmdCalls[0] {
-		switch v := opt.(type) {
-		case []telebot.Command:
-			cmds = v
-		case telebot.CommandScope:
-			s := v
-			scope = &s
-		}
-	}
-	if scope == nil || scope.Type != telebot.CommandScopeAllPrivateChats {
-		t.Fatalf("commands must be scoped to all private chats, got %+v", scope)
-	}
-
-	got := make([]string, 0, len(cmds))
-	for _, c := range cmds {
+	got := make([]string, 0, len(botCommands))
+	for _, c := range commandsOf(fake.cmdCalls[0]) {
 		if c.Description == "" {
 			t.Errorf("command %q has no description", c.Text)
 		}
@@ -561,7 +709,7 @@ func TestTelegramChannel_CreateBotRegistersCommands(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tg := newTestTelegramChannel()
+	tg := newTestTelegramChannel("424242")
 	tg.apiURL = srv.URL
 	tg.offline = true
 
@@ -575,7 +723,7 @@ func TestTelegramChannel_CreateBotRegistersCommands(t *testing.T) {
 	if got == "" {
 		t.Fatal("createBot never called setMyCommands, so the menu is invisible in Telegram")
 	}
-	for _, want := range []string{`"start"`, `"help"`, `"new"`, "all_private_chats"} {
+	for _, want := range []string{`"start"`, `"help"`, `"new"`, `"chat"`, "424242"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("setMyCommands payload missing %s: %s", want, got)
 		}
@@ -584,7 +732,7 @@ func TestTelegramChannel_CreateBotRegistersCommands(t *testing.T) {
 
 // A failure to register the menu is not fatal — the bot must still run.
 func TestTelegramChannel_RegisterCommandsFailureIsNotFatal(t *testing.T) {
-	tg := newTestTelegramChannel()
+	tg := newTestTelegramChannel("777")
 	fake := &fakeNotifier{cmdErr: fmt.Errorf("telegram is down")}
 
 	if err := tg.registerCommands(fake); err == nil {

@@ -1558,7 +1558,7 @@ reaches the prompt.
 | Command | Channel | Description |
 |---------|---------|-------------|
 | `/start` | Telegram | Start a conversation (shows the help text) |
-| `/new` | Telegram, Discord, CLI | Start a fresh session (clears context, model override and personality) |
+| `/new` | Telegram, Discord, CLI | Start a fresh session (clears context, model override and personality). Takes effect immediately even while a long turn is still running — it is the one command not queued behind the in-flight turn |
 | `/status` | Telegram, CLI | Show the current model, tool count, memory window and max iterations |
 | `/model [name]` | Telegram, CLI | Switch model for this session (`--global` makes it the default for all sessions) |
 | `/personality [name]` | Telegram, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear |

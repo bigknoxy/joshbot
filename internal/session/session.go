@@ -159,6 +159,13 @@ type Session struct {
 	// enough state for /resume to pick up where the run stopped.
 	// Cleared when the user sends a new message (not /resume) or /new.
 	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+	// Generation fences a session reset. Manager.ResetConversation and
+	// Manager.Reset both bump it, and Manager.Save refuses any write whose
+	// Generation is older than the one on disk, so a
+	// turn that loaded its prefix before a /new cannot republish the transcript
+	// the user just cleared (#319). Zero for every session that has never been
+	// reset, which is why it carries omitempty.
+	Generation int `json:"generation,omitempty"`
 }
 
 // Checkpoint records where a ReAct loop was interrupted by the iteration

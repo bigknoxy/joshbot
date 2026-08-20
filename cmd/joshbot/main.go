@@ -3278,6 +3278,10 @@ func runGateway(c *cli.Context) error {
 				return nil
 			}
 			s.SetReplyTo(inboundMessageID(msg))
+			// An empty-text draft renders as Telegram's own "Thinking…"
+			// placeholder, so the phone shows the turn started before the
+			// first token exists. No-op unless drafts are on for this turn.
+			s.Thinking()
 			return s
 		},
 	}))

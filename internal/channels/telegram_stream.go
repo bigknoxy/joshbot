@@ -74,6 +74,19 @@ type TelegramStreamer struct {
 	// delta edits it away in place, so the chat never accumulates a trail of
 	// stale progress lines above the answer.
 	statusShown string
+
+	// draftsOK reports that this turn may stream through sendMessageDraft
+	// instead of the send/edit loop. It is set at construction (private chat,
+	// stream_drafts on, a raw caller available) and cleared for good the
+	// first time the API refuses a draft, which is what makes the feature
+	// safe against a Bot API server that predates the method. draftShown is
+	// the text the draft slot last displayed; draftSent distinguishes "never
+	// sent" from "sent an empty placeholder", which are different states.
+	draftsOK    bool
+	draftSent   bool
+	draftID     int64
+	draftChatID int64
+	draftShown  string
 }
 
 // NewStreamer returns a streamer for one turn in the chat identified by
@@ -102,7 +115,7 @@ func (t *TelegramChannel) newStreamer(recipient telebot.Recipient) *TelegramStre
 	if editor == nil {
 		return nil
 	}
-	return &TelegramStreamer{
+	s := &TelegramStreamer{
 		ch:        t,
 		recipient: recipient,
 		// Markdown by default: every ordinary reply used to land as plain
@@ -114,6 +127,14 @@ func (t *TelegramChannel) newStreamer(recipient telebot.Recipient) *TelegramStre
 		now:       time.Now,
 		sleep:     time.Sleep,
 	}
+	// Drafts are opt-in and private-chat only. Deciding once here keeps the
+	// per-delta path a bool test.
+	if chatID, private := privateChatID(recipient); private && t.streamDraftsEnabled() && t.currentRawCaller() != nil {
+		s.draftsOK = true
+		s.draftChatID = chatID
+		s.draftID = nextDraftID()
+	}
+	return s
 }
 
 // SetReplyTo threads the streamed reply to the message that triggered it, so
@@ -170,6 +191,15 @@ func (s *TelegramStreamer) Delta(text string) {
 	if s.broken || s.now().Before(s.nextEdit) {
 		return
 	}
+	if s.draftsOK {
+		s.sendDraftLocked(s.buf)
+		// A draft that landed carried this delta; the persisting sendMessage
+		// still happens in Finish. If the draft was refused, drafts are off
+		// for good and the edit loop takes over from this delta on.
+		if s.draftsOK {
+			return
+		}
+	}
 	s.flushLocked(false)
 }
 
@@ -187,6 +217,14 @@ func (s *TelegramStreamer) Status(text string) {
 	defer s.mu.Unlock()
 	if s.broken || s.buf != "" || text == s.statusShown || s.now().Before(s.nextEdit) {
 		return
+	}
+	if s.draftsOK {
+		// In draft mode no status *message* is ever created, so there is
+		// nothing for Finish to clean up and statusShown stays "".
+		s.sendDraftLocked(text)
+		if s.draftsOK {
+			return
+		}
 	}
 	editor := s.ch.currentEditor()
 	if editor == nil {

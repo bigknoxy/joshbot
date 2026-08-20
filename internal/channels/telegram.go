@@ -91,6 +91,10 @@ type TelegramChannel struct {
 	editor             telegramEditor
 	streamEditInterval time.Duration
 
+	// rawCaller overrides the bot for raw Bot API calls (sendMessageDraft).
+	// Only tests set it; in production it stays nil and the bot is used.
+	rawCaller telegramRawCaller
+
 	// notifier overrides the bot for chat-action and command-menu calls.
 	// Only tests set it; in production it stays nil and the bot is used.
 	notifier telegramNotifier

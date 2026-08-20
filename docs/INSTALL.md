@@ -855,6 +855,7 @@ reply exists — and it costs no message slot, which matters in a group.
 }
 ```
 
+
 👀 goes on the moment the turn is admitted to the bus, and 👍 replaces it when
 the reply is on its way. Telegram's `setMessageReaction` *sets* rather than
 appends, so the second write clears the first with no extra call. The completion
@@ -866,6 +867,56 @@ It is **off by default** and opt-in: a bot in a group without permission to reac
 would otherwise log a failure on every single turn. A reaction is an ornament on
 the turn and never part of it, so a failure is logged at debug and the reply is
 unaffected. A sender the allowlist rejects is never acknowledged.
+
+#### Streaming drafts (`stream_drafts`)
+
+`channels.telegram.stream_drafts` streams a turn through the Bot API
+[`sendMessageDraft`](https://core.telegram.org/bots/api#sendmessagedraft) method
+instead of the `sendMessage` + `editMessageText` loop. Telegram renders it as a
+native animated draft, and before any output exists an empty-text draft renders
+as Telegram's own "Thinking…" placeholder, so the phone shows the turn started
+before the first token arrives.
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "123456789:ABCdef...",
+      "allow_from": ["123456789"],
+      "stream_drafts": true
+    }
+  }
+}
+```
+
+
+Off by default and carrying `omitempty`, so it is absent from every config
+joshbot has already saved and needs no schema migration.
+
+Four things to know before switching it on:
+
+- **Private chats only.** The Bot API documents `chat_id` for this method as
+  "the target private chat", so a group or supergroup keeps the edit loop.
+- **It needs a new enough Bot API.** Empty text — the "Thinking…" placeholder —
+  was allowed in **Bot API 10.0** (changelog dated 8 May 2026). Note that
+  [#308](https://github.com/bigknoxy/joshbot/issues/308) says "Bot API 9.3/9.5";
+  that is wrong, and the version above is what the published reference says.
+  A server that does not know the method is not a problem: the first refusal
+  turns drafts off **for that turn** and the edit loop carries the answer from
+  that delta on, so nothing is lost but the animation.
+- **A draft is ephemeral.** The reference calls it "a temporary 30-second
+  preview", and the finished text must still be sent with an ordinary
+  `sendMessage` to persist it. joshbot always does that at the end of the turn,
+  so a draft never counts as delivery — which is also why a turn that streams
+  nothing still gets its reply through the normal path while the placeholder
+  expires on its own.
+- **Tool progress rides the draft too.** In draft mode the `⚙️ …` status line
+  goes into the draft slot rather than a real message, so there is no status
+  message left over for the reply to replace.
+
+It honours `channels.telegram.api_url`, since the raw call goes to the same
+configured base URL.
 
 ---
 

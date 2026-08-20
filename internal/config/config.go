@@ -302,6 +302,14 @@ type TelegramConfig struct {
 	// config and its default can then never be flipped without a schema
 	// migration (the streaming v4→v5 trap).
 	Reactions bool `mapstructure:"reactions" json:"reactions,omitempty" yaml:"reactions"`
+	// StreamDrafts streams a turn through the Bot API sendMessageDraft
+	// method instead of the editMessageText loop, which renders as a native
+	// animated draft (and, before any output exists, as Telegram's own
+	// "Thinking…" placeholder). It is private-chat only, needs a Bot API
+	// server new enough to know the method, and self-disables per turn if one
+	// refuses. Off by default and carrying omitempty, so it is absent from
+	// every config joshbot has already saved and needs no schema migration.
+	StreamDrafts bool `mapstructure:"stream_drafts" json:"stream_drafts,omitempty" yaml:"stream_drafts"`
 }
 
 // DiscordConfig holds Discord channel configuration.

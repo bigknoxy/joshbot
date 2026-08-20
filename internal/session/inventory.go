@@ -309,8 +309,14 @@ func (m *Manager) Reset(ctx context.Context, sessionID string) (string, error) {
 	}
 
 	// Conversation metadata describes the archived conversation, not the new
-	// empty one.
-	_ = os.Remove(m.metadataFilePath(sessionID))
+	// empty one — but the generation is not conversation metadata, it is the
+	// fence. Dropping the sidecar outright would let a turn still running
+	// against the archived transcript re-create it under the live name on its
+	// next Save (#319), so the sidecar is rewritten carrying the bumped
+	// generation alone.
+	if err := m.bumpGenerationLocked(sessionID); err != nil {
+		return "", err
+	}
 
 	// The compaction archive belongs to the conversation being put away. Left
 	// in place it would be inherited by the next conversation under the same

@@ -23,6 +23,11 @@ var (
 	ErrInvalidSessionID = errors.New("invalid session ID")
 	// ErrContextCancelled is returned when the context is cancelled.
 	ErrContextCancelled = errors.New("context cancelled")
+	// ErrSessionSuperseded is returned by Save when the session on disk has a
+	// newer generation than the one being written — a /new reset landed while
+	// this turn was running, and writing would resurrect the cleared
+	// transcript (#319).
+	ErrSessionSuperseded = errors.New("session superseded by a reset")
 	// ErrKeyLockBusy is returned when a session key already has
 	// MaxConcurrentTurnsPerKey turns in flight and a further turn would exceed
 	// that cap. It is the backpressure a key's per-turn lock applies to a flood
@@ -308,6 +313,7 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 			ModelOverride       string            `json:"model_override,omitempty"`
 			Personality         string            `json:"personality,omitempty"`
 			Checkpoint          *Checkpoint       `json:"checkpoint,omitempty"`
+			Generation          int               `json:"generation,omitempty"`
 		}
 		if err := json.Unmarshal(metaData, &meta); err != nil {
 			log.Warnf("session %s: metadata sidecar unparseable (%v); model override, personality and checkpoint not restored",
@@ -318,6 +324,7 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 			sess.ModelOverride = meta.ModelOverride
 			sess.Personality = meta.Personality
 			sess.Checkpoint = meta.Checkpoint
+			sess.Generation = meta.Generation
 		}
 	}
 
@@ -341,6 +348,14 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Refuse a write from a generation the reset has moved past. A /new is not
+	// serialised against a running turn on purpose — a reset that queues behind
+	// a stuck turn is not a reset — so this is the only thing standing between
+	// the cleared transcript and the in-flight turn that loaded it (#319).
+	if onDisk := m.readGenerationLocked(s.ID); onDisk > s.Generation {
+		return fmt.Errorf("%w: on disk %d, writing %d", ErrSessionSuperseded, onDisk, s.Generation)
+	}
 
 	// Serialize messages to JSONL format
 	var lines []string
@@ -367,19 +382,24 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 	// otherwise re-inject a cleared model override or personality on the next
 	// Load, so `/personality none` or `/model x --global` (which clears the
 	// session override) would silently do nothing after a restart.
-	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" || s.Checkpoint != nil {
+	// Generation counts as presence: a reset clears every other field, so
+	// dropping the sidecar here would lose the fence and let the very turn the
+	// reset was racing write its transcript back on the next Save.
+	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" || s.Checkpoint != nil || s.Generation > 0 {
 		meta := struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
 			ModelOverride       string            `json:"model_override,omitempty"`
 			Personality         string            `json:"personality,omitempty"`
 			Checkpoint          *Checkpoint       `json:"checkpoint,omitempty"`
+			Generation          int               `json:"generation,omitempty"`
 		}{
 			ConversationTopic:   s.ConversationTopic,
 			ConversationContext: s.ConversationContext,
 			ModelOverride:       s.ModelOverride,
 			Personality:         s.Personality,
 			Checkpoint:          s.Checkpoint,
+			Generation:          s.Generation,
 		}
 		metaData, err := json.Marshal(meta)
 		if err != nil {
@@ -501,4 +521,87 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string) (*Session, 
 // SessionsDir returns the sessions directory path.
 func (m *Manager) SessionsDir() string {
 	return m.sessionsDir
+}
+
+// readGenerationLocked returns the generation recorded in the session's
+// metadata sidecar, or 0 when there is none. Callers must hold m.mu.
+//
+// An unreadable or unparseable sidecar reads as generation 0, which fails
+// *open* on purpose: this gate exists to drop a stale write, and refusing
+// every write because a sidecar was momentarily unreadable would lose live
+// conversation to protect a reset that may never have happened.
+func (m *Manager) readGenerationLocked(sessionID string) int {
+	path := m.metadataFilePath(sessionID)
+	if path == "" {
+		return 0
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- path built from a validated session ID
+	if err != nil {
+		return 0
+	}
+	var meta struct {
+		Generation int `json:"generation,omitempty"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return 0
+	}
+	return meta.Generation
+}
+
+// ResetConversation clears a session's transcript and per-session overrides and bumps its
+// generation, so a turn still running against the old transcript cannot write
+// it back (#319). It returns the cleared session.
+//
+// Reset deliberately does not take the per-key turn lock: a reset that queues
+// behind the stuck turn the user is trying to escape is not a reset. The
+// generation fence in Save is what makes that safe.
+func (m *Manager) ResetConversation(ctx context.Context, sessionID string) (*Session, error) {
+	if err := ValidateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ErrContextCancelled
+	default:
+	}
+
+	sess, err := m.Load(ctx, sessionID)
+	if err != nil {
+		if !errors.Is(err, ErrSessionNotFound) {
+			return nil, err
+		}
+		sess = NewSession(sessionID)
+	}
+
+	sess.ClearMessages()
+	sess.ModelOverride = ""
+	sess.Personality = ""
+	sess.Generation++
+
+	if err := m.Save(ctx, sess); err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
+// bumpGenerationLocked replaces the session's metadata sidecar with one
+// carrying only the next generation, discarding the conversation metadata that
+// belonged to the transcript being put away. Callers must hold m.mu.
+func (m *Manager) bumpGenerationLocked(sessionID string) error {
+	next := m.readGenerationLocked(sessionID) + 1
+	path := m.metadataFilePath(sessionID)
+	if path == "" {
+		return nil
+	}
+	data, err := json.Marshal(struct {
+		Generation int `json:"generation,omitempty"`
+	}{Generation: next})
+	if err != nil {
+		return fmt.Errorf("failed to marshal session metadata: %w", err)
+	}
+	if err := writeFileAtomic(path, data, sessionFileMode); err != nil {
+		return fmt.Errorf("failed to write session metadata: %w", err)
+	}
+	return nil
 }

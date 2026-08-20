@@ -382,6 +382,36 @@ type SessionLocker interface {
 	LockSession(ctx context.Context, sessionID string) (func(), error)
 }
 
+// SessionResetter is implemented by session stores that can clear a session's
+// transcript under a generation fence.
+//
+// It is optional and checked with a type assertion, for the same reason
+// SessionLocker is: a test double or an alternative SessionManager must not be
+// forced to implement it. A store that does not implement it keeps the previous
+// behaviour, where /new clears the session in place while holding the turn lock.
+type SessionResetter interface {
+	ResetConversation(ctx context.Context, sessionID string) (*session.Session, error)
+}
+
+// isResetCommand reports whether content is the /new command.
+//
+// /new is the one command routed ahead of the per-key turn lock: a reset that
+// queues behind the stuck turn the user is trying to escape is not a reset, and
+// under the per-key cap it is not merely slow but refused outright with
+// ErrKeyLockBusy (#319). session.Manager.ResetConversation bumps the session
+// generation and Save refuses any older write, so the in-flight turn cannot
+// republish the transcript the user just cleared.
+func isResetCommand(content string) bool {
+	if !isCommand(content) {
+		return false
+	}
+	cmd := cleanCommand(content)
+	if i := strings.IndexAny(cmd, " \t"); i >= 0 {
+		cmd = cmd[:i]
+	}
+	return cmd == "new"
+}
+
 // Process handles an inbound message and returns the response content.
 // It implements the full ReAct loop: receive message, call LLM, execute tools, repeat.
 //
@@ -397,6 +427,12 @@ type SessionLocker interface {
 func (a *Agent) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
+
+	// A reset skips the lock entirely when the store can fence it. See
+	// isResetCommand.
+	if _, canReset := a.sessions.(SessionResetter); canReset && isResetCommand(msg.Content) {
+		return a.process(ctx, msg)
+	}
 
 	locker, ok := a.sessions.(SessionLocker)
 	if !ok {
@@ -593,9 +629,15 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	// shrinking the session before that point would slice out of range.
 	a.applyCompaction(pctx, sess, compaction)
 
-	// Save session
+	// Save session. A superseded write is the generation fence working, not a
+	// failure: /new landed while this turn was running and writing would
+	// resurrect the transcript the user just cleared (#319).
 	if err := a.sessions.Save(pctx, sess); err != nil {
-		a.logger.Warn("Failed to save session", "error", err)
+		if errors.Is(err, session.ErrSessionSuperseded) {
+			a.logger.Debug("Dropped a session write superseded by a reset", "error", err)
+		} else {
+			a.logger.Warn("Failed to save session", "error", err)
+		}
 	}
 
 	// Update conversation topic based on what happened
@@ -604,7 +646,11 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 		if updatedTopic != "" {
 			sess.ConversationTopic = updatedTopic
 			if err := a.sessions.Save(pctx, sess); err != nil {
-				a.logger.Warn("Failed to save updated topic", "error", err)
+				if errors.Is(err, session.ErrSessionSuperseded) {
+					a.logger.Debug("Dropped a topic write superseded by a reset", "error", err)
+				} else {
+					a.logger.Warn("Failed to save updated topic", "error", err)
+				}
 			}
 		}
 	}
@@ -1606,8 +1652,11 @@ func (a *Agent) handleCommand(ctx context.Context, msg bus.InboundMessage) strin
 		// /new). The per-session model override and personality are scoped to
 		// the conversation, so they are cleared too.
 		sessionKey := getSessionKey(msg)
-		sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
-		if err == nil {
+		if resetter, ok := a.sessions.(SessionResetter); ok {
+			if _, err := resetter.ResetConversation(ctx, sessionKey); err != nil {
+				a.logger.Warn("Could not reset session for /new", "session", sessionKey, "error", err)
+			}
+		} else if sess, err := a.sessions.GetOrCreate(ctx, sessionKey); err == nil {
 			sess.ClearMessages()
 			sess.ModelOverride = ""
 			sess.Personality = ""

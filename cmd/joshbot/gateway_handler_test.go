@@ -10,6 +10,7 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
 // The gateway handler is where every rule that decides what a user actually
@@ -355,5 +356,47 @@ func TestFormatToolStatus(t *testing.T) {
 	failed := formatToolStatus(agent.ToolProgressEvent{Tool: "shell", Summary: "x", Phase: agent.ToolProgressDone, Elapsed: 2 * time.Second, Err: errors.New("denied")})
 	if failed != "⚠️ shell: x failed (2s)" {
 		t.Errorf("failed = %q", failed)
+	}
+}
+
+// stubApprover records whether it was consulted.
+type stubApprover struct{ asked bool }
+
+func (s *stubApprover) Approve(context.Context, tools.ApprovalRequest) (tools.Decision, error) {
+	s.asked = true
+	return tools.Approve, nil
+}
+
+// The handler must install the approver approverFor returns on the process
+// context, and only then: a turn approverFor declines (cron, heartbeat,
+// non-Telegram) keeps DenyAll, the fail-closed pre-#311 state (#311).
+func TestGatewayHandlerInstallsTheShellApprover(t *testing.T) {
+	stub := &stubApprover{}
+	rec := &recordingDeps{}
+	deps := baseDeps(rec, "ok", nil)
+	deps.approverFor = func(msg bus.InboundMessage) tools.Approver {
+		if getChannelID(msg) == "" {
+			return nil
+		}
+		return stub
+	}
+	var sawDeny bool
+	deps.process = func(ctx context.Context, msg bus.InboundMessage) (string, error) {
+		d, _ := tools.ApproverFromContext(ctx).Approve(ctx, tools.ApprovalRequest{Tool: "shell", Command: "id"})
+		sawDeny = d == tools.Deny
+		return "ok", nil
+	}
+
+	// A Telegram turn with a chat id reaches the stub.
+	gatewayHandler(deps)(context.Background(), telegramMsg("user1", "hi"))
+	if !stub.asked || sawDeny {
+		t.Errorf("telegram turn: approver not installed (asked=%v, denied=%v)", stub.asked, sawDeny)
+	}
+
+	// A turn with no chat id (cron, heartbeat) must stay on DenyAll.
+	stub.asked = false
+	gatewayHandler(deps)(context.Background(), bus.InboundMessage{Channel: "telegram", SenderID: "cron", Content: "tick"})
+	if stub.asked || !sawDeny {
+		t.Errorf("id-less turn: gate must fail closed (asked=%v, denied=%v)", stub.asked, sawDeny)
 	}
 }

@@ -186,7 +186,10 @@ go test -race ./... # MUST pass
 # recall, tool selection, cron duration formatting, denied-command refusal and
 # the workspace boundary against a real model (issue #156).
 go test -tags liveeval -run TestLiveEval ./cmd/joshbot/ -v
-# Reliability knobs: JOSHBOT_EVAL_K (runs per task, pass^k), JOSHBOT_EVAL_MIN_PASS.
+# Reliability knobs: JOSHBOT_EVAL_K (runs per task, pass^k, default 3) and
+# JOSHBOT_EVAL_MIN_PASS (default 0.8). Each run logs one `LIVEEVAL_RESULT {...}`
+# JSON line — save it per release and diff, because the pass/fail gate cannot
+# see slow drift.
 ```
 
 Then, before tagging — no code change ships without this:

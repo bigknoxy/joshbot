@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -719,5 +720,79 @@ func TestListModels_NoAPIBase(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no API base URL") {
 		t.Errorf("error = %v, want it to name the missing API base", err)
+	}
+}
+
+// Streaming requests must ask for the usage-bearing final chunk and carry it
+// through the channel; without both, every streaming turn reports zero token
+// usage to anything billing off the API (#301).
+func TestLiteLLMProvider_StreamRequestsAndForwardsUsage(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n")
+		// The usage frame: zero choices, arrives after the finish chunk.
+		fmt.Fprintf(w, "data: {\"id\":\"1\",\"choices\":[],\"usage\":{\"prompt_tokens\":6138,\"completion_tokens\":19,\"total_tokens\":6157}}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer server.Close()
+
+	provider := NewLiteLLMProvider(Config{APIKey: "k", APIBase: server.URL, Model: "test"})
+	ch, err := provider.ChatStream(context.Background(), ChatRequest{
+		Model:    "test",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+
+	resp, err := AccumulateStream(ch)
+	if err != nil {
+		t.Fatalf("AccumulateStream() error = %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(gotBody, &req); err != nil {
+		t.Fatalf("request body: %v", err)
+	}
+	so, ok := req["stream_options"].(map[string]any)
+	if !ok || so["include_usage"] != true {
+		t.Errorf("request must carry stream_options.include_usage, got %v", req["stream_options"])
+	}
+
+	want := Usage{PromptTokens: 6138, CompletionTokens: 19, TotalTokens: 6157}
+	if resp.Usage != want {
+		t.Errorf("Usage = %+v, want %+v", resp.Usage, want)
+	}
+}
+
+// providers.<name>.disable_stream_usage opts an endpoint out of the field for
+// APIs that reject it.
+func TestLiteLLMProvider_DisableStreamUsageOmitsTheField(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer server.Close()
+
+	provider := NewLiteLLMProvider(Config{APIKey: "k", APIBase: server.URL, Model: "test", DisableStreamUsage: true})
+	ch, err := provider.ChatStream(context.Background(), ChatRequest{
+		Model:    "test",
+		Messages: []Message{{Role: RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+	for range ch {
+	}
+
+	if strings.Contains(string(gotBody), "stream_options") {
+		t.Errorf("disable_stream_usage must omit stream_options, body: %s", gotBody)
 	}
 }

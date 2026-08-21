@@ -569,6 +569,10 @@ The new model-centric format is simpler and more intuitive. Define models direct
   `⚠️ nvidia unavailable (rate_limit) — answered by poolside (poolside/laguna-s-2.1)` —
   so a silent model switch never masquerades as the primary working. Set
   `agents.defaults.quiet_fallback` to `true` to suppress it.
+- Streaming requests ask for the usage-bearing final chunk
+  (`stream_options.include_usage`), so token usage is reported for streaming
+  turns too; `providers.<name>.disable_stream_usage: true` opts an endpoint out
+  if it rejects the field.
 - No separate provider configuration needed
 
 ### Provider Auto-Detection

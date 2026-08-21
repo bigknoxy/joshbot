@@ -170,6 +170,18 @@ type ChatRequest struct {
 	FrequencyPenalty float64 `json:"frequency_penalty,omitempty"`
 	// User is a user identifier for tracking
 	User string `json:"user,omitempty"`
+	// StreamOptions carries OpenAI's streaming options; set on streaming
+	// requests so the final chunk carries token usage (#301).
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+}
+
+// StreamOptions mirrors OpenAI's stream_options request field.
+type StreamOptions struct {
+	// IncludeUsage asks for a final chunk with no choices whose usage field
+	// reports the whole request's token counts. Without it a streaming turn
+	// has no usage at all, and the API surface reported hard zeros — worse
+	// than a missing field, because they read as a real measurement (#301).
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // ChatResponse represents a response from the chat endpoint.
@@ -224,6 +236,10 @@ type StreamChunk struct {
 	Model string `json:"model"`
 	// Choices is the list of choice deltas
 	Choices []StreamChoice `json:"choices"`
+	// Usage rides the final chunk only, and only when the request asked for
+	// it via stream_options.include_usage. That chunk has zero choices, so
+	// consumers must not drop choice-less chunks before reading this (#301).
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // StreamChoice represents a streaming choice delta.
@@ -254,6 +270,10 @@ type Config struct {
 	MaxTokens int
 	// Temperature is the default temperature
 	Temperature float64
+	// DisableStreamUsage stops streaming requests from sending
+	// stream_options.include_usage, for endpoints that reject the field.
+	// The zero value sends it, so usage reporting is on by default (#301).
+	DisableStreamUsage bool
 }
 
 // DefaultConfig returns a Config with default values.

@@ -35,6 +35,7 @@ type ChunkAccumulator struct {
 	order        []int // preserves first-seen order of choice indices
 	finished     bool
 	finishReason string
+	usage        *Usage
 	err          error
 }
 
@@ -71,6 +72,12 @@ func NewChunkAccumulator() *ChunkAccumulator {
 func (a *ChunkAccumulator) Accumulate(chunk StreamChunk) error {
 	if a.err != nil {
 		return a.err
+	}
+	// The usage frame is the one chunk that legitimately arrives *after* the
+	// finish-reason chunk (stream_options.include_usage, #301), so it must be
+	// captured before the finished short-circuit or it is silently dropped.
+	if chunk.Usage != nil {
+		a.usage = chunk.Usage
 	}
 	if a.finished {
 		return nil
@@ -227,14 +234,18 @@ func (a *ChunkAccumulator) Result() (*ChatResponse, error) {
 		})
 	}
 
-	return &ChatResponse{
+	resp := &ChatResponse{
 		ID:           a.id,
 		Object:       "chat.completion",
 		Created:      a.created,
 		Model:        a.model,
 		Choices:      choices,
 		FinishReason: a.finishReason,
-	}, nil
+	}
+	if a.usage != nil {
+		resp.Usage = *a.usage
+	}
+	return resp, nil
 }
 
 // AccumulateStream is a convenience function that drains a stream channel

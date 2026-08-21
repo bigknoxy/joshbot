@@ -651,13 +651,14 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 		// Register OpenRouter (if configured and enabled)
 		if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" && p.Enabled {
 			openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
-				APIKey:       p.APIKey,
-				APIBase:      p.APIBase,
-				ExtraHeaders: p.ExtraHeaders,
-				Timeout:      p.Timeout.Duration(),
-				Model:        cfg.Agents.Defaults.Model,
-				MaxTokens:    cfg.Agents.Defaults.MaxTokens,
-				Temperature:  cfg.Agents.Defaults.Temperature,
+				APIKey:             p.APIKey,
+				APIBase:            p.APIBase,
+				ExtraHeaders:       p.ExtraHeaders,
+				Timeout:            p.Timeout.Duration(),
+				DisableStreamUsage: p.DisableStreamUsage,
+				Model:              cfg.Agents.Defaults.Model,
+				MaxTokens:          cfg.Agents.Defaults.MaxTokens,
+				Temperature:        cfg.Agents.Defaults.Temperature,
 			})
 			if err != nil {
 				log.Warn("Failed to create OpenRouter provider", "error", err)
@@ -669,11 +670,12 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 		// Register NVIDIA NIM (if configured) - first fallback
 		if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
 			nvidiaProvider, err := providers.GetProvider("nvidia", providers.Config{
-				APIKey:       p.APIKey,
-				APIBase:      p.APIBase,
-				ExtraHeaders: p.ExtraHeaders,
-				Timeout:      p.Timeout.Duration(),
-				Model:        p.Model,
+				APIKey:             p.APIKey,
+				APIBase:            p.APIBase,
+				ExtraHeaders:       p.ExtraHeaders,
+				Timeout:            p.Timeout.Duration(),
+				DisableStreamUsage: p.DisableStreamUsage,
+				Model:              p.Model,
 			})
 			if err != nil {
 				log.Warn("Failed to create NVIDIA provider", "error", err)
@@ -693,10 +695,11 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 		// Register Groq (if configured)
 		if p, ok := cfg.Providers["groq"]; ok && p.APIKey != "" && p.Enabled {
 			groqProvider, err := providers.GetProvider("groq", providers.Config{
-				APIKey:       p.APIKey,
-				APIBase:      p.APIBase,
-				ExtraHeaders: p.ExtraHeaders,
-				Timeout:      p.Timeout.Duration(),
+				APIKey:             p.APIKey,
+				APIBase:            p.APIBase,
+				ExtraHeaders:       p.ExtraHeaders,
+				Timeout:            p.Timeout.Duration(),
+				DisableStreamUsage: p.DisableStreamUsage,
 			})
 			if err != nil {
 				log.Warn("Failed to create Groq provider", "error", err)
@@ -712,11 +715,12 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 		// Register Poolside (if configured)
 		if p, ok := cfg.Providers["poolside"]; ok && p.APIKey != "" && p.Enabled {
 			poolsideProvider, err := providers.GetProvider("poolside", providers.Config{
-				APIKey:       p.APIKey,
-				APIBase:      p.APIBase,
-				ExtraHeaders: p.ExtraHeaders,
-				Timeout:      p.Timeout.Duration(),
-				Model:        p.Model,
+				APIKey:             p.APIKey,
+				APIBase:            p.APIBase,
+				ExtraHeaders:       p.ExtraHeaders,
+				Timeout:            p.Timeout.Duration(),
+				DisableStreamUsage: p.DisableStreamUsage,
+				Model:              p.Model,
 			})
 			if err != nil {
 				log.Warn("Failed to create Poolside provider", "error", err)
@@ -744,10 +748,11 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				timeout = 300 * time.Second
 			}
 			ollamaProvider, err := providers.GetProvider("ollama", providers.Config{
-				APIBase:      apiBase,
-				ExtraHeaders: p.ExtraHeaders,
-				Timeout:      timeout,
-				Model:        p.Model,
+				APIBase:            apiBase,
+				ExtraHeaders:       p.ExtraHeaders,
+				Timeout:            timeout,
+				DisableStreamUsage: p.DisableStreamUsage,
+				Model:              p.Model,
 			})
 			if err != nil {
 				log.Warn("Failed to create Ollama provider", "error", err)
@@ -865,14 +870,15 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				}
 			}
 			prov, err := providers.GetProvider(canonical, providers.Config{
-				APIKey:       p.APIKey,
-				APIBase:      base,
-				ExtraHeaders: p.ExtraHeaders,
-				ExtraBody:    p.ExtraBody,
-				Timeout:      p.Timeout.Duration(),
-				Model:        model,
-				MaxTokens:    cfg.Agents.Defaults.MaxTokens,
-				Temperature:  cfg.Agents.Defaults.Temperature,
+				APIKey:             p.APIKey,
+				APIBase:            base,
+				ExtraHeaders:       p.ExtraHeaders,
+				ExtraBody:          p.ExtraBody,
+				Timeout:            p.Timeout.Duration(),
+				Model:              model,
+				DisableStreamUsage: p.DisableStreamUsage,
+				MaxTokens:          cfg.Agents.Defaults.MaxTokens,
+				Temperature:        cfg.Agents.Defaults.Temperature,
 			})
 			if err != nil {
 				log.Warn("Failed to create provider", "name", canonical, "error", err)

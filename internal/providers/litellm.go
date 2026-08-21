@@ -71,13 +71,14 @@ func NewProviderFromResolvedModel(resolved config.ResolvedModelConfig, logger Lo
 	}
 
 	cfg := Config{
-		APIKey:       resolved.APIKey,
-		APIBase:      resolved.APIBase,
-		Model:        resolved.ModelID,
-		MaxTokens:    maxTokens,
-		ExtraHeaders: resolved.Extra,
-		ExtraBody:    resolved.ExtraBody,
-		Timeout:      120 * time.Second,
+		APIKey:             resolved.APIKey,
+		APIBase:            resolved.APIBase,
+		Model:              resolved.ModelID,
+		MaxTokens:          maxTokens,
+		ExtraHeaders:       resolved.Extra,
+		ExtraBody:          resolved.ExtraBody,
+		Timeout:            120 * time.Second,
+		DisableStreamUsage: resolved.DisableStreamUsage,
 	}
 
 	if logger == nil {
@@ -247,6 +248,14 @@ func (p *LiteLLMProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 	// Enable streaming
 	req.Stream = true
 
+	// Ask for the usage-bearing final chunk, or every streaming turn reports
+	// zero tokens to anything billing or budgeting off the API (#301).
+	// providers.<name>.disable_stream_usage opts an endpoint out if it
+	// rejects the field.
+	if !p.cfg.DisableStreamUsage {
+		req.StreamOptions = &StreamOptions{IncludeUsage: true}
+	}
+
 	// Build the request URL
 	apiBase := p.cfg.APIBase
 	if apiBase == "" {
@@ -352,8 +361,9 @@ func (p *LiteLLMProvider) streamReader(ctx context.Context, body io.Reader, ch c
 			continue
 		}
 
-		// Skip empty chunks
-		if len(chunk.Choices) == 0 {
+		// Skip empty chunks — except the usage frame, which by contract has
+		// zero choices and arrives last (#301).
+		if len(chunk.Choices) == 0 && chunk.Usage == nil {
 			continue
 		}
 

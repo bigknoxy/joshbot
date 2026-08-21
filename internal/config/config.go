@@ -133,6 +133,11 @@ type ProviderConfig struct {
 	// that absent means "use the default" (2) while an explicit 0 means
 	// "fail over immediately" — a plain int cannot tell those apart.
 	MaxRetries *int `mapstructure:"max_retries" json:"max_retries,omitempty" yaml:"max_retries,omitempty"`
+	// DisableStreamUsage opts this provider out of stream_options.include_usage
+	// on streaming requests, for endpoints that reject the field. Default off
+	// (usage is requested), and the zero value carries omitempty, so no schema
+	// migration is needed (#301).
+	DisableStreamUsage bool `mapstructure:"disable_stream_usage" json:"disable_stream_usage,omitempty" yaml:"disable_stream_usage,omitempty"`
 }
 
 // ProviderDefaults holds default provider settings
@@ -194,6 +199,8 @@ type ModelConfig struct {
 	ExtraBody map[string]any    `mapstructure:"extra_body" json:"extra_body,omitempty" yaml:"extra_body,omitempty"`
 	Disabled  bool              `mapstructure:"disabled" json:"disabled,omitempty" yaml:"disabled,omitempty"`
 	MaxTokens int               `mapstructure:"max_tokens" json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	// DisableStreamUsage: see ProviderConfig.DisableStreamUsage (#301).
+	DisableStreamUsage bool `mapstructure:"disable_stream_usage" json:"disable_stream_usage,omitempty" yaml:"disable_stream_usage,omitempty"`
 }
 
 // AgentModelConfig holds agent model configuration (new simplified structure).
@@ -227,6 +234,8 @@ type ResolvedModelConfig struct {
 	Extra     map[string]string
 	ExtraBody map[string]any
 	MaxTokens int
+	// DisableStreamUsage: see ProviderConfig.DisableStreamUsage (#301).
+	DisableStreamUsage bool
 }
 
 // providerPrefixes maps model prefixes to provider info.
@@ -1133,16 +1142,17 @@ func (c *Config) ResolveModelConfig(name string) (ResolvedModelConfig, error) {
 	}
 
 	return ResolvedModelConfig{
-		Name:      model.Name,
-		ModelID:   modelID,
-		Provider:  provider.Name,
-		APIFormat: provider.APIFormat,
-		APIBase:   apiBase,
-		APIKey:    model.APIKey,
-		APIKeys:   apiKeys,
-		Extra:     model.Extra,
-		ExtraBody: model.ExtraBody,
-		MaxTokens: model.MaxTokens,
+		Name:               model.Name,
+		ModelID:            modelID,
+		Provider:           provider.Name,
+		APIFormat:          provider.APIFormat,
+		APIBase:            apiBase,
+		APIKey:             model.APIKey,
+		APIKeys:            apiKeys,
+		Extra:              model.Extra,
+		ExtraBody:          model.ExtraBody,
+		MaxTokens:          model.MaxTokens,
+		DisableStreamUsage: model.DisableStreamUsage,
 	}, nil
 }
 

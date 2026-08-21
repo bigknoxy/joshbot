@@ -782,7 +782,7 @@ It fails closed: an unrecognized value, a platform with no sandbox implementatio
 
 The prompt shows the full command line and its working directory, and only an explicit `y` approves — EOF, a timed-out turn and Ctrl-C are all denials. An unrecognized value is a startup error, never a silent `"off"`.
 
-**It only works in the interactive CLI.** The prompt is installed by the interactive loop and only when stdout is a terminal, so the gateway (Telegram/Discord), cron jobs, the heartbeat scanner and piped `agent -m` runs have nobody to ask — with the gate on, their shell commands are **denied** rather than left blocking. If joshbot runs as a service, use `shell_sandbox` and `shell_allow_list` there instead.
+**It works in the interactive CLI and on Telegram.** In the CLI the prompt appears when stdout is a terminal; on the Telegram gateway the command is posted in the chat with an inline keyboard — `[✅ Allow] [❌ Deny]`, plus `[🔓 Allow all (this session)]` under `"interactive"` — and the turn waits for your tap, bounded by the turn timeout (no answer is a denial; only the chat that was asked can answer). Discord, cron jobs, the heartbeat scanner and piped `agent -m` runs have nobody to ask — with the gate on, their shell commands are **denied** rather than left blocking. For unattended use, reach for `shell_sandbox` and `shell_allow_list` instead.
 
 Separately, spawned shell commands no longer inherit joshbot's own environment — they get an allowlisted subset (PATH, common toolchain variables, etc.) with anything credential-shaped stripped out, so provider API keys are not exposed to commands the agent runs.
 

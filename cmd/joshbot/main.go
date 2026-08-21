@@ -3003,6 +3003,11 @@ type gatewayDeps struct {
 	getChatID func(channel string) (string, bool)
 	// newStreamer returns nil when this turn must not be streamed.
 	newStreamer func(msg bus.InboundMessage) gatewayStreamer
+	// approverFor returns the shell-approval approver for this turn, nil for
+	// turns that must not be asked (non-Telegram channels, and cron or
+	// heartbeat inbounds, which carry no chat id). nil means no approver is
+	// installed and the gate denies rather than blocks — the pre-#311 state.
+	approverFor func(msg bus.InboundMessage) tools.Approver
 }
 
 // replyMetadata builds the outbound metadata that anchors a reply to the
@@ -3115,6 +3120,15 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			procCtx = agent.WithSink(procCtx, func(e agent.ToolProgressEvent) {
 				streamer.Status(formatToolStatus(e))
 			})
+		}
+
+		// Shell approval (#311): install the Telegram approver for turns that
+		// have a chat to ask in. Everything else keeps no approver, so the
+		// gate stays fail-closed for cron, heartbeat and Discord.
+		if d.approverFor != nil {
+			if a := d.approverFor(msg); a != nil {
+				procCtx = tools.WithApprover(procCtx, a)
+			}
 		}
 
 		response, err := d.process(procCtx, msg)
@@ -3260,6 +3274,23 @@ func runGateway(c *cli.Context) error {
 	}
 	streaming := cfg.Agents.Defaults.Streaming
 
+	// Shell approval over Telegram (#311): with the gate on and Telegram up,
+	// gated commands are asked in the chat as an inline keyboard instead of
+	// being denied outright. Registration happens before Start for the same
+	// data-race reason tgChannel is created before the subscription. A
+	// registration failure degrades to the old deny-everything behaviour —
+	// worse UX, but never an open gate.
+	var shellApprovals *channels.ShellApprovalCoordinator
+	if shellApprovalMode != tools.ApprovalOff && tgChannel != nil {
+		sa, err := tgChannel.NewShellApprovalCoordinator(shellApprovalMode)
+		if err != nil {
+			log.Error("Shell approval keyboard unavailable; gated commands will be denied", "error", err)
+		} else {
+			shellApprovals = sa
+			log.Info("Shell approval via Telegram inline keyboard enabled", "mode", shellApprovalMode)
+		}
+	}
+
 	// Subscribe agent to all channels. The handler itself is gatewayHandler,
 	// which is where every decision worth testing lives; runGateway only owns
 	// the network and process lifecycle around it.
@@ -3293,6 +3324,20 @@ func runGateway(c *cli.Context) error {
 			// first token exists. No-op unless drafts are on for this turn.
 			s.Thinking()
 			return s
+		},
+		approverFor: func(msg bus.InboundMessage) tools.Approver {
+			if shellApprovals == nil || tgChannel == nil || msg.Channel != tgChannel.Name() {
+				return nil
+			}
+			// Only the message's own chat id, never the stored fallback a
+			// proactive reply would use: a cron or heartbeat inbound carries
+			// none, and those turns must stay unattended-denied, not ask a
+			// chat nobody is necessarily watching.
+			id := getChannelID(msg)
+			if id == "" {
+				return nil
+			}
+			return shellApprovals.ApproverFor(id)
 		},
 	}))
 

@@ -901,15 +901,19 @@ Allow? [y]es / [n]o / [a]ll for this session:
 
 Two things are worth knowing before you turn it on.
 
-**Only the interactive CLI can ask.** The approver is installed by the
-interactive loop, and only when stdout is a real terminal. Every other entry
-point — the Telegram and Discord gateway, cron jobs, the heartbeat scanner,
-`agent -m` in a pipeline — has nobody to ask, so with the gate on **its shell
-commands are refused**, not queued. That is deliberate: a prompt that blocked
-would hang a background goroutine, and one that auto-approved on timeout would
-not be a gate. If you run joshbot as a service and want gated shell access
-there, leave `shell_approval` off and reach for `shell_sandbox` and
-`shell_allow_list` instead.
+**The interactive CLI and Telegram can ask; everything else is denied.** In
+the CLI the prompt appears when stdout is a real terminal. On the Telegram
+gateway the command arrives in the chat as a message with an inline keyboard —
+`[✅ Allow] [❌ Deny]`, plus `[🔓 Allow all (this session)]` under
+`"interactive"` — showing the exact command string, and the turn waits for
+your tap (bounded by the turn timeout; no answer is a denial). Only the chat
+the request was asked in can answer it, and only allowlisted senders reach the
+buttons at all. Every other entry point — Discord, cron jobs, the heartbeat
+scanner, `agent -m` in a pipeline — has nobody to ask, so with the gate on
+**its shell commands are refused**, not queued. That is deliberate: a prompt
+that blocked would hang a background goroutine, and one that auto-approved on
+timeout would not be a gate. If you run joshbot unattended and want gated
+shell access, reach for `shell_sandbox` and `shell_allow_list` instead.
 
 **Anything that is not an explicit `y` is a no**, including a closed stdin, a
 timed-out turn, and Ctrl-C at the prompt. An unrecognised value for the setting
@@ -1620,7 +1624,7 @@ reaches the prompt.
 - `send_file` is an egress path — it moves workspace bytes out of the process — so it resolves its path through the same two containment layers as the `filesystem` tool and refuses anything outside the workspace, including an escape via an intermediate symlink. The bytes are read once through that contained handle and carried on the message; nothing re-opens the path afterwards. The recipient is the channel the turn arrived on — the tool takes no address, so the model cannot choose where a file goes.
 - Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
 - `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock on Linux, Seatbelt on macOS) — see [Shell Sandbox](#shell-sandbox) below. On platforms with no sandbox, the shell tool falls back to allowlist-only by default.
-- `tools.shell_approval` asks before each shell command runs — see [Shell Approval](#shell-approval). Only the interactive CLI can prompt; unattended turns (gateway, cron, heartbeat) are denied rather than left blocking.
+- `tools.shell_approval` asks before each shell command runs — see [Shell Approval](#shell-approval). The interactive CLI prompts at the terminal and the Telegram gateway asks with an inline keyboard in the chat; unattended turns (Discord, cron, heartbeat, piped `agent -m`) are denied rather than left blocking.
 - Everything joshbot logs or prints is redacted first: API keys, `Authorization` headers, credential-shaped assignments and your home directory path are replaced with `[REDACTED]` and `~`, so a log or `joshbot status` dump can be pasted into a bug report. Session files on disk are deliberately exempt and stay verbatim at `0600` — rewriting conversation content on save would mangle legitimate text.
 
 ## Chat Commands

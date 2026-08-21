@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A session-load failure now reports through `agent.ReplyPrefix`, so it reaches `agent -m` as exit 1 and the HTTP API as a 502 (audit find).** `Process` returned `"Error: Failed to load session: ..."` — a bespoke prefix `ReplyError` does not match — so a corrupt sessions directory produced a 200 whose answer was an error string, and a monitoring script wrapping `agent -m` reported green forever. This is the same class fixed for the session-lock path earlier; `TestProcessFailureRepliesCarryReplyPrefix` pins the contract behaviourally (a failed turn's reply must satisfy `ReplyError`) rather than pinning the string.
+
 ## [1.60.0] - 2026-08-21
 
 ### Added

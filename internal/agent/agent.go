@@ -514,7 +514,11 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	sess, err := a.sessions.GetOrCreate(ctx, sessionKey)
 	if err != nil {
 		a.logger.Error("Failed to get session", "error", err)
-		return fmt.Sprintf("Error: Failed to load session: %v", err), nil
+		// ReplyPrefix, never a bespoke prefix: this is a failed turn, and a
+		// non-interactive caller translates it back into an error only when
+		// the text matches ReplyError. The old "Error: Failed to load
+		// session" reached the HTTP API as a 200 and `agent -m` as exit 0.
+		return ReplyPrefix + fmt.Sprintf("failed to load session: %v", err), nil
 	}
 
 	startSessionLen := len(sess.Messages)

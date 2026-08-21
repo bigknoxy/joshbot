@@ -3548,11 +3548,21 @@ func runOnboard(c *cli.Context) error {
 		// Provider precedence: --provider flag, then existing config, then default.
 		if providerFlag != "" {
 			provider = providerFlag
-		} else if existingCfg != nil && len(existingCfg.Providers) > 0 {
-			for p := range existingCfg.Providers {
-				provider = p
-				break
-			}
+		} else if existingCfg != nil {
+			// Only a provider the existing config can actually use: the
+			// defaults seed is a disabled, keyless openrouter entry, and a
+			// previous failed onboard leaves exactly that behind — picking it
+			// here shadowed a perfectly good credential in the environment.
+			// (The old bare map-range pick was also nondeterministic with
+			// more than one entry.)
+			provider = usableProviderFromConfig(existingCfg)
+		}
+		if provider == "" {
+			// A credential in the environment names its provider:
+			// JOSHBOT_PROVIDERS__NVIDIA__API_KEY is an explicit choice, and
+			// defaulting to openrouter over it made `onboard --force` fail
+			// while telling the operator to do exactly what they had done.
+			provider = providerFromEnvKeys()
 		}
 		if provider == "" {
 			provider = "openrouter"
@@ -3896,6 +3906,36 @@ func providerKeyURL(provider string) string {
 // (JOSHBOT_PROVIDERS__<PROVIDER>__API_KEY) and the shorthand
 // (JOSHBOT_<PROVIDER>_API_KEY). The provider key is upper-cased with hyphens
 // mapped to underscores (github-copilot -> GITHUB_COPILOT).
+// usableProviderFromConfig returns a provider the config could actually run —
+// one holding an API key (ollama and github-copilot are keyless by design and
+// count when enabled). Checked in configure.SupportedProviders order so the
+// pick is deterministic; "" when nothing usable is configured.
+func usableProviderFromConfig(cfg *config.Config) string {
+	for _, name := range configure.SupportedProviders() {
+		p, ok := cfg.Providers[name]
+		if !ok {
+			continue
+		}
+		if p.APIKey != "" || ((name == "ollama" || name == "github-copilot") && p.Enabled) {
+			return name
+		}
+	}
+	return ""
+}
+
+// providerFromEnvKeys returns the first supported provider whose API key is
+// present in the environment, or "" when none is. Checked in
+// configure.SupportedProviders order, so with several keys set the choice is
+// deterministic and matches the guided flow's menu order.
+func providerFromEnvKeys() string {
+	for _, p := range configure.SupportedProviders() {
+		if providerAPIKeyFromEnv(p) != "" {
+			return p
+		}
+	}
+	return ""
+}
+
 func providerAPIKeyFromEnv(provider string) string {
 	up := strings.ToUpper(strings.ReplaceAll(provider, "-", "_"))
 	if v := os.Getenv("JOSHBOT_PROVIDERS__" + up + "__API_KEY"); v != "" {

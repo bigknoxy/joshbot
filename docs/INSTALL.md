@@ -199,6 +199,10 @@ joshbot onboard --keep-data
 # Fully non-interactive
 joshbot onboard --force --provider ollama
 joshbot onboard --force --provider openrouter --api-key "$OPENROUTER_API_KEY"
+
+# Or let the environment name the provider: a JOSHBOT_PROVIDERS__<NAME>__API_KEY
+# is an explicit choice, so --force configures that provider without any flags
+JOSHBOT_PROVIDERS__NVIDIA__API_KEY="nvapi-..." joshbot onboard --force
 ```
 
 `--provider` must name a supported provider (`openrouter`, `openai`, `nvidia`,

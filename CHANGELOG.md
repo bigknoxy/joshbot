@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **An end-to-end gateway test now exercises the production wiring (audit find: `runGateway` had 0% coverage).** `TestGatewayEndToEnd_TelegramUpdateToWire` drives one Telegram update from a fake Bot API through the real poller, bus, agent (scripted provider, real session files) and `TelegramStreamer` back to the wire, asserting three things nothing previously checked outside production: the reply reaches the chat as converted HTML with `parse_mode: HTML`; the chat's *final state* holds exactly one message with the complete reply (loss, duplication, and a dangling partial all fail — verified by mutation against the `Finish` suppression); and the turn persists to a real session file. The wiring itself moved into `buildGatewayDeps`, the single function both `runGateway` and the test call, so the test cannot drift from what production runs.
+
 ### Fixed
 
 - **A session-load failure now reports through `agent.ReplyPrefix`, so it reaches `agent -m` as exit 1 and the HTTP API as a 502 (audit find).** `Process` returned `"Error: Failed to load session: ..."` — a bespoke prefix `ReplyError` does not match — so a corrupt sessions directory produced a 200 whose answer was an error string, and a monitoring script wrapping `agent -m` reported green forever. This is the same class fixed for the session-lock path earlier; `TestProcessFailureRepliesCarryReplyPrefix` pins the contract behaviourally (a failed turn's reply must satisfy `ReplyError`) rather than pinning the string.

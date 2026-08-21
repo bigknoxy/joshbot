@@ -371,14 +371,16 @@ func TestTelegramChannel_SendStopsTyping(t *testing.T) {
 // message.
 func TestTelegramChannel_SendFallsBackToPlainTextOnParseEntityError(t *testing.T) {
 	srv := newFakeTelegramServer(t)
-	srv.rejectParseMode = "Markdown"
+	srv.rejectParseMode = "HTML"
 	tg := newTestTelegramChannel()
 	tg.mu.Lock()
 	tg.bot = srv.bot(t)
 	tg.notifier = &fakeNotifier{}
 	tg.mu.Unlock()
 
-	content := "unescaped _ entity"
+	// The content is chosen so conversion changes it: the plain-text retry
+	// must carry the source, not the HTML, or the reader sees "&amp;".
+	content := "unescaped _ entity & *emphasis*"
 	err := tg.Send(bus.OutboundMessage{
 		Channel:   "telegram",
 		ChannelID: "1",
@@ -449,7 +451,7 @@ func TestTelegramChannel_PlainTextSendSucceedsUntouched(t *testing.T) {
 // its own fallback, not just the first.
 func TestTelegramChannel_SendFallsBackOnEveryPartOfASplitMessage(t *testing.T) {
 	srv := newFakeTelegramServer(t)
-	srv.rejectParseMode = "Markdown"
+	srv.rejectParseMode = "HTML"
 	tg := newTestTelegramChannel()
 	tg.mu.Lock()
 	tg.bot = srv.bot(t)

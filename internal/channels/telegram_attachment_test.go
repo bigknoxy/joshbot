@@ -106,14 +106,15 @@ func TestSendAttachments_PhotoCarriesCaptionModeAndReplyAnchor(t *testing.T) {
 	if !ok {
 		t.Fatalf("payload is %T, want *telebot.Photo", sent[0])
 	}
-	if photo.Caption != "*here*" {
-		t.Errorf("caption = %q, want %q", photo.Caption, "*here*")
+	// A Markdown caption goes out as HTML, same as the text path.
+	if photo.Caption != "<i>here</i>" {
+		t.Errorf("caption = %q, want %q", photo.Caption, "<i>here</i>")
 	}
 	if photo.FileReader == nil {
 		t.Error("photo carries no reader; the inline bytes were dropped")
 	}
-	if ed.modes[0] != telebot.ModeMarkdown {
-		t.Errorf("parse mode = %q, want markdown", ed.modes[0])
+	if ed.modes[0] != telebot.ModeHTML {
+		t.Errorf("parse mode = %q, want HTML", ed.modes[0])
 	}
 	if ed.reply[0] != 42 {
 		t.Errorf("reply anchor = %d, want 42", ed.reply[0])
@@ -306,5 +307,48 @@ func TestDescribeUnsentAttachments(t *testing.T) {
 	}
 	if !strings.Contains(got, "chart is ready") {
 		t.Errorf("degraded text must keep the reply, got %q", got)
+	}
+}
+
+// A caption rejected for its formatting falls back to plain text, and the
+// plain text must be the pre-conversion Markdown source: sending the HTML
+// with no parse mode shows the reader "&amp;" and "<i>" literally.
+func TestSendAttachments_CaptionFallbackSendsThePreConversionSource(t *testing.T) {
+	tg, ed := attachmentTestChannel(t)
+	ed.errs = []error{errors.New("telegram: can't parse entities: unbalanced")}
+
+	err := tg.Send(bus.OutboundMessage{
+		Channel:     "telegram",
+		ChannelID:   "999",
+		Content:     "tom & *jerry*",
+		Attachments: []bus.Attachment{photoAttachment()},
+		Metadata:    map[string]any{"parse_mode": "markdown"},
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	sent := ed.snapshot()
+	if len(sent) != 2 {
+		t.Fatalf("sent %d payloads, want 2 (rejected HTML then plain retry)", len(sent))
+	}
+	first, ok := sent[0].(*telebot.Photo)
+	if !ok {
+		t.Fatalf("payload is %T, want *telebot.Photo", sent[0])
+	}
+	if first.Caption != "tom &amp; <i>jerry</i>" {
+		t.Errorf("first caption = %q, want the converted HTML", first.Caption)
+	}
+	retry, ok := sent[1].(*telebot.Photo)
+	if !ok {
+		t.Fatalf("retry payload is %T, want *telebot.Photo", sent[1])
+	}
+	// The retry carries the Markdown source, not the HTML: delivered with no
+	// parse mode, the HTML would show the reader a literal "&amp;".
+	if retry.Caption != "tom & *jerry*" {
+		t.Errorf("retry caption = %q, want the Markdown source", retry.Caption)
+	}
+	if ed.modes[1] != telebot.ModeDefault {
+		t.Errorf("retry parse mode = %q, want plain", ed.modes[1])
 	}
 }

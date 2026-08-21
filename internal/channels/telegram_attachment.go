@@ -121,6 +121,17 @@ func (t *TelegramChannel) sendOneAttachment(editor telegramEditor, recipient tel
 		return fmt.Errorf("attachment %s carries no bytes", att.Filename)
 	}
 
+	// Same rule as the text path: a caption asked for as Markdown goes out
+	// as HTML, because the legacy Markdown parser rejects ordinary prose and
+	// the retry below then drops the formatting entirely. The plain-text
+	// retry sends the pre-conversion source, so entity references never
+	// reach the reader literally.
+	plainCaption := caption
+	if opts.ParseMode == telebot.ModeMarkdown {
+		caption = MarkdownToHTML(caption)
+		opts.ParseMode = telebot.ModeHTML
+	}
+
 	var lastErr error
 	delay := t.retryDelay
 	for attempt := 0; attempt < t.maxRetries; attempt++ {
@@ -136,6 +147,7 @@ func (t *TelegramChannel) sendOneAttachment(editor telegramEditor, recipient tel
 			log.Warn("telegram rejected caption formatting, retrying attachment with a plain caption",
 				"file", att.Filename, "error", err)
 			opts.ParseMode = telebot.ModeDefault
+			caption = plainCaption
 			if _, fallbackErr := editor.Send(recipient, telegramMedia(att, caption), opts); fallbackErr == nil {
 				return nil
 			} else {

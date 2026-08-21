@@ -659,3 +659,43 @@ func accumulateArrivalOrder(chunks []StreamChunk) (*ChatResponse, error) {
 		Model: acc.model, Choices: choices, FinishReason: acc.reason,
 	}, nil
 }
+
+// The usage frame arrives after the finish-reason chunk with zero choices
+// (stream_options.include_usage). It must be captured despite the finished
+// short-circuit and surface on the Result (#301).
+func TestAccumulate_UsageFrameAfterFinish(t *testing.T) {
+	acc := NewChunkAccumulator()
+	chunks := []StreamChunk{
+		{ID: "1", Choices: []StreamChoice{{Index: 0, Delta: Message{Role: RoleAssistant, Content: "Hi"}, FinishReason: "stop"}}},
+		{ID: "1", Usage: &Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}},
+	}
+	for _, c := range chunks {
+		if err := acc.Accumulate(c); err != nil {
+			t.Fatalf("Accumulate: %v", err)
+		}
+	}
+	resp, err := acc.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	want := Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}
+	if resp.Usage != want {
+		t.Errorf("Usage = %+v, want %+v", resp.Usage, want)
+	}
+}
+
+// A stream with no usage frame keeps the zero Usage — the pre-#301 behaviour
+// for providers that never send one.
+func TestAccumulate_NoUsageFrameLeavesZeroUsage(t *testing.T) {
+	acc := NewChunkAccumulator()
+	if err := acc.Accumulate(StreamChunk{ID: "1", Choices: []StreamChoice{{Index: 0, Delta: Message{Role: RoleAssistant, Content: "Hi"}, FinishReason: "stop"}}}); err != nil {
+		t.Fatalf("Accumulate: %v", err)
+	}
+	resp, err := acc.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if resp.Usage != (Usage{}) {
+		t.Errorf("Usage = %+v, want zero", resp.Usage)
+	}
+}

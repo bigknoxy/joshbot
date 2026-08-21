@@ -583,6 +583,15 @@ The old format is still supported for backward compatibility:
 > for a cooldown window rather than re-dialled on every turn. When a fallback
 > answers, the reply opens with a one-line notice naming the failed provider and
 > who answered; `agents.defaults.quiet_fallback: true` suppresses it.
+
+> **Streaming token usage:** streaming requests send OpenAI's
+> `stream_options: {"include_usage": true}` so the final chunk carries real token
+> counts — without it every streaming turn reported `usage` as zeros to anything
+> billing or budgeting off the API. If an endpoint rejects the field, set
+> `providers.<name>.disable_stream_usage: true` (also available per model as
+> `disable_stream_usage` in the model-centric format) to omit it; usage then
+> reads zero for that provider's streaming turns, which is honest rather than
+> wrong.
 > Raise the agent timeout for a slow local
 > model. Anything under a second is rejected at load, naming the key. A value
 > written by an older joshbot is a raw nanosecond count (`900000000000`); it is

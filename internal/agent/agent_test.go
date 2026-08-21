@@ -88,6 +88,9 @@ func (m *mockToolExecutor) GetSchemas() []providers.Tool {
 // mockSessionManager is a mock session manager for testing.
 type mockSessionManager struct {
 	sessions map[string]*session.Session
+	// getErr, when set, makes every GetOrCreate fail — the corrupt-sessions-
+	// directory case, unreachable through the real manager in a test.
+	getErr error
 	// saveErr, when set, makes every Save fail. Persistence failure is not
 	// reachable through the real manager without breaking the filesystem, and
 	// the checkpoint path branches on it (#244).
@@ -110,6 +113,9 @@ func (m *mockSessionManager) GetOrCreate(ctx context.Context, key string) (*sess
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
 	if sess, ok := m.sessions[key]; ok {
 		return sess, nil
 	}
@@ -1311,5 +1317,25 @@ func TestProcessPutsTheTurnsChannelOnTheToolContext(t *testing.T) {
 	}
 	if seen != "telegram" {
 		t.Errorf("tool saw channel %q, want the turn's own channel", seen)
+	}
+}
+
+// Every failed turn must report through ReplyPrefix, so ReplyError translates
+// it back into a real error for `agent -m` (exit 1) and the HTTP API (502). A
+// bespoke prefix here is the shipped bug class: "Error: Failed to load
+// session" reached the API as a 200 and scripts as exit 0.
+func TestProcessFailureRepliesCarryReplyPrefix(t *testing.T) {
+	sessions := newMockSessionManager()
+	sessions.getErr = errors.New("sessions directory unreadable")
+	a := NewAgent(config.Defaults(), &mockProvider{}, &mockToolExecutor{}, sessions, newMockLogger())
+
+	reply, err := a.Process(context.Background(), bus.InboundMessage{
+		Channel: "cli", SenderID: "u1", Content: "hello",
+	})
+	if err != nil {
+		t.Fatalf("Process reports failures in band, got err = %v", err)
+	}
+	if ReplyError(reply) == nil {
+		t.Fatalf("a failed turn's reply must match ReplyError, got %q", reply)
 	}
 }

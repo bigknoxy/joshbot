@@ -207,4 +207,7 @@ Then, before tagging — no code change ships without this:
 ## PR & release
 
 See `.github/PR_RULES.md`. Branch from main (never commit directly), conventional commits,
-squash & merge. Releases: push to main → **wait for CI green** → then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+squash & merge. Releases: **cut the CHANGELOG section first** (move `[Unreleased]` entries under a
+`## [X.Y.Z]` heading and merge that to main) → wait for CI green → then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+The release workflow refuses a tag with no matching section (`cmd/relguard -require-section`, #293) — tagging
+first no longer ships and then breaks changelog-guard for every later PR.

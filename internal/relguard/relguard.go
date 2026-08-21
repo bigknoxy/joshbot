@@ -163,6 +163,33 @@ func CheckTopVersion(changelog, latestTag string) error {
 	return nil
 }
 
+// CheckTagHasSection fails when the changelog has no `## [<tag-without-v>]`
+// section for the tag being released.
+//
+// It is the tag-time half of the guard (#293): the PR-side checks compare a
+// branch against main, so a tag pushed while the entries still sat under
+// `[Unreleased]` produced no failure for the person who tagged — it failed
+// changelog-guard on every *subsequent* PR instead, with a message pointing at
+// the changelog rather than at the tag. Running this in the release workflow
+// stops the release itself, naming the real cause.
+func CheckTagHasSection(changelog, tag string) error {
+	ver := strings.TrimPrefix(strings.TrimSpace(tag), "v")
+	if ver == "" {
+		return fmt.Errorf("no tag was given to check the changelog against")
+	}
+	if _, err := parseSemver(ver); err != nil {
+		return fmt.Errorf("could not read the release tag %q: %w", tag, err)
+	}
+	for _, s := range parseSections(changelog) {
+		if s.name == ver {
+			return nil
+		}
+	}
+	return fmt.Errorf("CHANGELOG.md has no `## [%s]` section, but %s is being released — "+
+		"cut the [Unreleased] entries into a `## [%s]` section (and merge that to main) before tagging",
+		ver, tag, ver)
+}
+
 // topReleased returns the name of the first `## [x.y.z]` heading that is not
 // `[Unreleased]`.
 func topReleased(changelog string) (string, bool) {

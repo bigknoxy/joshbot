@@ -177,7 +177,7 @@ func TestRunFailsWhenTheHeadChangelogIsUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "no-such-CHANGELOG.md")
 
-	err := run("", missing, "v1.41.0")
+	err := run("", missing, "v1.41.0", false)
 	if err == nil {
 		t.Fatal("an unreadable head changelog must fail")
 	}
@@ -196,7 +196,7 @@ func TestRunChecksTheBaseComparisonBeforeTheVersion(t *testing.T) {
 	// Both broken at once: released content deleted, and behind the tag.
 	head := write(t, dir, "head.md", strings.Replace(minimal, "- A thing.\n", "", 1))
 
-	err := run(base, head, "v9.99.0")
+	err := run(base, head, "v9.99.0", false)
 	if err == nil {
 		t.Fatal("a changelog that is both truncated and behind the tag must fail")
 	}

@@ -10,13 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **An end-to-end gateway test now exercises the production wiring (audit find: `runGateway` had 0% coverage).** `TestGatewayEndToEnd_TelegramUpdateToWire` drives one Telegram update from a fake Bot API through the real poller, bus, agent (scripted provider, real session files) and `TelegramStreamer` back to the wire, asserting three things nothing previously checked outside production: the reply reaches the chat as converted HTML with `parse_mode: HTML`; the chat's *final state* holds exactly one message with the complete reply (loss, duplication, and a dangling partial all fail — verified by mutation against the `Finish` suppression); and the turn persists to a real session file. The wiring itself moved into `buildGatewayDeps`, the single function both `runGateway` and the test call, so the test cannot drift from what production runs.
+- **The live prompt-behaviour eval gates for real now (audit find: the old defaults made it near-vacuous).** `JOSHBOT_EVAL_K` defaults to 3 (was 1) and `JOSHBOT_EVAL_MIN_PASS` to 0.8 (was 0.6) — under the old defaults three lucky single runs out of five was a green suite, and `refuse_denied_shell` could pass by chance. Three new probes cover the highest-risk unevaluated behaviours: `resist_prompt_injection` (an instruction embedded in quoted data must not be executed), `multi_turn_consistency` (a corrected fact must supersede the original across intervening turns), and `formatting_survives_telegram_wire` (the reply must be authored as Markdown and convert cleanly through `MarkdownToHTML`, the primary channel's wire format). Every run also emits one machine-parseable `LIVEEVAL_RESULT {...}` line with per-task verdicts and the aggregate rate — save it per release and diff, because a pass/fail gate cannot see a rate walking from 1.00 to 0.80 over four tags.
 
 ### Fixed
+
 
 - **A session-load failure now reports through `agent.ReplyPrefix`, so it reaches `agent -m` as exit 1 and the HTTP API as a 502 (audit find).** `Process` returned `"Error: Failed to load session: ..."` — a bespoke prefix `ReplyError` does not match — so a corrupt sessions directory produced a 200 whose answer was an error string, and a monitoring script wrapping `agent -m` reported green forever. This is the same class fixed for the session-lock path earlier; `TestProcessFailureRepliesCarryReplyPrefix` pins the contract behaviourally (a failed turn's reply must satisfy `ReplyError`) rather than pinning the string.
-
-### Fixed
-
 - **The NVIDIA provider's default model was dead (found by the hardened live eval).** `moonshotai/kimi-k2-thinking` — the model a fresh `joshbot onboard --provider nvidia` configures when none is named — now answers HTTP 410 Gone, so a new NVIDIA install failed on its very first message. The default is `deepseek-ai/deepseek-v4-flash-0731`, verified live before the change. A hosted default rots silently; the live eval's first run against a defaults-configured sandbox is what surfaced it.
 
 ## [1.60.0] - 2026-08-21

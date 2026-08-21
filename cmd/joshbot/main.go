@@ -3293,53 +3293,11 @@ func runGateway(c *cli.Context) error {
 
 	// Subscribe agent to all channels. The handler itself is gatewayHandler,
 	// which is where every decision worth testing lives; runGateway only owns
-	// the network and process lifecycle around it.
-	msgBus.Subscribe("all", gatewayHandler(gatewayDeps{
-		publish: msgBus.Publish,
-		process: agentInstance.Process,
-		setChatID: func(channel, chatID string) {
-			if sender != nil {
-				sender.SetChatID(channel, chatID)
-			}
-		},
-		getChatID: func(channel string) (string, bool) {
-			if sender == nil {
-				return "", false
-			}
-			return sender.GetChatID(channel)
-		},
-		newStreamer: func(msg bus.InboundMessage) gatewayStreamer {
-			if !shouldStream(streaming, tgChannel != nil, msg) {
-				return nil
-			}
-			// A typed nil must not be returned as a non-nil interface: the
-			// handler tests the interface, not the pointer.
-			s := tgChannel.NewStreamer(getChannelID(msg))
-			if s == nil {
-				return nil
-			}
-			s.SetReplyTo(inboundMessageID(msg))
-			// An empty-text draft renders as Telegram's own "Thinking…"
-			// placeholder, so the phone shows the turn started before the
-			// first token exists. No-op unless drafts are on for this turn.
-			s.Thinking()
-			return s
-		},
-		approverFor: func(msg bus.InboundMessage) tools.Approver {
-			if shellApprovals == nil || tgChannel == nil || msg.Channel != tgChannel.Name() {
-				return nil
-			}
-			// Only the message's own chat id, never the stored fallback a
-			// proactive reply would use: a cron or heartbeat inbound carries
-			// none, and those turns must stay unattended-denied, not ask a
-			// chat nobody is necessarily watching.
-			id := getChannelID(msg)
-			if id == "" {
-				return nil
-			}
-			return shellApprovals.ApproverFor(id)
-		},
-	}))
+	// the network and process lifecycle around it. The deps wiring is built by
+	// buildGatewayDeps so the end-to-end gateway test exercises the exact
+	// production composition rather than a hand-copied stand-in.
+	msgBus.Subscribe("all", gatewayHandler(buildGatewayDeps(
+		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals)))
 
 	// Start Telegram channel if enabled
 	if tgChannel != nil {
@@ -3388,6 +3346,67 @@ func runGateway(c *cli.Context) error {
 
 	log.Info("Gateway stopped")
 	return nil
+}
+
+// buildGatewayDeps assembles the gateway handler's dependencies from the
+// running gateway's components. It is the single wiring point: runGateway
+// subscribes with it and the end-to-end gateway test drives it, so a wiring
+// bug (a sink on the wrong context, a shared streamer) fails a test instead
+// of only failing in production.
+func buildGatewayDeps(
+	msgBus *bus.MessageBus,
+	process func(context.Context, bus.InboundMessage) (string, error),
+	sender *tools.BusMessageSender,
+	tgChannel *channels.TelegramChannel,
+	streaming bool,
+	shellApprovals *channels.ShellApprovalCoordinator,
+) gatewayDeps {
+	return gatewayDeps{
+		publish: msgBus.Publish,
+		process: process,
+		setChatID: func(channel, chatID string) {
+			if sender != nil {
+				sender.SetChatID(channel, chatID)
+			}
+		},
+		getChatID: func(channel string) (string, bool) {
+			if sender == nil {
+				return "", false
+			}
+			return sender.GetChatID(channel)
+		},
+		newStreamer: func(msg bus.InboundMessage) gatewayStreamer {
+			if !shouldStream(streaming, tgChannel != nil, msg) {
+				return nil
+			}
+			// A typed nil must not be returned as a non-nil interface: the
+			// handler tests the interface, not the pointer.
+			s := tgChannel.NewStreamer(getChannelID(msg))
+			if s == nil {
+				return nil
+			}
+			s.SetReplyTo(inboundMessageID(msg))
+			// An empty-text draft renders as Telegram's own "Thinking…"
+			// placeholder, so the phone shows the turn started before the
+			// first token exists. No-op unless drafts are on for this turn.
+			s.Thinking()
+			return s
+		},
+		approverFor: func(msg bus.InboundMessage) tools.Approver {
+			if shellApprovals == nil || tgChannel == nil || msg.Channel != tgChannel.Name() {
+				return nil
+			}
+			// Only the message's own chat id, never the stored fallback a
+			// proactive reply would use: a cron or heartbeat inbound carries
+			// none, and those turns must stay unattended-denied, not ask a
+			// chat nobody is necessarily watching.
+			id := getChannelID(msg)
+			if id == "" {
+				return nil
+			}
+			return shellApprovals.ApproverFor(id)
+		},
+	}
 }
 
 // shouldStream decides whether a turn gets incremental Telegram edits. Every

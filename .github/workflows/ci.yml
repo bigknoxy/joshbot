@@ -7,6 +7,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Manual dispatch (gh workflow run ci.yml --ref <branch>): the escape hatch
+  # for the day GitHub's push/pull_request event delivery stalls — it did for
+  # over an hour on 2026-08-21 while dispatch kept working, leaving three
+  # reviewed PRs unmergeable under the green-CI rule with no way to run CI.
+  workflow_dispatch:
 
 permissions:
   contents: write

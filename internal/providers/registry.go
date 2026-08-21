@@ -245,9 +245,13 @@ func init() {
 			return NewLiteLLMProvider(cfg), nil
 		},
 		DefaultAPIBase: "https://integrate.api.nvidia.com/v1",
-		DefaultModel:   "moonshotai/kimi-k2-thinking",
-		DisplayName:    "NVIDIA NIM",
-		Description:    "Free tier available",
+		// A hosted default rots: the previous one (moonshotai/kimi-k2-thinking)
+		// started answering HTTP 410 Gone, so a fresh nvidia onboarding got a
+		// dead model out of the box — caught by the live eval, 2026-08.
+		// Verified live before changing; do the same when this one rots.
+		DefaultModel: "deepseek-ai/deepseek-v4-flash-0731",
+		DisplayName:  "NVIDIA NIM",
+		Description:  "Free tier available",
 	})
 
 	// Register Groq

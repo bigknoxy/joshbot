@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A session-load failure now reports through `agent.ReplyPrefix`, so it reaches `agent -m` as exit 1 and the HTTP API as a 502 (audit find).** `Process` returned `"Error: Failed to load session: ..."` — a bespoke prefix `ReplyError` does not match — so a corrupt sessions directory produced a 200 whose answer was an error string, and a monitoring script wrapping `agent -m` reported green forever. This is the same class fixed for the session-lock path earlier; `TestProcessFailureRepliesCarryReplyPrefix` pins the contract behaviourally (a failed turn's reply must satisfy `ReplyError`) rather than pinning the string.
 
+### Fixed
+
+- **The NVIDIA provider's default model was dead (found by the hardened live eval).** `moonshotai/kimi-k2-thinking` — the model a fresh `joshbot onboard --provider nvidia` configures when none is named — now answers HTTP 410 Gone, so a new NVIDIA install failed on its very first message. The default is `deepseek-ai/deepseek-v4-flash-0731`, verified live before the change. A hosted default rots silently; the live eval's first run against a defaults-configured sandbox is what surfaced it.
+
 ## [1.60.0] - 2026-08-21
 
 ### Added

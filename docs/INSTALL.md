@@ -184,7 +184,7 @@ The wizard will guide you through:
    ```
 
 3. **Model Selection**
-   - Default depends on the provider you configured — e.g. `moonshotai/kimi-k2-thinking` for NVIDIA NIM, `openrouter/free` for OpenRouter
+   - Default depends on the provider you configured — e.g. `deepseek-ai/deepseek-v4-flash-0731` for NVIDIA NIM, `openrouter/free` for OpenRouter
    - You can specify any model supported by your provider
 
 ### Onboarding Options

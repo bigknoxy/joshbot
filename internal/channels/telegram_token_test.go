@@ -216,3 +216,40 @@ func TestIsNetworkError_Classification(t *testing.T) {
 		}
 	}
 }
+
+// ValidateTokenAt must dial the given endpoint — a self-hosted Bot API server
+// (#321) — and fall back to the public endpoint only when apiURL is empty.
+func TestValidateTokenAt(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true,"result":{"id":1234567890,"is_bot":true,"username":"joshbot7_bot"}}`)
+	}))
+	defer srv.Close()
+
+	if err := ValidateTokenAt(validTestToken, srv.URL); err != nil {
+		t.Errorf("ValidateTokenAt(configured URL) = %v, want nil", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("configured endpoint got %d requests, want 1", hits.Load())
+	}
+
+	// Empty apiURL means the public endpoint (telegramAPIBaseURL, substituted
+	// here). The configured server must not be dialled again.
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true,"result":{"id":1234567890,"is_bot":true,"username":"joshbot7_bot"}}`)
+	}))
+	defer fallback.Close()
+	prev := telegramAPIBaseURL
+	telegramAPIBaseURL = fallback.URL
+	defer func() { telegramAPIBaseURL = prev }()
+
+	if err := ValidateTokenAt(validTestToken, ""); err != nil {
+		t.Errorf("ValidateTokenAt(empty URL) = %v, want nil", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("configured endpoint dialled on empty apiURL (%d hits)", hits.Load())
+	}
+}

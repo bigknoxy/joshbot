@@ -1954,7 +1954,21 @@ var telegramTokenFormat = regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]{30,}$`)
 // Transient connectivity failures are retried up to telegramTokenAttempts
 // times; a definite API rejection (400/401/404) is never retried.
 func ValidateToken(token string) error {
-	return validateTokenWith(token, telegramAPIBaseURL, &http.Client{Timeout: telegramTokenTimeout})
+	return ValidateTokenAt(token, "")
+}
+
+// ValidateTokenAt validates a token against a specific Bot API endpoint —
+// the value of channels.telegram.api_url. An empty apiURL means the public
+// api.telegram.org, mirroring how the message path treats the key. Validation
+// must dial the same endpoint the runtime will (#321): a LAN-only self-hosted
+// telegram-bot-api server cannot be reached via the public API, so validating
+// there reported a perfectly working token as invalid.
+func ValidateTokenAt(token, apiURL string) error {
+	base := telegramAPIBaseURL
+	if apiURL != "" {
+		base = apiURL
+	}
+	return validateTokenWith(token, base, &http.Client{Timeout: telegramTokenTimeout})
 }
 
 func validateTokenWith(token, baseURL string, client *http.Client) error {

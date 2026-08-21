@@ -808,6 +808,10 @@ Separately, spawned shell commands no longer inherit joshbot's own environment �
 server](https://github.com/tdlib/telegram-bot-api) instead of `api.telegram.org`.
 Leave it unset for the public Bot API. Only `http` and `https` URLs are accepted,
 and a malformed value is a **fatal** config error rather than a silent fallback.
+The onboard/configure wizard validates the bot token against this endpoint when
+it is set — a LAN-only server cannot be reached via the public API — and a
+re-run of the wizard preserves this key (along with `reactions` and
+`stream_drafts`) even though it does not prompt for it.
 
 ```json
 {

@@ -4065,15 +4065,18 @@ func selectModel(existingCfg *config.Config, provider string, modelFlag string) 
 func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 	fmt.Println("\n[Step 5] Telegram Setup")
 
-	// Check if Telegram is already configured
-	existingToken := ""
-	existingEnabled := false
-	existingAllowFrom := []string{}
+	// Check if Telegram is already configured. base carries the whole existing
+	// struct: every return derives from it so keys the wizard does not collect
+	// (api_url, reactions, stream_drafts, ...) survive a re-run — runOnboard
+	// assigns the returned struct wholesale, so a field dropped here is a field
+	// erased from the operator's config (#321).
+	var base config.TelegramConfig
 	if existingCfg != nil {
-		existingEnabled = existingCfg.Channels.Telegram.Enabled
-		existingToken = existingCfg.Channels.Telegram.Token
-		existingAllowFrom = existingCfg.Channels.Telegram.AllowFrom
+		base = existingCfg.Channels.Telegram
 	}
+	existingEnabled := base.Enabled
+	existingToken := base.Token
+	existingAllowFrom := base.AllowFrom
 
 	if existingEnabled && existingToken != "" {
 		// Already configured - ask if they want to keep or change
@@ -4103,11 +4106,7 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 		if choice == "1" || choice == "" {
 			// Keep existing token
 			fmt.Println("Keeping current Telegram configuration.")
-			return &config.TelegramConfig{
-				Enabled:   true,
-				Token:     existingToken,
-				AllowFrom: existingAllowFrom,
-			}
+			return telegramConfigFrom(base, true, existingToken, existingAllowFrom)
 		}
 		// choice == "2" - proceed to get new token
 	} else {
@@ -4163,11 +4162,7 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 				// returning nil here would make runOnboard save the config with
 				// Telegram disabled.
 				fmt.Println("\nTelegram setup cancelled. Keeping the existing Telegram configuration.")
-				return &config.TelegramConfig{
-					Enabled:   true,
-					Token:     existingToken,
-					AllowFrom: existingAllowFrom,
-				}
+				return telegramConfigFrom(base, true, existingToken, existingAllowFrom)
 			}
 			fmt.Println("\nTelegram setup cancelled.")
 			return nil
@@ -4177,7 +4172,7 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 		token = strings.TrimSpace(sanitizeToken(token))
 
 		fmt.Println("\nValidating token...")
-		if err := validateTelegramToken(token); err != nil {
+		if err := validateTelegramToken(token, base.APIURL); err != nil {
 			fmt.Printf("Token validation failed: %v\n", err)
 			if channels.IsNetworkError(err) {
 				fmt.Println("This looks like a network problem — joshbot could not reach the Telegram API.")
@@ -4187,7 +4182,7 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 				fmt.Println("Double-check it was copied in full.")
 			}
 			if prompt == 2 {
-				return telegramValidationFailed(existingEnabled, existingToken, existingAllowFrom)
+				return telegramValidationFailed(base)
 			}
 			fmt.Println("Please check your token and try again.")
 			fmt.Println()
@@ -4224,19 +4219,18 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 
 		fmt.Println("\nTelegram configured!")
 
-		return &config.TelegramConfig{
-			Enabled:   true,
-			Token:     token,
-			AllowFrom: allowFrom,
-		}
+		return telegramConfigFrom(base, true, token, allowFrom)
 	}
-	return telegramValidationFailed(existingEnabled, existingToken, existingAllowFrom)
+	return telegramValidationFailed(base)
 }
 
 // validateTelegramToken is the network boundary for setupTelegram's token
 // validation. It is a package var so tests can stub it and exercise the wizard
-// flow without touching the real Telegram API.
-var validateTelegramToken = channels.ValidateToken
+// flow without touching the real Telegram API. It takes the configured
+// channels.telegram.api_url (empty = public api.telegram.org) because
+// validation must dial the endpoint the runtime will — a LAN-only self-hosted
+// Bot API server is unreachable via the public one (#321).
+var validateTelegramToken = channels.ValidateTokenAt
 
 // readLine reads a single line from stdin, spaces included. fmt.Scanln stops at
 // the first space, which truncates a comma-separated username list typed as
@@ -4264,21 +4258,24 @@ func readLine() string {
 // bot, which is what happened when the old code returned nil and the config
 // was saved with Telegram disabled. On a fresh install Telegram is left
 // disabled with a clear message instead.
-func telegramValidationFailed(existingEnabled bool, existingToken string, existingAllowFrom []string) *config.TelegramConfig {
-	if existingEnabled && existingToken != "" {
+func telegramValidationFailed(base config.TelegramConfig) *config.TelegramConfig {
+	if base.Enabled && base.Token != "" {
 		fmt.Println("\nKeeping the existing Telegram configuration: the new token could not be validated.")
-		return &config.TelegramConfig{
-			Enabled:   true,
-			Token:     existingToken,
-			AllowFrom: existingAllowFrom,
-		}
+		return telegramConfigFrom(base, true, base.Token, base.AllowFrom)
 	}
 	fmt.Println("\nTelegram setup skipped: no token could be validated.")
-	return &config.TelegramConfig{
-		Enabled:   false,
-		Token:     "",
-		AllowFrom: []string{},
-	}
+	return telegramConfigFrom(base, false, "", []string{})
+}
+
+// telegramConfigFrom derives the wizard's result from the existing config,
+// changing only the fields the wizard actually collects, so keys it does not
+// ask about (api_url, reactions, stream_drafts, ...) survive a re-run. base is
+// a value, so mutating it here never touches the caller's copy.
+func telegramConfigFrom(base config.TelegramConfig, enabled bool, token string, allowFrom []string) *config.TelegramConfig {
+	base.Enabled = enabled
+	base.Token = token
+	base.AllowFrom = allowFrom
+	return &base
 }
 
 func promptServiceInstall() bool {

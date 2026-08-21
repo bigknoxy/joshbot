@@ -48,7 +48,7 @@ func stubTokenValidator(t *testing.T, fn func(token string) error) *int {
 
 	prev := validateTelegramToken
 	var calls int
-	validateTelegramToken = func(token string) error {
+	validateTelegramToken = func(token, apiURL string) error {
 		calls++
 		return fn(token)
 	}
@@ -299,12 +299,12 @@ func TestSetupTelegram_Existing_ChangeCancelled_KeepsExisting(t *testing.T) {
 }
 
 func TestTelegramValidationFailed(t *testing.T) {
-	keep := telegramValidationFailed(true, "keep-token", []string{"@x"})
+	keep := telegramValidationFailed(config.TelegramConfig{Enabled: true, Token: "keep-token", AllowFrom: []string{"@x"}})
 	if !keep.Enabled || keep.Token != "keep-token" || len(keep.AllowFrom) != 1 || keep.AllowFrom[0] != "@x" {
 		t.Errorf("existing-token fallback = %+v", keep)
 	}
 
-	disable := telegramValidationFailed(false, "", nil)
+	disable := telegramValidationFailed(config.TelegramConfig{})
 	if disable.Enabled || disable.Token != "" || len(disable.AllowFrom) != 0 {
 		t.Errorf("fresh fallback = %+v", disable)
 	}
@@ -684,4 +684,84 @@ func TestOfferEnvFallbacksInteractiveDefaultYes(t *testing.T) {
 	if _, ok := cfg.Providers["groq"]; !ok {
 		t.Error("bare Enter should accept the fallback")
 	}
+}
+
+// The wizard must validate the token against the configured api_url (#321): a
+// LAN-only self-hosted Bot API server is unreachable via api.telegram.org, so
+// validating there reports a working token as invalid. Mutation: drop the
+// plumbing in setupTelegram and this goes red.
+func TestSetupTelegram_ValidatesAgainstConfiguredAPIURL(t *testing.T) {
+	withStdinInput(t, "2\n"+validOnboardToken+"\n\n")
+
+	prev := validateTelegramToken
+	var gotAPIURL string
+	validateTelegramToken = func(token, apiURL string) error {
+		gotAPIURL = apiURL
+		return nil
+	}
+	t.Cleanup(func() { validateTelegramToken = prev })
+
+	existing := &config.Config{}
+	existing.Channels.Telegram = config.TelegramConfig{
+		Enabled: true,
+		Token:   "1111111111:OLDOLDOLDOLDOLDOLDOLDOLDOLDOLDx",
+		APIURL:  "http://127.0.0.1:8081",
+	}
+
+	captureStdout(t, func() {
+		if cfg := setupTelegram(existing); cfg == nil {
+			t.Fatal("expected a Telegram config")
+		}
+	})
+
+	if gotAPIURL != "http://127.0.0.1:8081" {
+		t.Errorf("validator got apiURL %q, want the configured api_url", gotAPIURL)
+	}
+}
+
+// Every setupTelegram return derives from the existing config: runOnboard
+// assigns the result wholesale, so a field the wizard does not collect
+// (api_url, reactions, stream_drafts) must ride through or a re-run erases it.
+func TestSetupTelegram_PreservesFieldsTheWizardDoesNotCollect(t *testing.T) {
+	existing := &config.Config{}
+	existing.Channels.Telegram = config.TelegramConfig{
+		Enabled:      true,
+		Token:        "1111111111:OLDOLDOLDOLDOLDOLDOLDOLDOLDOLDx",
+		AllowFrom:    []string{"@x"},
+		APIURL:       "http://127.0.0.1:8081",
+		Reactions:    true,
+		StreamDrafts: true,
+	}
+
+	check := func(t *testing.T, cfg *config.TelegramConfig) {
+		t.Helper()
+		if cfg == nil {
+			t.Fatal("expected a Telegram config")
+		}
+		if cfg.APIURL != "http://127.0.0.1:8081" || !cfg.Reactions || !cfg.StreamDrafts {
+			t.Errorf("uncollected fields dropped: %+v", cfg)
+		}
+	}
+
+	t.Run("keep current token", func(t *testing.T) {
+		withStdinInput(t, "1\n")
+		captureStdout(t, func() { check(t, setupTelegram(existing)) })
+	})
+
+	t.Run("new token accepted", func(t *testing.T) {
+		withStdinInput(t, "2\n"+validOnboardToken+"\n\n")
+		stubTokenValidator(t, func(string) error { return nil })
+		captureStdout(t, func() { check(t, setupTelegram(existing)) })
+	})
+
+	t.Run("validation failed, existing kept", func(t *testing.T) {
+		withStdinInput(t, "2\n"+validOnboardToken+"\n"+validOnboardToken+"\n")
+		stubTokenValidator(t, func(string) error { return fmt.Errorf("rejected") })
+		captureStdout(t, func() { check(t, setupTelegram(existing)) })
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		withStdinInput(t, "2\ncancel\n")
+		captureStdout(t, func() { check(t, setupTelegram(existing)) })
+	})
 }

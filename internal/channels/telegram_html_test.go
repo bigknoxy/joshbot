@@ -170,3 +170,19 @@ func TestIsNotModifiedErrorCoversBothTelebotSymbols(t *testing.T) {
 		t.Fatal("unrelated 400 matched")
 	}
 }
+
+// A `"` is legal in a URL and possible in a fence language tag, and both are
+// interpolated into double-quoted attributes; unescaped it closes the
+// attribute early and the whole message fails entity parsing.
+func TestMarkdownToHTMLEscapesQuotesInAttributes(t *testing.T) {
+	got := MarkdownToHTML(`[x](http://e.com/a"b)`)
+	want := `<a href="http://e.com/a&quot;b">x</a>`
+	if got != want {
+		t.Fatalf("link: got %q, want %q", got, want)
+	}
+	got = MarkdownToHTML("```go\"x\nbody\n```")
+	want = `<pre><code class="language-go&quot;x">body</code></pre>`
+	if got != want {
+		t.Fatalf("fence: got %q, want %q", got, want)
+	}
+}

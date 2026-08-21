@@ -16,6 +16,13 @@ var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 // wider escape would publish visible entity references in ordinary prose.
 func EscapeHTML(s string) string { return htmlEscaper.Replace(s) }
 
+// Attribute values are interpolated between double quotes, so a `"` in a
+// fence language tag or an href — legal in a URL — would otherwise close the
+// attribute early and fail the whole message on entity parsing.
+var htmlAttrEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
+
+func escapeHTMLAttr(s string) string { return htmlAttrEscaper.Replace(s) }
+
 // MarkdownToHTML renders the Markdown subset an LLM actually emits into the
 // tag subset Telegram accepts, escaping every literal run on the way through.
 //
@@ -40,7 +47,7 @@ func MarkdownToHTML(md string) string {
 			if body, lang, next, ok := scanFence(md, i); ok {
 				out.WriteString("<pre>")
 				if lang != "" {
-					out.WriteString(`<code class="language-` + EscapeHTML(lang) + `">`)
+					out.WriteString(`<code class="language-` + escapeHTMLAttr(lang) + `">`)
 				}
 				out.WriteString(EscapeHTML(body))
 				if lang != "" {
@@ -68,7 +75,7 @@ func MarkdownToHTML(md string) string {
 
 		if md[i] == '[' {
 			if text, href, next, ok := scanLink(md, i); ok {
-				out.WriteString(`<a href="` + EscapeHTML(href) + `">` + MarkdownToHTML(text) + "</a>")
+				out.WriteString(`<a href="` + escapeHTMLAttr(href) + `">` + MarkdownToHTML(text) + "</a>")
 				i = next
 				continue
 			}

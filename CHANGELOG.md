@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.60.0] - 2026-08-21
+
 ### Added
 
 - **Shell approval works from Telegram: the gate asks in the chat with an inline keyboard (#311).** `tools.shell_approval` was impossible to satisfy from Telegram — only the interactive TUI installed an approver, so every gated command on a gateway turn was denied outright by `DenyAll`. A gated command is now posted in the chat, whole and unabridged as plain text (the arguments are the dangerous part, and a parse mode could reflow an arbitrary command string), with `[✅ Allow] [❌ Deny]` beneath it and `[🔓 Allow all (this session)]` under `"interactive"` — the TUI's `[a]ll` answer, mirrored. The turn blocks on the press, bounded by its own timeout, and the prompt is edited to show the outcome so a settled keyboard never looks live. The fail-closed structure is intact: the approver is installed per turn (`gatewayDeps.approverFor` → `channels.ShellApprovalCoordinator`, riding the request context like the sink), and only for Telegram turns whose inbound message carries its *own* chat id — never the stored proactive-recall fallback — so cron, heartbeat, Discord and piped `agent -m` turns keep `DenyAll`. A press reaches the handler only from an allowlisted sender (enforced in `handleCallback` before dispatch), is matched to its pending request by id *and* chat under a first-press-wins claim, and anything that is not an explicit Allow — a timeout, a send failure, an unknown action, a press from another chat, a stale replay — is a denial. Built on the structured callback routing from #312; the `approve` namespace is claimed once at wiring time.

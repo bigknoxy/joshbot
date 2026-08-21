@@ -62,3 +62,4 @@ htmlcov/
 .opencode/package-lock.json
 .opencode/node_modules/
 relguard
+.verify-workspace/

@@ -765,3 +765,36 @@ func TestSetupTelegram_PreservesFieldsTheWizardDoesNotCollect(t *testing.T) {
 		captureStdout(t, func() { check(t, setupTelegram(existing)) })
 	})
 }
+
+// onboard --force with a provider key in the environment must configure that
+// provider: JOSHBOT_PROVIDERS__NVIDIA__API_KEY names nvidia explicitly, and
+// the old openrouter default ignored it and then failed telling the operator
+// to set exactly the variable they had set.
+func TestRunOnboard_Force_PicksProviderFromEnvKey(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".joshbot")
+	setHome(t, home)
+	t.Setenv("JOSHBOT_PROVIDERS__NVIDIA__API_KEY", "nvapi-from-env")
+
+	runOnboardCmd(t, "--force")
+
+	cfg, err := config.LoadFrom(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	p, ok := cfg.Providers["nvidia"]
+	if !ok || !p.Enabled || p.APIKey != "nvapi-from-env" {
+		t.Errorf("nvidia not configured from env: %+v", cfg.Providers)
+	}
+}
+
+// An explicit --provider flag still beats the environment scan.
+func TestRunOnboard_Force_ProviderFlagBeatsEnvKey(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".joshbot")
+	setHome(t, home)
+	t.Setenv("JOSHBOT_PROVIDERS__NVIDIA__API_KEY", "nvapi-from-env")
+
+	err := runOnboardCmdExpectingError(t, "--force", "--provider", "groq")
+	if err == nil || !strings.Contains(err.Error(), "GROQ") {
+		t.Fatalf("--provider groq with only an nvidia env key must fail naming GROQ, got: %v", err)
+	}
+}

@@ -172,3 +172,34 @@ func TestVersionHeadingIgnoresTheDate(t *testing.T) {
 		t.Fatal("only a line that starts with the heading counts")
 	}
 }
+
+// CheckTagHasSection is the tag-time gate (#293): a tag pushed while the
+// entries still sit under [Unreleased] must fail the release, naming the tag
+// and the missing heading, instead of failing every subsequent PR.
+func TestCheckTagHasSection(t *testing.T) {
+	changelog := "# Changelog\n\n## [Unreleased]\n\n## [1.57.0] - 2026-08-18\n\n### Fixed\n- A thing.\n"
+
+	if err := CheckTagHasSection(changelog, "v1.57.0"); err != nil {
+		t.Errorf("a tag with a matching section must pass: %v", err)
+	}
+	if err := CheckTagHasSection(changelog, "1.57.0"); err != nil {
+		t.Errorf("the v prefix must be optional: %v", err)
+	}
+
+	err := CheckTagHasSection(changelog, "v1.58.0")
+	if err == nil {
+		t.Fatal("a tag with no matching section must fail")
+	}
+	for _, want := range []string{"## [1.58.0]", "v1.58.0", "[Unreleased]"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must mention %q, got: %v", want, err)
+		}
+	}
+
+	if err := CheckTagHasSection(changelog, ""); err == nil {
+		t.Error("an empty tag must fail — the gate would otherwise pass having checked nothing")
+	}
+	if err := CheckTagHasSection(changelog, "not-a-version"); err == nil {
+		t.Error("an unparseable tag must fail")
+	}
+}

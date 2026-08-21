@@ -19,9 +19,39 @@ permissions:
   id-token: write
 
 jobs:
+  # A tag pushed without a matching `## [x.y.z]` CHANGELOG section used to ship
+  # anyway and then fail changelog-guard on every subsequent PR, blaming a
+  # contributor who did nothing wrong (#293). Gate the release on it instead:
+  # the failure lands here, at tag time, naming the tag and the missing heading.
+  changelog:
+    name: Changelog section exists
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Require a CHANGELOG section for the tag
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${DISPATCH_TAG}"
+          fi
+          echo "Checking CHANGELOG.md for a section matching ${TAG:-<none>}"
+          go run ./cmd/relguard -head CHANGELOG.md -tag "${TAG}" -require-section
+
   # Run tests and build before release
   test:
     name: Test
+    needs: changelog
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

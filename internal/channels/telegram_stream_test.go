@@ -46,7 +46,7 @@ func (f *fakeEditor) pop(errs *[]error) error {
 func (f *fakeEditor) Send(to telebot.Recipient, what interface{}, opts ...interface{}) (*telebot.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, editorCall{chat: to.Recipient(), text: fmt.Sprint(what), mode: modeOf(opts), replyTo: replyToOf(opts)})
+	f.calls = append(f.calls, editorCall{chat: to.Recipient(), text: fmt.Sprint(what), mode: modeOf(opts), replyTo: replyToOf(opts), markup: markupOf(opts)})
 	if err := f.pop(&f.sendErrs); err != nil {
 		return nil, err
 	}

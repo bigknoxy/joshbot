@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A `[⏹ Stop]` button on the streaming Telegram reply cancels the running turn (#310).** The press reaches the turn's cancel func directly from the Telegram poller goroutine — it never enters the bus or waits on the per-session lock the turn holds, which is what makes it work while the turn it cancels is still running. The streamed partial stays in the chat and ends with "stopped by you"; a turn that had streamed nothing answers "⏹ Stopped."; a mid-stream cancellation no longer also appends `[stream error: context canceled]`. Tokens are per turn, honoured only from the chat they were issued in, and released when the turn settles. The button rides every interim edit and is dropped by the final one.
+
 - **`/model` and `/personality` are inline pickers on Telegram (#313).** A bare `/model` or `/personality` now carries its list as buttons, two per row with a ✅ on the current entry; a tap switches and the picker message is edited in place so the marker moves. The button runs the very same command turn a typed `/model <spec>` runs, for the presser's own session — it cannot select anything the typed command would refuse, and in a group each member switches their own session. A switch deliberately keeps the conversation (a one-tap button must not wipe a transcript), and the reply now says so and points at `/new`. Typed commands, the CLI and Discord are unchanged.
 
 ### Fixed

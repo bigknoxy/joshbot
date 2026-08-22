@@ -1125,10 +1125,15 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 		}
 
 		// Stream ended with a truncation error mid-text — append a visible
-		// marker to what was already shown.
-		marker := streamErrorMarker(err, accumulatedContent != "")
-		sink(StreamEvent{Delta: marker, Done: true})
-		accumulatedContent += marker
+		// marker to what was already shown. Not for a cancellation the user
+		// asked for (the Stop button, a dropped client): the caller marks a
+		// stopped turn itself, and "[stream error: context canceled]" above
+		// "stopped by you" reads as two failures.
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			marker := streamErrorMarker(err, accumulatedContent != "")
+			sink(StreamEvent{Delta: marker, Done: true})
+			accumulatedContent += marker
+		}
 		return &providers.ChatResponse{
 			ID:    "stream-error",
 			Model: req.Model,

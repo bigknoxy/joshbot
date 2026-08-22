@@ -87,6 +87,23 @@ type TelegramStreamer struct {
 	draftID     int64
 	draftChatID int64
 	draftShown  string
+
+	// interimMarkup is attached to every interim send and edit (the status
+	// line and each streamed partial) and omitted from the final edit, which
+	// is what removes it: the [⏹ Stop] button lives on the message only
+	// while the turn it cancels is running. Drafts cannot carry it.
+	interimMarkup *telebot.ReplyMarkup
+}
+
+// SetInterimMarkup attaches an inline keyboard to the in-progress message.
+// Must be called before the first delta.
+func (s *TelegramStreamer) SetInterimMarkup(rm *telebot.ReplyMarkup) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.interimMarkup = rm
+	s.mu.Unlock()
 }
 
 // NewStreamer returns a streamer for one turn in the chat identified by
@@ -232,7 +249,7 @@ func (s *TelegramStreamer) Status(text string) {
 	}
 
 	if s.msg == nil {
-		opts := &telebot.SendOptions{}
+		opts := &telebot.SendOptions{ReplyMarkup: s.interimMarkup}
 		if s.replyTo != nil {
 			opts.ReplyTo = s.replyTo
 		}
@@ -250,7 +267,7 @@ func (s *TelegramStreamer) Status(text string) {
 		// Finish's suppression contract depends on that.
 		s.msg = sent
 		s.replyTo = nil
-	} else if _, err := editor.Edit(s.msg, text); err != nil {
+	} else if _, err := editor.Edit(s.msg, text, &telebot.SendOptions{ReplyMarkup: s.interimMarkup}); err != nil {
 		if isFloodError(err) {
 			s.nextEdit = s.now().Add(floodRetryAfter(err))
 		}
@@ -410,6 +427,9 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 	opts := &telebot.SendOptions{ParseMode: mode}
 	if s.msg == nil && s.replyTo != nil {
 		opts.ReplyTo = s.replyTo
+	}
+	if !final {
+		opts.ReplyMarkup = s.interimMarkup
 	}
 
 	var err error

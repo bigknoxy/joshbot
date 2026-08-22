@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -439,4 +440,57 @@ func TestGatewayHandlerAttachesThePickerToCommandReplies(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The Stop button (#310): the handler wraps the turn in a cancellable
+// context the button reaches directly. A pressed turn is finished with the
+// "stopped by you" marker when text had streamed, or answered with a short
+// "Stopped." when nothing had — never with the raw context error, and never
+// with the reply published a second time. The arm is released when the turn
+// settles.
+func TestGatewayHandlerStopButton(t *testing.T) {
+	run := func(t *testing.T, delivered bool) (*recordingDeps, *fakeStreamer, bool) {
+		rec := &recordingDeps{}
+		fs := &fakeStreamer{delivered: delivered}
+		released := false
+		d := baseDeps(rec, "", nil)
+		d.newStreamer = func(bus.InboundMessage) gatewayStreamer { return fs }
+		d.process = func(ctx context.Context, _ bus.InboundMessage) (string, error) {
+			<-ctx.Done() // the press cancels us
+			return agent.ReplyPrefix + "LLM call failed: " + ctx.Err().Error(), nil
+		}
+		d.armStop = func(_ bus.InboundMessage, s gatewayStreamer, cancel context.CancelFunc) (func() bool, func()) {
+			if s != fs {
+				t.Fatal("armStop should receive this turn's streamer")
+			}
+			var pressed atomic.Bool
+			go func() { pressed.Store(true); cancel() }()
+			return pressed.Load, func() { released = true }
+		}
+		gatewayHandler(d)(context.Background(), telegramMsg("user1", "hi"))
+		return rec, fs, released
+	}
+
+	t.Run("text had streamed", func(t *testing.T) {
+		rec, fs, released := run(t, true)
+		if !fs.finished || !errors.Is(fs.finishErr, errTurnStopped) {
+			t.Errorf("Finish err = %v, want errTurnStopped", fs.finishErr)
+		}
+		if n := len(rec.out()); n != 0 {
+			t.Errorf("published %d message(s) for a stopped, streamed turn", n)
+		}
+		if !released {
+			t.Error("the stop arm was not released")
+		}
+	})
+	t.Run("nothing streamed", func(t *testing.T) {
+		rec, _, _ := run(t, false)
+		out := rec.out()
+		if len(out) != 1 || out[0].Content != stoppedReply {
+			t.Fatalf("want one %q reply, got %+v", stoppedReply, out)
+		}
+		if strings.Contains(out[0].Content, "canceled") {
+			t.Error("raw context error reached the chat")
+		}
+	})
 }

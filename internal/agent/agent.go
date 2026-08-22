@@ -676,6 +676,20 @@ func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.
 func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string, st *compactionState) (string, error) {
 	var toolRecords []skills.ToolCallRecord
+
+	// Turn-scoped stream state. The fallback notice is captured once for the
+	// whole turn, not once per LLM call: a turn that calls a tool makes two
+	// or more LLM calls, and a per-call notice reached the chat once per
+	// call — twice at the top of a reply, and glued mid-sentence onto the
+	// narration of the iteration before (#339).
+	ts := &turnStream{}
+	if !a.cfg.Agents.Defaults.QuietFallback {
+		ctx = providers.WithFallbackNotice(ctx, func(n providers.FallbackNotice) {
+			if ts.notice == "" {
+				ts.notice = formatFallbackNotice(n)
+			}
+		})
+	}
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
 
@@ -700,31 +714,17 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		sink := streamSinkFromContext(ctx)
 		streaming := a.cfg.Agents.Defaults.Streaming && sink != nil
 
-		// Capture a fallback notice for this LLM call so the user learns
-		// their answer came from a different provider than configured. The
-		// streaming path installs its own callback inside streamChat (the
-		// notice has to enter the delta stream before any content, so the
-		// buffer and the reply text stay identical); this one covers the
-		// non-streaming calls only.
-		var fallbackNotice string
-		callCtx := ctx
-		if !a.cfg.Agents.Defaults.QuietFallback {
-			callCtx = providers.WithFallbackNotice(ctx, func(n providers.FallbackNotice) {
-				fallbackNotice = formatFallbackNotice(n)
-			})
-		}
-
 		var resp *providers.ChatResponse
 		var err error
 		if streaming {
-			resp, err = a.streamChat(ctx, req, sink)
+			resp, err = a.streamChat(ctx, req, sink, ts)
 			// A provider with no streaming endpoint (github-copilot today)
 			// must not fail the turn: streaming is on by default, so erroring
 			// here would break every interactive message on that provider.
 			// The fallback is safe because the stream never opened, so nothing
 			// has been delivered to the sink yet.
 			if errors.Is(err, providers.ErrStreamingUnsupported) {
-				resp, err = a.provider.Chat(callCtx, req)
+				resp, err = a.provider.Chat(ctx, req)
 			}
 			// A stream that died before delivering anything is retried once
 			// through the non-streaming path — safe for the same reason as
@@ -735,10 +735,10 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			// handles that (it is the ErrStreamingUnsupported path).
 			if errors.Is(err, errStreamDiedEmpty) {
 				a.logger.Warn("Stream died before any content, retrying via Chat", "error", err)
-				resp, err = a.provider.Chat(callCtx, req)
+				resp, err = a.provider.Chat(ctx, req)
 			}
 		} else {
-			resp, err = a.provider.Chat(callCtx, req)
+			resp, err = a.provider.Chat(ctx, req)
 		}
 		if err != nil {
 			return "", fmt.Errorf("LLM call failed: %w", err)
@@ -791,11 +791,16 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			// Sanitize: strip internal context tags from response
 			content = sanitizeResponse(content)
 
-			// A non-streaming reply answered by a fallback carries the
-			// notice as a visible first line. (Streamed replies had it
-			// woven in by streamChat already.)
-			if fallbackNotice != "" {
-				content = fallbackNotice + content
+			// The fallback notice opens the reply exactly once per turn. A
+			// streamed turn already showed it through the sink (before the
+			// first delta, whichever iteration produced it); prepending it
+			// here keeps the session, the history and every non-streaming
+			// consumer on the same text the user saw. It is never stored on
+			// a tool-call iteration's message (see below), so the model does
+			// not read its own earlier reply as starting with a warning and
+			// echo it.
+			if ts.notice != "" {
+				content = ts.notice + content
 			}
 
 			// Add assistant message to session
@@ -1015,28 +1020,31 @@ func drainStream(stream <-chan providers.StreamChunk) {
 //
 // The returned *ChatResponse has the same shape as the non-streaming Chat
 // path, so everything downstream of the call site is unchanged.
-func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink StreamSink) (*providers.ChatResponse, error) {
-	// Fallback notice for streamed replies. It fires while the stream is
-	// being opened, but it is emitted lazily, right before the first content
-	// delta: emitted eagerly it would surface for a tool-call-only response
-	// that shows no text, and the notice must enter both the sink and the
-	// accumulated content so the streamed buffer and the reply text stay
-	// identical — a divergence there re-sends the whole reply through the
-	// bus fallback on Telegram.
-	var notice string
-	if !a.cfg.Agents.Defaults.QuietFallback {
-		ctx = providers.WithFallbackNotice(ctx, func(n providers.FallbackNotice) {
-			notice = formatFallbackNotice(n)
-		})
-	}
-	noticeShown := false
-	emitNotice := func() string {
-		if notice == "" || noticeShown {
-			return ""
+func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink StreamSink, ts *turnStream) (*providers.ChatResponse, error) {
+	// Everything that must precede this call's first content delta goes
+	// through here, lazily: emitted eagerly it would surface for a
+	// tool-call-only response that shows no text. Two things can precede it.
+	// A paragraph break, when an earlier iteration of this turn already
+	// streamed text that did not end its line — otherwise the narration
+	// before a tool call ("Let me check that.") and the answer after it are
+	// glued into one sentence on every channel. And the turn's fallback
+	// notice, once: the notice callback fires while the stream is being
+	// opened (or fired on an earlier call of the turn), and the reply text is
+	// given the same notice by reactLoop, so what the sink showed and what
+	// the session stores stay the same answer.
+	firstDelta := true
+	beforeFirstDelta := func() {
+		if !firstDelta {
+			return
 		}
-		noticeShown = true
-		sink(StreamEvent{Delta: notice})
-		return notice
+		firstDelta = false
+		if ts.streamed && !ts.tailNewline {
+			sink(StreamEvent{Delta: "\n\n"})
+		}
+		if ts.notice != "" && !ts.noticeShown {
+			ts.noticeShown = true
+			sink(StreamEvent{Delta: ts.notice})
+		}
 	}
 
 	stream, err := a.provider.ChatStream(ctx, req)
@@ -1090,8 +1098,10 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 		// Forward text deltas to the sink as they arrive.
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
-				accumulatedContent = emitNotice() + accumulatedContent
+				beforeFirstDelta()
 				accumulatedContent += choice.Delta.Content
+				ts.streamed = true
+				ts.tailNewline = strings.HasSuffix(choice.Delta.Content, "\n")
 				sink(StreamEvent{Delta: choice.Delta.Content})
 			}
 		}
@@ -1124,13 +1134,6 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 				},
 			},
 		}, nil
-	}
-
-	// The reply text must carry the notice the sink already showed, or the
-	// session, the history and every non-streaming consumer of this response
-	// records a different answer than the one on screen.
-	if noticeShown && len(resp.Choices) > 0 {
-		resp.Choices[0].Message.Content = notice + resp.Choices[0].Message.Content
 	}
 
 	// Signal completion to the sink.
@@ -1169,6 +1172,21 @@ func llmErrorHint(err error) string {
 		return "The provider is rate-limiting — a fallback provider keeps the conversation going: `joshbot configure --fallback \"<primary>,<backup>\"`."
 	}
 	return ""
+}
+
+// turnStream is the per-turn state shared by every LLM call of one ReAct
+// loop. It lives on the stack of reactLoop, never on the Agent, for the same
+// reason the sink rides the context: concurrent turns must not share it.
+type turnStream struct {
+	// notice is the turn's fallback notice, set by the first fallback that
+	// answers any call of the turn and left alone after that.
+	notice string
+	// noticeShown records that the notice went through the stream sink.
+	noticeShown bool
+	// streamed records that some text delta reached the sink this turn;
+	// tailNewline whether the last one ended its line.
+	streamed    bool
+	tailNewline bool
 }
 
 // formatFallbackNotice renders the one-line, user-facing note that a reply

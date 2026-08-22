@@ -218,8 +218,8 @@ func TestTelegramHandleStartMatchesTheCommandMenu(t *testing.T) {
 		ID: 1, Chat: &telebot.Chat{ID: 1},
 		Sender: &telebot.User{ID: 1234, Username: "josh"},
 	}})
-	if err := tg.handleStart(ctx); err != nil {
-		t.Fatalf("handleStart: %v", err)
+	if err := tg.handleCommandForward(ctx, "/start"); err != nil {
+		t.Fatalf("forward /start: %v", err)
 	}
 
 	select {

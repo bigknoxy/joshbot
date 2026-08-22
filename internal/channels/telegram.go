@@ -577,24 +577,6 @@ func unknownCommandText(text string) string {
 	return commands.UnknownText(commandName(text))
 }
 
-// handleStart and handleHelp forward to the agent like every other command;
-// the answer is commands.HelpText on every channel.
-func (t *TelegramChannel) handleStart(ctx telebot.Context) error {
-	return t.handleCommandForward(ctx, "/start")
-}
-
-func (t *TelegramChannel) handleHelp(ctx telebot.Context) error {
-	return t.handleCommandForward(ctx, "/help")
-}
-
-// handleNew forwards /new to the agent. It sends no local acknowledgement:
-// the agent's own "Started a new conversation" reply is the acknowledgement,
-// and /new is routed ahead of the session lock so it arrives at once — a
-// local "Starting new session..." on top of it made every reset answer twice.
-func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
-	return t.handleCommandForward(ctx, "/new")
-}
-
 // handleCommandForward routes a slash command to the agent through the bus.
 // The command's behaviour is owned by the agent (the CLI uses the same
 // handlers), so the channel only packages the raw text and its routing

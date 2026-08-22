@@ -176,7 +176,7 @@ func TestHandleMessagePanicIsContained(t *testing.T) {
 func TestHandleNewGatesOnTheAllowlist(t *testing.T) {
 	tg, srv, bot := commandChannel(t, "1234")
 
-	if err := tg.handleNew(textCtx(bot, 1234, "/new")); err != nil {
+	if err := tg.handleCommandForward(textCtx(bot, 1234, "/new"), "/new"); err != nil {
 		t.Fatalf("handleNew: %v", err)
 	}
 	select {
@@ -191,7 +191,7 @@ func TestHandleNewGatesOnTheAllowlist(t *testing.T) {
 		t.Fatalf("/new must not be acknowledged locally (the agent's reply is the ack): %v", got)
 	}
 
-	if err := tg.handleNew(textCtx(bot, 9999, "/new")); err != nil {
+	if err := tg.handleCommandForward(textCtx(bot, 9999, "/new"), "/new"); err != nil {
 		t.Fatalf("handleNew for a stranger: %v", err)
 	}
 	select {
@@ -211,7 +211,7 @@ func TestHandleNewReportsAFullBus(t *testing.T) {
 	for tg.bus.Send(bus.InboundMessage{Content: "filler", Channel: "telegram"}) {
 	}
 
-	if err := tg.handleNew(textCtx(bot, 1234, "/new")); err != nil {
+	if err := tg.handleCommandForward(textCtx(bot, 1234, "/new"), "/new"); err != nil {
 		t.Fatalf("handleNew: %v", err)
 	}
 	got := srv.texts()

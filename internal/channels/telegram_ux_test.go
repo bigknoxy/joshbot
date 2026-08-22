@@ -867,7 +867,7 @@ func TestTelegramChannel_NewRespectsAllowlist(t *testing.T) {
 		Sender: &telebot.User{ID: 999, Username: "mallory"},
 	}})
 
-	if err := tg.handleNew(ctx); err != nil {
+	if err := tg.handleCommandForward(ctx, "/new"); err != nil {
 		t.Fatalf("handleNew returned %v", err)
 	}
 

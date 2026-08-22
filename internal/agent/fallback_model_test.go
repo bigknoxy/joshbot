@@ -20,6 +20,10 @@ type hostedModelProvider struct {
 	hosts   map[string]bool
 	reply   string
 	openErr error
+	// script, when set, is answered in order ahead of reply — one entry per
+	// LLM call — so a test can stage a tool-call iteration before the answer.
+	script []providers.Message
+	calls  int
 }
 
 func (h *hostedModelProvider) answer(model string) (*providers.ChatResponse, error) {
@@ -29,6 +33,13 @@ func (h *hostedModelProvider) answer(model string) (*providers.ChatResponse, err
 	if !h.hosts[model] {
 		return nil, fmt.Errorf(`API error (404): {"error":"please check the model you provided"}`)
 	}
+	if h.calls < len(h.script) {
+		msg := h.script[h.calls]
+		h.calls++
+		msg.Role = providers.RoleAssistant
+		return &providers.ChatResponse{Model: model, Choices: []providers.Choice{{Message: msg}}}, nil
+	}
+	h.calls++
 	return &providers.ChatResponse{
 		Model: model,
 		Choices: []providers.Choice{{
@@ -46,10 +57,19 @@ func (h *hostedModelProvider) ChatStream(_ context.Context, req providers.ChatRe
 	if err != nil {
 		return nil, err
 	}
-	ch := make(chan providers.StreamChunk, 1)
+	ch := make(chan providers.StreamChunk, 2)
+	msg := resp.Choices[0].Message
+	for i := range msg.ToolCalls {
+		msg.ToolCalls[i].Index = i
+	}
 	ch <- providers.StreamChunk{Choices: []providers.StreamChoice{{
-		Delta: providers.Message{Role: providers.RoleAssistant, Content: resp.Choices[0].Message.Content},
+		Delta: providers.Message{Role: providers.RoleAssistant, Content: msg.Content, ToolCalls: msg.ToolCalls},
 	}}}
+	finish := "stop"
+	if len(msg.ToolCalls) > 0 {
+		finish = "tool_calls"
+	}
+	ch <- providers.StreamChunk{Choices: []providers.StreamChoice{{FinishReason: finish}}}
 	close(ch)
 	return ch, nil
 }
@@ -222,5 +242,82 @@ func TestProcess_FallbackNoticeStreamsBeforeContent(t *testing.T) {
 	}
 	if got != streamed.String() {
 		t.Errorf("reply text %q diverges from streamed text %q", got, streamed.String())
+	}
+}
+
+// A fallback turn that calls a tool makes two LLM calls, and the notice used
+// to be captured per call: it reached the chat twice at the top of a reply
+// and a third time glued onto the narration before the tool call
+// ("...traveler.⚠️ nvidia unavailable..."), while the stored tool-call message
+// carried the warning as the model's own words for it to echo on the next
+// turn. The notice is once per turn, the narration and the answer are
+// separated by a paragraph break, and the stored tool-call content is clean.
+func TestProcess_FallbackNoticeOncePerTurnAcrossToolCalls(t *testing.T) {
+	openrouter := &hostedModelProvider{
+		name:    "openrouter",
+		hosts:   map[string]bool{"z-ai/glm-5.2": true},
+		openErr: fmt.Errorf("API error (503): down"),
+	}
+	poolside := &hostedModelProvider{
+		name:  "poolside",
+		hosts: map[string]bool{"poolside/laguna-s-2.1": true},
+		script: []providers.Message{{
+			Content: "Let me check that.",
+			ToolCalls: []providers.ToolCall{{ID: "call_1", Type: "function",
+				Function: providers.FunctionCall{Name: "lookup", Arguments: `{}`}}},
+		}},
+		reply: "Sunny and 80°F.",
+	}
+
+	mp := providers.NewMultiProvider(providers.MultiProviderConfig{DefaultProvider: "openrouter"})
+	mp.Register("openrouter", openrouter, "z-ai/glm-5.2", 0, true)
+	mp.Register("poolside", poolside, "poolside/laguna-s-2.1", 1, true)
+
+	for _, streaming := range []bool{true, false} {
+		t.Run(fmt.Sprintf("streaming=%v", streaming), func(t *testing.T) {
+			poolside.calls = 0
+			cfg := config.Defaults()
+			cfg.Agents.Defaults.Model = "z-ai/glm-5.2"
+			cfg.Agents.Defaults.Streaming = streaming
+
+			sessions := newMockSessionManager()
+			a := NewAgent(cfg, mp, &mockToolExecutor{}, sessions, newMockLogger())
+
+			var streamed strings.Builder
+			ctx := context.Background()
+			if streaming {
+				ctx = WithStreamSink(ctx, func(ev StreamEvent) { streamed.WriteString(ev.Delta) })
+			}
+			got, err := a.Process(ctx, bus.InboundMessage{
+				SenderID: "josh", Content: "weather?", Channel: "cli", Timestamp: time.Now(),
+			})
+			if err != nil {
+				t.Fatalf("Process() failed: %v", err)
+			}
+			if n := strings.Count(got, "⚠️ openrouter unavailable"); n != 1 {
+				t.Errorf("reply carries the notice %d times, want 1: %q", n, got)
+			}
+			if !strings.HasPrefix(got, "⚠️ openrouter unavailable") || !strings.HasSuffix(got, "Sunny and 80°F.") {
+				t.Errorf("reply should be notice + answer: %q", got)
+			}
+			if streaming {
+				s := streamed.String()
+				if n := strings.Count(s, "⚠️ openrouter unavailable"); n != 1 {
+					t.Errorf("sink saw the notice %d times, want 1: %q", n, s)
+				}
+				if !strings.HasPrefix(s, "⚠️ openrouter unavailable") {
+					t.Errorf("sink should see the notice first: %q", s)
+				}
+				if !strings.Contains(s, "Let me check that.\n\nSunny") {
+					t.Errorf("narration and answer should be separated by a paragraph break: %q", s)
+				}
+			}
+			sess := sessions.sessions["cli:josh"]
+			for _, m := range sess.Messages {
+				if len(m.ToolCalls) > 0 && strings.Contains(m.Content, "unavailable") {
+					t.Errorf("stored tool-call message carries the notice as the model's words: %q", m.Content)
+				}
+			}
+		})
 	}
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The fallback notice ("⚠️ nvidia unavailable — answered by poolside") appears once per reply, and a tool-calling turn no longer glues its narration to its answer (#339).** The notice was captured per LLM call, and a turn that calls a tool makes two or more of them: on Telegram it showed twice at the top of a reply and a third time mid-sentence (`...traveler.⚠️ nvidia unavailable...`), and the stored tool-call message carried the warning as the model's own words for it to echo on later turns. It is now captured once per turn, shown once before the first streamed text, prepended once to the final reply, and never stored on a tool-call iteration. Separately, when an earlier iteration streamed narration that did not end its line, the next iteration's text now starts on a new paragraph on every channel. `TestProcess_FallbackNoticeOncePerTurnAcrossToolCalls` reproduces the reported transcript and pins all three.
+
 ## [1.61.0] - 2026-08-22
 
 ### Added

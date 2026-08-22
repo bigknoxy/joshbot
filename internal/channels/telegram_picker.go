@@ -175,15 +175,26 @@ func (p *Picker) handlePress(ctx context.Context, ns, command string, press Call
 	tctx, cancel := context.WithTimeout(ctx, pickerTurnTimeout)
 	defer cancel()
 	reply, err := p.backend.Process(tctx, inbound)
-	if err != nil {
-		reply = "Error: " + err.Error()
+	failed := err != nil
+	if failed {
+		// The raw error stays in the log: a Process failure can wrap
+		// provider or path detail, and the gateway path redacts those
+		// before they reach a chat. The typed command is the recovery.
+		log.Warn("picker command turn failed", "namespace", ns, "error", err)
+		reply = "Could not apply that choice. Try typing the command instead."
+	} else if strings.HasPrefix(reply, "Error") {
+		// An in-band failure ("Error: unknown model", ReplyPrefix): the
+		// text goes to the user as the command would send it.
+		failed = true
 	}
 	editor := p.t.currentEditor()
 	if editor == nil {
 		return fmt.Errorf("picker: channel not connected")
 	}
 	opts := &telebot.SendOptions{}
-	if choices, cerr := p.choices(tctx, ns, inbound); cerr == nil {
+	// No keyboard under a failure — the same rule the gateway applies to the
+	// command reply: a picker under an error invites a press into it.
+	if choices, cerr := p.choices(tctx, ns, inbound); !failed && cerr == nil {
 		if kb := pickerKeyboard(ns, choices); kb != nil {
 			if rm, berr := kb.Build(); berr == nil {
 				opts.ReplyMarkup = rm

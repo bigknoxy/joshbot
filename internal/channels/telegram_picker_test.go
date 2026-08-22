@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ type fakePickerBackend struct {
 	personas  []PickerChoice
 	processed []bus.InboundMessage
 	reply     string
+	err       error
 }
 
 func (f *fakePickerBackend) ModelChoices(context.Context, bus.InboundMessage) ([]PickerChoice, error) {
@@ -29,6 +31,9 @@ func (f *fakePickerBackend) Process(_ context.Context, msg bus.InboundMessage) (
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.processed = append(f.processed, msg)
+	if f.err != nil {
+		return "", f.err
+	}
 	// Move the marker the way the agent would.
 	for i := range f.models {
 		f.models[i].Current = "/model "+f.models[i].Spec == msg.Content
@@ -184,5 +189,42 @@ func TestPicker_IgnoresForeignActionsAndClaimsNamespacesOnce(t *testing.T) {
 	}
 	if _, err := tg.NewPicker(nil); err == nil {
 		t.Error("nil backend must be refused")
+	}
+}
+
+// A failed turn edits the message with a safe text and no keyboard: the raw
+// error (which can wrap provider or path detail) stays in the log, and a
+// picker under a failure would invite a press into it. An in-band "Error:"
+// reply is shown as the command would show it, also without a keyboard.
+func TestPicker_FailureShowsNoKeyboardAndNoRawError(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply string
+		err         error
+		wantText    string
+	}{
+		{"process error", "", errors.New("dial tcp 10.0.0.7: secret detail"), "Could not apply that choice"},
+		{"in-band error", "Error: unknown model \"x\"", nil, "Error: unknown model"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, p, b, ed := pickerTestChannel(t)
+			b.reply, b.err = tc.reply, tc.err
+			if err := p.handleModelPress(context.Background(), CallbackPress{
+				Action: CallbackAction{Namespace: ModelPickerNamespace, Action: pickerPickAction, Payload: "poolside"},
+				ChatID: 42, MessageID: 7, SenderID: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ed.mu.Lock()
+			defer ed.mu.Unlock()
+			if len(ed.calls) != 1 || !strings.Contains(ed.calls[0].text, tc.wantText) {
+				t.Fatalf("edit = %+v, want text containing %q", ed.calls, tc.wantText)
+			}
+			if strings.Contains(ed.calls[0].text, "secret detail") {
+				t.Error("raw error reached the chat")
+			}
+			if ed.calls[0].markup != nil {
+				t.Error("no keyboard under a failure")
+			}
+		})
 	}
 }

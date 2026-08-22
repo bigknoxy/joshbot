@@ -1634,8 +1634,8 @@ reaches the prompt.
 | `/start` | Telegram | Start a conversation (shows the help text) |
 | `/new` | Telegram, Discord, CLI | Start a fresh session (clears context, model override and personality). Takes effect immediately even while a long turn is still running — it is the one command not queued behind the in-flight turn |
 | `/status` | Telegram, CLI | Show the current model, tool count, memory window and max iterations |
-| `/model [name]` | Telegram, CLI | Switch model for this session (`--global` makes it the default for all sessions) |
-| `/personality [name]` | Telegram, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear |
+| `/model [name]` | Telegram, CLI | Switch model for this session (`--global` makes it the default for all sessions). On Telegram a bare `/model` lists the choices as inline buttons — tap one to switch; the ✅ marks the current one |
+| `/personality [name]` | Telegram, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear. On Telegram a bare `/personality` shows the presets as buttons |
 | `/compact` | Telegram, CLI | Summarize older conversation context now |
 | `/help` | Telegram, Discord, CLI | Show available commands |
 | `/clear` | CLI | Clear the terminal screen |
@@ -1661,7 +1661,9 @@ and output are real terminals — piped or scripted `joshbot agent` output is
 untouched.
 
 `/model` and `/personality` changes are per-session and persisted, so a
-model you pick mid-conversation survives a restart.
+model you pick mid-conversation survives a restart. Switching keeps the
+conversation — the new model continues from the same transcript — so a switch
+is never a reset; send `/new` when you want a fresh start.
 
 ## Architecture
 

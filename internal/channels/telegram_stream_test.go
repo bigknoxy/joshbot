@@ -20,6 +20,7 @@ type editorCall struct {
 	edit    bool
 	deleted bool
 	replyTo int // 0 = unthreaded
+	markup  *telebot.ReplyMarkup
 }
 
 // fakeEditor stands in for *telebot.Bot. Errors are queued per operation and
@@ -60,7 +61,7 @@ func (f *fakeEditor) Edit(msg telebot.Editable, what interface{}, opts ...interf
 	defer f.mu.Unlock()
 	_, chatID := msg.MessageSig()
 	f.calls = append(f.calls, editorCall{
-		chat: fmt.Sprint(chatID), text: fmt.Sprint(what), mode: modeOf(opts), edit: true,
+		chat: fmt.Sprint(chatID), text: fmt.Sprint(what), mode: modeOf(opts), edit: true, markup: markupOf(opts),
 	})
 	if err := f.pop(&f.editErrs); err != nil {
 		return nil, err
@@ -98,6 +99,15 @@ func replyToOf(opts []interface{}) int {
 		}
 	}
 	return 0
+}
+
+func markupOf(opts []interface{}) *telebot.ReplyMarkup {
+	for _, o := range opts {
+		if so, ok := o.(*telebot.SendOptions); ok {
+			return so.ReplyMarkup
+		}
+	}
+	return nil
 }
 
 func modeOf(opts []interface{}) telebot.ParseMode {

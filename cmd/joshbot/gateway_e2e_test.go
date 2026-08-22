@@ -210,7 +210,7 @@ func TestGatewayEndToEnd_TelegramUpdateToWire(t *testing.T) {
 	sender := tools.NewBusMessageSender(msgBus)
 
 	msgBus.Subscribe("all", gatewayHandler(buildGatewayDeps(
-		msgBus, agentInstance.Process, sender, tgChannel, cfg.Agents.Defaults.Streaming, nil)))
+		msgBus, agentInstance.Process, sender, tgChannel, cfg.Agents.Defaults.Streaming, nil, nil)))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

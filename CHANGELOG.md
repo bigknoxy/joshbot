@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`/model` and `/personality` are inline pickers on Telegram (#313).** A bare `/model` or `/personality` now carries its list as buttons, two per row with a ✅ on the current entry; a tap switches and the picker message is edited in place so the marker moves. The button runs the very same command turn a typed `/model <spec>` runs, for the presser's own session — it cannot select anything the typed command would refuse, and in a group each member switches their own session. A switch deliberately keeps the conversation (a one-tap button must not wipe a transcript), and the reply now says so and points at `/new`. Typed commands, the CLI and Discord are unchanged.
+
 ### Fixed
 
 - **The fallback notice ("⚠️ nvidia unavailable — answered by poolside") appears once per reply, and a tool-calling turn no longer glues its narration to its answer (#339).** The notice was captured per LLM call, and a turn that calls a tool makes two or more of them: on Telegram it showed twice at the top of a reply and a third time mid-sentence (`...traveler.⚠️ nvidia unavailable...`), and the stored tool-call message carried the warning as the model's own words for it to echo on later turns. It is now captured once per turn, shown once before the first streamed text, prepended once to the final reply, and never stored on a tool-call iteration. Separately, when an earlier iteration streamed narration that did not end its line, the next iteration's text now starts on a new paragraph on every channel. `TestProcess_FallbackNoticeOncePerTurnAcrossToolCalls` reproduces the reported transcript and pins all three.

@@ -1039,6 +1039,13 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 		}
 		firstDelta = false
 		if ts.streamed && !ts.tailNewline {
+			// Sink only, never content: it belongs to the join between two
+			// iterations, not to either one's message. That is safe for
+			// the Telegram streamer, whose Finish suppression compares what
+			// it flushed against its own delta buffer (shown == buf) — the
+			// reply string is not part of that contract, and a multi-
+			// iteration turn already returns only its last iteration's
+			// text while the chat holds every iteration's.
 			sink(StreamEvent{Delta: "\n\n"})
 		}
 		if ts.notice != "" && !ts.noticeShown {

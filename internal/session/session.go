@@ -290,7 +290,9 @@ func (s *Session) ConversationSummary() string {
 	}
 	var b strings.Builder
 	if s.ConversationTopic != "" {
-		b.WriteString(fmt.Sprintf("Current topic: %s", s.ConversationTopic))
+		// Labelled as derived: an unlabelled "Current topic: <snippet of the
+		// user's words>" was read by the model as a message from the user.
+		b.WriteString(fmt.Sprintf("Topic hint (auto-derived from the conversation, not a message): %s", s.ConversationTopic))
 	}
 	if len(s.ConversationContext) > 0 {
 		if b.Len() > 0 {

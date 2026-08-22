@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/providers"
 )
 
 // The picker draws exactly what the text list names, so a button can never
@@ -110,5 +112,49 @@ func TestModelSwitchReplySaysHistoryIsKept(t *testing.T) {
 	}
 	if !strings.Contains(resp, "conversation continues") || !strings.Contains(resp, "/new") {
 		t.Errorf("switch reply should name the keep-history behaviour and /new: %q", resp)
+	}
+}
+
+// The derived topic hint used to be the user's words, lowercased, cut
+// mid-word at 60 bytes with "..." appended, and injected as "Current topic:"
+// — which a model read as a message from the user that broke off, and
+// answered that instead of the real question (a live Telegram transcript:
+// "you were saying 'wanting to do a new topi...' and then radio silence").
+func TestInferTopicCutsOnAWordWithNoEllipsisAndKeepsCase(t *testing.T) {
+	in := "Ha! You son of a gun!  I'm actually wanting to do a new topic about the weather in Wichita"
+	got := inferTopic(in)
+	if len(got) > topicMaxLen || strings.HasSuffix(got, "...") || strings.HasSuffix(got, "topi") {
+		t.Errorf("topic = %q: must be ≤%d bytes, cut on a word, no ellipsis", got, topicMaxLen)
+	}
+	if !strings.HasPrefix(got, "Ha! You son") {
+		t.Errorf("topic = %q: casing must be the user's", got)
+	}
+	if inferTopic("tell me about Go generics") != "Go generics" {
+		t.Errorf("question-word strip broke: %q", inferTopic("tell me about Go generics"))
+	}
+	if inferTopic(strings.Repeat("x", 80)) != strings.Repeat("x", topicMaxLen) {
+		t.Errorf("a single long word is hard-cut: %q", inferTopic(strings.Repeat("x", 80)))
+	}
+	// strings.ToLower changes byte length for İ (2 → 3 bytes): the prefix
+	// strip must index the original by the prefix's own length, not by an
+	// offset taken from the lowered copy.
+	if got := inferTopic("What İstanbul is famous for"); got != "İstanbul is famous for" {
+		t.Errorf("length-changing rune misaligned the strip: %q", got)
+	}
+	// A hard cut through CJK text must land on a rune boundary.
+	if got := inferTopic(strings.Repeat("日本語", 30)); !utf8.ValidString(got) || len(got) > topicMaxLen {
+		t.Errorf("hard cut produced invalid UTF-8 or overran: %q (%d bytes)", got, len(got))
+	}
+}
+
+// A 404/410 from the addressed provider is a retired model, not an outage;
+// the notice says so and names the recovery instead of reporting a status.
+func TestFallbackNoticeNamesARetiredModel(t *testing.T) {
+	got := formatFallbackNotice(providers.FallbackNotice{From: "nvidia", To: "poolside", Model: "poolside/laguna-s-2.1", Reason: "http_410"})
+	if !strings.Contains(got, "no longer serves this model") || !strings.Contains(got, "/model") {
+		t.Errorf("notice = %q", got)
+	}
+	if got := formatFallbackNotice(providers.FallbackNotice{From: "nvidia", To: "poolside", Reason: "rate_limit"}); strings.Contains(got, "/model") {
+		t.Errorf("a rate limit is transient and must not suggest switching: %q", got)
 	}
 }

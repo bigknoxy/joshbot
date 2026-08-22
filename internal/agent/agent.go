@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/commands"
@@ -1207,7 +1208,17 @@ type turnStream struct {
 // sent out of band so every channel — CLI, Telegram, Discord, HTTP API —
 // carries it without per-channel wiring.
 func formatFallbackNotice(n providers.FallbackNotice) string {
-	return fmt.Sprintf("⚠️ %s unavailable (%s) — answered by %s (%s)\n\n", n.From, n.Reason, n.To, n.Model)
+	hint := ""
+	switch n.Reason {
+	case "http_404", "http_410":
+		// A not-found on the addressed provider is not an outage: the
+		// configured model is gone (hosted catalogs retire models — NVIDIA
+		// answered 410 for z-ai/glm-5.2 — and a typo looks the same). The
+		// chain covers the turn, but every later turn pays the same dead
+		// call first, so say what to do rather than report a status code.
+		hint = fmt.Sprintf(" — %s no longer serves this model; pick another with /model", n.From)
+	}
+	return fmt.Sprintf("⚠️ %s unavailable (%s)%s — answered by %s (%s)\n\n", n.From, n.Reason, hint, n.To, n.Model)
 }
 
 // afterReActDetection records the trace and, if a strong-enough candidate is
@@ -2150,18 +2161,39 @@ func inferTopic(content string) string {
 			return ""
 		}
 	}
-	// Strip question words for cleaner topic
-	cleaned := strings.TrimPrefix(lower, "what ")
-	cleaned = strings.TrimPrefix(cleaned, "what's ")
-	cleaned = strings.TrimPrefix(cleaned, "what are ")
-	cleaned = strings.TrimPrefix(cleaned, "tell me about ")
-	cleaned = strings.TrimPrefix(cleaned, "tell me ")
-	// Take first ~60 chars as topic snippet
-	if len(cleaned) > 60 {
-		cleaned = cleaned[:60] + "..."
+	// Strip question words for cleaner topic. The match is on the lowercase
+	// copy but the strip is applied to the original by the prefix's own
+	// (ASCII) byte length: strings.ToLower can change a string's byte length
+	// (İ is 2 bytes, its lowercase 3), so an offset taken from the lowered
+	// copy does not index the original.
+	cleaned := content
+	for _, prefix := range []string{"what's ", "what are ", "what ", "tell me about ", "tell me "} {
+		if strings.HasPrefix(lower, prefix) {
+			cleaned = cleaned[len(prefix):]
+			lower = lower[len(prefix):]
+		}
+	}
+	cleaned = strings.TrimSpace(cleaned)
+	// Cut on a word boundary with no ellipsis. A mid-word cut with "..."
+	// appended — "wanting to do a new topi..." — read to the model as a user
+	// message that broke off, and it answered the "cut-off" message instead
+	// of the real one. A single long word is cut hard, backed off to a rune
+	// start so the hint is never invalid UTF-8.
+	if len(cleaned) > topicMaxLen {
+		cut := strings.LastIndex(cleaned[:topicMaxLen], " ")
+		if cut < topicMaxLen/2 {
+			cut = topicMaxLen
+			for cut > 0 && !utf8.RuneStart(cleaned[cut]) {
+				cut--
+			}
+		}
+		cleaned = strings.TrimRight(cleaned[:cut], " ,;:-")
 	}
 	return cleaned
 }
+
+// topicMaxLen bounds the auto-derived topic hint.
+const topicMaxLen = 60
 
 // updateTopic updates the conversation topic based on the latest exchange.
 func updateTopic(currentTopic, userMsg, assistantMsg string) string {

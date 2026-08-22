@@ -699,7 +699,7 @@ func TestSessionConversationSummary(t *testing.T) {
 	// With topic only
 	sess.SetTopic("debugging build issue")
 	summary := sess.ConversationSummary()
-	if summary != "Current topic: debugging build issue" {
+	if summary != "Topic hint (auto-derived from the conversation, not a message): debugging build issue" {
 		t.Fatalf("expected topic summary, got %q", summary)
 	}
 

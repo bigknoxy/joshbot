@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/commands"
 	"github.com/bigknoxy/joshbot/internal/config"
 	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
 	"github.com/bigknoxy/joshbot/internal/log"
@@ -1680,7 +1681,9 @@ func (a *Agent) handleCommand(ctx context.Context, msg bus.InboundMessage) strin
 
 	switch cmd {
 	case "start":
-		return "Hello! I'm joshbot, your personal AI assistant. How can I help you today?"
+		// /start and /help are the same answer on every channel: a user who
+		// sends either wants to know what the bot can do.
+		return commands.HelpText()
 	case "new":
 		// Clear messages but preserve conversation context (user facts survive
 		// /new). The per-session model override and personality are scoped to
@@ -1716,17 +1719,7 @@ Just type normally to chat with me!`,
 			a.cfg.Agents.Defaults.MemoryWindow,
 		)
 	case "help":
-		return `Available commands:
-/start - Start a conversation
-/new - Start fresh (clears session model/personality)
-/model [name] - Switch model for this session (--global for all)
-/personality [name] - Set or clear a personality
-/compact - Summarize older context now
-/resume - Continue after hitting the iteration limit
-/status - Show system status
-/help - Show this help
-
-Just type normally to chat with me!`
+		return commands.HelpText()
 	case "status":
 		toolCount := 0
 		if a.tools != nil {

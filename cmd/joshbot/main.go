@@ -29,6 +29,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/channels"
+	"github.com/bigknoxy/joshbot/internal/commands"
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/configure"
 	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
@@ -1623,7 +1624,7 @@ type modelReporter interface {
 // here for a buffered prompt that never implemented them, so Tab completed a
 // command the agent then answered as ordinary prose. /exit is handled by the
 // loop itself, not by the agent.
-var cliCommandNames = []string{"start", "new", "status", "model", "personality", "compact", "help", "resume", "exit"}
+var cliCommandNames = append(commands.Names(), "exit")
 
 // isTTY reports whether w is connected to an interactive terminal. It is a
 // variable (not a plain function) so tests can inject deterministic

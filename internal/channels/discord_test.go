@@ -145,12 +145,42 @@ func TestDiscordChannel_UnknownCommandOnlyToAllowed(t *testing.T) {
 	}
 }
 
+// /help is the agent's answer, identical on every channel: it is forwarded
+// to the bus like any other command and nothing is sent locally.
 func TestDiscordChannel_HelpCommand(t *testing.T) {
 	d, fake := newTestDiscordChannel(t, []string{"111"})
 	d.dispatch("111", "alice", "Alice", "chan1", "/help")
-	msgs := fake.messages()
-	if len(msgs) != 1 || !strings.Contains(msgs[0], "JoshBot") {
-		t.Fatalf("expected help text, got %v", msgs)
+	select {
+	case msg := <-d.bus.InboundChannel():
+		if msg.Content != "/help" || msg.Metadata["is_command"] != true {
+			t.Errorf("/help reached the agent as %+v", msg)
+		}
+	default:
+		t.Fatal("expected /help on the bus")
+	}
+	if msgs := fake.messages(); len(msgs) != 0 {
+		t.Fatalf("a local help text would drift from the agent's: %v", msgs)
+	}
+}
+
+// Every command the agent answers is forwarded from Discord too — /status,
+// /model and the rest used to be "unknown" here while the CLI and Telegram
+// accepted them.
+func TestDiscordChannel_ForwardsEveryAgentCommand(t *testing.T) {
+	d, fake := newTestDiscordChannel(t, []string{"111"})
+	for _, c := range discordCommands {
+		d.dispatch("111", "alice", "Alice", "chan1", "/"+c.Name+" arg")
+		select {
+		case msg := <-d.bus.InboundChannel():
+			if msg.Content != "/"+c.Name+" arg" || msg.Metadata["is_command"] != true {
+				t.Errorf("/%s reached the agent as %+v", c.Name, msg)
+			}
+		default:
+			t.Errorf("/%s did not reach the bus", c.Name)
+		}
+	}
+	if msgs := fake.messages(); len(msgs) != 0 {
+		t.Errorf("forwarded commands must not be answered locally: %v", msgs)
 	}
 }
 
@@ -169,9 +199,10 @@ func TestDiscordChannel_NewCommandReachesBus(t *testing.T) {
 	default:
 		t.Fatal("expected /new on the bus")
 	}
-	// And an acknowledgement was sent.
-	if msgs := fake.messages(); len(msgs) != 1 || !strings.Contains(msgs[0], "new session") {
-		t.Fatalf("expected new-session ack, got %v", msgs)
+	// No local acknowledgement: the agent's "Started a new conversation"
+	// reply is the acknowledgement, and a local one made /new answer twice.
+	if msgs := fake.messages(); len(msgs) != 0 {
+		t.Fatalf("/new must not be acknowledged locally, got %v", msgs)
 	}
 }
 

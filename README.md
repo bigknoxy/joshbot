@@ -1629,15 +1629,20 @@ reaches the prompt.
 
 ## Chat Commands
 
+Every command below is answered by the agent, so it behaves and reads the same
+on every channel; the table lives in `internal/commands` and feeds the Telegram
+menu, the Discord and CLI command lists, `/help` and the unknown-command reply.
+
 | Command | Channel | Description |
 |---------|---------|-------------|
-| `/start` | Telegram | Start a conversation (shows the help text) |
+| `/start` | Telegram, Discord, CLI | Show the help text |
 | `[⏹ Stop]` button | Telegram | Shown on the in-progress reply while a turn is streaming; tapping it cancels the turn immediately — it reaches the running turn directly, never queued behind it — and the reply ends with "stopped by you" |
 | `/new` | Telegram, Discord, CLI | Start a fresh session (clears context, model override and personality). Takes effect immediately even while a long turn is still running — it is the one command not queued behind the in-flight turn |
-| `/status` | Telegram, CLI | Show the current model, tool count, memory window and max iterations |
-| `/model [name]` | Telegram, CLI | Switch model for this session (`--global` makes it the default for all sessions). On Telegram a bare `/model` lists the choices as inline buttons — tap one to switch; the ✅ marks the current one |
-| `/personality [name]` | Telegram, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear. On Telegram a bare `/personality` shows the presets as buttons |
-| `/compact` | Telegram, CLI | Summarize older conversation context now |
+| `/status` | Telegram, Discord, CLI | Show the current model, tool count, memory window and max iterations |
+| `/model [name]` | Telegram, Discord, CLI | Switch model for this session (`--global` makes it the default for all sessions). On Telegram a bare `/model` lists the choices as inline buttons — tap one to switch; the ✅ marks the current one |
+| `/personality [name]` | Telegram, Discord, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear. On Telegram a bare `/personality` shows the presets as buttons |
+| `/compact` | Telegram, Discord, CLI | Summarize older conversation context now |
+| `/resume` | Telegram, Discord, CLI | Continue after hitting the iteration limit |
 | `/help` | Telegram, Discord, CLI | Show available commands |
 | `/clear` | CLI | Clear the terminal screen |
 | `/history` | CLI | Show input history |

@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/commands"
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/providers"
@@ -134,23 +135,33 @@ type telegramNotifier interface {
 // step: a menu entry without a handler is silently swallowed by the
 // unknown-command fallback, and a handler without a menu entry is invisible
 // in the UI.
-var botCommands = []telebot.Command{
-	{Text: "start", Description: "Show what this bot can do"},
-	{Text: "new", Description: "Start a new session"},
-	{Text: "status", Description: "Show session status"},
-	{Text: "model", Description: "Switch model for this chat"},
-	{Text: "personality", Description: "Set a personality"},
-	{Text: "compact", Description: "Summarize older context"},
-	{Text: "resume", Description: "Continue after hitting the iteration limit"},
-	{Text: "help", Description: "Show the list of commands"},
+var botCommands = telegramMenu()
+
+// telegramMenu renders the bot menu from the shared command table
+// (internal/commands), so the menu, the unknown-command fallback and the
+// agent's /help cannot drift apart. Telegram caps a menu description at 256
+// characters and the table's are well under.
+func telegramMenu() []telebot.Command {
+	out := make([]telebot.Command, 0, len(commands.All))
+	for _, c := range commands.All {
+		out = append(out, telebot.Command{Text: c.Name, Description: c.Description})
+	}
+	return out
 }
 
-// forwardedCommands are the slash commands whose behaviour lives in the agent
-// (the CLI and Telegram share the same handlers) and are therefore routed to
-// the bus by handleCommandForward. They must all appear in botCommands, and
-// every botCommands entry that is not handled locally (start/help/new) must
-// appear here — TestTelegramChannel_CommandMenuAndHandlersInStep pins that.
-var forwardedCommands = []string{"/status", "/model", "/personality", "/compact", "/resume"}
+// forwardedCommands are the slash commands routed to the agent by
+// handleCommandForward: every command in the table. Nothing is answered
+// locally any more — a local /help drifted from the agent's, and a local
+// "Starting new session..." ack made /new answer twice.
+var forwardedCommands = forwardedCommandList()
+
+func forwardedCommandList() []string {
+	out := make([]string, 0, len(commands.All))
+	for _, c := range commands.All {
+		out = append(out, "/"+c.Name)
+	}
+	return out
+}
 
 // NewTelegramChannel creates a new Telegram channel instance.
 func NewTelegramChannel(bus *bus.MessageBus, cfg *config.TelegramConfig) *TelegramChannel {
@@ -446,22 +457,9 @@ func (t *TelegramChannel) setupHandlers(bot *telebot.Bot) {
 		return t.handleEdited(ctx)
 	})
 
-	// Commands using Handle with string endpoint
-	bot.Handle("/start", func(ctx telebot.Context) error {
-		return t.handleStart(ctx)
-	})
-
-	bot.Handle("/help", func(ctx telebot.Context) error {
-		return t.handleHelp(ctx)
-	})
-
-	bot.Handle("/new", func(ctx telebot.Context) error {
-		return t.handleNew(ctx)
-	})
-
-	// Commands whose behaviour lives in the agent (shared with the CLI): the
-	// channel packages the raw text and routes it to the bus, and the agent
-	// answers on the outbound channel. The set here must mirror botCommands.
+	// Every slash command's behaviour lives in the agent (shared with the
+	// CLI and Discord): the channel packages the raw text and routes it to
+	// the bus, and the agent answers on the outbound channel.
 	for _, command := range forwardedCommands {
 		cmd := command
 		bot.Handle(cmd, func(ctx telebot.Context) error {
@@ -576,77 +574,7 @@ func isKnownCommand(text string) bool {
 // unknownCommandText tells the user their command does not exist and lists the
 // ones that do.
 func unknownCommandText(text string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Unknown command: /%s\n\nAvailable commands:", commandName(text))
-	for _, c := range botCommands {
-		fmt.Fprintf(&b, "\n/%s - %s", c.Text, c.Description)
-	}
-	b.WriteString("\n\nOr just send me a message.")
-	return b.String()
-}
-
-// handleStart handles the /start command.
-func (t *TelegramChannel) handleStart(ctx telebot.Context) error {
-	return t.handleHelp(ctx)
-}
-
-// handleHelp handles the /help command.
-func (t *TelegramChannel) handleHelp(ctx telebot.Context) error {
-	helpText := `🤖 *JoshBot*
-
-Welcome! I'm here to help you.
-
-Available commands:
-/start - Show what this bot can do
-/new - Start a new session
-/status - Show session status
-/model <name> - Switch model for this chat (add --global for all chats)
-/personality <name> - Set a personality (or /personality none to clear)
-/compact - Summarize older context now
-/resume - Continue after hitting the iteration limit
-/help - Show this help
-
-Just send me a message and I'll respond!`
-
-	_, err := ctx.Bot().Send(ctx.Sender(), helpText, &telebot.SendOptions{
-		ParseMode: telebot.ModeMarkdown,
-	})
-	return err
-}
-
-// handleNew handles the /new command to start a new session.
-func (t *TelegramChannel) handleNew(ctx telebot.Context) error {
-	msg := ctx.Message()
-	log.Debug("handleNew called", "sender", msg.Sender.ID)
-
-	// The same allowlist gate handleMessage and handleCommandForward apply:
-	// /new is dispatched outside handleMessage, so it must be re-checked here
-	// or an unallowed caller could still trigger agent work.
-	if !t.IsAllowed(int64(msg.Sender.ID), msg.Sender.Username, msg.Sender.FirstName, msg.Sender.LastName) {
-		return nil
-	}
-
-	// Send new session command to bus
-	inbound := bus.InboundMessage{
-		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
-		Content:   "/new",
-		Channel:   t.name,
-		Timestamp: time.Now(),
-		Metadata: map[string]any{
-			"message_id": msg.ID,
-			"chat_id":    msg.Chat.ID,
-			"username":   msg.Sender.Username,
-			"is_command": true,
-		},
-	}
-	if !t.bus.Send(inbound) {
-		log.Error("failed to send /new command to bus")
-		_, err := ctx.Bot().Send(ctx.Sender(), "Sorry, couldn't start a new session. Please try again.")
-		return err
-	}
-
-	_, err := ctx.Bot().Send(ctx.Sender(), "🔄 Starting new session...")
-	return err
+	return commands.UnknownText(commandName(text))
 }
 
 // handleCommandForward routes a slash command to the agent through the bus.
@@ -669,9 +597,15 @@ func (t *TelegramChannel) handleCommandForward(ctx telebot.Context, command stri
 
 	t.startTyping(ctx.Chat())
 
+	// The raw text carries the arguments ("/model fast"); an update with no
+	// text (a menu tap in some clients) still names the command it was for.
+	content := msg.Text
+	if strings.TrimSpace(content) == "" {
+		content = command
+	}
 	inbound := bus.InboundMessage{
 		SenderID:  fmt.Sprintf("telegram_%d", msg.Sender.ID),
-		Content:   msg.Text,
+		Content:   content,
 		Channel:   t.name,
 		Timestamp: time.Now(),
 		Metadata: map[string]any{

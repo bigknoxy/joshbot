@@ -757,7 +757,8 @@ func TestTelegramChannel_RegisterCommandsFailureIsNotFatal(t *testing.T) {
 // entry is invisible in the Telegram UI (and absent from the unknown-command
 // fallback's list).
 func TestTelegramChannel_CommandMenuAndHandlersInStep(t *testing.T) {
-	locallyHandled := map[string]bool{"start": true, "help": true, "new": true}
+	// Nothing is handled locally any more; every menu entry is forwarded.
+	locallyHandled := map[string]bool{}
 
 	known := make(map[string]bool)
 	for _, c := range botCommands {
@@ -866,7 +867,7 @@ func TestTelegramChannel_NewRespectsAllowlist(t *testing.T) {
 		Sender: &telebot.User{ID: 999, Username: "mallory"},
 	}})
 
-	if err := tg.handleNew(ctx); err != nil {
+	if err := tg.handleCommandForward(ctx, "/new"); err != nil {
 		t.Fatalf("handleNew returned %v", err)
 	}
 

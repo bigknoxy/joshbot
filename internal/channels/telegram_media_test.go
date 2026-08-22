@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"github.com/bigknoxy/joshbot/internal/commands"
 	"strings"
 	"testing"
 	"time"
@@ -200,11 +201,10 @@ func TestTelegramHandleUnsupportedTellsTheUser(t *testing.T) {
 	}
 }
 
-// TestTelegramHandleStartMatchesTheCommandMenu pins the two things about /start
-// that drift: it must answer at all, and its listing must name every command in
-// botCommands. botCommands is the single source for the Telegram menu and the
-// unknown-command fallback, so a command added there but missing from the help
-// text is invisible to users who read /help.
+// TestTelegramHandleStartMatchesTheCommandMenu pins that /start is forwarded
+// to the agent (whose help text is the one every channel shows) rather than
+// answered locally, and that the menu and the unknown-command fallback list
+// exactly the shared command table.
 func TestTelegramHandleStartMatchesTheCommandMenu(t *testing.T) {
 	srv := newFakeTelegramServer(t)
 	bot := srv.bot(t)
@@ -218,21 +218,32 @@ func TestTelegramHandleStartMatchesTheCommandMenu(t *testing.T) {
 		ID: 1, Chat: &telebot.Chat{ID: 1},
 		Sender: &telebot.User{ID: 1234, Username: "josh"},
 	}})
-	if err := tg.handleStart(ctx); err != nil {
-		t.Fatalf("handleStart: %v", err)
+	if err := tg.handleCommandForward(ctx, "/start"); err != nil {
+		t.Fatalf("forward /start: %v", err)
 	}
 
-	texts := srv.texts()
-	if len(texts) != 1 {
-		t.Fatalf("expected exactly one help message, got %v", texts)
+	select {
+	case got := <-tg.bus.InboundChannel():
+		if got.Content != "/start" || got.Metadata["is_command"] != true {
+			t.Errorf("/start reached the agent as %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("/start never reached the agent")
 	}
+	if texts := srv.texts(); len(texts) != 0 {
+		t.Fatalf("a local /start text would drift from the agent's help: %v", texts)
+	}
+	unknown := unknownCommandText("/nope")
 	for _, cmd := range botCommands {
-		if !strings.Contains(texts[0], "/"+cmd.Text) {
-			t.Errorf("/%s is in the Telegram command menu but not in the help text", cmd.Text)
+		if !strings.Contains(unknown, "/"+cmd.Text) {
+			t.Errorf("/%s is in the Telegram command menu but not in the unknown-command listing", cmd.Text)
+		}
+		if !commands.Is(cmd.Text) {
+			t.Errorf("/%s is in the menu but not in the shared command table", cmd.Text)
 		}
 	}
-	if modes := srv.modes(); len(modes) != 1 || !strings.EqualFold(modes[0], string(telebot.ModeMarkdown)) {
-		t.Errorf("help text should be sent as Markdown, parse modes = %v", modes)
+	if len(botCommands) != len(commands.All) {
+		t.Errorf("menu has %d commands, table has %d", len(botCommands), len(commands.All))
 	}
 }
 

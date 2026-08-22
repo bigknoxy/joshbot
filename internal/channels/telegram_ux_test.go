@@ -757,7 +757,8 @@ func TestTelegramChannel_RegisterCommandsFailureIsNotFatal(t *testing.T) {
 // entry is invisible in the Telegram UI (and absent from the unknown-command
 // fallback's list).
 func TestTelegramChannel_CommandMenuAndHandlersInStep(t *testing.T) {
-	locallyHandled := map[string]bool{"start": true, "help": true, "new": true}
+	// Nothing is handled locally any more; every menu entry is forwarded.
+	locallyHandled := map[string]bool{}
 
 	known := make(map[string]bool)
 	for _, c := range botCommands {

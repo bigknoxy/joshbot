@@ -271,21 +271,15 @@ func TestDiscordReplySurvivesASendFailure(t *testing.T) {
 	d.reply("c1", "the bus is full") // no session at all
 }
 
-// handleCommand is the /help and /new surface. /new must reach the agent (it is
-// the session reset) and be acknowledged; /help must be answered locally and
-// list every command in discordCommands, which is the single source for the
-// unknown-command fallback too.
+// handleCommand forwards every registered command to the agent and answers
+// nothing locally; the unknown-command fallback lists the same table.
 func TestDiscordHandleCommand(t *testing.T) {
 	d, fake := newTestDiscordChannel(t, []string{"111"})
 
-	d.handleCommand("111", "josh", "c1", "/help")
-	msgs := fake.messages()
-	if len(msgs) != 1 {
-		t.Fatalf("/help sent %d messages, want 1", len(msgs))
-	}
+	unknown := unknownDiscordCommandText("/nope")
 	for _, c := range discordCommands {
-		if !strings.Contains(msgs[0], "/"+c.Name) {
-			t.Errorf("/%s is a registered command but is missing from the help text", c.Name)
+		if !strings.Contains(unknown, "/"+c.Name) {
+			t.Errorf("/%s is a registered command but is missing from the unknown-command listing", c.Name)
 		}
 	}
 
@@ -301,15 +295,20 @@ func TestDiscordHandleCommand(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("/new never reached the agent; the session is never reset")
 	}
-	if got := fake.messages(); len(got) != 2 || !strings.Contains(got[1], "new session") {
-		t.Fatalf("/new was not acknowledged: %v", got)
+	if got := fake.messages(); len(got) != 0 {
+		t.Fatalf("/new must not be acknowledged locally (the agent's reply is the ack): %v", got)
 	}
 
 	// An unrecognised command falls through silently here — dispatch is what
 	// answers it — and must not send anything or reach the bus.
 	d.handleCommand("111", "josh", "c1", "/nope")
-	if got := fake.messages(); len(got) != 2 {
+	if got := fake.messages(); len(got) != 0 {
 		t.Fatalf("an unknown command was answered by handleCommand: %v", got)
+	}
+	select {
+	case got := <-d.bus.InboundChannel():
+		t.Fatalf("an unknown command reached the agent: %+v", got)
+	default:
 	}
 }
 

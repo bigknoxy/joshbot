@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **One command table for every channel (cross-channel consistency pass).** `internal/commands` is now the single source for the slash commands: the agent's `/help`, the Telegram menu and unknown-command reply, the Discord list and the CLI's Tab completion all render from it. Discord forwards every command to the agent — `/status`, `/model`, `/personality`, `/compact` and `/resume` used to be "unknown" there while the CLI and Telegram accepted them. `/start` and `/help` give the same answer on every channel (the agent's), replacing three hand-written help texts that had drifted apart. And **`/new` no longer answers twice**: Telegram and Discord sent a local "Starting new session…" on top of the agent's "Started a new conversation!" — the agent's reply is the acknowledgement, and `/new` is routed ahead of the session lock so it arrives at once.
+
 ### Added
 
 - **A `[⏹ Stop]` button on the streaming Telegram reply cancels the running turn (#310).** The press reaches the turn's cancel func directly from the Telegram poller goroutine — it never enters the bus or waits on the per-session lock the turn holds, which is what makes it work while the turn it cancels is still running. The streamed partial stays in the chat and ends with "stopped by you"; a turn that had streamed nothing answers "⏹ Stopped."; a mid-stream cancellation no longer also appends `[stream error: context canceled]`. Tokens are per turn, honoured only from the chat they were issued in, and released when the turn settles. The button rides every interim edit and is dropped by the final one.

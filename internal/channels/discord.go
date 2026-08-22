@@ -14,6 +14,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/commands"
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/log"
 )
@@ -33,9 +34,18 @@ type discordCommand struct {
 	Description string
 }
 
-var discordCommands = []discordCommand{
-	{Name: "help", Description: "Show the list of commands"},
-	{Name: "new", Description: "Start a new session"},
+var discordCommands = discordCommandList()
+
+// discordCommandList renders the Discord command list from the shared table
+// (internal/commands): every command the agent answers is forwarded, so a
+// Discord user is never told a command the CLI and Telegram accept is
+// unknown.
+func discordCommandList() []discordCommand {
+	out := make([]discordCommand, 0, len(commands.All))
+	for _, c := range commands.All {
+		out = append(out, discordCommand{Name: c.Name, Description: c.Description})
+	}
+	return out
 }
 
 // discordSession is the subset of *discordgo.Session the channel needs, so the
@@ -358,19 +368,18 @@ func (d *DiscordChannel) dispatch(userID, username, globalName, channelID, conte
 	}
 }
 
-// handleCommand handles a recognised "/name" command.
+// handleCommand forwards a recognised "/name" command to the agent, which
+// owns every command's behaviour (the CLI and Telegram share the handlers).
+// No local acknowledgement: the agent's reply is the acknowledgement, and a
+// local "Starting new session..." made /new answer twice.
 func (d *DiscordChannel) handleCommand(userID, username, channelID, content string) {
-	switch commandName(content) {
-	case "help":
-		d.reply(channelID, discordHelpText())
-	case "new":
-		inbound := d.inboundMessage(userID, username, channelID, "/new", true)
-		if !d.bus.Send(inbound) {
-			log.Error("failed to send /new command to discord bus")
-			d.reply(channelID, "Sorry, couldn't start a new session. Please try again.")
-			return
-		}
-		d.reply(channelID, "🔄 Starting new session...")
+	if !isKnownDiscordCommand(content) {
+		return
+	}
+	inbound := d.inboundMessage(userID, username, channelID, content, true)
+	if !d.bus.Send(inbound) {
+		log.Error("failed to send command to discord bus", "command", commandName(content))
+		d.reply(channelID, "Sorry, I couldn't process that. Please try again.")
 	}
 }
 
@@ -407,24 +416,7 @@ func isKnownDiscordCommand(text string) bool {
 // unknownDiscordCommandText tells the user their command does not exist and
 // lists the ones that do.
 func unknownDiscordCommandText(text string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Unknown command: /%s\n\nAvailable commands:", commandName(text))
-	for _, c := range discordCommands {
-		fmt.Fprintf(&b, "\n/%s - %s", c.Name, c.Description)
-	}
-	b.WriteString("\n\nOr just send me a message.")
-	return b.String()
-}
-
-// discordHelpText renders the /help response from discordCommands.
-func discordHelpText() string {
-	var b strings.Builder
-	b.WriteString("🤖 **JoshBot**\n\nWelcome! I'm here to help you.\n\nAvailable commands:")
-	for _, c := range discordCommands {
-		fmt.Fprintf(&b, "\n/%s - %s", c.Name, c.Description)
-	}
-	b.WriteString("\n\nJust send me a message and I'll respond!")
-	return b.String()
+	return commands.UnknownText(commandName(text))
 }
 
 // reply sends a short control message straight to a channel, splitting and

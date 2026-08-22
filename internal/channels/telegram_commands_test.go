@@ -187,8 +187,8 @@ func TestHandleNewGatesOnTheAllowlist(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("/new never reached the agent")
 	}
-	if got := srv.texts(); len(got) != 1 || !strings.Contains(got[0], "new session") {
-		t.Fatalf("/new was not acknowledged: %v", got)
+	if got := srv.texts(); len(got) != 0 {
+		t.Fatalf("/new must not be acknowledged locally (the agent's reply is the ack): %v", got)
 	}
 
 	if err := tg.handleNew(textCtx(bot, 9999, "/new")); err != nil {
@@ -199,7 +199,7 @@ func TestHandleNewGatesOnTheAllowlist(t *testing.T) {
 		t.Fatalf("a disallowed sender reset a session: %+v", got)
 	case <-time.After(100 * time.Millisecond):
 	}
-	if got := srv.texts(); len(got) != 1 {
+	if got := srv.texts(); len(got) != 0 {
 		t.Fatalf("a disallowed sender was answered, confirming the bot is live: %v", got)
 	}
 }

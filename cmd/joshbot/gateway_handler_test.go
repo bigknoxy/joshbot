@@ -5,12 +5,14 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/channels"
+	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
@@ -438,5 +440,91 @@ func TestGatewayHandlerAttachesThePickerToCommandReplies(t *testing.T) {
 				t.Errorf("keyboard should be asked for the inbound command, got %+v", asked)
 			}
 		})
+	}
+}
+
+// The Stop button (#310): the handler wraps the turn in a cancellable
+// context the button reaches directly. A pressed turn is finished with the
+// "stopped by you" marker when text had streamed, or answered with a short
+// "Stopped." when nothing had — never with the raw context error, and never
+// with the reply published a second time. The arm is released when the turn
+// settles.
+func TestGatewayHandlerStopButton(t *testing.T) {
+	run := func(t *testing.T, delivered bool) (*recordingDeps, *fakeStreamer, bool) {
+		rec := &recordingDeps{}
+		fs := &fakeStreamer{delivered: delivered}
+		released := false
+		d := baseDeps(rec, "", nil)
+		d.newStreamer = func(bus.InboundMessage) gatewayStreamer { return fs }
+		d.process = func(ctx context.Context, _ bus.InboundMessage) (string, error) {
+			<-ctx.Done() // the press cancels us
+			return agent.ReplyPrefix + "LLM call failed: " + ctx.Err().Error(), nil
+		}
+		d.armStop = func(_ bus.InboundMessage, s gatewayStreamer, cancel context.CancelFunc) (func() bool, func()) {
+			if s != fs {
+				t.Fatal("armStop should receive this turn's streamer")
+			}
+			var pressed atomic.Bool
+			go func() { pressed.Store(true); cancel() }()
+			return pressed.Load, func() { released = true }
+		}
+		gatewayHandler(d)(context.Background(), telegramMsg("user1", "hi"))
+		return rec, fs, released
+	}
+
+	t.Run("text had streamed", func(t *testing.T) {
+		rec, fs, released := run(t, true)
+		if !fs.finished || !errors.Is(fs.finishErr, errTurnStopped) {
+			t.Errorf("Finish err = %v, want errTurnStopped", fs.finishErr)
+		}
+		if n := len(rec.out()); n != 0 {
+			t.Errorf("published %d message(s) for a stopped, streamed turn", n)
+		}
+		if !released {
+			t.Error("the stop arm was not released")
+		}
+	})
+	t.Run("nothing streamed", func(t *testing.T) {
+		rec, _, _ := run(t, false)
+		out := rec.out()
+		if len(out) != 1 || out[0].Content != stoppedReply {
+			t.Fatalf("want one %q reply, got %+v", stoppedReply, out)
+		}
+		if strings.Contains(out[0].Content, "canceled") {
+			t.Error("raw context error reached the chat")
+		}
+	})
+}
+
+// buildGatewayDeps arms the Stop button only for a turn that has a real
+// Telegram streamer, a numeric chat id and a coordinator to register with;
+// every other combination returns nil so the handler runs the turn without
+// a cancel hook rather than panicking on a type assertion.
+func TestBuildGatewayDepsArmStopDeclinesWhatItCannotStop(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	tg := channels.NewTelegramChannel(msgBus, &config.TelegramConfig{Enabled: true, Token: "t"})
+	stops, err := tg.NewStopCoordinator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withStops := buildGatewayDeps(msgBus, nil, nil, tg, true, nil, nil, stops)
+	noStops := buildGatewayDeps(msgBus, nil, nil, tg, true, nil, nil, nil)
+
+	if p, r := noStops.armStop(telegramMsg("u", "hi"), &channels.TelegramStreamer{}, func() {}); p != nil || r != nil {
+		t.Error("no coordinator: must not arm")
+	}
+	if p, r := withStops.armStop(telegramMsg("u", "hi"), &fakeStreamer{}, func() {}); p != nil || r != nil {
+		t.Error("not a Telegram streamer: must not arm")
+	}
+	msg := telegramMsg("u", "hi")
+	msg.Metadata["chat_id"] = "not-a-number"
+	if p, r := withStops.armStop(msg, &channels.TelegramStreamer{}, func() {}); p != nil || r != nil {
+		t.Error("non-numeric chat id: must not arm")
+	}
+	if withStops.commandKeyboard(context.Background(), telegramMsg("u", "/model")) != nil {
+		t.Error("no picker wired: commandKeyboard must be inert")
+	}
+	if out, err := toPickerChoices(nil, errors.New("no session")); err == nil || out != nil {
+		t.Error("toPickerChoices must pass the agent's error through")
 	}
 }

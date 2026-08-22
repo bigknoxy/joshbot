@@ -3012,7 +3012,20 @@ type gatewayDeps struct {
 	// reply (the /model and /personality pickers on Telegram), nil for every
 	// other turn and every other channel.
 	commandKeyboard func(ctx context.Context, msg bus.InboundMessage) *channels.Keyboard
+	// armStop puts a [⏹ Stop] button on this turn's streamed message and
+	// binds it to cancel. It returns a func reporting whether the button
+	// was pressed and a release to call when the turn settles. nil when the
+	// turn cannot be stopped from the chat (no streamer, non-Telegram).
+	armStop func(msg bus.InboundMessage, s gatewayStreamer, cancel context.CancelFunc) (pressed func() bool, release func())
 }
+
+// errTurnStopped is what a stopped turn reports through the streamer: the
+// user pressed the button, so the marker says so rather than quoting the
+// context error the cancellation surfaced as.
+var errTurnStopped = errors.New("stopped by you")
+
+// stoppedReply is the reply for a stopped turn that streamed nothing.
+const stoppedReply = "⏹ Stopped."
 
 // replyMetadata builds the outbound metadata that anchors a reply to the
 // inbound message that triggered it, and (for ordinary answers) selects
@@ -3114,8 +3127,21 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 		// noStreamer, not a nil interface: Finish must return false rather
 		// than panic when this turn is not streamed.
 		var streamer gatewayStreamer = noStreamer{}
+		stopped := func() bool { return false }
 		if s := d.newStreamer(msg); s != nil {
 			streamer = s
+			// The Stop button (#310) cancels this context directly from the
+			// Telegram poller goroutine — it must never wait on the bus or
+			// the session lock the turn it is cancelling holds.
+			if d.armStop != nil {
+				var cancelTurn context.CancelFunc
+				procCtx, cancelTurn = context.WithCancel(procCtx)
+				defer cancelTurn()
+				if pressed, release := d.armStop(msg, s, cancelTurn); release != nil {
+					defer release()
+					stopped = pressed
+				}
+			}
 			procCtx = agent.WithStreamSink(procCtx, func(e agent.StreamEvent) {
 				streamer.Delta(e.Delta)
 			})
@@ -3136,6 +3162,19 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 		}
 
 		response, err := d.process(procCtx, msg)
+		if stopped() {
+			// A stopped turn is not a failure: whatever streamed stays, the
+			// marker says the user stopped it, and nothing else is sent.
+			// Process reports the cancellation in band or as an error
+			// depending on where it landed; both end here.
+			if !streamer.Finish(errTurnStopped) {
+				d.publish(bus.OutboundMessage{
+					Content: stoppedReply, Channel: msg.Channel, ChannelID: resolveChannelID(d, msg),
+					SenderID: msg.SenderID, Timestamp: time.Now(), Metadata: replyMetadata(msg, false),
+				})
+			}
+			return
+		}
 		if err != nil {
 			log.Error("Agent error", "error", err)
 			// Partial text is already in the chat, so the error belongs on the
@@ -3322,8 +3361,19 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
+	// [⏹ Stop] on the streaming message (#310).
+	var stops *channels.StopCoordinator
+	if tgChannel != nil {
+		sc, err := tgChannel.NewStopCoordinator()
+		if err != nil {
+			log.Error("Stop button unavailable", "error", err)
+		} else {
+			stops = sc
+		}
+	}
+
 	msgBus.Subscribe("all", gatewayHandler(buildGatewayDeps(
-		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals, picker)))
+		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals, picker, stops)))
 
 	// Start Telegram channel if enabled
 	if tgChannel != nil {
@@ -3414,11 +3464,25 @@ func buildGatewayDeps(
 	streaming bool,
 	shellApprovals *channels.ShellApprovalCoordinator,
 	picker *channels.Picker,
+	stops *channels.StopCoordinator,
 ) gatewayDeps {
 	return gatewayDeps{
 		commandKeyboard: picker.Keyboard,
-		publish:         msgBus.Publish,
-		process:         process,
+		armStop: func(msg bus.InboundMessage, s gatewayStreamer, cancel context.CancelFunc) (func() bool, func()) {
+			ts, ok := s.(*channels.TelegramStreamer)
+			if stops == nil || !ok {
+				return nil, nil
+			}
+			chatID, err := strconv.ParseInt(getChannelID(msg), 10, 64)
+			if err != nil {
+				return nil, nil
+			}
+			token, pressed, release := stops.Arm(chatID, cancel)
+			ts.SetInterimMarkup(stops.Markup(token))
+			return pressed, release
+		},
+		publish: msgBus.Publish,
+		process: process,
 		setChatID: func(channel, chatID string) {
 			if sender != nil {
 				sender.SetChatID(channel, chatID)

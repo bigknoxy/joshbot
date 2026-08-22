@@ -1818,7 +1818,11 @@ func (a *Agent) handleModelCommand(ctx context.Context, msg bus.InboundMessage) 
 		a.logger.Warn("Failed to save session after /model", "error", err)
 		return fmt.Sprintf("Error: could not save the session, so the model change will not persist: %v", err)
 	}
-	return fmt.Sprintf("✓ Model switched to %s for this session.\n\nUse /model %s --global to make it the default for all sessions.", canonical, canonical)
+	// The conversation is kept, deliberately: a switch mid-task is usually
+	// "try a smarter model on this", and a button that silently wiped the
+	// transcript would be a destructive action one tap away. The trade-off
+	// (a transcript answered by two models) is named so the user can pick.
+	return fmt.Sprintf("✓ Model switched to %s for this session.\n\nThe conversation continues with the new model; send /new to start fresh. Use /model %s --global to make it the default for all sessions.", canonical, canonical)
 }
 
 // parseModelArgs splits a /model line into the model spec tokens and whether

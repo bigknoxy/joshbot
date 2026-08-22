@@ -3008,6 +3008,10 @@ type gatewayDeps struct {
 	// heartbeat inbounds, which carry no chat id). nil means no approver is
 	// installed and the gate denies rather than blocks — the pre-#311 state.
 	approverFor func(msg bus.InboundMessage) tools.Approver
+	// commandKeyboard returns the inline keyboard to attach to a command
+	// reply (the /model and /personality pickers on Telegram), nil for every
+	// other turn and every other channel.
+	commandKeyboard func(ctx context.Context, msg bus.InboundMessage) *channels.Keyboard
 }
 
 // replyMetadata builds the outbound metadata that anchors a reply to the
@@ -3199,6 +3203,15 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			Timestamp: time.Now(),
 			Metadata:  replyMetadata(msg, true),
 		}
+		// A bare /model or /personality on Telegram gets its list as buttons.
+		// Attached only when the reply is an answer: a failed turn's error
+		// text with a picker under it would invite a press into the same
+		// failure.
+		if d.commandKeyboard != nil && agentReplyError(response) == nil {
+			if kb := d.commandKeyboard(ctx, msg); kb != nil {
+				outbound.Metadata["reply_markup"] = kb
+			}
+		}
 		d.publish(outbound)
 	}
 }
@@ -3296,8 +3309,21 @@ func runGateway(c *cli.Context) error {
 	// the network and process lifecycle around it. The deps wiring is built by
 	// buildGatewayDeps so the end-to-end gateway test exercises the exact
 	// production composition rather than a hand-copied stand-in.
+	// /model and /personality as inline pickers (#313). Registered before
+	// Start for the same data-race reason as the approval keyboard; a
+	// registration failure keeps the typed commands working without buttons.
+	var picker *channels.Picker
+	if tgChannel != nil {
+		pk, err := tgChannel.NewPicker(pickerBackend{agentInstance})
+		if err != nil {
+			log.Error("Model/personality pickers unavailable; typed commands still work", "error", err)
+		} else {
+			picker = pk
+		}
+	}
+
 	msgBus.Subscribe("all", gatewayHandler(buildGatewayDeps(
-		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals)))
+		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals, picker)))
 
 	// Start Telegram channel if enabled
 	if tgChannel != nil {
@@ -3353,6 +3379,33 @@ func runGateway(c *cli.Context) error {
 // subscribes with it and the end-to-end gateway test drives it, so a wiring
 // bug (a sink on the wrong context, a shared streamer) fails a test instead
 // of only failing in production.
+// pickerBackend adapts *agent.Agent to channels.PickerBackend: the two
+// packages do not import each other, so the choice type is converted here.
+type pickerBackend struct{ a *agent.Agent }
+
+func (p pickerBackend) ModelChoices(ctx context.Context, msg bus.InboundMessage) ([]channels.PickerChoice, error) {
+	return toPickerChoices(p.a.ModelChoices(ctx, msg))
+}
+
+func (p pickerBackend) PersonalityChoices(ctx context.Context, msg bus.InboundMessage) ([]channels.PickerChoice, error) {
+	return toPickerChoices(p.a.PersonalityChoices(ctx, msg))
+}
+
+func (p pickerBackend) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	return p.a.Process(ctx, msg)
+}
+
+func toPickerChoices(in []agent.Choice, err error) ([]channels.PickerChoice, error) {
+	if err != nil {
+		return nil, err
+	}
+	out := make([]channels.PickerChoice, len(in))
+	for i, c := range in {
+		out[i] = channels.PickerChoice{Spec: c.Spec, Label: c.Label, Current: c.Current}
+	}
+	return out, nil
+}
+
 func buildGatewayDeps(
 	msgBus *bus.MessageBus,
 	process func(context.Context, bus.InboundMessage) (string, error),
@@ -3360,10 +3413,12 @@ func buildGatewayDeps(
 	tgChannel *channels.TelegramChannel,
 	streaming bool,
 	shellApprovals *channels.ShellApprovalCoordinator,
+	picker *channels.Picker,
 ) gatewayDeps {
 	return gatewayDeps{
-		publish: msgBus.Publish,
-		process: process,
+		commandKeyboard: picker.Keyboard,
+		publish:         msgBus.Publish,
+		process:         process,
 		setChatID: func(channel, chatID string) {
 			if sender != nil {
 				sender.SetChatID(channel, chatID)

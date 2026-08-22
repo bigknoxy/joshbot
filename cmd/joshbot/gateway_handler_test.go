@@ -10,6 +10,7 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/channels"
 	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
@@ -398,5 +399,44 @@ func TestGatewayHandlerInstallsTheShellApprover(t *testing.T) {
 	gatewayHandler(deps)(context.Background(), bus.InboundMessage{Channel: "telegram", SenderID: "cron", Content: "tick"})
 	if stub.asked || !sawDeny {
 		t.Errorf("id-less turn: gate must fail closed (asked=%v, denied=%v)", stub.asked, sawDeny)
+	}
+}
+
+// A bare /model on Telegram gets its picker attached to the reply as a typed
+// *channels.Keyboard under "reply_markup" — the only form the channel
+// validates. A failed turn gets none: a picker under an error would invite a
+// press into the same failure.
+func TestGatewayHandlerAttachesThePickerToCommandReplies(t *testing.T) {
+	kb := &channels.Keyboard{}
+	kb.Row(channels.ActionButton("x", "model", "pick", "x"))
+	for _, tc := range []struct {
+		name  string
+		reply string
+		want  bool
+	}{
+		{"answer", "Current model: x", true},
+		{"error", agent.ReplyPrefix + "boom", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recordingDeps{}
+			deps := baseDeps(rec, tc.reply, nil)
+			var asked bus.InboundMessage
+			deps.commandKeyboard = func(_ context.Context, msg bus.InboundMessage) *channels.Keyboard {
+				asked = msg
+				return kb
+			}
+			gatewayHandler(deps)(context.Background(), telegramMsg("user1", "/model"))
+			out := rec.out()
+			if len(out) != 1 {
+				t.Fatalf("published %d messages, want 1", len(out))
+			}
+			got, has := out[0].Metadata["reply_markup"].(*channels.Keyboard)
+			if has != tc.want || (has && got != kb) {
+				t.Errorf("reply_markup attached=%v (want %v): %+v", has, tc.want, out[0].Metadata)
+			}
+			if tc.want && asked.Content != "/model" {
+				t.Errorf("keyboard should be asked for the inbound command, got %+v", asked)
+			}
+		})
 	}
 }

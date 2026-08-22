@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.62.1] - 2026-08-22
+
 ### Fixed
 
 - **The auto-derived topic hint no longer reads as a cut-off message from the user.** `inferTopic` stored the user's words lowercased, cut mid-word at 60 bytes with `...` appended, and the prompt injected it as `Current topic: ...` — a live Telegram turn had the model reply "you were saying 'wanting to do a new topi...' and then radio silence" and answer that phantom instead of the real question. The hint now keeps the user's casing, cuts on a word boundary with no ellipsis, and is injected labelled as auto-derived and not a message. The system prompt also states that a tool result is the agent's own output, never something the user pasted (the same transcript answered a web search with "you've pasted me a whole forecast"), and the live eval gains `tool_result_is_not_user_input` to catch a regression.

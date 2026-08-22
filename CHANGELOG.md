@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.62.0] - 2026-08-22
+
 ### Changed
 
 - **One command table for every channel (cross-channel consistency pass).** `internal/commands` is now the single source for the slash commands: the agent's `/help`, the Telegram menu and unknown-command reply, the Discord list and the CLI's Tab completion all render from it. Discord forwards every command to the agent — `/status`, `/model`, `/personality`, `/compact` and `/resume` used to be "unknown" there while the CLI and Telegram accepted them. `/start` and `/help` give the same answer on every channel (the agent's), replacing three hand-written help texts that had drifted apart. And **`/new` no longer answers twice**: Telegram and Discord sent a local "Starting new session…" on top of the agent's "Started a new conversation!" — the agent's reply is the acknowledgement, and `/new` is routed ahead of the session lock so it arrives at once.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/providers"
@@ -133,6 +134,16 @@ func TestInferTopicCutsOnAWordWithNoEllipsisAndKeepsCase(t *testing.T) {
 	}
 	if inferTopic(strings.Repeat("x", 80)) != strings.Repeat("x", topicMaxLen) {
 		t.Errorf("a single long word is hard-cut: %q", inferTopic(strings.Repeat("x", 80)))
+	}
+	// strings.ToLower changes byte length for İ (2 → 3 bytes): the prefix
+	// strip must index the original by the prefix's own length, not by an
+	// offset taken from the lowered copy.
+	if got := inferTopic("What İstanbul is famous for"); got != "İstanbul is famous for" {
+		t.Errorf("length-changing rune misaligned the strip: %q", got)
+	}
+	// A hard cut through CJK text must land on a rune boundary.
+	if got := inferTopic(strings.Repeat("日本語", 30)); !utf8.ValidString(got) || len(got) > topicMaxLen {
+		t.Errorf("hard cut produced invalid UTF-8 or overran: %q (%d bytes)", got, len(got))
 	}
 }
 

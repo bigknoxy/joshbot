@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/commands"
@@ -2160,23 +2161,31 @@ func inferTopic(content string) string {
 			return ""
 		}
 	}
-	// Strip question words for cleaner topic
-	cleaned := strings.TrimPrefix(lower, "what ")
-	cleaned = strings.TrimPrefix(cleaned, "what's ")
-	cleaned = strings.TrimPrefix(cleaned, "what are ")
-	cleaned = strings.TrimPrefix(cleaned, "tell me about ")
-	cleaned = strings.TrimPrefix(cleaned, "tell me ")
-	// Keep the original casing of what survives the strip: the prefix trims
-	// were matched on the lowercase copy, so take the same byte offset.
-	cleaned = strings.TrimSpace(content[len(content)-len(cleaned):])
+	// Strip question words for cleaner topic. The match is on the lowercase
+	// copy but the strip is applied to the original by the prefix's own
+	// (ASCII) byte length: strings.ToLower can change a string's byte length
+	// (İ is 2 bytes, its lowercase 3), so an offset taken from the lowered
+	// copy does not index the original.
+	cleaned := content
+	for _, prefix := range []string{"what's ", "what are ", "what ", "tell me about ", "tell me "} {
+		if strings.HasPrefix(lower, prefix) {
+			cleaned = cleaned[len(prefix):]
+			lower = lower[len(prefix):]
+		}
+	}
+	cleaned = strings.TrimSpace(cleaned)
 	// Cut on a word boundary with no ellipsis. A mid-word cut with "..."
 	// appended — "wanting to do a new topi..." — read to the model as a user
 	// message that broke off, and it answered the "cut-off" message instead
-	// of the real one.
+	// of the real one. A single long word is cut hard, backed off to a rune
+	// start so the hint is never invalid UTF-8.
 	if len(cleaned) > topicMaxLen {
 		cut := strings.LastIndex(cleaned[:topicMaxLen], " ")
 		if cut < topicMaxLen/2 {
 			cut = topicMaxLen
+			for cut > 0 && !utf8.RuneStart(cleaned[cut]) {
+				cut--
+			}
 		}
 		cleaned = strings.TrimRight(cleaned[:cut], " ,;:-")
 	}

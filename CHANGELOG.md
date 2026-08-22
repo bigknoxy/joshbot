@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.61.0] - 2026-08-22
+
 ### Added
 
 - **An end-to-end gateway test now exercises the production wiring (audit find: `runGateway` had 0% coverage).** `TestGatewayEndToEnd_TelegramUpdateToWire` drives one Telegram update from a fake Bot API through the real poller, bus, agent (scripted provider, real session files) and `TelegramStreamer` back to the wire, asserting three things nothing previously checked outside production: the reply reaches the chat as converted HTML with `parse_mode: HTML`; the chat's *final state* holds exactly one message with the complete reply (loss, duplication, and a dangling partial all fail — verified by mutation against the `Finish` suppression); and the turn persists to a real session file. The wiring itself moved into `buildGatewayDeps`, the single function both `runGateway` and the test call, so the test cannot drift from what production runs.

@@ -205,12 +205,26 @@ func TestGatewayEndToEnd_TelegramUpdateToWire(t *testing.T) {
 	}
 	cfg := config.Defaults()
 	cfg.Agents.Defaults.Streaming = true
+	// One keyed provider so /model has something to list; the scripted
+	// provider below answers regardless of the configured name.
+	cfg.Providers["scripted"] = config.ProviderConfig{Enabled: true, APIKey: "k", Model: "scripted-1"}
 	const reply = "Here is **bold** text"
 	agentInstance := agent.NewAgent(cfg, &scriptedStreamProvider{reply: reply, interDelta: 4 * time.Second}, noTools{}, sessions, nil)
 	sender := tools.NewBusMessageSender(msgBus)
 
+	// The production wiring for the inline controls too: the /model and
+	// /personality pickers (#313) and the Stop button (#310), through the
+	// same adapters runGateway uses.
+	picker, err := tgChannel.NewPicker(pickerBackend{agentInstance})
+	if err != nil {
+		t.Fatalf("NewPicker: %v", err)
+	}
+	stops, err := tgChannel.NewStopCoordinator()
+	if err != nil {
+		t.Fatalf("NewStopCoordinator: %v", err)
+	}
 	msgBus.Subscribe("all", gatewayHandler(buildGatewayDeps(
-		msgBus, agentInstance.Process, sender, tgChannel, cfg.Agents.Defaults.Streaming, nil, nil, nil)))
+		msgBus, agentInstance.Process, sender, tgChannel, cfg.Agents.Defaults.Streaming, nil, picker, stops)))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -260,6 +274,41 @@ func TestGatewayEndToEnd_TelegramUpdateToWire(t *testing.T) {
 	if len(replyMessages) != 1 || replyMessages[0] != wantHTML {
 		t.Errorf("chat final state must be exactly one message holding the complete reply, got %d: %q",
 			len(replyMessages), replyMessages)
+	}
+
+	// The Stop button rode the interim edits and is gone from the final
+	// one: a keyboard left on a finished message is a button into nothing.
+	var interimWithStop, finalWithStop int
+	for _, b := range append(api.bodies("sendMessage"), api.bodies("editMessageText")...) {
+		rm := fmt.Sprint(b["reply_markup"])
+		text, _ := b["text"].(string)
+		hasStop := strings.Contains(rm, "⏹ Stop")
+		switch {
+		case text == wantHTML && hasStop:
+			finalWithStop++
+		case text != wantHTML && hasStop:
+			interimWithStop++
+		}
+	}
+	if interimWithStop == 0 || finalWithStop != 0 {
+		t.Errorf("Stop button: on %d interim edits (want >0), on %d final edits (want 0)", interimWithStop, finalWithStop)
+	}
+
+	// The picker adapter hands the agent's choices to the channel unchanged.
+	bare := bus.InboundMessage{Channel: "telegram", SenderID: "telegram_99", Content: "/model"}
+	models, err := pickerBackend{agentInstance}.ModelChoices(ctx, bare)
+	if err != nil || len(models) == 0 {
+		t.Errorf("pickerBackend.ModelChoices = %v, %v", models, err)
+	}
+	personas, err := pickerBackend{agentInstance}.PersonalityChoices(ctx, bare)
+	if err != nil || len(personas) == 0 || personas[len(personas)-1].Spec != "none" {
+		t.Errorf("pickerBackend.PersonalityChoices = %v, %v", personas, err)
+	}
+	if out, err := (pickerBackend{agentInstance}).Process(ctx, bare); err != nil || !strings.Contains(out, "Current model") {
+		t.Errorf("pickerBackend.Process(/model) = %q, %v", out, err)
+	}
+	if kb := picker.Keyboard(ctx, bare); kb == nil {
+		t.Error("the wired picker should build a keyboard for a bare /model")
 	}
 
 	// The turn persisted to a real session file keyed telegram:telegram_99.

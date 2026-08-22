@@ -12,6 +12,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/channels"
+	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
@@ -493,4 +494,37 @@ func TestGatewayHandlerStopButton(t *testing.T) {
 			t.Error("raw context error reached the chat")
 		}
 	})
+}
+
+// buildGatewayDeps arms the Stop button only for a turn that has a real
+// Telegram streamer, a numeric chat id and a coordinator to register with;
+// every other combination returns nil so the handler runs the turn without
+// a cancel hook rather than panicking on a type assertion.
+func TestBuildGatewayDepsArmStopDeclinesWhatItCannotStop(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	tg := channels.NewTelegramChannel(msgBus, &config.TelegramConfig{Enabled: true, Token: "t"})
+	stops, err := tg.NewStopCoordinator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withStops := buildGatewayDeps(msgBus, nil, nil, tg, true, nil, nil, stops)
+	noStops := buildGatewayDeps(msgBus, nil, nil, tg, true, nil, nil, nil)
+
+	if p, r := noStops.armStop(telegramMsg("u", "hi"), &channels.TelegramStreamer{}, func() {}); p != nil || r != nil {
+		t.Error("no coordinator: must not arm")
+	}
+	if p, r := withStops.armStop(telegramMsg("u", "hi"), &fakeStreamer{}, func() {}); p != nil || r != nil {
+		t.Error("not a Telegram streamer: must not arm")
+	}
+	msg := telegramMsg("u", "hi")
+	msg.Metadata["chat_id"] = "not-a-number"
+	if p, r := withStops.armStop(msg, &channels.TelegramStreamer{}, func() {}); p != nil || r != nil {
+		t.Error("non-numeric chat id: must not arm")
+	}
+	if withStops.commandKeyboard(context.Background(), telegramMsg("u", "/model")) != nil {
+		t.Error("no picker wired: commandKeyboard must be inert")
+	}
+	if out, err := toPickerChoices(nil, errors.New("no session")); err == nil || out != nil {
+		t.Error("toPickerChoices must pass the agent's error through")
+	}
 }

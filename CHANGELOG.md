@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The fallback notice is given in full once per outage, then collapses to a marker** — a provider that retired the configured model is down for the life of the session, and #339's once-per-turn rule still put the same `⚠️ nvidia unavailable (http_410) — … pick another with /model — answered by poolside (…)` paragraph at the top of every reply, burying the one instruction in it (#348). The first reply a fallback answers carries the full notice; later replies answered by the same fallback for the same outage open with `↪ answered by poolside (poolside/laguna-s-2.1)`; the full notice returns once the addressed provider has answered again. The outage is identified by the addressed provider plus whether the failure is a retired model (404/410), so a cooldown that follows a 410 continues that outage rather than announcing a new one. The key is `session.Session.FallbackNoticed` (`fallback_noticed`, `omitempty`) on the metadata sidecar, so a restart does not re-announce, and `/new` clears it. `agents.defaults.quiet_fallback` still suppresses both forms.
+
 ## [1.62.2] - 2026-08-24
 
 ### Fixed

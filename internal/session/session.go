@@ -147,6 +147,11 @@ type Session struct {
 	UpdatedAt           time.Time         `json:"updated_at"`
 	ConversationTopic   string            `json:"conversation_topic,omitempty"`
 	ConversationContext map[string]string `json:"conversation_context,omitempty"`
+	// FallbackNoticed records which provider outage the user has already been
+	// told about in full (see agent.fallbackNoticeKey), so later turns answered
+	// by the same fallback carry a short marker instead of repeating the whole
+	// notice (#348). Cleared when the addressed provider answers again.
+	FallbackNoticed string `json:"fallback_noticed,omitempty"`
 	// ModelOverride, when set, pins this session to a specific model name or
 	// provider:model spec instead of the configured default. Persisted per
 	// session so a /model switch survives restarts but never affects other

@@ -567,8 +567,12 @@ The new model-centric format is simpler and more intuitive. Define models direct
   turn; the in-chat `/status` command shows any provider currently cooling down.
 - When a fallback does answer, the reply **opens with a one-line notice** —
   `⚠️ nvidia unavailable (rate_limit) — answered by poolside (poolside/laguna-s-2.1)` —
-  so a silent model switch never masquerades as the primary working. Set
-  `agents.defaults.quiet_fallback` to `true` to suppress it.
+  so a silent model switch never masquerades as the primary working. The full
+  notice appears once per outage; later replies answered by the same fallback
+  open with a short `↪ answered by poolside (…)` marker instead, and the full
+  notice returns once the primary has answered again (`/status` always shows
+  the current cooldowns). Set `agents.defaults.quiet_fallback` to `true` to
+  suppress both.
 - Streaming requests ask for the usage-bearing final chunk
   (`stream_options.include_usage`), so token usage is reported for streaming
   turns too; `providers.<name>.disable_stream_usage: true` opts an endpoint out

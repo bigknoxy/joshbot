@@ -11,6 +11,7 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/providers"
+	"github.com/bigknoxy/joshbot/internal/session"
 )
 
 // hostedModelProvider answers only for the models it hosts, the way a real API
@@ -319,5 +320,139 @@ func TestProcess_FallbackNoticeOncePerTurnAcrossToolCalls(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- #348: the full notice is once per outage, not once per turn -----------
+
+func newFallbackAgent(t *testing.T, sessions SessionManager, openErr error) *Agent {
+	t.Helper()
+	openrouter := &hostedModelProvider{
+		name:    "openrouter",
+		hosts:   map[string]bool{"z-ai/glm-5.2": true},
+		openErr: openErr,
+		reply:   "Answer from the primary.",
+	}
+	poolside := &hostedModelProvider{
+		name:  "poolside",
+		hosts: map[string]bool{"poolside/laguna-s-2.1": true},
+		reply: "Answer from the backup.",
+	}
+	mp := providers.NewMultiProvider(providers.MultiProviderConfig{DefaultProvider: "openrouter"})
+	mp.Register("openrouter", openrouter, "z-ai/glm-5.2", 0, true)
+	mp.Register("poolside", poolside, "poolside/laguna-s-2.1", 1, true)
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Model = "z-ai/glm-5.2"
+	return NewAgent(cfg, mp, &mockToolExecutor{}, sessions, newMockLogger())
+}
+
+func fallbackTurn(t *testing.T, a *Agent, content string) string {
+	t.Helper()
+	got, err := a.Process(context.Background(), bus.InboundMessage{
+		SenderID: "josh", Content: content, Channel: "cli", Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Process() failed: %v", err)
+	}
+	return got
+}
+
+// The second reply answered by the same fallback for the same outage opens
+// with the short marker, not the full paragraph. Before the fix every reply
+// in a session repeated "⚠️ nvidia unavailable (http_410) — nvidia no longer
+// serves this model; pick another with /model — answered by poolside (...)".
+func TestProcess_FallbackNoticeIsFullOnceThenAMarker(t *testing.T) {
+	a := newFallbackAgent(t, newMockSessionManager(), fmt.Errorf("API error (410): gone"))
+
+	first := fallbackTurn(t, a, "hello")
+	if !strings.HasPrefix(first, "⚠️ openrouter unavailable (http_410)") || !strings.Contains(first, "/model") {
+		t.Fatalf("first reply should carry the full notice with the /model hint: %q", first)
+	}
+
+	second := fallbackTurn(t, a, "still there?")
+	if !strings.HasPrefix(second, "↪ answered by poolside (poolside/laguna-s-2.1)\n\n") {
+		t.Errorf("second reply should open with the short marker: %q", second)
+	}
+	if strings.Contains(second, "⚠️") || strings.Contains(second, "/model") {
+		t.Errorf("second reply repeats the full notice: %q", second)
+	}
+	if !strings.HasSuffix(second, "Answer from the backup.") {
+		t.Errorf("marker should be followed by the answer: %q", second)
+	}
+
+	// A cooldown after a 410 is the same outage: still the marker.
+	third := fallbackTurn(t, a, "and now?")
+	if !strings.HasPrefix(third, "↪ answered by poolside") {
+		t.Errorf("third reply should still be the marker: %q", third)
+	}
+}
+
+// Once the addressed provider answers again, the next outage is news and is
+// reported in full.
+func TestProcess_FallbackNoticeResetsWhenThePrimaryRecovers(t *testing.T) {
+	// One session store shared by three chains — down, recovered, down again —
+	// because the cooldown table inside a MultiProvider cannot be advanced
+	// from this package and the state under test lives on the session.
+	sessions := newMockSessionManager()
+
+	down := newFallbackAgent(t, sessions, fmt.Errorf("API error (503): down"))
+	fallbackTurn(t, down, "one")
+	if got := fallbackTurn(t, down, "two"); !strings.HasPrefix(got, "↪ answered by poolside") {
+		t.Fatalf("second reply should be the marker: %q", got)
+	}
+
+	up := newFallbackAgent(t, sessions, nil)
+	if got := fallbackTurn(t, up, "three"); !strings.HasPrefix(got, "Answer from the primary.") {
+		t.Fatalf("expected the primary to answer with no notice: %q", got)
+	}
+
+	again := newFallbackAgent(t, sessions, fmt.Errorf("API error (503): down again"))
+	if got := fallbackTurn(t, again, "four"); !strings.HasPrefix(got, "⚠️ openrouter unavailable") {
+		t.Errorf("a new outage after recovery should be reported in full: %q", got)
+	}
+}
+
+// The key survives the session's save/load round trip, so a restart does not
+// re-announce an outage the user has already read about.
+func TestFallbackNoticedSurvivesSessionRoundTrip(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	sess, err := mgr.GetOrCreate(context.Background(), "cli:josh")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	sess.FallbackNoticed = "nvidia|retired"
+	if err := mgr.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := mgr.Load(context.Background(), "cli:josh")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.FallbackNoticed != "nvidia|retired" {
+		t.Errorf("FallbackNoticed = %q after round trip, want nvidia|retired", loaded.FallbackNoticed)
+	}
+	reset, err := mgr.ResetConversation(context.Background(), "cli:josh")
+	if err != nil {
+		t.Fatalf("ResetConversation: %v", err)
+	}
+	if reset.FallbackNoticed != "" {
+		t.Errorf("/new should clear the notice key, got %q", reset.FallbackNoticed)
+	}
+}
+
+func TestFallbackNoticeKey(t *testing.T) {
+	for _, tc := range []struct{ reason, want string }{
+		{"http_410", "nvidia|retired"},
+		{"http_404", "nvidia|retired"},
+		{"rate_limit", "nvidia"},
+		{"cooldown", "nvidia"},
+		{"http_503", "nvidia"},
+	} {
+		if got := fallbackNoticeKey(providers.FallbackNotice{From: "nvidia", Reason: tc.reason}); got != tc.want {
+			t.Errorf("key(%s) = %q, want %q", tc.reason, got, tc.want)
+		}
 	}
 }

@@ -314,6 +314,7 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 			Personality         string            `json:"personality,omitempty"`
 			Checkpoint          *Checkpoint       `json:"checkpoint,omitempty"`
 			Generation          int               `json:"generation,omitempty"`
+			FallbackNoticed     string            `json:"fallback_noticed,omitempty"`
 		}
 		if err := json.Unmarshal(metaData, &meta); err != nil {
 			log.Warnf("session %s: metadata sidecar unparseable (%v); model override, personality and checkpoint not restored",
@@ -325,6 +326,7 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 			sess.Personality = meta.Personality
 			sess.Checkpoint = meta.Checkpoint
 			sess.Generation = meta.Generation
+			sess.FallbackNoticed = meta.FallbackNoticed
 		}
 	}
 
@@ -385,7 +387,7 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 	// Generation counts as presence: a reset clears every other field, so
 	// dropping the sidecar here would lose the fence and let the very turn the
 	// reset was racing write its transcript back on the next Save.
-	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" || s.Checkpoint != nil || s.Generation > 0 {
+	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" || s.Checkpoint != nil || s.Generation > 0 || s.FallbackNoticed != "" {
 		meta := struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
 			ConversationContext map[string]string `json:"conversation_context,omitempty"`
@@ -393,6 +395,7 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 			Personality         string            `json:"personality,omitempty"`
 			Checkpoint          *Checkpoint       `json:"checkpoint,omitempty"`
 			Generation          int               `json:"generation,omitempty"`
+			FallbackNoticed     string            `json:"fallback_noticed,omitempty"`
 		}{
 			ConversationTopic:   s.ConversationTopic,
 			ConversationContext: s.ConversationContext,
@@ -400,6 +403,7 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 			Personality:         s.Personality,
 			Checkpoint:          s.Checkpoint,
 			Generation:          s.Generation,
+			FallbackNoticed:     s.FallbackNoticed,
 		}
 		metaData, err := json.Marshal(meta)
 		if err != nil {
@@ -577,6 +581,7 @@ func (m *Manager) ResetConversation(ctx context.Context, sessionID string) (*Ses
 	sess.ClearMessages()
 	sess.ModelOverride = ""
 	sess.Personality = ""
+	sess.FallbackNoticed = ""
 	sess.Generation++
 
 	if err := m.Save(ctx, sess); err != nil {

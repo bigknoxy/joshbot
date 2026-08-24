@@ -684,13 +684,39 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	// or more LLM calls, and a per-call notice reached the chat once per
 	// call — twice at the top of a reply, and glued mid-sentence onto the
 	// narration of the iteration before (#339).
+	//
+	// And once per *outage*, not once per turn, in full: the first turn a
+	// fallback answers carries the whole notice; later turns answered by the
+	// same fallback for the same kind of failure carry a one-line marker,
+	// because a provider that retired the configured model is down for the
+	// life of the session and the same paragraph at the top of every reply
+	// buries the one instruction in it (#348). The key is persisted on the
+	// session and cleared when the addressed provider answers again.
 	ts := &turnStream{}
 	if !a.cfg.Agents.Defaults.QuietFallback {
 		ctx = providers.WithFallbackNotice(ctx, func(n providers.FallbackNotice) {
 			if ts.notice == "" {
-				ts.notice = formatFallbackNotice(n)
+				ts.noticeKey = fallbackNoticeKey(n)
+				if sess != nil && sameOutage(sess.FallbackNoticed, n) {
+					ts.noticeKey = sess.FallbackNoticed
+					ts.notice = formatFallbackMarker(n)
+				} else {
+					ts.notice = formatFallbackNotice(n)
+				}
 			}
 		})
+		defer func() {
+			if sess == nil {
+				return
+			}
+			switch {
+			case ts.noticeKey != "":
+				sess.FallbackNoticed = ts.noticeKey
+			case ts.answered:
+				// The addressed provider answered: the next outage is news.
+				sess.FallbackNoticed = ""
+			}
+		}()
 	}
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
@@ -752,6 +778,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		if usageSink := usageFromContext(ctx); usageSink != nil {
 			usageSink(resp.Usage)
 		}
+		ts.answered = true
 
 		// Check if we have a valid response
 		if len(resp.Choices) == 0 {
@@ -1197,10 +1224,51 @@ type turnStream struct {
 	notice string
 	// noticeShown records that the notice went through the stream sink.
 	noticeShown bool
+	// noticeKey identifies the outage the notice describes (fallbackNoticeKey);
+	// answered records that some LLM call of the turn succeeded.
+	noticeKey string
+	answered  bool
 	// streamed records that some text delta reached the sink this turn;
 	// tailNewline whether the last one ended its line.
 	streamed    bool
 	tailNewline bool
+}
+
+// fallbackNoticeKey identifies an outage for once-per-outage notice purposes:
+// the addressed provider, plus whether the failure is a retired model
+// (404/410) rather than a transient one. A cooldown following a 410 keys the
+// same as the 410 — it is the same outage, deprioritized — so the user is not
+// told twice. Rate limits and 5xx share the transient key.
+func fallbackNoticeKey(n providers.FallbackNotice) string {
+	if isRetiredModelReason(n.Reason) {
+		return n.From + "|retired"
+	}
+	return n.From
+}
+
+// sameOutage reports whether the notice n describes the outage already
+// recorded as noticed. A cooldown is the chain declining to dial a provider
+// that failed earlier, so it continues whatever outage was recorded for that
+// provider rather than starting a new one.
+func sameOutage(noticed string, n providers.FallbackNotice) bool {
+	if noticed == "" {
+		return false
+	}
+	if noticed == fallbackNoticeKey(n) {
+		return true
+	}
+	return n.Reason == "cooldown" && (noticed == n.From || strings.HasPrefix(noticed, n.From+"|"))
+}
+
+// isRetiredModelReason reports a not-found class on the addressed provider.
+func isRetiredModelReason(reason string) bool {
+	return reason == "http_404" || reason == "http_410"
+}
+
+// formatFallbackMarker is the short form shown once the full notice has
+// already been given for this outage: who answered, nothing else.
+func formatFallbackMarker(n providers.FallbackNotice) string {
+	return fmt.Sprintf("↪ answered by %s (%s)\n\n", n.To, n.Model)
 }
 
 // formatFallbackNotice renders the one-line, user-facing note that a reply
@@ -1209,8 +1277,8 @@ type turnStream struct {
 // carries it without per-channel wiring.
 func formatFallbackNotice(n providers.FallbackNotice) string {
 	hint := ""
-	switch n.Reason {
-	case "http_404", "http_410":
+	switch {
+	case isRetiredModelReason(n.Reason):
 		// A not-found on the addressed provider is not an outage: the
 		// configured model is gone (hosted catalogs retire models — NVIDIA
 		// answered 410 for z-ai/glm-5.2 — and a typo looks the same). The

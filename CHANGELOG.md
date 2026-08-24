@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Compaction wiped the conversation on every tool-using turn** — three defects compounded (#346). `context.Registry.Lookup` assumed a 4096-token window for any model it did not recognise, which is every current hosted model including joshbot's own default; with `max_tokens` 8192 the budget arithmetic went negative and was clamped to 256 tokens, so proactive compaction fired at roughly 700 characters of history. `checkAndCompactContext` then summarized the *whole* session, the user's live message included, and sent the model `[system, <ctx_compress>…</ctx_compress>]` — which is why the reply asked what "them" referred to. And the "summary" was a deterministic newest-backwards join cut to that budget, because `Compressor.CompressMessages` asked the provider only above 50 messages and its second provider path summarized the already-truncated join. Now: an unrecognised model gets `context.DefaultContextWindow` (131072); a completion reservation that swallows the window falls back to a quarter of it, never to the 256 floor; the live turn and the `compactionKeepTail` (6) messages before it are held out of every compaction verbatim (the tail is anchored to the start of the turn so a multi-tool turn does not move the boundary and re-summarize on every iteration, and a prefix too small to matter is skipped rather than spent on an LLM call); and the provider is asked to summarize the whole conversation whenever one is available, with the deterministic join only as its failure fallback. `TestCompactionKeepsTheLiveTurnVerbatim` pins the request and the persisted session; `TestCompressMessages_ProviderSeesTheWholeConversation` pins the summarizer's input.
+
 ## [1.62.1] - 2026-08-22
 
 ### Fixed

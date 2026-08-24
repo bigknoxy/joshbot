@@ -86,9 +86,12 @@ func newCompactionFixture(t *testing.T, sessions SessionManager, comp *countingC
 	toolLayer := &recordingTools{outputs: map[string]string{}}
 
 	a := NewAgent(cfg, provider, toolLayer, sessions, newMockLogger(),
-		// Margin 3800 against the 4096-token "small" window drives the budget
-		// to its floor, so seeded history always exceeds it.
-		WithBudgetManager(ctxpkg.NewBudgetManager(ctxpkg.NewRegistry(), 3800)),
+		// An 8192-token window less the margin leaves ~4300 tokens, so the
+		// seeded 400-char history (chatHistory(30, 400) is ~6000 tokens)
+		// exceeds the threshold while the compactionKeepTail messages held
+		// out verbatim (#346) fit under it and do not re-trigger compaction
+		// on every later turn.
+		WithBudgetManager(ctxpkg.NewBudgetManager(fixtureRegistry(), 3800)),
 		WithContextCompressor(comp),
 	)
 
@@ -99,6 +102,21 @@ func newCompactionFixture(t *testing.T, sessions SessionManager, comp *countingC
 		provider:   provider,
 		sessionKey: "cli:eval",
 	}
+}
+
+// fixtureRegistry maps the fixture's "small" model to an 8192-token window.
+func fixtureRegistry() *ctxpkg.Registry {
+	registry := ctxpkg.NewRegistry()
+	registry.SetOverride("small", 8192)
+	return registry
+}
+
+// tightenBudget drives the fixture's budget to the 256-token floor, so even a
+// memory-windowed handful of messages exceeds it.
+func tightenBudget(f *compactionFixture) {
+	registry := ctxpkg.NewRegistry()
+	registry.SetOverride("small", 1024)
+	f.agent.budget = ctxpkg.NewBudgetManager(registry, 3800)
 }
 
 func (f *compactionFixture) turn(t *testing.T, content string) {
@@ -379,8 +397,10 @@ func TestCompactionShrinksSessionFileAndArchivesHistory(t *testing.T) {
 		t.Fatalf("expected an archive of the compacted messages: %v", err)
 	}
 	archivedLines := strings.Count(strings.TrimSpace(string(archive)), "\n") + 1
-	if archivedLines < originalCount {
-		t.Errorf("archive holds %d messages, expected at least the %d that were summarized", archivedLines, originalCount)
+	// The last compactionKeepTail messages before the live turn stay in the
+	// session verbatim (#346); everything earlier must be in the archive.
+	if want := originalCount - compactionKeepTail; archivedLines < want {
+		t.Errorf("archive holds %d messages, expected at least the %d that were summarized", archivedLines, want)
 	}
 }
 
@@ -492,9 +512,10 @@ func TestCompactionSummarizesEverythingItReplaces(t *testing.T) {
 	sessions := newMockSessionManager()
 	f := newCompactionFixture(t, sessions, &countingCompressor{}, toolTurns(1))
 	f.agent.compressor = rec
+	tightenBudget(f)
 	// A window far smaller than the history: this is the default shape, since
 	// MemoryWindow defaults to 50 and a compacting session is longer than that.
-	f.agent.cfg.Agents.Defaults.MemoryWindow = 4
+	f.agent.cfg.Agents.Defaults.MemoryWindow = 8
 
 	seedHistory(t, sessions, f.sessionKey, 15)
 	before := len(f.session(t).Messages)
@@ -513,10 +534,128 @@ func TestCompactionSummarizesEverythingItReplaces(t *testing.T) {
 		t.Fatal("no compaction record was stored")
 	}
 
-	// Everything the session held before the turn was replaced by the record,
-	// so the compressor must have seen at least that many messages.
-	if seen < before {
+	// Everything the session held before the turn, less the verbatim tail,
+	// was replaced by the record, so the compressor must have seen at least
+	// that many messages.
+	if before -= compactionKeepTail; seen < before {
 		t.Errorf("compressor saw %d messages but the write-back replaced %d; "+
 			"the summary does not cover what it stands in for", seen, before)
+	}
+}
+
+// --- #346: the live turn must survive compaction --------------------------
+
+// The request the user just made must reach the model verbatim, not inside a
+// summary. Before the fix the whole session — the live user message included —
+// was compressed into one <ctx_compress> block and the model asked what "them"
+// referred to.
+func TestCompactionKeepsTheLiveTurnVerbatim(t *testing.T) {
+	sessions := newMockSessionManager()
+	seedHistory(t, sessions, "cli:eval", 30)
+
+	comp := &countingCompressor{summary: "earlier: the user asked about the weather"}
+	f := newCompactionFixture(t, sessions, comp, toolTurns(1))
+	f.turn(t, "Yeah now I'm curious. Pull them down too")
+
+	if comp.count() == 0 {
+		t.Fatal("setup: the turn did not compact")
+	}
+	reqs := f.provider.requests
+	last := reqs[len(reqs)-1]
+	var sawUser, sawSummary bool
+	for _, m := range last.Messages {
+		if m.Role == providers.RoleUser && m.Content == "Yeah now I'm curious. Pull them down too" {
+			sawUser = true
+		}
+		if strings.Contains(m.Content, "earlier: the user asked about the weather") {
+			sawSummary = true
+		}
+	}
+	if !sawSummary {
+		t.Error("the compaction summary was not sent to the model")
+	}
+	if !sawUser {
+		t.Errorf("the live user message was summarized away instead of sent verbatim; request messages: %d", len(last.Messages))
+	}
+
+	// And it is still in the stored session after the write-back, right after
+	// the record, with the kept tail ahead of it.
+	sess := f.session(t)
+	if !sess.Messages[0].Compaction {
+		t.Fatal("expected the compaction record at index 0")
+	}
+	var stored bool
+	for _, m := range sess.Messages[1:] {
+		if m.Role == session.RoleUser && m.Content == "Yeah now I'm curious. Pull them down too" {
+			stored = true
+		}
+	}
+	if !stored {
+		t.Error("the live user message did not survive into the persisted session")
+	}
+	if kept := len(sess.Messages) - 1; kept < compactionKeepTail+1 {
+		t.Errorf("session keeps %d messages after the record; want at least the %d-message tail plus the live turn", kept, compactionKeepTail)
+	}
+}
+
+// compactionPrefixLen never cuts so that the kept tail opens with a tool
+// result, and never summarizes a prefix that is only an earlier record.
+func TestCompactionPrefixLen(t *testing.T) {
+	msgs := func(roles ...session.Role) *session.Session {
+		s := &session.Session{}
+		for _, r := range roles {
+			s.Messages = append(s.Messages, session.Message{Role: r, Content: "x"})
+		}
+		return s
+	}
+	// Indices: 0 u, 1 a, 2 u, 3 a, 4 u, 5 a, 6 tool, 7 tool, 8 u, 9 a, 10 u, 11 a, 12 u, 13 a
+	sess := msgs("user", "assistant", "user", "assistant", "user", "assistant", "tool", "tool",
+		"user", "assistant", "user", "assistant", "user", "assistant")
+	// The tail is compactionKeepTail messages before the live turn: turn at
+	// 10 keeps from 4, which is a user message, so the prefix is [0:4].
+	if got := compactionPrefixLen(sess, &compactionState{turnStart: 10}); got != 4 {
+		t.Errorf("prefix = %d, want 4 (live turn at 10 less a %d-message tail)", got, compactionKeepTail)
+	}
+	// Turn at 13 keeps from 7, a tool result: the cut backs up over 7 and 6 to
+	// the assistant message that announced them, so the prefix is [0:5].
+	if got := compactionPrefixLen(sess, &compactionState{turnStart: 13}); got != 5 {
+		t.Errorf("prefix = %d, want 5 (backed up over the tool results at 6-7 to the assistant at 5)", got)
+	}
+	// A live turn at 0 means the whole session is this turn: nothing to compact.
+	if got := compactionPrefixLen(sess, &compactionState{turnStart: 0}); got != 0 {
+		t.Errorf("prefix = %d, want 0 when the live turn is the whole session", got)
+	}
+	// A prefix that is only the existing record is not worth re-summarizing.
+	short := msgs("user", "user", "assistant", "user", "assistant", "user", "assistant", "user")
+	short.Messages[0].Compaction = true
+	if got := compactionPrefixLen(short, &compactionState{turnStart: 7}); got != 0 {
+		t.Errorf("prefix = %d, want 0 when only the earlier record precedes the tail", got)
+	}
+	// With no turn recorded the tail is measured from the end of the session.
+	if got := compactionPrefixLen(sess, &compactionState{turnStart: -1}); got != 8 {
+		t.Errorf("prefix = %d, want 8 (14 messages less the tail)", got)
+	}
+}
+
+// Once the prefix has been compacted in a turn, a later iteration whose
+// excess sits entirely in the protected tail must not re-run the compressor.
+func TestCompactionDoesNotLoopOnTheProtectedTail(t *testing.T) {
+	sessions := newMockSessionManager()
+	seedHistory(t, sessions, "cli:eval", 30)
+
+	comp := &countingCompressor{}
+	toolLayer := &recordingTools{outputs: map[string]string{"noop": strings.Repeat("big tool output ", 600)}}
+	turns := []scriptedTurn{
+		{toolCalls: []providers.ToolCall{toolCall("c1", "noop", `{}`)}},
+		{toolCalls: []providers.ToolCall{toolCall("c2", "noop", `{}`)}},
+		{toolCalls: []providers.ToolCall{toolCall("c3", "noop", `{}`)}},
+		{content: "done"},
+	}
+	f := newCompactionFixture(t, sessions, comp, turns)
+	f.agent.tools = toolLayer
+	f.turn(t, "first")
+
+	if got := comp.count(); got != 1 {
+		t.Errorf("compressor ran %d times; the oversized tool results are in the live turn, which is never summarized", got)
 	}
 }

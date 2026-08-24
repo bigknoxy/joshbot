@@ -572,7 +572,7 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 
 	// Run ReAct loop with channel info for async callbacks
 	channelID := msg.SenderID // Use SenderID as the channel identifier
-	var compaction compactionState
+	compaction := compactionState{turnStart: len(sess.Messages) - 1}
 	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &compaction)
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
@@ -1293,7 +1293,17 @@ type compactionState struct {
 	prefixLen int
 	// active reports whether a compaction happened at all this turn.
 	active bool
+	// turnStart is the index in sess.Messages of this turn's user message.
+	// Everything from it onward is the live turn and is never summarized.
+	turnStart int
 }
+
+// compactionKeepTail is the number of most recent session messages held out
+// of a compaction verbatim, in addition to the whole live turn. A summary
+// stands in for the *earlier* conversation; the exchange the user is in the
+// middle of must reach the model as the user wrote it, or the model answers a
+// paraphrase of the request — "what are you referring to with 'them'?" (#346).
+const compactionKeepTail = 6
 
 // persistenceWriteTimeout bounds the fresh context given to session/history
 // writes once a turn's budget has been spent.
@@ -1411,11 +1421,39 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	// summarizing the tail while claiming the whole prefix would destroy every
 	// message the window had already slid past. The two must describe the same
 	// set of messages.
-	sessionMsgs := messages[1:] // Skip system message
-	prefixLen := 0
-	if sess != nil && len(sess.Messages) > 0 {
-		sessionMsgs = sessionToProviderMessages(sess)
-		prefixLen = len(sess.Messages)
+	//
+	// And never compress the live turn. The prefix ends before this turn's
+	// user message and before the last compactionKeepTail messages, whichever
+	// is earlier, so the request the user just made — and the tool exchange
+	// answering it — reach the model verbatim. Summarizing them produced a
+	// reply that asked what the user meant (#346).
+	if sess == nil || len(sess.Messages) == 0 {
+		return messages
+	}
+	prefixLen := compactionPrefixLen(sess, st)
+	if prefixLen <= 0 {
+		a.logger.Debug("Context over threshold but nothing before the live turn to compact",
+			"session_messages", len(sess.Messages))
+		return messages
+	}
+	if st != nil && st.active && st.prefixLen == prefixLen {
+		// Already compacted this exact prefix earlier in the turn; the excess
+		// is in the tail we refuse to summarize, so a second pass changes
+		// nothing.
+		return messages
+	}
+	sessionMsgs := sessionToProviderMessages(&session.Session{Messages: sess.Messages[:prefixLen]})
+	prefixTokens := 0
+	for _, m := range sessionMsgs {
+		prefixTokens += ctxpkg.TokenEstimator(m.Content)
+	}
+	if prefixTokens < thresholdBudget/4 {
+		// The prefix is not what is over budget — the protected tail is
+		// (one huge tool result, say). Summarizing a few hundred tokens of
+		// prefix spends an LLM call to recover nothing.
+		a.logger.Debug("Context over threshold but the compactable prefix is small; skipping",
+			"prefix_tokens", prefixTokens, "threshold_budget", thresholdBudget)
+		return messages
 	}
 	compressed, err := a.compressor.CompressMessages(ctx, model, sessionMsgs, thresholdBudget)
 	if err != nil {
@@ -1423,20 +1461,33 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 		return messages
 	}
 
+	// The tail is taken from `messages`, not rebuilt from the session, so this
+	// turn's image and document bytes (which live only on the request) survive.
+	// The loop appends to both in step, so the last tailLen entries line up.
+	tailLen := len(sess.Messages) - prefixLen
+	var tail []providers.Message
+	if len(messages)-1 >= tailLen {
+		tail = messages[len(messages)-tailLen:]
+	} else {
+		tail = sessionToProviderMessages(&session.Session{Messages: sess.Messages[prefixLen:]})
+	}
+
 	// Return new message list with compressed content
-	newMessages := []providers.Message{
+	newMessages := make([]providers.Message, 0, 2+len(tail))
+	newMessages = append(newMessages,
 		messages[0], // Keep system message
-		{
+		providers.Message{
 			Role:    providers.RoleUser,
 			Content: session.CompactionEnvelope(compressed),
 		},
-	}
+	)
+	newMessages = append(newMessages, dropOrphanedToolResults(tail)...)
 
 	// Record it for the write-back at the end of the turn. A later compaction in
 	// the same turn overwrites this: its summary already subsumes the earlier
 	// one (the compressed text is carried forward in `messages`), and its
 	// prefixLen covers strictly more of the session.
-	if st != nil && prefixLen > 0 {
+	if st != nil {
 		st.summary = compressed
 		st.prefixLen = prefixLen
 		st.active = true
@@ -1444,6 +1495,34 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 
 	a.logger.Debug("Context compacted", "original_messages", len(sessionMsgs), "new_content_len", len(compressed))
 	return newMessages
+}
+
+// compactionPrefixLen returns how many leading session messages a compaction
+// may summarize: everything before the live turn and before the last
+// compactionKeepTail messages, backed up so the kept tail never opens with a
+// tool result whose announcing assistant message was summarized away. It
+// returns 0 when there is nothing worth summarizing — a prefix that is only an
+// earlier compaction record would just be re-summarized into itself.
+func compactionPrefixLen(sess *session.Session, st *compactionState) int {
+	n := len(sess.Messages)
+	// The tail is anchored to the start of the live turn, not to the end of
+	// the session: the turn grows with every tool iteration, and an anchor
+	// at the end would move the prefix boundary on every pass and defeat the
+	// "already compacted this prefix" check in checkAndCompactContext.
+	keepFrom := n - compactionKeepTail
+	if st != nil && st.turnStart >= 0 && st.turnStart <= n {
+		keepFrom = st.turnStart - compactionKeepTail
+	}
+	for keepFrom > 0 && sess.Messages[keepFrom].Role == session.RoleTool {
+		keepFrom--
+	}
+	if keepFrom <= 0 {
+		return 0
+	}
+	if keepFrom == 1 && sess.Messages[0].Compaction {
+		return 0
+	}
+	return keepFrom
 }
 
 // sessionToProviderMessages converts a session's stored messages to the

@@ -46,13 +46,13 @@ func TestCompressMessages_WithProvider_ExceedsBudget(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		msgs = append(msgs, providers.Message{Role: providers.RoleUser, Content: "this is a longer message to consume tokens"})
 	}
-	mock := &mockProv{resp: "SUMMARY"}
+	mock := &mockProv{resp: "SUMMARY: the user sent many long messages"}
 	c := &Compressor{Provider: mock}
 	out, err := c.CompressMessages(context.Background(), "test-model", msgs, 10) // tiny budget forces summarization
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out != "SUMMARY" {
+	if out != "SUMMARY: the user sent many long messages" {
 		t.Fatalf("expected provider summary, got %q", out)
 	}
 }
@@ -133,9 +133,20 @@ func TestRegistryLookup_Override(t *testing.T) {
 func TestRegistryLookup_DefaultHeuristic(t *testing.T) {
 	r := NewRegistry()
 
+	// An unrecognised model gets a modern window, not the 4096 "small" class:
+	// with max_tokens 8192 the small default drove the budget to 256 tokens
+	// and compaction wiped the conversation on every tool call (#346).
 	info := r.Lookup("unknown-model")
-	if info.ContextWindow != 4096 {
-		t.Fatalf("expected small fallback 4096, got %d", info.ContextWindow)
+	if info.ContextWindow != DefaultContextWindow {
+		t.Fatalf("expected DefaultContextWindow %d for an unknown model, got %d", DefaultContextWindow, info.ContextWindow)
+	}
+	for _, m := range []string{"poolside/laguna-s-2.1", "deepseek-ai/deepseek-v4-flash-0731"} {
+		if got := r.Lookup(m).ContextWindow; got != DefaultContextWindow {
+			t.Errorf("Lookup(%q) = %d, want %d", m, got, DefaultContextWindow)
+		}
+	}
+	if got := r.Lookup("small-model").ContextWindow; got != 4096 {
+		t.Errorf("a model that calls itself small keeps the 4096 class, got %d", got)
 	}
 }
 

@@ -25,13 +25,21 @@ func TestComputeBudgetNeverGoesNegative(t *testing.T) {
 	}{
 		{"openai/gpt-4", 8192},   // exactly the window
 		{"openai/gpt-4", 100000}, // far past it
-		{"unknown-model", 4096},  // default 4096 window
+		{"unknown-model", DefaultContextWindow},
 	} {
 		got := b.ComputeBudget(tc.model, tc.maxCompletion)
 		if got < 256 {
 			t.Errorf("ComputeBudget(%q, %d) = %d; a budget below the 256 floor is used as a slice bound in CompressMessages",
 				tc.model, tc.maxCompletion, got)
 		}
+	}
+
+	// A completion reservation that swallows the window is a misconfiguration,
+	// and the answer to it is a quarter of the window, not the 256 floor: at
+	// 256 tokens compaction fires at ~700 chars of history and summarizes the
+	// conversation away on every tool call (#346).
+	if got, want := b.ComputeBudget("openai/gpt-4", 8192), 8192/4; got != want {
+		t.Errorf("ComputeBudget over-reserved = %d, want %d (a quarter of the window)", got, want)
 	}
 
 	// And the margin must actually be reserved, or the prompt is built to

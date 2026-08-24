@@ -208,3 +208,44 @@ func TestCompressMessages_ManyMessages_CanceledContextFallsThrough(t *testing.T)
 		t.Fatalf("expected a non-empty result even when the propagated context is canceled")
 	}
 }
+
+// A provider is asked to summarize the whole conversation, not a join already
+// cut down to the budget. With a 179-token budget the old code handed the
+// model one message and called the answer a summary (#346).
+func TestCompressMessages_ProviderSeesTheWholeConversation(t *testing.T) {
+	var got string
+	prov := &capturingProvider{scriptedProvider: scriptedProvider{resp: "the user and the assistant discussed twelve numbered messages"}}
+	prov.onChat = func(req providers.ChatRequest) { got = req.Messages[len(req.Messages)-1].Content }
+	c := &Compressor{Provider: prov}
+	msgs := manyMessages(12)
+	out, err := c.CompressMessages(context.Background(), "m", msgs, 10)
+	if err != nil {
+		t.Fatalf("CompressMessages: %v", err)
+	}
+	if out != prov.resp {
+		t.Fatalf("expected the provider summary, got %q", out)
+	}
+	for i := 0; i < 12; i++ {
+		if !strings.Contains(got, fmt.Sprintf("message number %d ", i)) {
+			t.Errorf("message %d was not sent to the summarizer; the provider saw a budget-truncated join", i)
+		}
+	}
+	if req := prov.lastReq; req.MaxTokens != summaryMaxTokens {
+		t.Errorf("MaxTokens = %d, want %d", req.MaxTokens, summaryMaxTokens)
+	}
+}
+
+// capturingProvider records the request it was asked to summarize.
+type capturingProvider struct {
+	scriptedProvider
+	onChat  func(providers.ChatRequest)
+	lastReq providers.ChatRequest
+}
+
+func (c *capturingProvider) Chat(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+	c.lastReq = req
+	if c.onChat != nil {
+		c.onChat(req)
+	}
+	return c.scriptedProvider.Chat(ctx, req)
+}

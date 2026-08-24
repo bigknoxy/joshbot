@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/providers"
 )
@@ -13,6 +14,16 @@ type ModelInfo struct {
 	Name          string
 	ContextWindow int // approximate token window
 }
+
+// DefaultContextWindow is the window assumed for a model the registry does
+// not recognise. It used to be the 4096-token "small" class, which no current
+// hosted model has: with the default max_tokens of 8192 the budget arithmetic
+// went negative, was clamped to 256 tokens, and proactive compaction then
+// fired at ~700 characters of history and summarized the whole conversation
+// away on every tool-using turn (#346). Guessing large costs an oversized
+// request that the provider rejects with a clear error; guessing small costs
+// the conversation silently.
+const DefaultContextWindow = 131072
 
 // Registry provides heuristics to map model names to context windows.
 type Registry struct {
@@ -68,7 +79,7 @@ func (r *Registry) Lookup(model string) ModelInfo {
 	case strings.Contains(m, "small"):
 		return r.defaults[0]
 	default:
-		return r.defaults[0]
+		return ModelInfo{Name: model, ContextWindow: DefaultContextWindow}
 	}
 }
 
@@ -107,9 +118,18 @@ func NewBudgetManager(reg *Registry, margin int) *BudgetManager {
 }
 
 // ComputeBudget returns available context tokens for the prompt given model and maxCompletion.
+//
+// When maxCompletion (plus the margin) eats the whole window — a
+// misconfiguration, not a real model — the budget falls back to a quarter of
+// the window rather than a 256-token floor. A 256-token budget is not a
+// degraded mode, it is amnesia: compaction summarizes the conversation into
+// a few hundred characters on every tool call (#346).
 func (b *BudgetManager) ComputeBudget(model string, maxCompletion int) int {
 	info := b.registry.Lookup(model)
 	avail := info.ContextWindow - maxCompletion - b.margin
+	if floor := info.ContextWindow / 4; avail < floor {
+		avail = floor
+	}
 	if avail < 256 {
 		avail = 256
 	}
@@ -187,25 +207,16 @@ func (c *Compressor) CompressMessages(ctx context.Context, model string, message
 		return "", fmt.Errorf("all %d messages have empty content", len(messages))
 	}
 
-	// Heuristic: if there are many messages, prefer provider summarization when available.
-	if c.Provider != nil && len(messages) > 50 {
-		sys := "You are a summarization assistant. Produce a concise summary that preserves important facts and decisions."
-		joinedAll := ""
-		for _, mm := range messages {
-			role := string(mm.Role)
-			joinedAll += role + ": " + mm.Content + "\n\n"
-		}
-		req := providers.ChatRequest{
-			Model: model,
-			Messages: []providers.Message{
-				{Role: providers.RoleSystem, Content: sys},
-				{Role: providers.RoleUser, Content: "Summarize the following conversation in under 200 tokens:\n\n" + joinedAll},
-			},
-			MaxTokens: 200,
-		}
-		resp, err := c.Provider.Chat(ctx, req)
-		if err == nil && len(resp.Choices) > 0 && isPlausibleSummary(resp.Choices[0].Message.Content, minPlausibleSummaryChars) {
-			return resp.Choices[0].Message.Content, nil
+	// Prefer a provider summary of the whole conversation whenever a provider
+	// is available. This used to run only above 50 messages, and the second
+	// provider path further down summarized `joined` — which is already cut
+	// down to the budget by the newest-backwards join, so at a small budget
+	// the model was asked to "summarize" a single message. Both left the
+	// deterministic join, which is a truncation and not a summary, as the
+	// path almost every real compaction took (#346).
+	if c.Provider != nil {
+		if summary, ok := c.summarizeWithProvider(ctx, model, messages); ok {
+			return summary, nil
 		}
 		// A missing/empty/whitespace-only/implausibly-short summary (refusal,
 		// truncated stream, provider error) is a failed compression: fall
@@ -236,23 +247,6 @@ func (c *Compressor) CompressMessages(ctx context.Context, model string, message
 		return joined, nil
 	}
 
-	// If provider available, request a concise summary
-	if c.Provider != nil {
-		sys := "You are a summarization assistant. Produce a concise summary that preserves important facts and decisions."
-		req := providers.ChatRequest{
-			Model: model,
-			Messages: []providers.Message{
-				{Role: providers.RoleSystem, Content: sys},
-				{Role: providers.RoleUser, Content: "Summarize the following conversation in under 200 tokens:\n\n" + joined},
-			},
-			MaxTokens: 200,
-		}
-		resp, err := c.Provider.Chat(ctx, req)
-		if err == nil && len(resp.Choices) > 0 && isPlausibleSummary(resp.Choices[0].Message.Content, 1) {
-			return resp.Choices[0].Message.Content, nil
-		}
-	}
-
 	// fallback: truncate
 	out := joined
 	maxChars := budget * 4
@@ -273,4 +267,55 @@ func (c *Compressor) CompressMessages(ctx context.Context, model string, message
 		return "", fmt.Errorf("no compressible content after truncation in %d messages", len(messages))
 	}
 	return out, nil
+}
+
+// summaryMaxTokens bounds the provider summary. 200 tokens was enough to lose
+// the thread of a six-turn chat; a summary that stands in for the whole
+// earlier conversation needs room for facts, decisions and open requests.
+const summaryMaxTokens = 768
+
+// summaryInputMaxChars caps how much conversation is sent to be summarized,
+// newest first, so a very long history does not itself overflow the model.
+const summaryInputMaxChars = 200_000
+
+// summarizeWithProvider asks the provider for a summary of the whole
+// conversation. It reports false when the provider errors or answers with
+// something too short to be a summary, so the caller can fall back.
+func (c *Compressor) summarizeWithProvider(ctx context.Context, model string, messages []providers.Message) (string, bool) {
+	var b strings.Builder
+	for _, mm := range messages {
+		if mm.Content == "" {
+			continue
+		}
+		b.WriteString(string(mm.Role))
+		b.WriteString(": ")
+		b.WriteString(mm.Content)
+		b.WriteString("\n\n")
+	}
+	joined := b.String()
+	if len(joined) > summaryInputMaxChars {
+		cut := len(joined) - summaryInputMaxChars
+		for cut < len(joined) && !utf8.RuneStart(joined[cut]) {
+			cut++
+		}
+		joined = "[earlier conversation omitted]\n\n" + joined[cut:]
+	}
+	sys := "You are a summarization assistant. Summarize the conversation so an assistant that reads only your summary can continue it: keep the user's facts and preferences, decisions made, results already obtained, and any request that is still open or in progress. Write in the third person about the user and the assistant."
+	req := providers.ChatRequest{
+		Model: model,
+		Messages: []providers.Message{
+			{Role: providers.RoleSystem, Content: sys},
+			{Role: providers.RoleUser, Content: "Summarize the following conversation concisely:\n\n" + joined},
+		},
+		MaxTokens: summaryMaxTokens,
+	}
+	resp, err := c.Provider.Chat(ctx, req)
+	if err != nil || resp == nil || len(resp.Choices) == 0 {
+		return "", false
+	}
+	summary := resp.Choices[0].Message.Content
+	if !isPlausibleSummary(summary, minPlausibleSummaryChars) {
+		return "", false
+	}
+	return summary, true
 }

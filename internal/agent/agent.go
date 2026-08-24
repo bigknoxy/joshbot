@@ -598,7 +598,12 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 			// a turn that already sent any delta (narration, a progress line)
 			// has made that true and a plain-text return is then suppressed —
 			// the timeout notice reached nobody (#283).
-			emitThroughSink(ctx, reply)
+			// And it must not glue onto narration the turn already streamed:
+			// "Let me try one more angle:I'm sorry, but processing your
+			// request took too long" read as one sentence (#347). The
+			// separator goes to the sink only; the returned text is a
+			// message of its own on every non-streaming path.
+			emitThroughSink(ctx, narrationSeparator(a.cfg.Agents.Defaults.Streaming, sess.Messages[startSessionLen:])+reply)
 			return reply, nil
 		}
 		reply := fmt.Sprintf("Error processing request: %v", err)
@@ -1011,7 +1016,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	// only narration streamed) counts — and a plain-text return is then
 	// suppressed. The reply that explains why the turn stopped must ride the
 	// sink, or it reaches nobody (#283).
-	emitThroughSink(ctx, resp)
+	emitThroughSink(ctx, narrationSeparator(a.cfg.Agents.Defaults.Streaming, turnMessages(sess, st))+resp)
 	return resp, nil
 }
 
@@ -1269,6 +1274,39 @@ func isRetiredModelReason(reason string) bool {
 // already been given for this outage: who answered, nothing else.
 func formatFallbackMarker(n providers.FallbackNotice) string {
 	return fmt.Sprintf("↪ answered by %s (%s)\n\n", n.To, n.Model)
+}
+
+// narrationSeparator returns the "\n\n" a synthesized reply needs before it
+// rides the sink after streamed narration that did not end its line, and ""
+// when nothing could have streamed (streaming off) or the last thing the
+// model said this turn already ended with a newline. It mirrors the
+// separator streamChat inserts between iterations (#339) for the replies the
+// loop synthesizes itself — timeout and max-iteration — which used to be
+// glued onto "Let me try one more angle:" (#347).
+func narrationSeparator(streaming bool, turn []session.Message) string {
+	if !streaming {
+		return ""
+	}
+	for i := len(turn) - 1; i >= 0; i-- {
+		m := turn[i]
+		if m.Role != session.RoleAssistant || m.Content == "" {
+			continue
+		}
+		if strings.HasSuffix(m.Content, "\n") {
+			return ""
+		}
+		return "\n\n"
+	}
+	return ""
+}
+
+// turnMessages returns the messages appended to sess during the turn st
+// describes, or nothing when the turn start is unknown.
+func turnMessages(sess *session.Session, st *compactionState) []session.Message {
+	if sess == nil || st == nil || st.turnStart < 0 || st.turnStart > len(sess.Messages) {
+		return nil
+	}
+	return sess.Messages[st.turnStart:]
 }
 
 // formatFallbackNotice renders the one-line, user-facing note that a reply

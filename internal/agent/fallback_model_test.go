@@ -456,3 +456,23 @@ func TestFallbackNoticeKey(t *testing.T) {
 		}
 	}
 }
+
+// The observer fires with the notice the user sees in full — the first turn
+// of an outage — and stays silent on the marker turns, so a channel attaching
+// a picker to a retired-model notice does so once (#348).
+func TestProcess_FallbackObserverFiresOnTheFullNoticeOnly(t *testing.T) {
+	a := newFallbackAgent(t, newMockSessionManager(), fmt.Errorf("API error (410): gone"))
+	var seen []providers.FallbackNotice
+	ctx := WithFallbackObserver(context.Background(), func(n providers.FallbackNotice) { seen = append(seen, n) })
+	for _, content := range []string{"one", "two"} {
+		if _, err := a.Process(ctx, bus.InboundMessage{SenderID: "josh", Content: content, Channel: "cli", Timestamp: time.Now()}); err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+	}
+	if len(seen) != 1 {
+		t.Fatalf("observer fired %d times across two turns of one outage, want 1: %+v", len(seen), seen)
+	}
+	if !seen[0].ModelRetired() || seen[0].From != "openrouter" || seen[0].To != "poolside" {
+		t.Errorf("observer saw %+v, want the retired-model notice from openrouter answered by poolside", seen[0])
+	}
+}

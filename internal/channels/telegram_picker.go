@@ -9,6 +9,7 @@ import (
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/log"
+	"github.com/bigknoxy/joshbot/internal/providers"
 	"gopkg.in/telebot.v3"
 )
 
@@ -103,6 +104,22 @@ func (p *Picker) Keyboard(ctx context.Context, msg bus.InboundMessage) *Keyboard
 		return nil
 	}
 	return pickerKeyboard(ns, choices)
+}
+
+// NoticeKeyboard returns the model picker to attach to a reply that opens
+// with a retired-model fallback notice (#348): the notice says "pick another
+// with /model", and on a phone the buttons are the shortest way to do that.
+// Nil for any other notice, any other channel, or no picker.
+func (p *Picker) NoticeKeyboard(ctx context.Context, msg bus.InboundMessage, n providers.FallbackNotice) *Keyboard {
+	if p == nil || msg.Channel != p.t.name || !n.ModelRetired() {
+		return nil
+	}
+	choices, err := p.backend.ModelChoices(ctx, msg)
+	if err != nil {
+		log.Warn("picker choices unavailable for the fallback notice", "error", err)
+		return nil
+	}
+	return pickerKeyboard(ModelPickerNamespace, choices)
 }
 
 func (p *Picker) choices(ctx context.Context, ns string, msg bus.InboundMessage) ([]PickerChoice, error) {

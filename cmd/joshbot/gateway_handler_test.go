@@ -13,7 +13,9 @@ import (
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/channels"
 	"github.com/bigknoxy/joshbot/internal/config"
+	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/tools"
+	telebot "gopkg.in/telebot.v3"
 )
 
 // The gateway handler is where every rule that decides what a user actually
@@ -527,4 +529,77 @@ func TestBuildGatewayDepsArmStopDeclinesWhatItCannotStop(t *testing.T) {
 	if out, err := toPickerChoices(nil, errors.New("no session")); err == nil || out != nil {
 		t.Error("toPickerChoices must pass the agent's error through")
 	}
+}
+
+// A streamer that can take a final keyboard.
+type markupStreamer struct {
+	fakeStreamer
+	final *telebot.ReplyMarkup
+}
+
+func (m *markupStreamer) SetFinalMarkup(rm *telebot.ReplyMarkup) { m.final = rm }
+
+// A retired-model fallback notice carries the model picker: on the streamed
+// path as the final edit's keyboard, on the bus path as reply_markup. A
+// transient notice, or a failed turn, carries nothing (#348).
+func TestGatewayHandlerAttachesThePickerToARetiredModelNotice(t *testing.T) {
+	kb := &channels.Keyboard{}
+	kb.Row(channels.ActionButton("nvidia", channels.ModelPickerNamespace, "pick", "nvidia"))
+	retired := providers.FallbackNotice{From: "nvidia", To: "poolside", Model: "m", Reason: "http_410"}
+
+	newDeps := func(rec *recordingDeps, reply string, n *providers.FallbackNotice) gatewayDeps {
+		deps := baseDeps(rec, reply, nil)
+		deps.process = func(ctx context.Context, _ bus.InboundMessage) (string, error) {
+			if n != nil {
+				if observe := agent.FallbackObserverFromContext(ctx); observe != nil {
+					observe(*n)
+				}
+			}
+			return reply, nil
+		}
+		deps.noticeKeyboard = func(_ context.Context, _ bus.InboundMessage, n providers.FallbackNotice) *channels.Keyboard {
+			if n.ModelRetired() {
+				return kb
+			}
+			return nil
+		}
+		return deps
+	}
+
+	t.Run("bus path", func(t *testing.T) {
+		rec := &recordingDeps{}
+		gatewayHandler(newDeps(rec, "⚠️ nvidia unavailable (http_410) …", &retired))(context.Background(), telegramMsg("u", "hi"))
+		out := rec.out()
+		if len(out) != 1 || out[0].Metadata["reply_markup"] != kb {
+			t.Errorf("bus reply should carry the picker: %+v", out)
+		}
+	})
+	t.Run("streamed path", func(t *testing.T) {
+		rec := &recordingDeps{}
+		ms := &markupStreamer{fakeStreamer: fakeStreamer{delivered: true}}
+		deps := newDeps(rec, "⚠️ nvidia unavailable (http_410) …", &retired)
+		deps.newStreamer = func(bus.InboundMessage) gatewayStreamer { return ms }
+		gatewayHandler(deps)(context.Background(), telegramMsg("u", "hi"))
+		if ms.final == nil {
+			t.Error("streamed reply should carry the picker as its final markup")
+		}
+		if len(rec.out()) != 0 {
+			t.Error("a delivered stream must not also publish")
+		}
+	})
+	t.Run("transient notice", func(t *testing.T) {
+		rec := &recordingDeps{}
+		n := providers.FallbackNotice{From: "nvidia", To: "poolside", Reason: "rate_limit"}
+		gatewayHandler(newDeps(rec, "⚠️ …", &n))(context.Background(), telegramMsg("u", "hi"))
+		if _, has := rec.out()[0].Metadata["reply_markup"]; has {
+			t.Error("a transient notice must not carry the picker")
+		}
+	})
+	t.Run("failed turn", func(t *testing.T) {
+		rec := &recordingDeps{}
+		gatewayHandler(newDeps(rec, agent.ReplyPrefix+"boom", &retired))(context.Background(), telegramMsg("u", "hi"))
+		if _, has := rec.out()[0].Metadata["reply_markup"]; has {
+			t.Error("a failed turn must not invite a press into the same failure")
+		}
+	})
 }

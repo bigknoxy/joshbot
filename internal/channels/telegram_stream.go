@@ -93,6 +93,21 @@ type TelegramStreamer struct {
 	// is what removes it: the [⏹ Stop] button lives on the message only
 	// while the turn it cancels is running. Drafts cannot carry it.
 	interimMarkup *telebot.ReplyMarkup
+	// finalMarkup is attached to the final edit only — a keyboard that
+	// belongs to the finished answer, like the model picker under a
+	// retired-model notice (#348). Interim edits carry interimMarkup instead.
+	finalMarkup *telebot.ReplyMarkup
+}
+
+// SetFinalMarkup attaches an inline keyboard to the finished message. Must
+// be called before Finish.
+func (s *TelegramStreamer) SetFinalMarkup(rm *telebot.ReplyMarkup) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.finalMarkup = rm
+	s.mu.Unlock()
 }
 
 // SetInterimMarkup attaches an inline keyboard to the in-progress message.
@@ -406,7 +421,7 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 	// Telegram answers an unchanged edit with an error, not a silent success,
 	// so a no-op edit is worse than useless — it burns rate limit to produce
 	// a log line. The final write is exempt only when it changes formatting.
-	if s.buf == s.shown && !(final && s.parseMode != telebot.ModeDefault) {
+	if s.buf == s.shown && !(final && (s.parseMode != telebot.ModeDefault || s.finalMarkup != nil)) {
 		return true
 	}
 
@@ -428,7 +443,9 @@ func (s *TelegramStreamer) writeLocked(editor telegramEditor, final bool) bool {
 	if s.msg == nil && s.replyTo != nil {
 		opts.ReplyTo = s.replyTo
 	}
-	if !final {
+	if final {
+		opts.ReplyMarkup = s.finalMarkup
+	} else {
 		opts.ReplyMarkup = s.interimMarkup
 	}
 

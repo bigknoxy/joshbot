@@ -571,7 +571,8 @@ The new model-centric format is simpler and more intuitive. Define models direct
   notice appears once per outage; later replies answered by the same fallback
   open with a short `↪ answered by poolside (…)` marker instead, and the full
   notice returns once the primary has answered again (`/status` always shows
-  the current cooldowns). Set `agents.defaults.quiet_fallback` to `true` to
+  the current cooldowns). On Telegram a notice for a *retired* model (404/410)
+  comes with the `/model` picker buttons under it. Set `agents.defaults.quiet_fallback` to `true` to
   suppress both.
 - Streaming requests ask for the usage-bearing final chunk
   (`stream_options.include_usage`), so token usage is reported for streaming

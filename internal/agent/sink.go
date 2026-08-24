@@ -168,3 +168,29 @@ func UsageFromContext(ctx context.Context) UsageSink {
 func StreamSinkFromContext(ctx context.Context) StreamSink {
 	return streamSinkFromContext(ctx)
 }
+
+// FallbackObserver receives the fallback notice a turn shows the user in
+// full — the first turn of an outage, never the marker turns that follow —
+// so a channel can act on it (Telegram attaches the model picker to a
+// retired-model notice, #348). Per request, on the context, for the same
+// reason every other sink is.
+type FallbackObserver func(providers.FallbackNotice)
+
+type fallbackObserverKey struct{}
+
+// WithFallbackObserver attaches a FallbackObserver to the context.
+func WithFallbackObserver(ctx context.Context, fn FallbackObserver) context.Context {
+	return context.WithValue(ctx, fallbackObserverKey{}, fn)
+}
+
+func fallbackObserverFromContext(ctx context.Context) FallbackObserver {
+	fn, _ := ctx.Value(fallbackObserverKey{}).(FallbackObserver)
+	return fn
+}
+
+// FallbackObserverFromContext returns the observer attached with
+// WithFallbackObserver, or nil. Exported for callers that stand in for the
+// agent in tests.
+func FallbackObserverFromContext(ctx context.Context) FallbackObserver {
+	return fallbackObserverFromContext(ctx)
+}

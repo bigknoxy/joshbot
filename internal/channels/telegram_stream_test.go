@@ -770,3 +770,45 @@ func TestStatusSendFloodErrorBacksOff(t *testing.T) {
 		t.Fatalf("%d writes went out during the flood window, want 1", n)
 	}
 }
+
+// A final markup lands on the final edit only, and the interim markup is
+// gone from it; interim edits never carry the final one (#348).
+func TestStreamerFinalMarkupOnTheFinalEditOnly(t *testing.T) {
+	tg, ed := streamTestChannel(t, time.Nanosecond)
+	s := newTestStreamer(t, tg, 111, nil)
+	interim := &telebot.ReplyMarkup{InlineKeyboard: [][]telebot.InlineButton{{{Text: "⏹ Stop"}}}}
+	final := &telebot.ReplyMarkup{InlineKeyboard: [][]telebot.InlineButton{{{Text: "pick"}}}}
+	s.SetInterimMarkup(interim)
+	s.SetFinalMarkup(final)
+
+	s.Delta("hello")
+	s.Delta(" world")
+	if !s.Finish(nil) {
+		t.Fatal("Finish should report delivery")
+	}
+	calls := ed.calls
+	if len(calls) < 2 {
+		t.Fatalf("expected at least an interim write and a final edit, got %d", len(calls))
+	}
+	for _, c := range calls[:len(calls)-1] {
+		if c.markup != interim {
+			t.Errorf("interim write carried %v, want the interim markup", c.markup)
+		}
+	}
+	last := calls[len(calls)-1]
+	if last.markup != final {
+		t.Errorf("final edit carried %v, want the final markup", last.markup)
+	}
+
+	// With the text unchanged and no parse mode, a final markup alone must
+	// still force the final edit, or the keyboard never appears.
+	s2 := newTestStreamer(t, tg, 222, nil)
+	s2.SetParseMode(telebot.ModeDefault)
+	s2.SetFinalMarkup(final)
+	s2.Delta("plain")
+	before := len(ed.calls)
+	s2.Finish(nil)
+	if len(ed.calls) == before || ed.calls[len(ed.calls)-1].markup != final {
+		t.Error("final markup did not force the final edit when the text was already shown")
+	}
+}

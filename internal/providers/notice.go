@@ -13,6 +13,13 @@ type FallbackNotice struct {
 	Reason string // ClassifyError of the addressed provider's failure, or "cooldown"
 }
 
+// ModelRetired reports that the addressed provider answered not-found for
+// the model: the configured model is gone from its catalog (or mistyped),
+// which no retry will fix — the user has to pick another.
+func (n FallbackNotice) ModelRetired() bool {
+	return n.Reason == "http_404" || n.Reason == "http_410"
+}
+
 // FallbackNoticeFunc receives a FallbackNotice when a fallback answers.
 type FallbackNoticeFunc func(FallbackNotice)
 

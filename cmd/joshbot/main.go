@@ -25,6 +25,7 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
+	telebot "gopkg.in/telebot.v3"
 
 	"github.com/bigknoxy/joshbot/internal/agent"
 	"github.com/bigknoxy/joshbot/internal/bus"
@@ -2964,6 +2965,12 @@ type gatewayStreamer interface {
 	Finish(procErr error) bool
 }
 
+// finalMarkupSetter is implemented by streamers that can attach an inline
+// keyboard to the finished message (channels.TelegramStreamer).
+type finalMarkupSetter interface {
+	SetFinalMarkup(rm *telebot.ReplyMarkup)
+}
+
 // noStreamer stands in when the turn is not being streamed. Finish reporting
 // false is what routes the reply back through the bus.
 type noStreamer struct{}
@@ -3013,6 +3020,9 @@ type gatewayDeps struct {
 	// reply (the /model and /personality pickers on Telegram), nil for every
 	// other turn and every other channel.
 	commandKeyboard func(ctx context.Context, msg bus.InboundMessage) *channels.Keyboard
+	// noticeKeyboard returns the inline keyboard to attach to a reply that
+	// opened with the given fallback notice, or nil (#348).
+	noticeKeyboard func(ctx context.Context, msg bus.InboundMessage, n providers.FallbackNotice) *channels.Keyboard
 	// armStop puts a [⏹ Stop] button on this turn's streamed message and
 	// binds it to cancel. It returns a func reporting whether the button
 	// was pressed and a release to call when the turn settles. nil when the
@@ -3162,6 +3172,22 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			}
 		}
 
+		// The fallback notice the turn shows in full, if any, captured so a
+		// retired-model notice can carry the model picker (#348). The
+		// observer may fire from the provider's goroutine; the read happens
+		// after Process returns, under the same mutex.
+		var noticeMu sync.Mutex
+		var notice *providers.FallbackNotice
+		if d.noticeKeyboard != nil {
+			procCtx = agent.WithFallbackObserver(procCtx, func(n providers.FallbackNotice) {
+				noticeMu.Lock()
+				defer noticeMu.Unlock()
+				if notice == nil {
+					notice = &n
+				}
+			})
+		}
+
 		response, err := d.process(procCtx, msg)
 		if stopped() {
 			// A stopped turn is not a failure: whatever streamed stays, the
@@ -3221,6 +3247,24 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 		// sees nothing wrong, and the publish that would have carried the error
 		// is suppressed. Translating it back gets the reason appended to what
 		// the user is already looking at.
+		// A retired-model notice carries the model picker, on whichever path
+		// delivers the reply: the streamer's final edit, or the bus message.
+		var noticeKB *channels.Keyboard
+		noticeMu.Lock()
+		if notice != nil && agentReplyError(response) == nil {
+			noticeKB = d.noticeKeyboard(ctx, msg, *notice)
+		}
+		noticeMu.Unlock()
+		if noticeKB != nil {
+			if fm, ok := streamer.(finalMarkupSetter); ok {
+				if rm, err := noticeKB.Build(); err != nil {
+					log.Error("dropping invalid notice keyboard", "error", err)
+				} else {
+					fm.SetFinalMarkup(rm)
+				}
+			}
+		}
+
 		if streamer.Finish(agentReplyError(response)) {
 			log.Info("Streamed outbound message", "channel", msg.Channel, "response_len", len(response))
 			return
@@ -3251,6 +3295,9 @@ func gatewayHandler(d gatewayDeps) func(context.Context, bus.InboundMessage) {
 			if kb := d.commandKeyboard(ctx, msg); kb != nil {
 				outbound.Metadata["reply_markup"] = kb
 			}
+		}
+		if noticeKB != nil {
+			outbound.Metadata["reply_markup"] = noticeKB
 		}
 		d.publish(outbound)
 	}
@@ -3469,6 +3516,7 @@ func buildGatewayDeps(
 ) gatewayDeps {
 	return gatewayDeps{
 		commandKeyboard: picker.Keyboard,
+		noticeKeyboard:  picker.NoticeKeyboard,
 		armStop: func(msg bus.InboundMessage, s gatewayStreamer, cancel context.CancelFunc) (func() bool, func()) {
 			ts, ok := s.(*channels.TelegramStreamer)
 			if stops == nil || !ok {

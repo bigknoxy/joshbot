@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A retired-model fallback notice carries the model picker on Telegram** — the notice says "pick another with /model", and on a phone the buttons are the shortest way to do that (#348 follow-up). `agent.WithFallbackObserver` is a per-request callback fired only with the notice the user sees in full (the first turn of an outage, never the marker turns), `Picker.NoticeKeyboard` builds the model keyboard for a notice whose `ModelRetired()` (404/410) is true, and the gateway attaches it on whichever path delivers the reply: `TelegramStreamer.SetFinalMarkup` puts it on the final edit of a streamed answer (interim edits keep the Stop button, the final edit swaps to the picker), the bus path sets `reply_markup`. A failed turn carries nothing, for the same reason the `/model` picker does not.
+
 ## [1.63.0] - 2026-08-24
 
 ### Fixed

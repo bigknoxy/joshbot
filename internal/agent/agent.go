@@ -707,6 +707,9 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 					ts.notice = formatFallbackMarker(n)
 				} else {
 					ts.notice = formatFallbackNotice(n)
+					if observe := fallbackObserverFromContext(ctx); observe != nil {
+						observe(n)
+					}
 				}
 			}
 		})
@@ -1267,7 +1270,7 @@ func sameOutage(noticed string, n providers.FallbackNotice) bool {
 
 // isRetiredModelReason reports a not-found class on the addressed provider.
 func isRetiredModelReason(reason string) bool {
-	return reason == "http_404" || reason == "http_410"
+	return providers.FallbackNotice{Reason: reason}.ModelRetired()
 }
 
 // formatFallbackMarker is the short form shown once the full notice has

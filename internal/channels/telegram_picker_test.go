@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"github.com/bigknoxy/joshbot/internal/providers"
 	"gopkg.in/telebot.v3"
 )
 
@@ -226,5 +227,38 @@ func TestPicker_FailureShowsNoKeyboardAndNoRawError(t *testing.T) {
 				t.Error("no keyboard under a failure")
 			}
 		})
+	}
+}
+
+// A retired-model fallback notice gets the model picker under it; any other
+// notice, channel or a nil picker gets nothing (#348).
+func TestPickerNoticeKeyboardOnlyForARetiredModel(t *testing.T) {
+	_, p, _, _ := pickerTestChannel(t)
+	msg := bus.InboundMessage{Channel: "telegram", SenderID: "telegram_1", Content: "hello"}
+	retired := providers.FallbackNotice{From: "nvidia", To: "poolside", Model: "poolside/laguna-s-2.1", Reason: "http_410"}
+
+	kb := p.NoticeKeyboard(context.Background(), msg, retired)
+	if kb == nil {
+		t.Fatal("expected the model picker under a retired-model notice")
+	}
+	rm, err := kb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := buttonTexts(rm); len(got) == 0 || got[0][0] != "✅ nvidia · z-ai/glm-5.2" {
+		t.Errorf("keyboard = %v, want the model choices", got)
+	}
+
+	if p.NoticeKeyboard(context.Background(), msg, providers.FallbackNotice{From: "nvidia", To: "poolside", Reason: "rate_limit"}) != nil {
+		t.Error("a transient notice must not carry the picker")
+	}
+	discord := msg
+	discord.Channel = "discord"
+	if p.NoticeKeyboard(context.Background(), discord, retired) != nil {
+		t.Error("another channel must not get a Telegram keyboard")
+	}
+	var none *Picker
+	if none.NoticeKeyboard(context.Background(), msg, retired) != nil {
+		t.Error("a nil picker must be inert")
 	}
 }

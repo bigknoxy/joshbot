@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.63.0] - 2026-08-24
+
 ### Fixed
 
 - **The timeout and max-iteration replies no longer glue onto streamed narration** — a turn that had streamed "Let me try one more angle with a different search approach:" and then hit its deadline showed `…approach:I'm sorry, but processing your request took too long` as one sentence (#347). `narrationSeparator` now emits the same `\n\n` `streamChat` inserts between iterations (#339) ahead of a synthesized reply on the sink when the last thing the model said this turn did not end its line; the returned text is untouched, since it is a message of its own on every non-streaming path, and nothing is inserted with streaming off.

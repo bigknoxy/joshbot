@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The timeout and max-iteration replies no longer glue onto streamed narration** — a turn that had streamed "Let me try one more angle with a different search approach:" and then hit its deadline showed `…approach:I'm sorry, but processing your request took too long` as one sentence (#347). `narrationSeparator` now emits the same `\n\n` `streamChat` inserts between iterations (#339) ahead of a synthesized reply on the sink when the last thing the model said this turn did not end its line; the returned text is untouched, since it is a message of its own on every non-streaming path, and nothing is inserted with streaming off.
+
 ### Changed
 
 - **The fallback notice is given in full once per outage, then collapses to a marker** — a provider that retired the configured model is down for the life of the session, and #339's once-per-turn rule still put the same `⚠️ nvidia unavailable (http_410) — … pick another with /model — answered by poolside (…)` paragraph at the top of every reply, burying the one instruction in it (#348). The first reply a fallback answers carries the full notice; later replies answered by the same fallback for the same outage open with `↪ answered by poolside (poolside/laguna-s-2.1)`; the full notice returns once the addressed provider has answered again. The outage is identified by the addressed provider plus whether the failure is a retired model (404/410), so a cooldown that follows a 410 continues that outage rather than announcing a new one. The key is `session.Session.FallbackNoticed` (`fallback_noticed`, `omitempty`) on the metadata sidecar, so a restart does not re-announce, and `/new` clears it. `agents.defaults.quiet_fallback` still suppresses both forms.

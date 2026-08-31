@@ -390,6 +390,111 @@ func TestOutboundChannelAccess(t *testing.T) {
 	}
 }
 
+// This is the regression test for "enable Telegram or Discord, not both"
+// (AGENTS.md/CLAUDE.md): before fan-out, every channel implementation called
+// OutboundChannel() and got back the *same* underlying channel, so two
+// channels running together raced an ordinary Go channel receive over each
+// message — the loser silently never saw it, with no error anywhere. Two
+// independent consumers here must each see every message published,
+// regardless of which one is addressed to them.
+func TestOutboundChannelAccess_TwoConsumersEachSeeEveryMessage(t *testing.T) {
+	mb := NewMessageBus()
+	mb.Start()
+	defer mb.Stop()
+
+	telegramCh := mb.OutboundChannel()
+	discordCh := mb.OutboundChannel()
+
+	const n = 50
+	for i := 0; i < n; i++ {
+		channel := "telegram"
+		if i%2 == 0 {
+			channel = "discord"
+		}
+		if !mb.Publish(OutboundMessage{Content: fmt.Sprintf("msg-%d", i), Channel: channel}) {
+			t.Fatalf("Publish failed at message %d", i)
+		}
+	}
+
+	// Each consumer must receive all n messages — its own addressed ones
+	// plus the ones meant for the other channel, exactly as a real channel
+	// implementation's consumeOutbound loop receives everything and then
+	// filters by msg.Channel itself.
+	drain := func(ch <-chan OutboundMessage) int {
+		got := 0
+		timeout := time.After(2 * time.Second)
+		for got < n {
+			select {
+			case <-ch:
+				got++
+			case <-timeout:
+				return got
+			}
+		}
+		return got
+	}
+
+	gotTelegram := drain(telegramCh)
+	gotDiscord := drain(discordCh)
+
+	if gotTelegram != n {
+		t.Errorf("telegram consumer received %d of %d messages, want all %d — a message was lost to fan-out", gotTelegram, n, n)
+	}
+	if gotDiscord != n {
+		t.Errorf("discord consumer received %d of %d messages, want all %d — a message was lost to fan-out", gotDiscord, n, n)
+	}
+}
+
+// A consumer registered via RegisterOutboundConsumer directly (not through
+// OutboundChannel's sugar) must fan out identically.
+func TestRegisterOutboundConsumer_ReceivesFannedOutMessages(t *testing.T) {
+	mb := NewMessageBus()
+	mb.Start()
+	defer mb.Stop()
+
+	ch := mb.RegisterOutboundConsumer()
+
+	if !mb.Publish(OutboundMessage{Content: "hello", Channel: "telegram"}) {
+		t.Fatal("Publish failed")
+	}
+
+	select {
+	case msg := <-ch:
+		if msg.Content != "hello" {
+			t.Errorf("Content = %q, want %q", msg.Content, "hello")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("registered consumer never received the published message")
+	}
+}
+
+// A slow or absent consumer must not stall delivery to other consumers, and
+// must not block Publish or the dispatcher loop — a full per-consumer
+// buffer drops that one message for that one consumer only.
+func TestFanOutOutbound_SlowConsumerDoesNotBlockOthers(t *testing.T) {
+	mb := NewMessageBus()
+	mb.Start()
+	defer mb.Stop()
+
+	slow := mb.RegisterOutboundConsumer() // never drained
+	fast := mb.RegisterOutboundConsumer()
+
+	// Overfill the slow consumer's own buffer (MaxQueueSize) plus a bit more,
+	// then confirm the fast consumer still receives fresh messages published
+	// afterward — the slow one being permanently full must not back up the
+	// shared dispatcher loop.
+	for i := 0; i < MaxQueueSize+5; i++ {
+		mb.Publish(OutboundMessage{Content: fmt.Sprintf("m%d", i), Channel: "x"})
+	}
+
+	select {
+	case <-fast:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fast consumer never received a message; a slow consumer stalled fan-out")
+	}
+	_ = slow
+}
+
 func TestContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	mb := NewMessageBusWithContext(ctx)

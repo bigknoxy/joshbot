@@ -81,6 +81,8 @@ func TestBusMessageSender_MultipleChannels(t *testing.T) {
 
 func TestBusMessageSender_SetAndGetSenderID(t *testing.T) {
 	messageBus := bus.NewMessageBus()
+	messageBus.Start()
+	defer messageBus.Stop()
 	sender := NewBusMessageSender(messageBus)
 
 	sender.SetSenderID("agent-1")
@@ -89,23 +91,24 @@ func TestBusMessageSender_SetAndGetSenderID(t *testing.T) {
 	sender.SetChatID("cli", "user")
 	ctx := context.Background()
 
-	// Start consuming from the outbound channel to prevent blocking
-	go func() {
-		<-messageBus.OutboundChannel()
-	}()
+	// Register before publishing, and read with a timeout rather than a
+	// non-blocking default: a message published before a consumer is
+	// registered never reaches that consumer, and a `default:` here would
+	// let the assertion below silently never run instead of failing.
+	ch := messageBus.OutboundChannel()
 
 	err := sender.SendMessage(ctx, "cli", "test")
 	if err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
-	// Re-consume and check
 	select {
-	case msg := <-messageBus.OutboundChannel():
+	case msg := <-ch:
 		if msg.SenderID != "agent-1" {
 			t.Errorf("expected SenderID 'agent-1', got %q", msg.SenderID)
 		}
-	default:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for outbound message")
 	}
 }
 
@@ -123,6 +126,8 @@ func TestBusMessageSender_SendMessage_NoChatID(t *testing.T) {
 
 func TestBusMessageSender_SendMessage_Success(t *testing.T) {
 	messageBus := bus.NewMessageBus()
+	messageBus.Start()
+	defer messageBus.Stop()
 	sender := NewBusMessageSender(messageBus)
 
 	sender.SetChatID("telegram", "chat-001")
@@ -130,12 +135,10 @@ func TestBusMessageSender_SendMessage_Success(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Consume the outbound channel to prevent blocking
-	done := make(chan bus.OutboundMessage, 1)
-	go func() {
-		msg := <-messageBus.OutboundChannel()
-		done <- msg
-	}()
+	// Register before publishing: the bus fans a message out to whichever
+	// consumers are already registered at publish time, so a consumer
+	// registered afterward would never see it.
+	ch := messageBus.OutboundChannel()
 
 	err := sender.SendMessage(ctx, "telegram", "Hello, world!")
 	if err != nil {
@@ -143,7 +146,7 @@ func TestBusMessageSender_SendMessage_Success(t *testing.T) {
 	}
 
 	select {
-	case msg := <-done:
+	case msg := <-ch:
 		if msg.Content != "Hello, world!" {
 			t.Errorf("expected content 'Hello, world!', got %q", msg.Content)
 		}
@@ -220,8 +223,14 @@ func TestBusMessageSender_SendMessage_WithCanceledContext(t *testing.T) {
 
 func TestBusMessageSender_SendFilePublishesTheAttachment(t *testing.T) {
 	mb := bus.NewMessageBus()
+	mb.Start()
+	defer mb.Stop()
 	s := NewBusMessageSender(mb)
 	s.SetChatID("telegram", "555")
+
+	// Register before publishing, same reason as the other sender tests:
+	// the bus fans out to whoever is already registered at publish time.
+	ch := mb.OutboundChannel()
 
 	att := Attachment{Filename: "chart.png", Kind: bus.AttachmentPhoto, Size: 4, Data: []byte("\x89PNG")}
 	if err := s.SendFile(context.Background(), "telegram", att, "here"); err != nil {
@@ -229,7 +238,7 @@ func TestBusMessageSender_SendFilePublishesTheAttachment(t *testing.T) {
 	}
 
 	select {
-	case msg := <-mb.OutboundChannel():
+	case msg := <-ch:
 		if len(msg.Attachments) != 1 || msg.Attachments[0].Filename != "chart.png" {
 			t.Fatalf("attachments = %+v", msg.Attachments)
 		}

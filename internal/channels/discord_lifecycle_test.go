@@ -89,12 +89,14 @@ func TestDiscordStartRefusesASecondRun(t *testing.T) {
 	}
 }
 
-// TestDiscordConsumeOutboundRoutesByChannel pins the routing rule. The bus has
-// one outbound channel that every channel implementation reads competitively,
-// so a consumer that took messages not addressed to it would swallow another
-// channel's reply with no error anywhere.
+// TestDiscordConsumeOutboundRoutesByChannel pins the routing rule: a message
+// not addressed to this channel (or "all") must never be delivered, even
+// though — since the bus fans out a copy of every outbound message to each
+// registered consumer — this channel's consumeOutbound sees it arrive.
 func TestDiscordConsumeOutboundRoutesByChannel(t *testing.T) {
 	d, fake := newTestDiscordChannel(t, []string{"111"})
+	d.bus.Start()
+	defer d.bus.Stop()
 	d.mu.Lock()
 	d.running = true
 	d.mu.Unlock()
@@ -108,27 +110,42 @@ func TestDiscordConsumeOutboundRoutesByChannel(t *testing.T) {
 		close(done)
 	}()
 
-	for _, m := range []bus.OutboundMessage{
+	msgs := []bus.OutboundMessage{
 		{Channel: "telegram", ChannelID: "c1", Content: "not mine"},
 		{Channel: "discord", ChannelID: "c1", Content: "mine"},
 		{Channel: "all", ChannelID: "c1", Content: "broadcast"},
-	} {
-		d.bus.OutboundChan() <- m
 	}
 
+	// consumeOutbound registers its bus subscription only once its goroutine
+	// actually runs — a message published before that registration completes
+	// was fanned out to a subscriber list that did not yet include this one
+	// and never arrives. Resend on a short interval until both expected
+	// messages are seen rather than assuming the first send won that race;
+	// resending is safe here since a duplicate "mine"/"broadcast" doesn't
+	// change what the test checks, and a "not mine" that leaks through even
+	// once is still caught below.
 	deadline := time.After(2 * time.Second)
 	for {
 		got := fake.messages()
-		if len(got) >= 2 {
-			if got[0] != "mine" || got[1] != "broadcast" {
-				t.Fatalf("delivered = %v, want [mine broadcast]", got)
+		seenMine, seenBroadcast := false, false
+		for _, m := range got {
+			if m == "mine" {
+				seenMine = true
 			}
+			if m == "broadcast" {
+				seenBroadcast = true
+			}
+		}
+		if seenMine && seenBroadcast {
 			break
 		}
 		select {
 		case <-deadline:
 			t.Fatalf("consumeOutbound delivered %v, want the discord and all messages", got)
 		case <-time.After(10 * time.Millisecond):
+			for _, m := range msgs {
+				d.bus.OutboundChan() <- m
+			}
 		}
 	}
 

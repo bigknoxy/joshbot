@@ -1341,13 +1341,9 @@ joshbot also speaks Discord (gateway websocket + REST via the pure-Go
 - Messages over 2000 chars are split (code-fence aware); the bot ignores its own
   and other bots' messages; `/help` and `/new` work as text commands.
 
-> **⚠️ Enable one chat channel at a time.** The message bus exposes a *single*
-> outbound channel that channel implementations read competitively, so running
-> Discord and Telegram simultaneously has them steal each other's replies —
-> roughly half of each conversation's answers are delivered to the other
-> service's chat, with no error anywhere. Until the bus fans out per channel,
-> enable **either** `channels.telegram` **or** `channels.discord`, not both.
-> (`internal/channels/discord.go`, `consumeOutbound`.)
+Telegram and Discord can both be enabled at once — the message bus fans out
+every outbound reply to each registered channel, so each one gets its own
+copy and delivers only the replies addressed to it.
 
 ## OpenAI-Compatible API
 

@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registry entirely instead of gating it. Closes the gap where a prompt-injected
   `web_fetch` result or inbound document could reach an operator's own chat
   with no confirmation (issue #304).
+- `skill_registry` gained a `get` action that returns a skill's full content.
+  Found by an eval-suite audit: the prompt told the model to `read_file` a
+  skill's instructions, but never gave it a path, and a bundled skill (5 of
+  the 6 shipped skills) has no real filesystem path at all — it ships
+  embedded in the binary. The net effect was that non-`Always` skills'
+  detailed instructions were unreachable in practice.
+
+### Fixed
+- Skill auto-extraction (the LLM call that drafts a `SKILL.md` after a
+  tool-using turn) now runs in a background goroutine with its own 60s bound,
+  instead of inline on an unbounded context before the turn's reply was
+  returned. It used to be able to hang the whole reply — ignoring
+  `agents.defaults.timeout` entirely — on an ordinary tool-using turn whose
+  answer merely contained a word like "steps".
 
 ## [1.65.0] - 2026-08-31
 

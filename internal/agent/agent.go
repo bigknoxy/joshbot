@@ -1360,9 +1360,26 @@ func (a *Agent) afterReActDetection(finalOutput string, toolRecords []skills.Too
 		return
 	}
 
-	// Ask LLM to generate SKILL.md content from the trace
+	// The extraction LLM call runs off the turn's critical path, in its own
+	// goroutine with its own bounded timeout — not inline, and not on
+	// context.Background() unbounded. This used to block the reply the user
+	// is waiting on behind a second full LLM call that ignored
+	// agents.defaults.timeout entirely: a turn configured with a short
+	// timeout specifically to avoid hangs could still hang here, and the
+	// trigger bar is low (>=3 tool calls plus an ordinary word like "steps"
+	// in the answer is enough to fire SkillDetector.Detect in ordinary use).
 	existingSkills := a.skillLoader.List()
-	skillContent, err := a.extractor.Extract(context.Background(), trace, existingSkills)
+	go a.extractAndCreateSkill(candidate.Name, trace, existingSkills)
+}
+
+// extractAndCreateSkill runs the skill-extraction LLM call and the resulting
+// file write off the turn's goroutine. See afterReActDetection for why this
+// must never run inline or on an unbounded context.
+func (a *Agent) extractAndCreateSkill(candidateName string, trace skills.Trace, existingSkills []*skills.Skill) {
+	ctx, cancel := context.WithTimeout(context.Background(), skillExtractionTimeout)
+	defer cancel()
+
+	skillContent, err := a.extractor.Extract(ctx, trace, existingSkills)
 	if err != nil {
 		a.logger.Warn("Skill extraction failed", "error", err)
 		return
@@ -1374,12 +1391,12 @@ func (a *Agent) afterReActDetection(finalOutput string, toolRecords []skills.Too
 	}
 
 	// Create the skill
-	if err := a.skillLoader.Create(candidate.Name, skillContent); err != nil {
-		a.logger.Warn("Failed to create skill", "name", candidate.Name, "error", err)
+	if err := a.skillLoader.Create(candidateName, skillContent); err != nil {
+		a.logger.Warn("Failed to create skill", "name", candidateName, "error", err)
 		return
 	}
 
-	a.logger.Info("Skill created successfully", "name", candidate.Name)
+	a.logger.Info("Skill created successfully", "name", candidateName)
 }
 
 // compactionState carries a compaction produced during a turn so it can be
@@ -1417,6 +1434,13 @@ const compactionKeepTail = 6
 // persistenceWriteTimeout bounds the fresh context given to session/history
 // writes once a turn's budget has been spent.
 const persistenceWriteTimeout = 10 * time.Second
+
+// skillExtractionTimeout bounds the background skill-extraction LLM call
+// afterReActDetection spawns. It is deliberately generous (a full LLM call,
+// not a quick check) but finite — this used to run on context.Background()
+// with no bound at all, up to the provider's own client timeout (300s for
+// ollama), and inline before the turn's reply was returned.
+const skillExtractionTimeout = 60 * time.Second
 
 // persistenceCtx returns a context for persistence writes (session, history,
 // checkpoint) that must complete even when the turn's budget has already been

@@ -315,7 +315,7 @@ func (l *Loader) LoadSummary(ctx context.Context) (string, error) {
 		}
 	}
 
-	parts := []string{"Available skills (use read_file to load full skill content when needed):"}
+	parts := []string{"Available skills (use skill_registry with action=\"get\" and the skill's name to load its full content when needed):"}
 	for _, sk := range l.skills {
 		// Untrusted workspace skills are withheld entirely. Offering only the
 		// name and description would still put attacker-chosen text in the

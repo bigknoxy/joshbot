@@ -29,8 +29,8 @@ func TestSkillRegistryTool_Description(t *testing.T) {
 	if !strings.HasPrefix(desc, "skill_registry: ") {
 		t.Errorf("Description() = %q, expected the tool-name prefix", desc)
 	}
-	if !strings.Contains(strings.ToLower(desc), "list, create, or delete") {
-		t.Errorf("Description() = %q, expected it to describe list/create/delete", desc)
+	if !strings.Contains(strings.ToLower(desc), "list, create, delete, or get") {
+		t.Errorf("Description() = %q, expected it to describe list/create/delete/get", desc)
 	}
 }
 
@@ -46,8 +46,8 @@ func TestSkillRegistryTool_Parameters(t *testing.T) {
 	if !params[0].Required {
 		t.Error("params[0].Required should be true")
 	}
-	if len(params[0].Enum) != 3 {
-		t.Errorf("params[0].Enum has %d values, want 3", len(params[0].Enum))
+	if len(params[0].Enum) != 4 {
+		t.Errorf("params[0].Enum has %d values, want 4", len(params[0].Enum))
 	}
 }
 

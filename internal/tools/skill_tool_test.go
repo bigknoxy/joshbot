@@ -3,6 +3,7 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/skills"
@@ -211,5 +212,129 @@ func TestSkillRegistryTool_MissingContent(t *testing.T) {
 
 	if result.Error == nil {
 		t.Fatal("expected error for missing content")
+	}
+}
+
+// The "get" action is the only working path to a skill's full content: the
+// summary the model sees never carries a filesystem path, so read_file
+// cannot reach it (issue found in the eval-suite audit).
+func TestSkillRegistryTool_Get(t *testing.T) {
+	tmpDir := t.TempDir()
+	ws := filepath.Join(tmpDir, "workspace")
+	os.MkdirAll(ws, 0755)
+
+	loader, err := skills.NewLoader(ws)
+	if err != nil {
+		t.Fatalf("NewLoader() error = %v", err)
+	}
+	store, err := skills.LoadTrustStore(filepath.Join(tmpDir, "skills.trust"))
+	if err != nil {
+		t.Fatalf("LoadTrustStore() error = %v", err)
+	}
+	loader.SetTrustStore(store)
+
+	content := `---
+name: gettable-skill
+description: A skill to fetch in full
+tags: ["test"]
+---
+
+Step 1: Do the thing.
+Step 2: Do the other thing.`
+	if err := loader.Create("gettable-skill", content); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := loader.Trust("gettable-skill"); err != nil {
+		t.Fatalf("Trust() error = %v", err)
+	}
+
+	tool := NewSkillRegistryTool(loader)
+	result := tool.Execute(nil, map[string]any{"action": "get", "name": "gettable-skill"})
+	if result.Error != nil {
+		t.Fatalf("Get failed: %v", result.Error)
+	}
+	if !strings.Contains(result.Output, "Step 1: Do the thing.") {
+		t.Errorf("Get() output = %q, want the skill body", result.Output)
+	}
+}
+
+// A skill that exists but has not been approved must not be readable by
+// asking for it directly by name — the summary withholds it, and "get" must
+// enforce the same boundary, not offer a side door around it.
+func TestSkillRegistryTool_Get_UntrustedSkillIsRefused(t *testing.T) {
+	tmpDir := t.TempDir()
+	ws := filepath.Join(tmpDir, "workspace")
+	os.MkdirAll(ws, 0755)
+
+	loader, err := skills.NewLoader(ws)
+	if err != nil {
+		t.Fatalf("NewLoader() error = %v", err)
+	}
+	store, err := skills.LoadTrustStore(filepath.Join(tmpDir, "skills.trust"))
+	if err != nil {
+		t.Fatalf("LoadTrustStore() error = %v", err)
+	}
+	loader.SetTrustStore(store)
+
+	content := "---\nname: untrusted-skill\ndescription: not yet approved\n---\nbody"
+	if err := loader.Create("untrusted-skill", content); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	// Deliberately not trusted.
+
+	tool := NewSkillRegistryTool(loader)
+	result := tool.Execute(nil, map[string]any{"action": "get", "name": "untrusted-skill"})
+	if result.Error == nil {
+		t.Fatal("expected an error for an unapproved skill")
+	}
+}
+
+func TestSkillRegistryTool_Get_UnknownSkill(t *testing.T) {
+	tmpDir := t.TempDir()
+	ws := filepath.Join(tmpDir, "workspace")
+	os.MkdirAll(ws, 0755)
+
+	loader, err := skills.NewLoader(ws)
+	if err != nil {
+		t.Fatalf("NewLoader() error = %v", err)
+	}
+
+	tool := NewSkillRegistryTool(loader)
+	result := tool.Execute(nil, map[string]any{"action": "get", "name": "does-not-exist"})
+	if result.Error == nil {
+		t.Fatal("expected an error for an unknown skill")
+	}
+}
+
+// A bundled skill has no real filesystem path at all — Path is a virtual
+// "bundled/<name>" string, since the content ships embedded in the binary
+// via go:embed. Before "get" existed this was the one class of skill the
+// model had no working way to load in full: read_file could not resolve
+// its path, and no tool exposed LoadFullSkillContent.
+func TestSkillRegistryTool_Get_BundledSkill(t *testing.T) {
+	loader, err := skills.NewLoader(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLoader() error = %v", err)
+	}
+
+	tool := NewSkillRegistryTool(loader)
+	result := tool.Execute(nil, map[string]any{"action": "get", "name": "cron"})
+	if result.Error != nil {
+		t.Fatalf("Get(cron) failed: %v", result.Error)
+	}
+	if strings.TrimSpace(result.Output) == "" {
+		t.Error("expected the bundled skill's embedded content, got nothing")
+	}
+}
+
+func TestSkillRegistryTool_Get_MissingName(t *testing.T) {
+	loader, err := skills.NewLoader(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLoader() error = %v", err)
+	}
+	tool := NewSkillRegistryTool(loader)
+	result := tool.Execute(nil, map[string]any{"action": "get"})
+	if result.Error == nil {
+		t.Fatal("expected an error for a missing name")
 	}
 }

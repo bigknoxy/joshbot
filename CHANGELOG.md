@@ -7,19 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- Telegram and Discord can now both be enabled at once. The message bus used
-  to expose a single outbound channel that every channel implementation read
-  competitively, so running both had them silently steal roughly half of
-  each other's replies — no error, no log line, just answers arriving in the
-  wrong service. The bus now fans out a private copy of every outbound
-  message to each registered channel.
-
-### Changed
-- `joshbot onboard` no longer prompts for Telegram or background-service setup
-  by default — the two least-needed questions for someone evaluating the tool
-  for the first time now print a one-line notice instead. Pass
-  `--configure-channels` to be asked, same as before.
+## [1.66.0] - 2026-08-31
 
 ### Added
 - `tools.send_file_approval` gates the `send_file` tool behind a human decision
@@ -36,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embedded in the binary. The net effect was that non-`Always` skills'
   detailed instructions were unreachable in practice.
 
+### Changed
+- `gosec` is now a blocking check in CI, not advisory. Its first real run
+  found 150 findings (issue #358); 129 were false positives given this
+  codebase's documented design (shell tool, sandbox, containment — see
+  `.github/workflows/security.yml` for the full per-rule reasoning) and are
+  now excluded by rule; the remaining 21 were the file-permission fix above.
+- `joshbot onboard` no longer prompts for Telegram or background-service setup
+  by default — the two least-needed questions for someone evaluating the tool
+  for the first time now print a one-line notice instead. Pass
+  `--configure-channels` to be asked, same as before.
+
 ### Fixed
 - Skill auto-extraction (the LLM call that drafts a `SKILL.md` after a
   tool-using turn) now runs in a background goroutine with its own 60s bound,
@@ -49,7 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session files already get `0600` for; on a shared machine any local
   account could previously read another user's extracted facts and full
   interaction history.
-
 - Onboarding wizard fixes from an audit of first-run friction: the name
   prompt no longer silently truncates a multi-word name to its first token
   (it used `Scanln`, which reads one whitespace-delimited token); an
@@ -58,13 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs/INSTALL.md now recommend the same provider (NVIDIA NIM) the wizard
   itself defaults to, instead of disagreeing with it; docs/INSTALL.md's
   walkthrough now lists all six wizard steps instead of three.
-
-### Changed
-- `gosec` is now a blocking check in CI, not advisory. Its first real run
-  found 150 findings (issue #358); 129 were false positives given this
-  codebase's documented design (shell tool, sandbox, containment — see
-  `.github/workflows/security.yml` for the full per-rule reasoning) and are
-  now excluded by rule; the remaining 21 were the file-permission fix above.
+- Telegram and Discord can now both be enabled at once. The message bus used
+  to expose a single outbound channel that every channel implementation read
+  competitively, so running both had them silently steal roughly half of
+  each other's replies — no error, no log line, just answers arriving in the
+  wrong service. The bus now fans out a private copy of every outbound
+  message to each registered channel.
+- Post-merge review caught a stale doc comment on `MessageBus.Stop()` left
+  over from the fan-out change above: it still described the inbound
+  processor as "the only goroutine tracked by wg" after a second
+  (`processOutbound`) joined it. Comment-only, no behavior change.
 
 ## [1.65.0] - 2026-08-31
 

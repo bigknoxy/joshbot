@@ -77,6 +77,24 @@ func TestSelectProviderEveryMenuNumberReturnsTheProviderItNames(t *testing.T) {
 	}
 }
 
+// Garbled input (a typo, a stray paste) fell through to the default with no
+// feedback — the operator had no way to know their choice wasn't the one
+// written to config.json. A blank line (pressing Enter) is a deliberate
+// "use the default" and must stay silent.
+func TestSelectProviderNamesTheDefaultOnUnparseableInput(t *testing.T) {
+	withStdinInput(t, "xyz\n")
+	out := captureStdout(t, func() { selectProvider(nil) })
+	if !strings.Contains(out, `Didn't recognize "xyz"`) {
+		t.Errorf("no notice for unparseable input:\n%s", out)
+	}
+
+	withStdinInput(t, "\n")
+	out = captureStdout(t, func() { selectProvider(nil) })
+	if strings.Contains(out, "Didn't recognize") {
+		t.Errorf("a blank line (deliberate default) printed a notice:\n%s", out)
+	}
+}
+
 // The current default provider is shown so the operator can see what they are
 // about to change. Losing it makes re-running onboarding a guess.
 func TestSelectProviderShowsTheConfiguredDefault(t *testing.T) {

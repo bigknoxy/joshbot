@@ -4030,8 +4030,16 @@ func selectProvider(existingCfg *config.Config) string {
 	fmt.Print("\nChoice [1]: ")
 	var choice string
 	fmt.Scanln(&choice)
-	if idx, err := strconv.Atoi(strings.TrimSpace(choice)); err == nil && idx >= 1 && idx <= len(providerList) {
+	choice = strings.TrimSpace(choice)
+	if idx, err := strconv.Atoi(choice); err == nil && idx >= 1 && idx <= len(providerList) {
 		return providerList[idx-1]
+	}
+	// A blank line is a deliberate "use the default" — say nothing. Anything
+	// else that failed to parse (a typo, a stray paste) falls through to the
+	// same default silently otherwise, and the operator has no way to know
+	// their choice wasn't the one that got written to config.json.
+	if choice != "" {
+		fmt.Printf("Didn't recognize %q — using %s.\n", choice, providers.GetProviderDisplayName(providerList[0]))
 	}
 	return providerList[0]
 }
@@ -4262,9 +4270,10 @@ func promptUserName(existingCfg *config.Config) string {
 		fmt.Print("What should I call you? (optional, press Enter to skip): ")
 	}
 
-	var name string
-	fmt.Scanln(&name)
-	return strings.TrimSpace(name)
+	// readLine, not Scanln: Scanln reads a single whitespace-delimited
+	// token, so "Josh Knox" silently became "Josh" with no error or
+	// indication anything was cut.
+	return strings.TrimSpace(readLine())
 }
 
 // modelHelp returns a brief description of what a model is good for, by provider.

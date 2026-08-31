@@ -42,7 +42,8 @@ Before installing joshbot, ensure you have the following:
   ```
 
 - **LLM Provider API Key** - joshbot needs an API key to connect to an LLM provider
-  - **OpenRouter** (recommended for beginners): Free tier available at [openrouter.ai/keys](https://openrouter.ai/keys) - no credit card required
+  - **NVIDIA NIM** (recommended for beginners, and the onboarding wizard's default): Free tier available at [build.nvidia.com](https://build.nvidia.com) - no credit card required
+  - **OpenRouter**: Free tier available at [openrouter.ai/keys](https://openrouter.ai/keys) - no credit card required
   - **Anthropic**: Get a key at [console.anthropic.com](https://console.anthropic.com)
   - **OpenAI**: Get a key at [platform.openai.com](https://platform.openai.com)
   - **Groq**: Free tier at [console.groq.com](https://console.groq.com)
@@ -167,7 +168,7 @@ After installation, run the onboarding wizard:
 joshbot onboard
 ```
 
-The wizard will guide you through:
+The wizard walks through six steps. Every step except the provider and key accepts a sensible default on a bare Enter — Telegram and Service Installation default to "skip for now."
 
 1. **LLM Provider Configuration**
    - Choose a provider — NVIDIA NIM is the recommended default (free tier), with OpenRouter, OpenAI, Groq, Ollama, Anthropic, Poolside, and GitHub Copilot also offered (Azure/custom/litellm need `--api-base` and are configured via flags)
@@ -183,9 +184,15 @@ The wizard will guide you through:
      5. Custom - Write your own SOUL.md
    ```
 
-3. **Model Selection**
+3. **Personalization** — optionally tell joshbot your name (press Enter to skip)
+
+4. **Model Selection**
    - Default depends on the provider you configured — e.g. `deepseek-ai/deepseek-v4-flash-0731` for NVIDIA NIM, `openrouter/free` for OpenRouter
    - You can specify any model supported by your provider
+
+5. **Telegram Setup** (optional) — configure a bot token and allowlist now, or skip and run `joshbot configure` later; see [Telegram Setup](#telegram-setup) below
+
+6. **Service Installation** (optional) — install joshbot as a background service (systemd/launchd/OpenRC) now, or skip and run `joshbot service install` later
 
 ### Onboarding Options
 

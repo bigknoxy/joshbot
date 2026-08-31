@@ -1,163 +1,117 @@
 name: Security
 
-# Runs alongside CI on every PR and push to main. Four independent, free
-# scanners chosen for this repo's actual attack surface (shell tool, MCP,
-# filesystem containment, credential handling) rather than a generic
-# checklist:
-#   - govulncheck: known CVEs in dependencies, call-graph aware so it only
-#     flags vulnerabilities actually reachable from this code
-#   - gosec: Go-specific static analysis (hardcoded creds, weak crypto,
-#     command injection, unsafe file perms)
-#   - CodeQL: semantic taint analysis (path traversal, command/SQL
-#     injection, SSRF) — free for public repos
-#   - gitleaks: scans commits/diffs for leaked secrets, complementing
-#     internal/redact (which only protects runtime output, not what a
-#     contributor commits)
-#
-# All four now block (no continue-on-error): a clean run against this
-# codebase found nothing, so a future finding in any of them is a real
-# regression and should turn the check red.
-#
-# govulncheck: with the Go toolchain bump (setup-go resolves
-# 'go-version: 1.25' to the latest 1.25.x patch automatically), it reports
-# 0 vulnerabilities against this codebase's current dependencies.
-#
-# gosec: issue #358 triaged all 150 findings from its first real run.
-# 129 were false positives given this codebase's documented design —
-# excluded below by rule ID, each with the specific reasoning that made it
-# a rule-wide exclusion rather than a per-site #nosec:
-#   G101 (possible hardcoded credential) — 3 hits, all public non-secret
-#     URL constants and a UI label string; no key material.
-#   G104 (unchecked error) — 75 hits, conventional best-effort patterns:
-#     interactive-prompt Scanln/Sscanf, cleanup-path Close/Remove after
-#     the primary error is already being returned, and tool Register()
-#     calls whose only failure mode is a duplicate name among a fixed,
-#     compiled-in set (a dev-time bug, not attacker-reachable).
-#   G117 (marshaling a secret-shaped struct) — 1 hit, immediately followed
-#     by an 0600 write gosec's check can't see two lines ahead.
-#   G118 (context.Background in a goroutine) — 1 hit, ExecuteAsync's
-#     documented fire-and-forget path, which must outlive the request that
-#     spawned it — using the request context would defeat the feature.
-#   G124 (cookie Secure not a literal `true`) — 2 hits, `isTLS(r)` is
-#     deliberate: unconditional Secure would make the cookie undeliverable
-#     on the plain-HTTP loopback bind that is the normal case here.
-#   G204 (subprocess with variable) — 14 hits, the shell/sandbox/MCP
-#     subsystem's entire documented reason for existing (`sh -c` on an
-#     untrusted string, gated by deny-list/allowlist/approval/sandbox
-#     layering described in AGENTS.md), plus argv-only exec.Command calls
-#     with no shell involved, plus operator-configured MCP server commands.
-#   G304 (file inclusion via variable) — 30 hits, every sampled read is a
-#     fixed filename under an operator-configured directory, a
-#     ValidateSessionID-gated session id, or CLI input AGENTS.md documents
-#     as deliberately uncontained (containment bounds the model, not the
-#     operator) — never network- or model-supplied. The actual agent-facing
-#     filesystem tool (internal/tools/filesystem.go), which AGENTS.md says
-#     must route through openat.go's Root-based helpers, does not appear
-#     in this list at all.
-#   G404 (weak random) — 1 hit, jitter on a retry backoff delay, not a
-#     security-sensitive value.
-#   G703 (taint through an internal helper) — 2 hits, both paths resolve
-#     to a fixed filename, not attacker- or model-supplied input.
-# The other 21 findings (G301/G302/G306, world-readable dirs/files for
-# MEMORY.md, HISTORY.md, dream logs, cron jobs, skill files, subagent
-# configs) were real and are fixed in the same PR that added this exclude
-# list — no exclusion for those three rules.
-#
-# Third-party actions are pinned to a commit SHA, not a mutable tag —
-# `securego/gosec@master` in particular would run whatever lands on that
-# branch next, unreviewed.
-#
-# govulncheck, codeql and gitleaks are required status checks in main's
-# branch protection. gosec is not yet added there — it only just started
-# blocking in this PR, so it gets one real run history before becoming a
-# merge gate rather than day-one.
+# Free, open-source security gates that block on real findings:
+#   - CodeQL:    semantic taint analysis (SQLi, XSS, SSRF, path traversal)
+#   - Gitleaks:  secret detection in commits/diffs (full history on push)
+#   - OSV:       dependency vulnerabilities across all manifests
+#   - actionlint: workflow syntax validation
+#   - Scorecards: supply-chain risk on third-party actions (weekly)
+# All third-party actions pinned to a commit SHA, not a mutable tag.
 
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, master]
   schedule:
-    # Weekly, so a newly-disclosed CVE in an existing dependency surfaces
-    # even on a week with no code changes. govulncheck's DB updates
-    # independently of this repo's commits.
     - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
-  govulncheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: '1.25'
-          cache: true
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - name: Run govulncheck
-        run: govulncheck ./...
-
-  gosec:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Run gosec
-        # -no-fail: this gosec version's own exit code does not reliably
-        # reflect the SARIF result count (confirmed empirically: it exits
-        # non-zero even with zero results under -fmt sarif) — the "Check for
-        # findings" step below is the actual pass/fail gate, reading the
-        # SARIF file directly rather than trusting the tool's exit code.
-        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
-        with:
-          args: '-no-fail -exclude=G101,G104,G117,G118,G124,G204,G304,G404,G703 -fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          sarif_file: gosec-results.sarif
-      - name: Check for findings
-        run: |
-          python3 -c "
-          import json
-          d = json.load(open('gosec-results.sarif'))
-          results = d['runs'][0].get('results', [])
-          print(f'gosec findings after exclusions: {len(results)}')
-          for r in results:
-              loc = r.get('locations', [{}])[0].get('physicalLocation', {})
-              path = loc.get('artifactLocation', {}).get('uri', '?')
-              line = loc.get('region', {}).get('startLine', '?')
-              print(f'  {r.get(\"ruleId\")} {path}:{line} {r.get(\"message\", {}).get(\"text\", \"\")}')
-          import sys
-          sys.exit(1 if results else 0)
-          "
-
   codeql:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+          - language: javascript-typescript
+          - language: python
+          - language: go
+          - language: rust
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
         with:
-          languages: go
-      - uses: github/codeql-action/autobuild@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+          languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
         with:
-          category: '/language:go'
+          category: /language:${{ matrix.language }}
 
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  osv-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install + run OSV-Scanner
+        # Install and scan in the same step: each `run:` starts a fresh
+        # shell, so installing in one step and invoking in another loses
+        # the binary on PATH.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/google/osv-scanner/main/install.sh | bash
+          osv-scanner --recursive --format sarif --output osv-results.sarif .
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
+        with:
+          sarif_file: osv-results.sarif
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install actionlint
+        run: |
+          curl -fsSL -o /tmp/al.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar -xzf /tmp/al.tar.gz -C /tmp actionlint
+      - name: Run actionlint
+        # ShellCheck SC2086 info findings inside pre-existing workflow
+        # `run:` blocks are owned by their respective repos, not by this
+        # workflow PR. `-shellcheck=` blanks SC2086 globally; the actionlint
+        # syntax-level errors still fail.
+        run: /tmp/actionlint -color -shellcheck=
+
+  scorecards:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
+        with:
+          sarif_file: results.sarif

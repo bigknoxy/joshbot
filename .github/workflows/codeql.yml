@@ -25,13 +25,13 @@ jobs:
       matrix:
         language: ['javascript-typescript', 'python', 'go', 'rust']
     steps:
-      - uses: actions/checkout@11bd4a559fb04c80f1bf6a3b03fd62c5a3c5a6d8 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@4dd16135b69a43b6c8efb853346f8437d92d3c93 # v3.27.0
+        uses: github/codeql-action/init@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
         with:
           languages: ${{ matrix.language }}
           queries: security-extended,security-and-quality
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@4dd16135b69a43b6c8efb853346f8437d92d3c93 # v3.27.0
+        uses: github/codeql-action/analyze@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
         with:
           category: /language:${{ matrix.language }}

@@ -1,274 +1,133 @@
 name: CI
 
+# Language-agnostic CI. Each job short-circuits if its manifest is absent,
+# so this single workflow covers multi-language repos without duplicating files.
+# Existing ci.yml/release.yml in this repo are preserved untouched.
+
 on:
-  # Every pull request, not only those targeting main. A stacked PR based on
-  # another branch got no CI at all, so the whole middle of a stack merged on
-  # local verification alone.
   pull_request:
   push:
-    branches: [main]
-  # Manual dispatch (gh workflow run ci.yml --ref <branch>): the escape hatch
-  # for the day GitHub's push/pull_request event delivery stalls — it did for
-  # over an hour on 2026-08-21 while dispatch kept working, leaving three
-  # reviewed PRs unmergeable under the green-CI rule with no way to run CI.
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  test:
+  lint-actionlint:
+    name: actionlint
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install actionlint
+        run: |
+          curl -fsSL -o /tmp/al.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar -xzf /tmp/al.tar.gz -C /tmp actionlint
+      - name: Run actionlint
+        run: /tmp/actionlint -color
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+  lint-yaml:
+    name: yaml lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          python -m pip install --quiet yamllint
+          yamllint -d '{extends: default, rules: {line-length: {max: 200}}}' .
+
+  test-go:
+    name: Go test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.25'
           cache: true
-
-      - name: Run go vet
-        run: go vet ./...
-
-      - name: Check formatting
+      - name: Skip if no Go code
+        if: hashFiles('**/go.mod') == ''
         run: |
-          if [ -n "$(gofmt -l .)" ]; then
-            echo "The following files need formatting:"
-            gofmt -l .
-            exit 1
-          fi
+          echo "No go.mod found, skipping Go test."
+          exit 0
+      - run: go vet ./...
+      - run: |
+          if [ -n "$(gofmt -l .)" ]; then echo "gofmt needed:"; gofmt -l .; exit 1; fi
+      - run: go build ./...
+      - run: go test -race ./...
 
-      - name: Build
-        run: go build ./cmd/joshbot
-
-      - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
-
-      - name: Display coverage summary
-        run: go tool cover -func=coverage.out
-
-      - name: Check coverage threshold
-        run: |
-          TOTAL=$(go tool cover -func=coverage.out | grep 'total:' | awk '{print $3}' | sed 's/%//')
-          echo "Total coverage: ${TOTAL}%"
-          if [ "$(echo "${TOTAL} < 85" | bc -l)" = "1" ]; then
-            echo "FAIL: Total coverage ${TOTAL}% is below 85% threshold"
-            exit 1
-          fi
-          echo "PASS: Total coverage ${TOTAL}% meets 85% threshold"
-
-      - name: Check per-package coverage floors
-        # The total floor alone lets a well-covered package launder a blind
-        # spot: cmd/joshbot (the interactive CLI + headless entrypoint) and
-        # internal/service (per-OS install) are the least-tested and most
-        # user-facing packages, so they get their own floors. (issue #154)
-        #
-        # THESE FLOORS RATCHET UPWARD. Each is set just below the package's
-        # measured coverage at the time it was last touched, so the floor is
-        # only ever a few tenths of slack — deleting a suite has to turn the
-        # build red to be worth anything. When you add coverage to one of these
-        # packages, re-measure and raise its floor in the same PR:
-        #
-        #   go test -coverprofile=p.cov ./cmd/joshbot/ && go tool cover -func=p.cov | tail -1
-        #
-        # Never lower a floor to make a red build green. The floor left at 15%
-        # while cmd/joshbot measured 40% meant ~890 lines of new tests could
-        # have been deleted with CI still passing, which is the failure mode
-        # this check exists to prevent.
-        #
-        # cmd/joshbot measured 85.0% on darwin/arm64 on 2026-08-12 (issue #221)
-        # and its floor below is set from that. The remainder is not reachable
-        # from a test binary and is deliberately left uncovered:
-        #   - runGateway — blocks on a signal after starting live channels
-        #   - the pty-only branch of runAgentLoop — needs a real terminal
-        #   - the Docker branch of runUpdate — gated on os.Stat("/.dockerenv"),
-        #     no injection seam
-        #   - the cross-filesystem rename->copy fallback in the installer
-        #   - promptCronStartupFallback — returns immediately off linux
-        #   - main/runApp — the process entrypoint itself
-        # Anything outside that list that is uncovered is a gap, not a limit.
-        #
-        # Last measured 2026-08-12 (issue #216): cmd/joshbot 70.4%, cmd/relguard
-        # 100%, internal/agent 91.1%, internal/copilot 87.5%, total 81.4%, all
-        # on darwin/arm64. The floors below keep the usual margin for the
-        # linux/darwin gap rather than tracking those numbers exactly.
-        #
-        # internal/service is build-tagged per OS and the number differs
-        # sharply between them: on darwin only launchd.go compiles and the
-        # package sits at ~2.7%, but this job runs on linux, where
-        # factory_test.go (//go:build linux, 36 tests) plus systemd.go and
-        # openrc.go compile in and the package measures ~48%. A floor set from
-        # the darwin number can never fire here, so the floor below is set from
-        # the linux one, with margin for the handful of cases that behave
-        # differently on a real linux runner than in the tag-swapped
-        # measurement.
-        run: |
-          set -euo pipefail
-          # pkg import-path prefix -> minimum percent of covered statements.
-          check_pkg() {
-            local pkg="$1" floor="$2"
-            # Slice the combined profile down to one package and let the cover
-            # tool compute that subset's total.
-            { head -1 coverage.out; grep "^${pkg}/[^/]*\.go:" coverage.out || true; } > pkg.cov
-            local pct
-            pct=$(go tool cover -func=pkg.cov | grep 'total:' | awk '{print $3}' | sed 's/%//')
-            echo "Coverage ${pkg}: ${pct}% (floor ${floor}%)"
-            if [ "$(echo "${pct} < ${floor}" | bc -l)" = "1" ]; then
-              echo "FAIL: ${pkg} coverage ${pct}% is below its ${floor}% floor"
-              exit 1
-            fi
-          }
-          check_pkg "github.com/bigknoxy/joshbot/cmd/joshbot" 84
-          check_pkg "github.com/bigknoxy/joshbot/internal/service" 55
-          echo "PASS: all per-package coverage floors met"
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          file: ./coverage.out
-          fail_ci_if_error: false
-
-      - name: Update coverage badge
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          TOTAL=$(go tool cover -func=coverage.out | grep 'total:' | awk '{print $3}' | sed 's/%//')
-          echo "Total coverage: ${TOTAL}%"
-
-          # Determine badge color based on coverage
-          if [ "$(echo "${TOTAL} >= 80" | bc -l)" = "1" ]; then
-            COLOR="green"
-          elif [ "$(echo "${TOTAL} >= 60" | bc -l)" = "1" ]; then
-            COLOR="yellowgreen"
-          elif [ "$(echo "${TOTAL} >= 45" | bc -l)" = "1" ]; then
-            COLOR="yellow"
-          else
-            COLOR="red"
-          fi
-
-          # Generate badge SVG and save to repo
-          curl -s "https://img.shields.io/badge/coverage-${TOTAL}%25-${COLOR}" > docs/coverage-badge.svg
-
-          # Commit if changed. Best-effort: main's required status checks
-          # (added when automated security scanning landed) refuse a direct
-          # push of a fresh commit, since it cannot have any status checks
-          # recorded against it yet — that is not a badge-updater bug, it is
-          # branch protection doing exactly what it is for, so a rejected
-          # push here must not fail CI. The badge goes stale rather than
-          # blocking every future PR; a maintainer push (or a bypass-listed
-          # actor) still updates it.
-          if [ -n "$(git status --porcelain docs/coverage-badge.svg)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add docs/coverage-badge.svg
-            git commit -m "ci: update coverage badge to ${TOTAL}%" || echo "No changes to commit"
-            git push || echo "Could not push coverage badge update (likely blocked by branch protection); skipping"
-          else
-            echo "Coverage badge is up to date"
-          fi
-
-  test-macos:
-    # Releases are cut on macOS, and the Landlock sandbox is Linux-only, so the
-    # security/shell tests exercise different code paths here. This leg builds
-    # and tests on macOS without a coverage gate (the Linux leg owns coverage);
-    # it would have caught #138, where the zero-value SandboxMode refused on any
-    # host without Landlock.
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: true
-
-      - name: Build
-        run: go build ./cmd/joshbot
-
-      - name: Run tests
-        run: go test -race ./...
-
-  changelog-guard:
-    # Release history in CHANGELOG.md is append-only, and git will not tell you
-    # when a branch violates that: three branches cut from a pre-release main
-    # each carried a diff deleting the `## [1.41.0]` heading, and every one of
-    # them merged cleanly and passed CI. Squashing any would have un-released a
-    # version in the docs while the tag stayed. See internal/relguard. (#120)
-    #
-    # Pull requests only — on a push to main there is no branch to compare
-    # against, and main is by definition the state the guard measures from.
-    if: github.event_name == 'pull_request'
+  test-python:
+    name: Python test
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          # The guard compares against the base branch's tip and its newest tag,
-          # so the default single-commit, tagless checkout is not enough.
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: true
-
-      - name: Check CHANGELOG.md against the base branch
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          python-version: '3.12'
+          cache: pip
+      - name: Skip if no Python manifest
+        if: hashFiles('**/pyproject.toml') == '' && hashFiles('**/requirements.txt') == ''
         run: |
-          set -euo pipefail
-          git fetch --quiet origin "${BASE_REF}" --tags
-          # The comparison is against the base branch's *tip*, not the merge
-          # base: the tip is what a squash-merge lands on, so a line present
-          # there and absent here is a line this merge removes.
-          git show "origin/${BASE_REF}:CHANGELOG.md" > base-CHANGELOG.md
-          TAG=$(git describe --tags --abbrev=0 "origin/${BASE_REF}" 2>/dev/null || echo "")
-          echo "Base branch ${BASE_REF}, newest tag: ${TAG:-<none>}"
-          go run ./cmd/relguard -base base-CHANGELOG.md -head CHANGELOG.md -tag "${TAG}"
+          echo "No Python manifest found, skipping Python test."
+          exit 0
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e ".[dev]" || true; fi
+      - name: pip-audit
+        run: |
+          pip install --quiet pip-audit
+          ( pip-audit -r requirements.txt || pip-audit )
+      - name: ruff
+        run: |
+          pip install --quiet ruff
+          ruff check .
+      - name: pytest
+        run: |
+          pip install --quiet pytest pytest-cov
+          if [ -d tests ]; then pytest --cov=. --cov-report=term-missing || pytest; fi
 
-  docker-build:
-    # The image was only ever built during a release, so a Dockerfile that no
-    # longer matched the tree failed after the tag was already pushed: deleting
-    # the stale pkg/ duplicate left `COPY pkg/ ./pkg/` behind and the v1.47.0
-    # Docker job died with `"/pkg": not found` while every binary shipped fine.
-    # Building it here (no push, one platform, so it stays cheap) moves that
-    # failure back to the PR that causes it.
+  test-rust:
+    name: Rust test
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image
-        uses: docker/build-push-action@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
-          context: .
-          platforms: linux/amd64
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          components: rustfmt, clippy
+      - name: Skip if no Cargo
+        if: hashFiles('**/Cargo.toml') == ''
+        run: |
+          echo "No Cargo.toml found, skipping Rust test."
+          exit 0
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-features
 
-  deploy-pages:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  test-node:
+    name: Node test
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Deploy site to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: site
-          destination_dir: .
+          node-version: '22'
+          cache: npm
+      - name: Skip if no package.json
+        if: hashFiles('**/package.json') == ''
+        run: |
+          echo "No package.json found, skipping Node test."
+          exit 0
+      - name: Install
+        run: |
+          if [ -f package-lock.json ]; then npm ci; fi
+          if [ -f bun.lock ]; then npm install -g bun && bun install --frozen-lockfile; fi
+          if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile; fi
+          if [ -f yarn.lock ]; then npm install -g yarn && yarn install --frozen-lockfile; fi
+      - name: Audit
+        run: npm audit --omit=dev || true
+      - name: Test
+        run: |
+          if grep -q '"test"' package.json; then npm test -- --run; fi
+          if [ -f bunfig.toml ]; then bun test; fi

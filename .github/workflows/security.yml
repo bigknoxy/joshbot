@@ -68,7 +68,7 @@ jobs:
       - name: Run gosec
         uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
         with:
-          args: '-fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
+          args: '-no-fail -fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9

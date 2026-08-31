@@ -14,19 +14,35 @@ name: Security
 #     internal/redact (which only protects runtime output, not what a
 #     contributor commits)
 #
-# govulncheck and gosec are `continue-on-error: true` on purpose: run
-# against this codebase for the first time, both found real findings (an
-# outdated gorilla/websocket, an outdated golang.org/x/text, a batch of Go
-# stdlib toolchain CVEs, and a set of gosec static findings) that need
-# triage, not a red build blocking every unrelated PR under this repo's
-# green-CI merge rule. CodeQL and gitleaks found nothing on the first run,
-# so they are left blocking — flip govulncheck/gosec to blocking too once
-# their baseline is triaged (see CLAUDE.md / AGENTS.md pre-release
-# checklists, which check the Security tab explicitly in the meantime).
+# CodeQL and gitleaks block (no continue-on-error): a clean run against
+# this codebase found nothing, so a future finding in either is a real
+# regression and should turn the check red.
+#
+# govulncheck blocks too: with the Go toolchain bump in this PR (setup-go
+# resolves 'go-version: 1.25' to the latest 1.25.x patch automatically),
+# it reports 0 vulnerabilities against this codebase's current
+# dependencies. It will go red again the moment a real one appears —
+# that's the point.
+#
+# gosec stays `continue-on-error: true`, and unlike the other three this
+# is NOT because it's clean — running it for the first time surfaced 150
+# findings across the shell tool, sandbox, and service-install code (G204
+# subprocess launches, G101 possible hardcoded credentials, G404 weak
+# random, and more). Many are almost certainly intentional given what this
+# codebase does on purpose (the shell tool exists to launch subprocesses),
+# but that call has to be made file by file, not assumed. Flipping this to
+# blocking before that triage happens would either permanently redden
+# every PR or invite a blanket #nosec pass that hides real findings later.
+# Tracked in issue #358; revisit once triaged.
 #
 # Third-party actions are pinned to a commit SHA, not a mutable tag —
 # `securego/gosec@master` in particular would run whatever lands on that
 # branch next, unreviewed.
+#
+# NOTE: a red job here only shows on the PR checks list — GitHub does not
+# refuse the merge unless these are added as required status checks in
+# branch protection (main currently has none configured). That is a
+# separate, admin-level repo-settings change.
 
 on:
   pull_request:
@@ -50,7 +66,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest

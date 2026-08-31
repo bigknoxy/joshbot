@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `joshbot onboard` no longer prompts for Telegram or background-service setup
+  by default — the two least-needed questions for someone evaluating the tool
+  for the first time now print a one-line notice instead. Pass
+  `--configure-channels` to be asked, same as before.
+
 ### Added
 - `tools.send_file_approval` gates the `send_file` tool behind a human decision
   ("off"/"interactive"/"always"), reusing the exact same approval mechanism as

@@ -458,6 +458,7 @@ func onboardApp() *cli.App {
 			Flags: []cli.Flag{
 				&cli.BoolFlag{Name: "force"},
 				&cli.BoolFlag{Name: "keep-data"},
+				&cli.BoolFlag{Name: "configure-channels"},
 				&cli.StringFlag{Name: "model", Aliases: []string{"m"}},
 				&cli.StringFlag{Name: "provider"},
 				&cli.StringFlag{Name: "api-key"},
@@ -569,8 +570,9 @@ func TestRunOnboard_Interactive_KeepCurrentAPIKey(t *testing.T) {
 	}
 
 	// 1: keep existing data; 1: nvidia; Enter: keep current key;
-	// 2: personality; Enter: keep name; Enter: accept model;
-	// 2: skip telegram; 2: skip service install.
+	// 2: personality; Enter: keep name; Enter: accept model.
+	// Telegram/service prompts don't fire by default (no --configure-channels),
+	// so the trailing input is never read; left in place to prove that.
 	withStdinInput(t, "1\n1\n\n2\n\n\n2\n2\n")
 	calls := stubTokenValidator(t, func(string) error { return nil })
 
@@ -600,6 +602,75 @@ func TestRunOnboard_Interactive_KeepCurrentAPIKey(t *testing.T) {
 	}
 	if *calls != 0 {
 		t.Errorf("token validator called %d times, want 0 (telegram skipped)", *calls)
+	}
+}
+
+// A fresh interactive run must not ask about Telegram or the background
+// service by default — those two prompts are the least-needed ceremony for
+// someone evaluating the tool for the first time (found in an onboarding-
+// friction audit). It must say so, and it must not touch stdin for either
+// question: this is the same test as above in spirit, but on a fresh home
+// with nothing to preserve, which is the case that matters most.
+func TestRunOnboard_Interactive_SkipsChannelSetupByDefault(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".joshbot")
+	setHome(t, home)
+	calls := stubTokenValidator(t, func(string) error { return nil })
+
+	// 1: nvidia; nvapi-freshkey: api key; 1: personality; Enter: name;
+	// Enter: model. Nothing left for Telegram/service — if either prompt
+	// fired, Scanln would read past the end of this input and the two
+	// questions would be answered by whatever came next (or block).
+	withStdinInput(t, "1\nnvapi-freshkey\n1\n\n\n")
+
+	out := captureStdout(t, func() {
+		if err := onboardApp().Run([]string{
+			"joshbot", "--config", filepath.Join(home, "config.json"), "onboard",
+		}); err != nil {
+			t.Fatalf("onboard failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "--configure-channels") {
+		t.Errorf("no notice about the skipped channel setup:\n%s", out)
+	}
+	if *calls != 0 {
+		t.Errorf("token validator called %d times, want 0 (Telegram prompt never ran)", *calls)
+	}
+
+	cfg, err := config.LoadFrom(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Channels.Telegram.Enabled {
+		t.Error("a skipped Telegram prompt must not enable Telegram")
+	}
+}
+
+// --configure-channels restores the full wizard, for an operator who does
+// want to be asked. This is the one test that still exercises the prompts
+// end to end, so a regression in either question is still caught.
+func TestRunOnboard_Interactive_ConfigureChannelsAsksBoth(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".joshbot")
+	setHome(t, home)
+	stubTokenValidator(t, func(string) error { return nil })
+
+	// 1: nvidia; key; 1: personality; Enter: name; Enter: model;
+	// 2: skip telegram; 2: skip service install.
+	withStdinInput(t, "1\nnvapi-freshkey\n1\n\n\n2\n2\n")
+
+	out := captureStdout(t, func() {
+		if err := onboardApp().Run([]string{
+			"joshbot", "--config", filepath.Join(home, "config.json"), "onboard", "--configure-channels",
+		}); err != nil {
+			t.Fatalf("onboard failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "[Step 5] Telegram Setup") {
+		t.Errorf("--configure-channels did not prompt for Telegram:\n%s", out)
+	}
+	if !strings.Contains(out, "[Step 6] Service Installation") {
+		t.Errorf("--configure-channels did not prompt for service install:\n%s", out)
 	}
 }
 

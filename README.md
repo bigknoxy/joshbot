@@ -279,9 +279,10 @@ This is especially useful when troubleshooting why joshbot returns "I've process
 ### Onboard Command
 
 ```bash
-joshbot onboard              # Interactive setup
+joshbot onboard              # Interactive setup (Telegram/service-install prompts skipped by default)
 joshbot onboard --force      # Overwrite existing config
 joshbot onboard --keep-data  # Reconfigure but preserve memory/skills
+joshbot onboard --keep-data --configure-channels  # Also be asked about Telegram/service install
 
 # Fully non-interactive: configure a provider without any prompts
 joshbot onboard --force \

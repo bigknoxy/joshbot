@@ -336,6 +336,16 @@ func TestSelectProviderMapping(t *testing.T) {
 	}
 }
 
+// promptUserName used Scanln, which reads one whitespace-delimited token —
+// "Josh Knox" silently became "Josh" with no error or indication anything
+// was cut.
+func TestPromptUserName_MultiWordNameIsNotTruncated(t *testing.T) {
+	withStdinInput(t, "Josh Knox\n")
+	if got := promptUserName(nil); got != "Josh Knox" {
+		t.Errorf("promptUserName() = %q, want %q", got, "Josh Knox")
+	}
+}
+
 func TestPromptServiceInstall(t *testing.T) {
 	withStdinInput(t, "1\n")
 	if !promptServiceInstall() {

@@ -44,7 +44,7 @@ joshbot is heavier on guarantees, lighter on your machine.
 ## Requirements
 
 - **Go 1.25+** (for building from source)
-- **An LLM API key** — OpenRouter free tier works, no credit card needed
+- **An LLM API key** — NVIDIA NIM's free tier works, no credit card needed (the onboarding wizard defaults to it); OpenRouter also has a free tier
 - **Linux or macOS** recommended
 
 ## Quick Start
@@ -88,7 +88,8 @@ docker run -it -v ~/.joshbot:/home/joshbot/.joshbot joshbot onboard
 ## Usage
 
 ```bash
-joshbot onboard # First-time setup
+joshbot onboard # First-time setup (interactive)
+joshbot onboard --force --provider nvidia --api-key "$NVIDIA_API_KEY" # non-interactive, skips every prompt
 joshbot agent # Interactive CLI chat
 joshbot agent --debug # CLI chat with debug logging
 joshbot gateway # Start all channels (Telegram, etc.)

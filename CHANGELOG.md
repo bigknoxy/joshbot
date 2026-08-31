@@ -36,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   account could previously read another user's extracted facts and full
   interaction history.
 
+- Onboarding wizard fixes from an audit of first-run friction: the name
+  prompt no longer silently truncates a multi-word name to its first token
+  (it used `Scanln`, which reads one whitespace-delimited token); an
+  unparseable provider-menu choice now says so instead of silently falling
+  back to the default with no indication anything was wrong; README and
+  docs/INSTALL.md now recommend the same provider (NVIDIA NIM) the wizard
+  itself defaults to, instead of disagreeing with it; docs/INSTALL.md's
+  walkthrough now lists all six wizard steps instead of three.
+
 ### Changed
 - `gosec` is now a blocking check in CI, not advisory. Its first real run
   found 150 findings (issue #358); 129 were false positives given this

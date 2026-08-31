@@ -151,13 +151,20 @@ jobs:
           # Generate badge SVG and save to repo
           curl -s "https://img.shields.io/badge/coverage-${TOTAL}%25-${COLOR}" > docs/coverage-badge.svg
 
-          # Commit if changed
+          # Commit if changed. Best-effort: main's required status checks
+          # (added when automated security scanning landed) refuse a direct
+          # push of a fresh commit, since it cannot have any status checks
+          # recorded against it yet — that is not a badge-updater bug, it is
+          # branch protection doing exactly what it is for, so a rejected
+          # push here must not fail CI. The badge goes stale rather than
+          # blocking every future PR; a maintainer push (or a bypass-listed
+          # actor) still updates it.
           if [ -n "$(git status --porcelain docs/coverage-badge.svg)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add docs/coverage-badge.svg
             git commit -m "ci: update coverage badge to ${TOTAL}%" || echo "No changes to commit"
-            git push
+            git push || echo "Could not push coverage badge update (likely blocked by branch protection); skipping"
           else
             echo "Coverage badge is up to date"
           fi

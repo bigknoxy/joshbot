@@ -123,12 +123,19 @@ jobs:
           sarif_file: gosec-results.sarif
       - name: Check for findings
         run: |
-          count=$(python3 -c "import json; print(len(json.load(open('gosec-results.sarif'))['runs'][0].get('results', [])))")
-          echo "gosec findings after exclusions: ${count}"
-          if [ "${count}" -gt 0 ]; then
-            echo "::error::gosec found ${count} finding(s) not covered by an existing rule-level exclusion. See the Security tab or gosec-results.sarif for detail."
-            exit 1
-          fi
+          python3 -c "
+          import json
+          d = json.load(open('gosec-results.sarif'))
+          results = d['runs'][0].get('results', [])
+          print(f'gosec findings after exclusions: {len(results)}')
+          for r in results:
+              loc = r.get('locations', [{}])[0].get('physicalLocation', {})
+              path = loc.get('artifactLocation', {}).get('uri', '?')
+              line = loc.get('region', {}).get('startLine', '?')
+              print(f'  {r.get(\"ruleId\")} {path}:{line} {r.get(\"message\", {}).get(\"text\", \"\")}')
+          import sys
+          sys.exit(1 if results else 0)
+          "
 
   codeql:
     runs-on: ubuntu-latest

@@ -68,3 +68,35 @@ func TestCronService_SaveLoad(t *testing.T) {
 		t.Fatalf("job not persisted")
 	}
 }
+
+// jobs.json can carry reminder text a user asked joshbot to remember —
+// scheduled content, not just timing metadata — so it gets the same
+// not-world-readable treatment as other workspace files (gosec audit).
+func TestCronService_FilesAreNotWorldReadable(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	b := bus.NewMessageBus()
+	s := NewService(b, tmp)
+
+	job := Job{ID: "j3", Schedule: "delay:1s", Channel: "test", Content: "x"}
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("AddJob error: %v", err)
+	}
+
+	cronDir := filepath.Join(tmp, "cron")
+	dirInfo, err := os.Stat(cronDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("cron directory mode = %o, must not grant group/other access", perm)
+	}
+
+	fileInfo, err := os.Stat(filepath.Join(cronDir, "jobs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fileInfo.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("jobs.json mode = %o, must not grant group/other access", perm)
+	}
+}

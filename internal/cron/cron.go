@@ -59,7 +59,7 @@ type Service struct {
 // NewService constructs a new cron service storing jobs under workspace/cron/jobs.json
 func NewService(b *bus.MessageBus, workspace string) *Service {
 	jobsDir := filepath.Join(workspace, "cron")
-	_ = os.MkdirAll(jobsDir, 0o755)
+	_ = os.MkdirAll(jobsDir, 0o700)
 	return &Service{
 		bus:       b,
 		workspace: workspace,
@@ -127,7 +127,7 @@ func (s *Service) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.jobsPath, data, 0o644)
+	return os.WriteFile(s.jobsPath, data, 0o600)
 }
 
 // AddJob adds and schedules a job. Adding a job with an existing ID replaces it.

@@ -14,35 +14,63 @@ name: Security
 #     internal/redact (which only protects runtime output, not what a
 #     contributor commits)
 #
-# CodeQL and gitleaks block (no continue-on-error): a clean run against
-# this codebase found nothing, so a future finding in either is a real
+# All four now block (no continue-on-error): a clean run against this
+# codebase found nothing, so a future finding in any of them is a real
 # regression and should turn the check red.
 #
-# govulncheck blocks too: with the Go toolchain bump in this PR (setup-go
-# resolves 'go-version: 1.25' to the latest 1.25.x patch automatically),
-# it reports 0 vulnerabilities against this codebase's current
-# dependencies. It will go red again the moment a real one appears —
-# that's the point.
+# govulncheck: with the Go toolchain bump (setup-go resolves
+# 'go-version: 1.25' to the latest 1.25.x patch automatically), it reports
+# 0 vulnerabilities against this codebase's current dependencies.
 #
-# gosec stays `continue-on-error: true`, and unlike the other three this
-# is NOT because it's clean — running it for the first time surfaced 150
-# findings across the shell tool, sandbox, and service-install code (G204
-# subprocess launches, G101 possible hardcoded credentials, G404 weak
-# random, and more). Many are almost certainly intentional given what this
-# codebase does on purpose (the shell tool exists to launch subprocesses),
-# but that call has to be made file by file, not assumed. Flipping this to
-# blocking before that triage happens would either permanently redden
-# every PR or invite a blanket #nosec pass that hides real findings later.
-# Tracked in issue #358; revisit once triaged.
+# gosec: issue #358 triaged all 150 findings from its first real run.
+# 129 were false positives given this codebase's documented design —
+# excluded below by rule ID, each with the specific reasoning that made it
+# a rule-wide exclusion rather than a per-site #nosec:
+#   G101 (possible hardcoded credential) — 3 hits, all public non-secret
+#     URL constants and a UI label string; no key material.
+#   G104 (unchecked error) — 75 hits, conventional best-effort patterns:
+#     interactive-prompt Scanln/Sscanf, cleanup-path Close/Remove after
+#     the primary error is already being returned, and tool Register()
+#     calls whose only failure mode is a duplicate name among a fixed,
+#     compiled-in set (a dev-time bug, not attacker-reachable).
+#   G117 (marshaling a secret-shaped struct) — 1 hit, immediately followed
+#     by an 0600 write gosec's check can't see two lines ahead.
+#   G118 (context.Background in a goroutine) — 1 hit, ExecuteAsync's
+#     documented fire-and-forget path, which must outlive the request that
+#     spawned it — using the request context would defeat the feature.
+#   G124 (cookie Secure not a literal `true`) — 2 hits, `isTLS(r)` is
+#     deliberate: unconditional Secure would make the cookie undeliverable
+#     on the plain-HTTP loopback bind that is the normal case here.
+#   G204 (subprocess with variable) — 14 hits, the shell/sandbox/MCP
+#     subsystem's entire documented reason for existing (`sh -c` on an
+#     untrusted string, gated by deny-list/allowlist/approval/sandbox
+#     layering described in AGENTS.md), plus argv-only exec.Command calls
+#     with no shell involved, plus operator-configured MCP server commands.
+#   G304 (file inclusion via variable) — 30 hits, every sampled read is a
+#     fixed filename under an operator-configured directory, a
+#     ValidateSessionID-gated session id, or CLI input AGENTS.md documents
+#     as deliberately uncontained (containment bounds the model, not the
+#     operator) — never network- or model-supplied. The actual agent-facing
+#     filesystem tool (internal/tools/filesystem.go), which AGENTS.md says
+#     must route through openat.go's Root-based helpers, does not appear
+#     in this list at all.
+#   G404 (weak random) — 1 hit, jitter on a retry backoff delay, not a
+#     security-sensitive value.
+#   G703 (taint through an internal helper) — 2 hits, both paths resolve
+#     to a fixed filename, not attacker- or model-supplied input.
+# The other 21 findings (G301/G302/G306, world-readable dirs/files for
+# MEMORY.md, HISTORY.md, dream logs, cron jobs, skill files, subagent
+# configs) were real and are fixed in the same PR that added this exclude
+# list — no exclusion for those three rules.
 #
 # Third-party actions are pinned to a commit SHA, not a mutable tag —
 # `securego/gosec@master` in particular would run whatever lands on that
 # branch next, unreviewed.
 #
-# NOTE: a red job here only shows on the PR checks list — GitHub does not
-# refuse the merge unless these are added as required status checks in
-# branch protection (main currently has none configured). That is a
-# separate, admin-level repo-settings change.
+# govulncheck, codeql and gitleaks are required status checks in main's
+# branch protection. gosec is not yet added there — it only just started
+# blocking in this PR, so it gets one real run history before becoming a
+# merge gate rather than day-one.
 
 on:
   pull_request:
@@ -61,7 +89,6 @@ permissions:
 jobs:
   govulncheck:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -75,21 +102,33 @@ jobs:
 
   gosec:
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Run gosec
+        # -no-fail: this gosec version's own exit code does not reliably
+        # reflect the SARIF result count (confirmed empirically: it exits
+        # non-zero even with zero results under -fmt sarif) — the "Check for
+        # findings" step below is the actual pass/fail gate, reading the
+        # SARIF file directly rather than trusting the tool's exit code.
         uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
         with:
-          args: '-no-fail -fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
+          args: '-no-fail -exclude=G101,G104,G117,G118,G124,G204,G304,G404,G703 -fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           sarif_file: gosec-results.sarif
+      - name: Check for findings
+        run: |
+          count=$(python3 -c "import json; print(len(json.load(open('gosec-results.sarif'))['runs'][0].get('results', [])))")
+          echo "gosec findings after exclusions: ${count}"
+          if [ "${count}" -gt 0 ]; then
+            echo "::error::gosec found ${count} finding(s) not covered by an existing rule-level exclusion. See the Security tab or gosec-results.sarif for detail."
+            exit 1
+          fi
 
   codeql:
     runs-on: ubuntu-latest

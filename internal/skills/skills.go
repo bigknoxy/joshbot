@@ -369,11 +369,11 @@ func (l *Loader) Invalidate() {
 // content must be a valid SKILL.md with YAML frontmatter.
 func (l *Loader) Create(name, content string) error {
 	dir := filepath.Join(l.workspaceDir, name)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create skill directory: %w", err)
 	}
 	p := filepath.Join(dir, "SKILL.md")
-	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(p, []byte(content), 0600); err != nil {
 		return fmt.Errorf("failed to write SKILL.md: %w", err)
 	}
 	l.Invalidate()

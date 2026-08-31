@@ -418,7 +418,7 @@ func (dm *DreamManager) Record(ctx context.Context, rec DreamRecord) error {
 	}
 
 	path := filepath.Join(dm.memoryDir, "dream_raw.log")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open dream log: %w", err)
 	}
@@ -616,7 +616,7 @@ func (dm *DreamManager) saveConsolidated(consolidations []DreamConsolidated) err
 	if len(consolidations) == 0 {
 		return nil
 	}
-	f, err := os.OpenFile(dm.consolidatedPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(dm.consolidatedPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open consolidated log: %w", err)
 	}

@@ -157,7 +157,7 @@ func (m *SubagentConfigManager) Save(cfg *SubagentConfig) error {
 		return fmt.Errorf("config name is required")
 	}
 
-	if err := os.MkdirAll(m.configDir, 0755); err != nil {
+	if err := os.MkdirAll(m.configDir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -169,7 +169,7 @@ func (m *SubagentConfigManager) Save(cfg *SubagentConfig) error {
 	}
 
 	path := filepath.Join(m.configDir, cfg.Name+".yaml")
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config file %s: %w", path, err)
 	}
 

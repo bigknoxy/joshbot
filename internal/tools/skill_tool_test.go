@@ -327,6 +327,47 @@ func TestSkillRegistryTool_Get_BundledSkill(t *testing.T) {
 	}
 }
 
+// A created skill directory and SKILL.md must not be world-readable — the
+// same reasoning session files get 0600 for applies to any workspace
+// content an operator writes through joshbot (gosec audit finding).
+func TestSkillRegistryTool_Create_FilesAreNotWorldReadable(t *testing.T) {
+	tmpDir := t.TempDir()
+	ws := filepath.Join(tmpDir, "workspace")
+	os.MkdirAll(ws, 0755)
+
+	loader, err := skills.NewLoader(ws)
+	if err != nil {
+		t.Fatalf("NewLoader() error = %v", err)
+	}
+	tool := NewSkillRegistryTool(loader)
+	content := "---\nname: perm-check\ndescription: checks file modes\n---\nbody"
+	result := tool.Execute(nil, map[string]any{"action": "create", "name": "perm-check", "content": content})
+	if result.Error != nil {
+		t.Fatalf("Create failed: %v", result.Error)
+	}
+
+	sk := loader.GetSkill("perm-check")
+	if sk == nil {
+		t.Fatal("expected skill to exist after Create")
+	}
+
+	dirInfo, err := os.Stat(sk.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("skill directory mode = %o, must not grant group/other access", perm)
+	}
+
+	fileInfo, err := os.Stat(filepath.Join(sk.Path, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fileInfo.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("SKILL.md mode = %o, must not grant group/other access", perm)
+	}
+}
+
 func TestSkillRegistryTool_Get_MissingName(t *testing.T) {
 	loader, err := skills.NewLoader(t.TempDir())
 	if err != nil {

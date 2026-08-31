@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned. It used to be able to hang the whole reply — ignoring
   `agents.defaults.timeout` entirely — on an ordinary tool-using turn whose
   answer merely contained a word like "steps".
+- `MEMORY.md`, `HISTORY.md`, dream logs, cron `jobs.json`, skill files and
+  subagent configs are now written `0600`/`0700` instead of `0644`/`0755`
+  (issue #358). These hold the same class of unredacted personal content
+  session files already get `0600` for; on a shared machine any local
+  account could previously read another user's extracted facts and full
+  interaction history.
+
+### Changed
+- `gosec` is now a blocking check in CI, not advisory. Its first real run
+  found 150 findings (issue #358); 129 were false positives given this
+  codebase's documented design (shell tool, sandbox, containment — see
+  `.github/workflows/security.yml` for the full per-rule reasoning) and are
+  now excluded by rule; the remaining 21 were the file-permission fix above.
 
 ## [1.65.0] - 2026-08-31
 

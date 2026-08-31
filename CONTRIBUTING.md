@@ -6,7 +6,7 @@ Thanks for your interest in contributing! This guide covers how to set up your d
 
 ### Requirements
 
-- **Go 1.24+** - The project uses modern Go features
+- **Go 1.25+** - The project uses modern Go features
 - Git
 
 ### Getting Started

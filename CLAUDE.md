@@ -6,7 +6,7 @@ joshbot is a self-hosted Go personal AI assistant (~39.3K LOC non-test, 2,145 te
 
 ## Key facts
 
-- **Go 1.24.0**, module `github.com/bigknoxy/joshbot`
+- **Go 1.25.9**, module `github.com/bigknoxy/joshbot`
 - **~19MB binary** (darwin/arm64, measured 2026-08-10)
 - **Architecture**: goroutine message bus → ReAct agent loop → multi-provider LLM
 - **Channels**: CLI (readline) + Telegram (long-polling, telebot) + Discord (gateway websocket, discordgo)

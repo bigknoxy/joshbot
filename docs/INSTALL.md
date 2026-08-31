@@ -30,7 +30,7 @@ Before installing joshbot, ensure you have the following:
 
 ### Required
 
-- **Go 1.24+** - joshbot is written in Go and requires Go 1.24 or later
+- **Go 1.25+** - joshbot is written in Go and requires Go 1.25 or later
   ```bash
   # Check your Go version
   go version
@@ -1210,7 +1210,7 @@ export PATH=$PATH:$(go env GOPATH)/bin
 **Problem:** `go build` fails with errors.
 
 **Solutions:**
-1. Ensure Go 1.24+ is installed:
+1. Ensure Go 1.25+ is installed:
    ```bash
    go version
    ```

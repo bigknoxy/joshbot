@@ -1,0 +1,45 @@
+# Gitleaks baseline. Loaded on top of gitleaks' default ruleset.
+# Each [[allowlists]] entry suppresses a confirmed false positive in
+# this repo; if a future gitleaks release changes the rule IDs the
+# failure will be obvious ("does not exist") rather than silent.
+#
+# Do not preemptively silence rules. Add to this file only after a
+# confirmed false positive from a real `gitleaks detect` run.
+
+title = "Gitleaks Baseline"
+
+# Load the upstream default ruleset on top of which we add only
+# this repo's allowlist. Without [extend] gitleaks' default rules
+# are *replaced*, not merged, by this config.
+[extend]
+useDefault = true
+
+# HashPilot: tests/redact.test.ts uses truncated token-shape labels
+# (xoxb-1...ghij, AIzaSy...stuv) as the redacted-output placeholders
+# inside redacted-string fixtures. They are not real credentials.
+[[allowlists]]
+description = "HashPilot: redacted-output test fixture labels"
+targetRules = ["generic-api-key", "gcp-api-key"]
+paths = [
+  '''tests/redact\.test\.ts''',
+]
+
+# joshbot: empty token-string placeholders in the install/config docs
+# and redaction-fixture strings in *_test.go that match generic-api-key
+# on entropy but contain no key material.
+[[allowlists]]
+description = "joshbot: empty token placeholders in docs/INSTALL.md"
+targetRules = ["discord-client-id", "telegram-bot-api-token", "generic-api-key"]
+paths = [
+  '''docs/INSTALL\.md''',
+]
+
+[[allowlists]]
+description = "joshbot: redaction-fixture strings in *_test.go"
+targetRules = ["generic-api-key"]
+paths = [
+  '''.*_test\.go''',
+  '''docs/.*\.md''',
+  '''AGENTS\.md''',
+  '''README\.md''',
+]

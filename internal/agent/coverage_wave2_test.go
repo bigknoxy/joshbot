@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
@@ -894,6 +895,29 @@ func TestBuildSmartPrompt_IncludesNameAndTime(t *testing.T) {
 // skill auto-detection
 // ---------------------------------------------------------------------------
 
+// waitForGlob polls until pattern matches at least one file, or fails the
+// test after timeout. Skill extraction runs in a background goroutine (see
+// afterReActDetection) precisely so Process does not block on it, which
+// means a test asserting on its output can no longer check immediately
+// after Process returns.
+func waitForGlob(t *testing.T, pattern string, timeout time.Duration) []string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) > 0 {
+			return matches
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for a match of %q", pattern)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // The end of the detection pipeline: a turn that used a tool and whose user
 // message asks for a skill must produce a SKILL.md on disk. Every stage is
 // real here (detector, extractor, loader) — the only double is the provider
@@ -932,10 +956,10 @@ func TestAfterReActDetection_WritesASkillEndToEnd(t *testing.T) {
 		t.Fatalf("Process: %v", err)
 	}
 
-	matches, err := filepath.Glob(filepath.Join(ws, "skills", "*", "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Extraction runs in the background (issue found in the eval-suite
+	// audit: this used to run inline, unbounded, blocking the reply), so
+	// the file may not exist the instant Process returns.
+	matches := waitForGlob(t, filepath.Join(ws, "skills", "*", "SKILL.md"), 2*time.Second)
 	if len(matches) != 1 {
 		t.Fatalf("found %d generated SKILL.md files, want 1 (%v)", len(matches), matches)
 	}
@@ -950,6 +974,73 @@ func TestAfterReActDetection_WritesASkillEndToEnd(t *testing.T) {
 		t.Fatal("skill written without a name directory")
 	}
 }
+
+// The reason extraction was moved off the turn's critical path: a turn must
+// return its reply promptly even when the extractor LLM call would hang far
+// longer than any reasonable turn timeout. Before this fix, afterReActDetection
+// ran inline on context.Background() with no bound at all.
+func TestAfterReActDetection_ProcessReturnsBeforeAHungExtractor(t *testing.T) {
+	InvalidatePromptCache()
+	ws := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Workspace = ws
+
+	provider := &scriptedProvider{turns: []scriptedTurn{
+		{toolCalls: []providers.ToolCall{toolCall("c1", "noop", `{}`)}},
+		{content: "all done"},
+	}}
+
+	loader, err := skills.NewLoader(ws)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+
+	a := NewAgent(cfg, provider, &recordingTools{outputs: map[string]string{"noop": "ok"}},
+		newMockSessionManager(), newMockLogger(),
+		WithSkillDetector(skills.NewSkillDetector()),
+		WithExtractor(skills.NewExtractor(&hangingProvider{}, "small")),
+		WithSkillLoader(loader),
+	)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := a.Process(context.Background(), bus.InboundMessage{
+			Channel: "cli", SenderID: "u", Content: "create a skill for this workflow",
+		}); err != nil {
+			t.Errorf("Process: %v", err)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Process blocked on a hung skill extractor instead of returning the reply")
+	}
+}
+
+// hangingProvider simulates an LLM call that never returns on its own — Chat
+// only unblocks when its context is cancelled, exactly like a real provider
+// call would under a context deadline. Only Chat is exercised by
+// skills.Extractor; the rest satisfy providers.Provider with unused zero
+// implementations.
+type hangingProvider struct{}
+
+func (hangingProvider) Chat(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (hangingProvider) ChatStream(ctx context.Context, req providers.ChatRequest) (<-chan providers.StreamChunk, error) {
+	return nil, ctx.Err()
+}
+
+func (hangingProvider) Transcribe(ctx context.Context, audioData []byte, prompt string) (string, error) {
+	return "", ctx.Err()
+}
+
+func (hangingProvider) Name() string             { return "hanging" }
+func (hangingProvider) Config() providers.Config { return providers.Config{} }
 
 // Detection must not fire on a turn that used no tools: there is no procedure
 // to capture, and creating a skill from a plain chat turn fills the workspace

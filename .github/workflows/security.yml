@@ -14,19 +14,30 @@ name: Security
 #     internal/redact (which only protects runtime output, not what a
 #     contributor commits)
 #
-# govulncheck and gosec are `continue-on-error: true` on purpose: run
-# against this codebase for the first time, both found real findings (an
-# outdated gorilla/websocket, an outdated golang.org/x/text, a batch of Go
-# stdlib toolchain CVEs, and a set of gosec static findings) that need
-# triage, not a red build blocking every unrelated PR under this repo's
-# green-CI merge rule. CodeQL and gitleaks found nothing on the first run,
-# so they are left blocking — flip govulncheck/gosec to blocking too once
-# their baseline is triaged (see CLAUDE.md / AGENTS.md pre-release
-# checklists, which check the Security tab explicitly in the meantime).
+# gosec, CodeQL and gitleaks block (no continue-on-error): a clean run
+# against this codebase found nothing, so a future finding in any of them
+# is a real regression and should turn the check red.
+#
+# govulncheck stays `continue-on-error: true` — not because its findings
+# don't matter, but because 11 of them cannot be fixed by this repo at all
+# right now. The two real dependency CVEs (gorilla/websocket, x/text) and
+# every stdlib CVE fixed by Go 1.25.9 were resolved by the dependency bump
+# in this same PR; the remaining 11 are stdlib CVEs fixed only in Go
+# 1.25.10 through 1.25.13, which do not exist yet (latest real Go release
+# is 1.25.9, checked against go.dev). Flipping this job to blocking today
+# would permanently redden every PR with no fix available. Revisit once Go
+# ships those patches — the weekly schedule below re-surfaces this
+# automatically, and CLAUDE.md / AGENTS.md pre-release checklists call out
+# checking the Security tab in the meantime.
 #
 # Third-party actions are pinned to a commit SHA, not a mutable tag —
 # `securego/gosec@master` in particular would run whatever lands on that
 # branch next, unreviewed.
+#
+# NOTE: a red job here only shows on the PR checks list — GitHub does not
+# refuse the merge unless these are added as required status checks in
+# branch protection (main currently has none configured). That is a
+# separate, admin-level repo-settings change.
 
 on:
   pull_request:
@@ -50,7 +61,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -59,7 +70,6 @@ jobs:
 
   gosec:
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
       security-events: write
@@ -68,7 +78,7 @@ jobs:
       - name: Run gosec
         uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
         with:
-          args: '-no-fail -fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
+          args: '-fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- CI: automated security scanning (`govulncheck`, `gosec`, `CodeQL`, `gitleaks`) runs on
+  every PR, push to main, and weekly, with findings on the Security tab; advisory only,
+  does not gate merges yet. Dependabot now opens weekly PRs for Go and GitHub Actions deps.
+
 ## [1.64.0] - 2026-08-24
 
 ### Added

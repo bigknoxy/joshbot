@@ -601,6 +601,8 @@ Documentation gate — a release does not go out with any of these unchecked:
 - [ ] `./scripts/test-install.sh` passes — not in CI (it downloads real artifacts), so it only runs if you run it
 - [ ] `CHANGELOG.md` — entry under `[Unreleased]`
 - [ ] Every quoted count or size re-measured, not carried over
+- [ ] The Security tab has no new unreviewed finding since the last release
+      (`.github/workflows/security.yml` — govulncheck/gosec/CodeQL/gitleaks; advisory, does not gate merges)
 
 ## Release Process
 1. Push changes to main first

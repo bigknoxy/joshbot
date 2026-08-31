@@ -184,6 +184,11 @@ go test -race ./... # MUST pass
 # CI also fails if total coverage drops below 85%, or if cmd/joshbot or
 # internal/service fall below their per-package floors (.github/workflows/ci.yml)
 
+# Security scanning (.github/workflows/security.yml) — advisory today, does
+# not gate merges. govulncheck/gosec/CodeQL findings land on the Security
+# tab; check it before a release, since the workflow itself won't block one.
+go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+
 # LIVE prompt-behaviour eval — opt-in, never in CI (cost + flakiness).
 # Run once pre-release against the configured provider; it exercises fact
 # recall, tool selection, cron duration formatting, denied-command refusal and
@@ -206,6 +211,7 @@ Then, before tagging — no code change ships without this:
       the tools no longer permit
 - [ ] `./scripts/test-install.sh` passes — not in CI (it downloads real artifacts), so it only runs if you run it
 - [ ] `CHANGELOG.md` — an entry exists under `[Unreleased]`
+- [ ] the Security tab has no new unreviewed finding since the last release
 - [ ] `go test -tags liveeval -run TestLiveEval ./cmd/joshbot/` ran green against a
       real provider (opt-in live prompt-behaviour eval; not run by CI)
 - [ ] Any count or size quoted anywhere was re-measured, not carried over

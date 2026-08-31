@@ -1,0 +1,89 @@
+name: Security
+
+# Runs alongside CI on every PR and push to main. Four independent, free
+# scanners chosen for this repo's actual attack surface (shell tool, MCP,
+# filesystem containment, credential handling) rather than a generic
+# checklist:
+#   - govulncheck: known CVEs in dependencies, call-graph aware so it only
+#     flags vulnerabilities actually reachable from this code
+#   - gosec: Go-specific static analysis (hardcoded creds, weak crypto,
+#     command injection, unsafe file perms)
+#   - CodeQL: semantic taint analysis (path traversal, command/SQL
+#     injection, SSRF) — free for public repos
+#   - gitleaks: scans commits/diffs for leaked secrets, complementing
+#     internal/redact (which only protects runtime output, not what a
+#     contributor commits)
+#
+# None of these gate merges today (advisory via SARIF upload to the
+# Security tab / job summary) — flip a job's failure condition once the
+# baseline is triaged and clean.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so a newly-disclosed CVE in an existing dependency surfaces
+    # even on a week with no code changes. govulncheck's DB updates
+    # independently of this repo's commits.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  gosec:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run gosec
+        uses: securego/gosec@master
+        with:
+          args: '-fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec-results.sarif
+
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:go'
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

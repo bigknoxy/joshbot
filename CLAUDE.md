@@ -6,7 +6,7 @@ joshbot is a self-hosted Go personal AI assistant (~39.3K LOC non-test, 2,145 te
 
 ## Key facts
 
-- **Go 1.24.0**, module `github.com/bigknoxy/joshbot`
+- **Go 1.25.9**, module `github.com/bigknoxy/joshbot`
 - **~19MB binary** (darwin/arm64, measured 2026-08-10)
 - **Architecture**: goroutine message bus → ReAct agent loop → multi-provider LLM
 - **Channels**: CLI (readline) + Telegram (long-polling, telebot) + Discord (gateway websocket, discordgo)
@@ -184,6 +184,14 @@ go test -race ./... # MUST pass
 # CI also fails if total coverage drops below 85%, or if cmd/joshbot or
 # internal/service fall below their per-package floors (.github/workflows/ci.yml)
 
+# Security scanning (.github/workflows/security.yml). gosec/CodeQL/gitleaks
+# block (a red job is a real regression); govulncheck is advisory because
+# some of its findings are stdlib CVEs with no Go release that fixes them
+# yet — check the Security tab before a release regardless, since none of
+# these are wired into main's required status checks (no branch protection
+# rule requires them today, so a red job does not by itself block a merge).
+go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+
 # LIVE prompt-behaviour eval — opt-in, never in CI (cost + flakiness).
 # Run once pre-release against the configured provider; it exercises fact
 # recall, tool selection, cron duration formatting, denied-command refusal and
@@ -206,6 +214,7 @@ Then, before tagging — no code change ships without this:
       the tools no longer permit
 - [ ] `./scripts/test-install.sh` passes — not in CI (it downloads real artifacts), so it only runs if you run it
 - [ ] `CHANGELOG.md` — an entry exists under `[Unreleased]`
+- [ ] the Security tab has no new unreviewed finding since the last release
 - [ ] `go test -tags liveeval -run TestLiveEval ./cmd/joshbot/` ran green against a
       real provider (opt-in live prompt-behaviour eval; not run by CI)
 - [ ] Any count or size quoted anywhere was re-measured, not carried over

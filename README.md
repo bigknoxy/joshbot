@@ -3,7 +3,7 @@
 [![CI](https://github.com/bigknoxy/joshbot/actions/workflows/ci.yml/badge.svg)](https://github.com/bigknoxy/joshbot/actions/workflows/ci.yml)
 [![Coverage](docs/coverage-badge.svg)](https://github.com/bigknoxy/joshbot/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/bigknoxy/joshbot.svg)](https://pkg.go.dev/github.com/bigknoxy/joshbot)
-[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/dl/)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/dl/)
 [![GitHub release](https://img.shields.io/github/v/release/bigknoxy/joshbot?include_prereleases)](https://github.com/bigknoxy/joshbot/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -43,7 +43,7 @@ joshbot is heavier on guarantees, lighter on your machine.
 
 ## Requirements
 
-- **Go 1.24+** (for building from source)
+- **Go 1.25+** (for building from source)
 - **An LLM API key** — OpenRouter free tier works, no credit card needed
 - **Linux or macOS** recommended
 

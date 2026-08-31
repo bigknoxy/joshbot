@@ -2434,7 +2434,7 @@ func runUpdate(c *cli.Context) error {
 	}
 
 	// 5. Make temp binary executable
-	if err := os.Chmod(tmpFile, 0755); err != nil {
+	if err := os.Chmod(tmpFile, 0700); err != nil {
 		os.Remove(tmpFile)
 		return fmt.Errorf("failed to make binary executable: %w", err)
 	}
@@ -4712,7 +4712,7 @@ func createWorkspaceFiles(cfg *config.Config, soulContent string) error {
 	// SOUL.md - write the personality content
 	soulPath := filepath.Join(wsDir, "SOUL.md")
 	if _, err := os.Stat(soulPath); os.IsNotExist(err) {
-		if err := os.WriteFile(soulPath, []byte(soulContent), 0644); err != nil {
+		if err := os.WriteFile(soulPath, []byte(soulContent), 0600); err != nil {
 			return fmt.Errorf("failed to write SOUL.md: %w", err)
 		}
 	}
@@ -4734,7 +4734,7 @@ func createWorkspaceFiles(cfg *config.Config, soulContent string) error {
 ## Notes
 - (anything else joshbot should know)
 `
-	if err := os.WriteFile(filepath.Join(wsDir, "USER.md"), []byte(userContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wsDir, "USER.md"), []byte(userContent), 0600); err != nil {
 		return fmt.Errorf("failed to write USER.md: %w", err)
 	}
 
@@ -4754,7 +4754,7 @@ func createWorkspaceFiles(cfg *config.Config, soulContent string) error {
 - Search the web when you need current information
 - Update memory when you learn something important about the user
 `
-	if err := os.WriteFile(filepath.Join(wsDir, "AGENTS.md"), []byte(agentsContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wsDir, "AGENTS.md"), []byte(agentsContent), 0600); err != nil {
 		return fmt.Errorf("failed to write AGENTS.md: %w", err)
 	}
 
@@ -4766,7 +4766,7 @@ I am always learning and improving through conversations.
 I remember important information across sessions.
 I can create new skills to extend my capabilities.
 `
-	if err := os.WriteFile(filepath.Join(wsDir, "IDENTITY.md"), []byte(identityContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(wsDir, "IDENTITY.md"), []byte(identityContent), 0600); err != nil {
 		return fmt.Errorf("failed to write IDENTITY.md: %w", err)
 	}
 
@@ -4776,11 +4776,11 @@ I can create new skills to extend my capabilities.
 		return fmt.Errorf("failed to create memory directory: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("# Memory\n\nImportant information about the user:\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("# Memory\n\nImportant information about the user:\n"), 0600); err != nil {
 		return fmt.Errorf("failed to write MEMORY.md: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(memDir, "HISTORY.md"), []byte("# History\n\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(memDir, "HISTORY.md"), []byte("# History\n\n"), 0600); err != nil {
 		return fmt.Errorf("failed to write HISTORY.md: %w", err)
 	}
 

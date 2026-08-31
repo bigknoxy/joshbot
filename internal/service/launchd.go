@@ -136,7 +136,7 @@ func (s *launchdManager) Install() (Result, error) {
 </plist>
 `, s.config.Name, s.config.DisplayName, s.config.ExecPath, s.config.WorkingDir, s.logPath, s.errorPath, home)
 
-	if err := os.WriteFile(s.plistPath, []byte(plist), 0644); err != nil {
+	if err := os.WriteFile(s.plistPath, []byte(plist), 0600); err != nil {
 		return Result{}, fmt.Errorf("failed to write plist: %w", err)
 	}
 

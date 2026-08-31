@@ -75,7 +75,14 @@ func TestAsyncResultMessageTruncatesLongOutputVisibly(t *testing.T) {
 // publishing against the wrong one delivers somebody else's task output.
 func TestPublishAsyncResultsRoutesBackToTheOriginatingChat(t *testing.T) {
 	msgBus := bus.NewMessageBus()
+	msgBus.Start()
+	defer msgBus.Stop()
 	ch := make(chan tools.AsyncResult, 1)
+
+	// Register before triggering the publish: the bus fans a message out to
+	// whichever consumers are already registered at publish time, so a
+	// consumer registered afterward would never see it.
+	outboundCh := msgBus.OutboundChannel()
 
 	done := make(chan struct{})
 	go func() {
@@ -86,7 +93,7 @@ func TestPublishAsyncResultsRoutesBackToTheOriginatingChat(t *testing.T) {
 	ch <- tools.AsyncResult{ToolName: "shell", Output: "ok", Channel: "telegram", ChatID: "12345"}
 
 	select {
-	case got := <-msgBus.OutboundChannel():
+	case got := <-outboundCh:
 		if got.Channel != "telegram" || got.ChannelID != "12345" {
 			t.Errorf("published to %s/%s, want telegram/12345", got.Channel, got.ChannelID)
 		}

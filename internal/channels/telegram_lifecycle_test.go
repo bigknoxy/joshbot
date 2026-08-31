@@ -58,6 +58,8 @@ func TestTelegramChannel_StartRefusesAnUnconfiguredToken(t *testing.T) {
 // outbound consumer that actually delivers. Stop must then bring all of it down.
 func TestTelegramChannel_StartRunsTheWholeLoop(t *testing.T) {
 	tg, srv := offlineTelegramChannel(t, "1234")
+	tg.bus.Start()
+	defer tg.bus.Stop()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -81,8 +83,14 @@ func TestTelegramChannel_StartRunsTheWholeLoop(t *testing.T) {
 
 	// The consumer Start launched must deliver a message addressed to this
 	// channel. Nothing else in the process is reading the outbound channel.
-	tg.bus.OutboundChan() <- bus.OutboundMessage{Channel: "telegram", ChannelID: "1234", Content: "delivered by the consumer"}
-
+	//
+	// The consumer registers its bus subscription only once its own
+	// goroutine actually runs, so a message published before that
+	// registration completes is fanned out to a subscriber list that does
+	// not yet include it and never arrives. Resend on a short interval
+	// until it's seen, rather than assuming the first send won that race —
+	// a duplicate delivery doesn't change what this test checks.
+	outbound := bus.OutboundMessage{Channel: "telegram", ChannelID: "1234", Content: "delivered by the consumer"}
 	deadline := time.After(2 * time.Second)
 	for {
 		texts := srv.texts()
@@ -99,6 +107,7 @@ func TestTelegramChannel_StartRunsTheWholeLoop(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("the outbound consumer Start launched never delivered; sent = %v", texts)
 		case <-time.After(10 * time.Millisecond):
+			tg.bus.OutboundChan() <- outbound
 		}
 	}
 

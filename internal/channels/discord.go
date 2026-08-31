@@ -697,11 +697,11 @@ func notifyDiscordTyping(s discordSession, channelID string) {
 
 // consumeOutbound listens for outbound messages addressed to this channel.
 //
-// NOTE: the bus exposes a single outbound channel that consumers read
-// competitively (see internal/bus). Running Discord and Telegram at once would
-// have them steal each other's outbound messages; the fan-out fix belongs in
-// the bus and is tracked as follow-up work. With one gateway channel enabled at
-// a time (the common case) this routes correctly.
+// bus.OutboundChannel() (really RegisterOutboundConsumer under the hood)
+// returns a private channel that gets a copy of every outbound message —
+// Discord and Telegram running together no longer compete for the same
+// underlying channel, so this filter is what decides whether a message is
+// this channel's, not luck in a race.
 func (d *DiscordChannel) consumeOutbound(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {

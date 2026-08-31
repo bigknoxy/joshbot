@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Telegram and Discord can now both be enabled at once. The message bus used
+  to expose a single outbound channel that every channel implementation read
+  competitively, so running both had them silently steal roughly half of
+  each other's replies — no error, no log line, just answers arriving in the
+  wrong service. The bus now fans out a private copy of every outbound
+  message to each registered channel.
+
 ### Changed
 - `joshbot onboard` no longer prompts for Telegram or background-service setup
   by default — the two least-needed questions for someone evaluating the tool

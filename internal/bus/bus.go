@@ -139,6 +139,25 @@ type MessageBus struct {
 	mu         sync.RWMutex
 	// handlerSemaphore limits concurrent handler executions to prevent unbounded goroutines
 	handlerSemaphore chan struct{}
+
+	// outboundSubs holds one private channel per registered outbound
+	// consumer (one per running chat channel — Telegram, Discord, ...).
+	// Guarded by its own mutex, separate from mu: registration must not
+	// contend with Start/Stop's started-flag lock, and the fan-out
+	// dispatcher (processOutbound) reads this slice on every message.
+	//
+	// This is what fan-out means in practice: outboundCh is the single
+	// arrival queue Publish still writes to (so a full-queue backpressure
+	// signal stays meaningful and unrelated to how many consumers exist),
+	// and processOutbound drains it and copies each message onward to
+	// every subscriber's own channel. Before this existed, every channel
+	// implementation called OutboundChannel() and got back the *same*
+	// channel, so Telegram and Discord running together each received
+	// roughly half of the other's replies via ordinary Go channel
+	// receive competition — silently, with no error anywhere (documented
+	// in AGENTS.md/CLAUDE.md as "enable Telegram or Discord, not both").
+	outboundSubs   []chan OutboundMessage
+	outboundSubsMu sync.RWMutex
 }
 
 // NewMessageBus creates a new MessageBus with default buffer sizes.
@@ -173,14 +192,11 @@ func (mb *MessageBus) Start() {
 	// already-cancelled context. The channels are intentionally left untouched.
 	ctx, cancel := context.WithCancel(mb.parentCtx)
 	mb.ctx, mb.cancel = ctx, cancel
-	mb.wg.Add(1)
-	// Hand the goroutine the context captured here, not mb.ctx: a later Start
+	mb.wg.Add(2)
+	// Hand the goroutines the context captured here, not mb.ctx: a later Start
 	// reassigns the field, and nothing joins the goroutines of the previous run.
 	go mb.processInbound(ctx)
-	// Note: processOutbound is not started here because channel implementations
-	// (e.g., Telegram, CLI) consume outbound messages directly via OutboundChannel().
-	// The bus acts as a pub/sub broker - publishers send to outboundCh, and
-	// channel implementations subscribe by reading from OutboundChannel().
+	go mb.processOutbound(ctx)
 }
 
 // Subscribe registers a handler for inbound messages on a topic.
@@ -245,9 +261,15 @@ func (mb *MessageBus) InboundChannel() <-chan InboundMessage {
 	return mb.inboundCh
 }
 
-// OutboundChannel returns the outbound message channel for external consumers.
+// OutboundChannel returns a private channel carrying a copy of every
+// outbound message published from this point on. It is sugar for
+// RegisterOutboundConsumer, kept as the name every channel implementation
+// already calls; each call returns a *distinct* channel; two callers never
+// share one, so running two channel implementations at once no longer means
+// one steals the other's replies (issue: "enable Telegram or Discord, not
+// both", now fixed by fan-out — see the outboundSubs field doc).
 func (mb *MessageBus) OutboundChannel() <-chan OutboundMessage {
-	return mb.outboundCh
+	return mb.RegisterOutboundConsumer()
 }
 
 // InboundChan returns the inbound channel for selecting.
@@ -326,28 +348,65 @@ func (mb *MessageBus) dispatchInbound(ctx context.Context, msg InboundMessage) {
 	}
 }
 
-// processOutbound handles outbound messages.
-// Currently logs them; in production would route to actual channels.
+// processOutbound drains the single arrival queue (outboundCh) and fans each
+// message out to every registered consumer (see outboundSubs on MessageBus).
+// This is the piece that makes running Telegram and Discord together safe:
+// each channel implementation gets its own copy of every outbound message
+// and filters by msg.Channel itself, instead of every channel racing to
+// receive off one shared channel and silently losing whatever it didn't win.
 func (mb *MessageBus) processOutbound(ctx context.Context) {
 	defer mb.wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
-			// Drain remaining messages before exiting
+			// Drain remaining messages before exiting, same as processInbound —
+			// a reply already queued when shutdown starts still reaches whichever
+			// channel consumers have room for it, rather than being dropped.
 			for {
 				select {
 				case msg := <-mb.outboundCh:
-					_ = msg // Would be dispatched to channel handlers
+					mb.fanOutOutbound(msg)
 				default:
 					return
 				}
 			}
 		case msg := <-mb.outboundCh:
-			// Outbound messages would be handled by channel implementations
-			// that subscribe to the outbound channel
-			_ = msg
+			mb.fanOutOutbound(msg)
 		}
 	}
+}
+
+// fanOutOutbound copies one message to every registered consumer channel.
+// Each send is non-blocking: a consumer whose buffer is full (its own
+// channel implementation has fallen behind) drops that one message for
+// that one consumer rather than stalling delivery to every other consumer,
+// or blocking the dispatcher loop itself.
+func (mb *MessageBus) fanOutOutbound(msg OutboundMessage) {
+	mb.outboundSubsMu.RLock()
+	subs := mb.outboundSubs
+	mb.outboundSubsMu.RUnlock()
+
+	for _, sub := range subs {
+		select {
+		case sub <- msg:
+		default:
+			log.Warn("outbound consumer queue full, dropping message",
+				"target_channel", msg.Channel)
+		}
+	}
+}
+
+// RegisterOutboundConsumer returns a private channel that receives a copy of
+// every outbound message published to the bus from this point on. Call once
+// per channel implementation at wiring time (mirroring OutboundChannel,
+// which is now sugar for this) — each call creates a distinct channel, so
+// two callers never compete for the same message.
+func (mb *MessageBus) RegisterOutboundConsumer() <-chan OutboundMessage {
+	ch := make(chan OutboundMessage, MaxQueueSize)
+	mb.outboundSubsMu.Lock()
+	mb.outboundSubs = append(mb.outboundSubs, ch)
+	mb.outboundSubsMu.Unlock()
+	return ch
 }
 
 // Stop gracefully shuts down the message bus.

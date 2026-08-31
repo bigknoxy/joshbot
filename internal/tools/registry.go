@@ -349,6 +349,8 @@ type registrySettings struct {
 	cronService        *cron.Service
 	cronDefaultChannel string
 	attachmentLimits   *bus.AttachmentLimits
+	sendFileApproval   ApprovalMode
+	sendFileDisabled   bool
 }
 
 // RegistryOption adjusts optional registry behaviour. Options are used rather
@@ -390,6 +392,23 @@ func WithCronService(svc *cron.Service, defaultChannel string) RegistryOption {
 func WithAttachmentLimits(limits bus.AttachmentLimits) RegistryOption {
 	return func(s *registrySettings) {
 		s.attachmentLimits = &limits
+	}
+}
+
+// WithSendFileApproval turns on the human-approval gate for outbound file
+// sends. Reuses the same Approver plumbing as WithShellApproval.
+func WithSendFileApproval(mode ApprovalMode) RegistryOption {
+	return func(s *registrySettings) {
+		s.sendFileApproval = mode
+	}
+}
+
+// WithSendFileDisabled removes the send_file tool from the registry
+// entirely, for an operator who does not want outbound file egress as a
+// capability at all rather than gated behind approval.
+func WithSendFileDisabled(disabled bool) RegistryOption {
+	return func(s *registrySettings) {
+		s.sendFileDisabled = disabled
 	}
 }
 
@@ -479,15 +498,22 @@ func RegistryWithDefaults(
 		// bytes leave the process, so "the agent may only send what it could
 		// legitimately read" has to be enforced by the same walk, not by a
 		// second, weaker path check.
-		sendFileTool := NewSendFileTool(messageSender, FilesystemToolConfig{
-			Workspace:    workspace,
-			Restrict:     restrictToWorkspace,
-			AllowedPaths: filesystemAllowedPaths,
-		})
-		if settings.attachmentLimits != nil {
-			sendFileTool.SetLimits(*settings.attachmentLimits)
+		//
+		// Skippable entirely (settings.sendFileDisabled) for an operator who
+		// does not want this capability offered to the model at all, distinct
+		// from gating it behind approval.
+		if !settings.sendFileDisabled {
+			sendFileTool := NewSendFileTool(messageSender, FilesystemToolConfig{
+				Workspace:    workspace,
+				Restrict:     restrictToWorkspace,
+				AllowedPaths: filesystemAllowedPaths,
+			})
+			if settings.attachmentLimits != nil {
+				sendFileTool.SetLimits(*settings.attachmentLimits)
+			}
+			sendFileTool.SetApproval(settings.sendFileApproval)
+			_ = registry.Register(sendFileTool)
 		}
-		_ = registry.Register(sendFileTool)
 	}
 
 	// Skill registry tool (optional)

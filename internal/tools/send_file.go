@@ -33,6 +33,21 @@ type SendFileTool struct {
 	sender MessageSender
 	fs     *FilesystemTool
 	limits bus.AttachmentLimits
+	// approval gates a send behind a human decision, off by default. See
+	// approval.go and ShellTool.checkApproval — this reuses the same
+	// Approver plumbing (rides the request context via WithApprover) rather
+	// than growing a second approval mechanism.
+	approval ApprovalMode
+}
+
+// SetApproval turns the human-approval gate on for outbound sends. The
+// approver comes from the request context (WithApprover); a request with
+// none is denied outright rather than left blocking (see ApproverFromContext).
+func (t *SendFileTool) SetApproval(mode ApprovalMode) {
+	if mode == "" {
+		mode = ApprovalOff
+	}
+	t.approval = mode
 }
 
 // NewSendFileTool creates a SendFileTool contained the same way the filesystem
@@ -118,11 +133,45 @@ func (t *SendFileTool) Execute(ctx interface{}, args map[string]any) ToolResult 
 		return ToolResult{Error: err}
 	}
 
+	// The gate runs after containment resolves the file, not before: a path
+	// refused by containment must never reach a human as a prompt, the same
+	// ordering rule the shell tool's deny list follows ahead of its approval
+	// gate.
+	if err := t.checkApproval(execCtx, att, channel); err != nil {
+		return ToolResult{Error: err}
+	}
+
 	if err := t.sender.SendFile(execCtx, channel, att, caption); err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to send file: %w", err)}
 	}
 	return ToolResult{Output: fmt.Sprintf("Sent %s (%s, %s) to %s",
 		att.Filename, att.Kind, humanBytes(att.Size), channel)}
+}
+
+// checkApproval runs the human-approval gate, returning nil when the send
+// may proceed. Mirrors ShellTool.checkApproval: the prompt names the file,
+// its size and the recipient channel, since those are the three things the
+// operator is actually deciding about.
+func (t *SendFileTool) checkApproval(ctx context.Context, att Attachment, channel string) error {
+	if t.approval == ApprovalOff || t.approval == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	req := ApprovalRequest{
+		Tool:    "send_file",
+		Command: fmt.Sprintf("send %s (%s) to %s", att.SourcePath, humanBytes(att.Size), channel),
+	}
+	decision, err := ApproverFromContext(ctx).Approve(ctx, req)
+	if decision == Approve && err == nil {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrDenied, strings.TrimPrefix(err.Error(), ErrDenied.Error()+": "))
+	}
+	return fmt.Errorf("%w: run it yourself, or ask the user to approve it", ErrDenied)
 }
 
 // buildAttachment resolves, contains, measures and sniffs the file. It is

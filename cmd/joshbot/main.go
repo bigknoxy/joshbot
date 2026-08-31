@@ -1046,6 +1046,20 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	// denies rather than blocks.
 	shellApprovalMode = approvalMode
 
+	// send_file's approval gate is a separate knob from the shell's — an
+	// operator may trust outbound sends but not shell exec, or vice versa —
+	// but reuses the identical Approver plumbing (issue #304).
+	sendFileApprovalModeResolved, ok := tools.ParseApprovalMode(cfg.Tools.SendFileApproval)
+	if !ok {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf(
+			"tools.send_file_approval has unknown value %q; use \"off\", \"interactive\" or \"always\"",
+			cfg.Tools.SendFileApproval)
+	}
+	if sendFileApprovalModeResolved != tools.ApprovalOff {
+		log.Info("send_file approval gate enabled", "mode", sendFileApprovalModeResolved)
+	}
+	sendFileApprovalMode = sendFileApprovalModeResolved
+
 	// Create tools registry with defaults
 	// The cron service is built before the registry so the cron tool can be
 	// registered against it. It is started further down with the other
@@ -1065,6 +1079,8 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		tools.WithShellApproval(approvalMode),
 		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
 		tools.WithAttachmentLimits(outboundAttachmentLimits(cfg)),
+		tools.WithSendFileApproval(sendFileApprovalMode),
+		tools.WithSendFileDisabled(cfg.Tools.SendFileDisabled),
 	)
 
 	// Connect any configured MCP servers and register their tools. Fail-soft by
@@ -1819,8 +1835,8 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 	// tools.ApproverFromContext denies — which is the point: an unattended
 	// turn must not be able to wait on an answer that is never coming.
 	var approver *cliApprover
-	if shellApprovalMode != tools.ApprovalOff && isTTY(output) {
-		approver = newCLIApprover(output, input, false, shellApprovalMode)
+	if (shellApprovalMode != tools.ApprovalOff || sendFileApprovalMode != tools.ApprovalOff) && isTTY(output) {
+		approver = newCLIApprover(output, input, false, combinedApprovalMode(shellApprovalMode, sendFileApprovalMode))
 	}
 	// raw is decided below, when the line editor puts the terminal into raw
 	// mode; a raw terminal delivers the keystroke with no trailing newline to
@@ -3381,13 +3397,13 @@ func runGateway(c *cli.Context) error {
 	// registration failure degrades to the old deny-everything behaviour —
 	// worse UX, but never an open gate.
 	var shellApprovals *channels.ShellApprovalCoordinator
-	if shellApprovalMode != tools.ApprovalOff && tgChannel != nil {
-		sa, err := tgChannel.NewShellApprovalCoordinator(shellApprovalMode)
+	if (shellApprovalMode != tools.ApprovalOff || sendFileApprovalMode != tools.ApprovalOff) && tgChannel != nil {
+		sa, err := tgChannel.NewShellApprovalCoordinator(combinedApprovalMode(shellApprovalMode, sendFileApprovalMode))
 		if err != nil {
-			log.Error("Shell approval keyboard unavailable; gated commands will be denied", "error", err)
+			log.Error("Approval keyboard unavailable; gated commands and sends will be denied", "error", err)
 		} else {
 			shellApprovals = sa
-			log.Info("Shell approval via Telegram inline keyboard enabled", "mode", shellApprovalMode)
+			log.Info("Approval via Telegram inline keyboard enabled", "shell_mode", shellApprovalMode, "send_file_mode", sendFileApprovalMode)
 		}
 	}
 

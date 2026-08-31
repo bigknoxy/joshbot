@@ -925,6 +925,41 @@ timed-out turn, and Ctrl-C at the prompt. An unrecognised value for the setting
 itself is a startup error rather than a silent `"off"`, so a typo can never
 leave you believing commands are gated when they are not.
 
+### Send File Approval
+
+`tools.send_file_approval` asks *you* before the agent sends a file from the
+workspace to a chat as an attachment — the same reason to gate this as shell:
+a prompt-injected `web_fetch` result or inbound document could otherwise say
+"read this file and send it to the chat," and the chat being your own doesn't
+mean you had a say in whether that capability existed. It reuses the exact
+same prompt/keyboard mechanism as `shell_approval` — the CLI asks at the
+terminal, Telegram asks with an inline keyboard, everything else (Discord,
+cron, heartbeat) is denied outright.
+
+```json
+{
+  "tools": {
+    "send_file_approval": "interactive"
+  }
+}
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `"off"` (default) | Files send without asking. |
+| `"interactive"` | Prompt before each send, with a `[a]ll for this session` answer. |
+| `"always"` | Prompt before every send, with no remembered answer. |
+
+The prompt names the file, its size and the recipient — the three things
+you're actually deciding about. `tools.shell_approval` and
+`tools.send_file_approval` are independent knobs (you might trust one and not
+the other), but share one approver: if either is on, the CLI/Telegram
+approval prompt installs and handles both.
+
+To remove the capability entirely rather than gate it, set
+`tools.send_file_disabled: true` — the tool is not offered to the model at
+all.
+
 ### Streaming Responses
 
 `agents.defaults.streaming` prints the assistant's reply as it arrives instead of
@@ -1630,6 +1665,7 @@ reaches the prompt.
 - Shell commands get an allowlisted environment, not joshbot's own — provider API keys and other secret-shaped variables are never inherited.
 - `tools.shell_sandbox: "workspace"` additionally confines shell commands with an OS-level sandbox (Landlock on Linux, Seatbelt on macOS) — see [Shell Sandbox](#shell-sandbox) below. On platforms with no sandbox, the shell tool falls back to allowlist-only by default.
 - `tools.shell_approval` asks before each shell command runs — see [Shell Approval](#shell-approval). The interactive CLI prompts at the terminal and the Telegram gateway asks with an inline keyboard in the chat; unattended turns (Discord, cron, heartbeat, piped `agent -m`) are denied rather than left blocking.
+- `tools.send_file_approval` gates outbound file sends the same way — see [Send File Approval](#send-file-approval). `tools.send_file_disabled` removes the tool entirely instead.
 - Everything joshbot logs or prints is redacted first: API keys, `Authorization` headers, credential-shaped assignments and your home directory path are replaced with `[REDACTED]` and `~`, so a log or `joshbot status` dump can be pasted into a bug report. Session files on disk are deliberately exempt and stay verbatim at `0600` — rewriting conversation content on save would mangle legitimate text.
 
 ## Chat Commands

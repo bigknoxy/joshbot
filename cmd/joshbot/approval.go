@@ -16,6 +16,30 @@ import (
 // that do not care about it.
 var shellApprovalMode = tools.ApprovalOff
 
+// sendFileApprovalMode is the resolved tools.send_file_approval setting,
+// read alongside shellApprovalMode wherever an approver gets installed: the
+// two tools share one Approver instance per request (it rides the context,
+// not a per-tool slot), so either gate being on is enough to justify
+// installing one.
+var sendFileApprovalMode = tools.ApprovalOff
+
+// combinedApprovalMode picks the more-restrictive of two approval modes for
+// constructing the single shared approver: "always" beats "interactive"
+// beats "off", so a turn that could ask for either tool always gets an
+// approver that behaves correctly for whichever mode actually applies to
+// the tool being called (checkApproval on each tool still gates on its own
+// configured mode — this only decides the approver's own "remember this
+// session" behaviour, which is a property of the approver, not the request).
+func combinedApprovalMode(a, b tools.ApprovalMode) tools.ApprovalMode {
+	if a == tools.ApprovalAlways || b == tools.ApprovalAlways {
+		return tools.ApprovalAlways
+	}
+	if a == tools.ApprovalInteractive || b == tools.ApprovalInteractive {
+		return tools.ApprovalInteractive
+	}
+	return tools.ApprovalOff
+}
+
 // cliApprover asks the operator at the terminal.
 //
 // It is only ever constructed when output is a real TTY. A gate installed on a

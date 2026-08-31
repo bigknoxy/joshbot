@@ -412,10 +412,10 @@ func (mb *MessageBus) RegisterOutboundConsumer() <-chan OutboundMessage {
 // Stop gracefully shuts down the message bus.
 //
 // Shutdown is cancel-only: it cancels the context and waits for the inbound
-// processor goroutine (the only goroutine tracked by wg) to drain and exit.
-// In-flight handler goroutines are not awaited here — they are bounded by
-// handlerSemaphore and observe the cancellation through the context they were
-// handed, unwinding on their own.
+// and outbound processor goroutines (the two goroutines tracked by wg) to
+// drain and exit. In-flight handler goroutines are not awaited here — they
+// are bounded by handlerSemaphore and observe the cancellation through the
+// context they were handed, unwinding on their own.
 //
 // The inbound/outbound channels are deliberately NOT closed or replaced.
 // Send/Publish and handler goroutines write to them without holding mb.mu, so

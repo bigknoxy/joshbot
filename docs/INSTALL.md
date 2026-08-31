@@ -168,7 +168,7 @@ After installation, run the onboarding wizard:
 joshbot onboard
 ```
 
-The wizard walks through six steps. Every step except the provider and key accepts a sensible default on a bare Enter — Telegram and Service Installation default to "skip for now."
+The wizard walks through six steps. Every step except the provider and key accepts a sensible default on a bare Enter, and the last two (Telegram, Service Installation) don't even prompt by default — pass `--configure-channels` to be asked.
 
 1. **LLM Provider Configuration**
    - Choose a provider — NVIDIA NIM is the recommended default (free tier), with OpenRouter, OpenAI, Groq, Ollama, Anthropic, Poolside, and GitHub Copilot also offered (Azure/custom/litellm need `--api-base` and are configured via flags)
@@ -190,9 +190,11 @@ The wizard walks through six steps. Every step except the provider and key accep
    - Default depends on the provider you configured — e.g. `deepseek-ai/deepseek-v4-flash-0731` for NVIDIA NIM, `openrouter/free` for OpenRouter
    - You can specify any model supported by your provider
 
-5. **Telegram Setup** (optional) — configure a bot token and allowlist now, or skip and run `joshbot configure` later; see [Telegram Setup](#telegram-setup) below
+5. **Telegram Setup** (optional, skipped by default) — configure a bot token and allowlist now, or run `joshbot onboard --keep-data --configure-channels` later; see [Telegram Setup](#telegram-setup) below
 
-6. **Service Installation** (optional) — install joshbot as a background service (systemd/launchd/OpenRC) now, or skip and run `joshbot service install` later
+6. **Service Installation** (optional, skipped by default) — install joshbot as a background service (systemd/launchd/OpenRC) now, or skip and run `joshbot service install` later
+
+Steps 5 and 6 don't prompt unless you pass `--configure-channels` — they're the least-needed ceremony on a first run, and re-running `joshbot service install` or onboarding again later covers them just as well.
 
 ### Onboarding Options
 
@@ -202,6 +204,9 @@ joshbot onboard --force
 
 # Reconfigure while keeping existing data
 joshbot onboard --keep-data
+
+# Also be asked about Telegram and background-service setup (skipped by default)
+joshbot onboard --keep-data --configure-channels
 
 # Fully non-interactive
 joshbot onboard --force --provider ollama

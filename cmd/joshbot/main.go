@@ -356,6 +356,10 @@ func newApp() *cli.App {
 						Name:  "keep-data",
 						Usage: "Reconfigure while preserving all existing data",
 					},
+					&cli.BoolFlag{
+						Name:  "configure-channels",
+						Usage: "Also prompt for Telegram and background-service setup (skipped by default; use `joshbot configure` or `joshbot service install` later instead)",
+					},
 					&cli.StringFlag{
 						Name:    "model",
 						Aliases: []string{"m"},
@@ -3628,6 +3632,7 @@ func getChannelID(msg bus.InboundMessage) string {
 func runOnboard(c *cli.Context) error {
 	force := c.Bool("force")
 	keepData := c.Bool("keep-data")
+	configureChannels := c.Bool("configure-channels")
 	modelFlag := c.String("model")
 	providerFlag := c.String("provider")
 	apiKeyFlag := c.String("api-key")
@@ -3819,7 +3824,20 @@ func runOnboard(c *cli.Context) error {
 		soulContent = getPersonalitySoul(personalityChoice)
 		userName = promptUserName(existingCfg)
 		model = selectModel(existingCfg, provider, modelFlag)
-		telegramConfig = setupTelegram(existingCfg)
+		if configureChannels {
+			telegramConfig = setupTelegram(existingCfg)
+		} else {
+			if existingCfg != nil {
+				// Skipping the prompt must never silently disable a Telegram
+				// setup that already exists — only skip *asking*, not
+				// preserving.
+				existing := existingCfg.Channels.Telegram
+				telegramConfig = &existing
+			}
+			fmt.Println("\nSkipping Telegram and background-service setup for now. Run " +
+				"`joshbot onboard --keep-data --configure-channels` to be asked, or " +
+				"`joshbot service install` for just the background service.")
+		}
 	}
 
 	// Build config
@@ -3910,7 +3928,7 @@ func runOnboard(c *cli.Context) error {
 
 	// Step 6: Service install
 	var installService bool
-	if force {
+	if force || !configureChannels {
 		installService = false
 	} else {
 		installService = promptServiceInstall()

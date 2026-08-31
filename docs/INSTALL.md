@@ -790,6 +790,10 @@ The prompt shows the full command line and its working directory, and only an ex
 
 Separately, spawned shell commands no longer inherit joshbot's own environment — they get an allowlisted subset (PATH, common toolchain variables, etc.) with anything credential-shaped stripped out, so provider API keys are not exposed to commands the agent runs.
 
+#### Send File Approval (opt-in)
+
+`tools.send_file_approval` gates the `send_file` tool the same way — same values (`"off"`/`"interactive"`/`"always"`), same CLI/Telegram prompt, same fail-closed rule for unattended turns. It reuses the shell approval mechanism verbatim rather than a second one; the two are independent settings but share one installed approver. The prompt names the file, its size, and the recipient. See [Send File Approval](../README.md#send-file-approval) in the README for the full picture. To remove the tool entirely instead of gating it, set `tools.send_file_disabled: true`.
+
 #### Web Fetch SSRF Protection
 
 `web_fetch` and `web_search` block localhost, private IP ranges, and metadata hostnames (for example: `127.0.0.1`, `10.0.0.0/8`, `169.254.169.254`, and `metadata.google.internal`), enforced at connection time. If you see **"URL blocked by security policy"**, use a public URL or proxy through a safe external endpoint.

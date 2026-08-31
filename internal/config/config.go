@@ -376,6 +376,20 @@ type ToolsConfig struct {
 	// ShellSandbox. Turns nobody is watching — cron, heartbeat — carry no
 	// approver and are denied outright rather than left blocking.
 	ShellApproval string `mapstructure:"shell_approval" json:"shell_approval,omitempty" yaml:"shell_approval,omitempty"`
+	// SendFileApproval gates the send_file tool the same way ShellApproval
+	// gates shell: "off" (default), "interactive" or "always". Reuses the
+	// exact same Approver plumbing (tools.WithApprover / ApproverFromContext)
+	// rather than a second approval mechanism.
+	SendFileApproval string `mapstructure:"send_file_approval" json:"send_file_approval,omitempty" yaml:"send_file_approval,omitempty"`
+	// SendFileDisabled removes the send_file tool from the registry entirely.
+	// Inverted polarity on purpose: send_file has shipped registered
+	// unconditionally since it was added, so a plain "enabled" bool without
+	// omitempty would be written into every saved config and its default
+	// could never be flipped without a schema migration (the streaming
+	// v4->v5 trap documented in AGENTS.md). The zero value (false) preserves
+	// existing behaviour — the tool stays available — for every config that
+	// predates this field.
+	SendFileDisabled bool `mapstructure:"send_file_disabled" json:"send_file_disabled,omitempty" yaml:"send_file_disabled,omitempty"`
 }
 
 // GatewayConfig holds gateway server configuration.

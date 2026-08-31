@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 )
@@ -389,5 +390,138 @@ func TestSendFile_IsRegisteredWhenASenderExists(t *testing.T) {
 	bare := RegistryWithDefaults(t.TempDir(), true, 0, 0, nil, nil, nil, nil)
 	if _, ok := bare.Get("send_file"); ok {
 		t.Error("send_file must not be offered with no sender to deliver through")
+	}
+}
+
+// Off by default: turning the gate on changes what an existing install can
+// do unattended, so it must not happen silently (issue #304).
+func TestSendFile_ApprovalOffByDefault(t *testing.T) {
+	tool, ms, ws := sendFileFixture(t)
+	writeWS(t, ws, "note.txt", []byte("hi"))
+
+	res := tool.Execute(sendFileCtx(), map[string]any{"path": "note.txt"})
+	if res.Error != nil {
+		t.Fatalf("ungated send_file refused a send: %v", res.Error)
+	}
+	if ms.fileCalls != 1 {
+		t.Fatalf("expected 1 send, got %d", ms.fileCalls)
+	}
+}
+
+// Cron and heartbeat turns carry no approver at all. A gate that blocks
+// waiting for one hangs the background goroutine; it must deny immediately.
+func TestSendFile_UnattendedTurnIsDeniedWithoutBlocking(t *testing.T) {
+	tool, ms, ws := sendFileFixture(t)
+	tool.SetApproval(ApprovalInteractive)
+	writeWS(t, ws, "note.txt", []byte("hi"))
+
+	done := make(chan ToolResult, 1)
+	go func() {
+		done <- tool.Execute(sendFileCtx(), map[string]any{"path": "note.txt"})
+	}()
+
+	select {
+	case res := <-done:
+		if res.Error == nil {
+			t.Fatal("a turn with no approver was allowed to send a file")
+		}
+		if !errors.Is(res.Error, ErrDenied) {
+			t.Errorf("denial is not reported as ErrDenied: %v", res.Error)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a turn with no approver blocked instead of being denied")
+	}
+	if ms.fileCalls != 0 {
+		t.Error("a denied send must never reach the sender")
+	}
+}
+
+// An approved send proceeds, and the request the approver saw names the
+// file, its size and the recipient — the three things the operator is
+// actually deciding about.
+func TestSendFile_ApprovedSendRuns(t *testing.T) {
+	tool, ms, ws := sendFileFixture(t)
+	tool.SetApproval(ApprovalAlways)
+	writeWS(t, ws, "report.txt", []byte("contents"))
+
+	var seen ApprovalRequest
+	ctx := WithApprover(sendFileCtx(), approverFunc(func(_ context.Context, req ApprovalRequest) (Decision, error) {
+		seen = req
+		return Approve, nil
+	}))
+
+	res := tool.Execute(ctx, map[string]any{"path": "report.txt"})
+	if res.Error != nil {
+		t.Fatalf("approved send was refused: %v", res.Error)
+	}
+	if ms.fileCalls != 1 {
+		t.Fatalf("expected 1 send, got %d", ms.fileCalls)
+	}
+	if seen.Tool != "send_file" {
+		t.Errorf("Tool = %q, want send_file", seen.Tool)
+	}
+	if !strings.Contains(seen.Command, "report.txt") || !strings.Contains(seen.Command, "telegram") {
+		t.Errorf("approval request %q does not name the file and recipient", seen.Command)
+	}
+}
+
+// A denied send never reaches the sender — the whole point of the gate.
+func TestSendFile_DeniedSendNeverReachesSender(t *testing.T) {
+	tool, ms, ws := sendFileFixture(t)
+	tool.SetApproval(ApprovalAlways)
+	writeWS(t, ws, "secret.txt", []byte("contents"))
+
+	ctx := WithApprover(sendFileCtx(), approverFunc(func(context.Context, ApprovalRequest) (Decision, error) {
+		return Deny, nil
+	}))
+
+	res := tool.Execute(ctx, map[string]any{"path": "secret.txt"})
+	if res.Error == nil {
+		t.Fatal("expected the send to be denied")
+	}
+	if !errors.Is(res.Error, ErrDenied) {
+		t.Errorf("denial is not reported as ErrDenied: %v", res.Error)
+	}
+	if ms.fileCalls != 0 {
+		t.Error("a denied send must never reach the sender")
+	}
+}
+
+// The gate runs after containment, not before: a path refused by
+// containment must never reach a human as a prompt.
+func TestSendFile_ContainmentRefusalNeverPrompts(t *testing.T) {
+	tool, ms, ws := sendFileFixture(t)
+	tool.SetApproval(ApprovalAlways)
+	_ = ws
+
+	asked := false
+	ctx := WithApprover(sendFileCtx(), approverFunc(func(context.Context, ApprovalRequest) (Decision, error) {
+		asked = true
+		return Approve, nil
+	}))
+
+	res := tool.Execute(ctx, map[string]any{"path": "/etc/passwd"})
+	if res.Error == nil {
+		t.Fatal("expected an out-of-workspace path to be refused")
+	}
+	if asked {
+		t.Error("a path refused by containment must never reach the approver")
+	}
+	if ms.fileCalls != 0 {
+		t.Error("nothing should be sent for a refused path")
+	}
+}
+
+func TestSendFile_IsDisabledByConfig(t *testing.T) {
+	reg := RegistryWithDefaults(t.TempDir(), true, 0, 0, &mockSender{}, nil, nil, nil,
+		WithSendFileDisabled(true))
+	if _, ok := reg.Get("send_file"); ok {
+		t.Error("send_file must not be registered when disabled by config")
+	}
+
+	reg2 := RegistryWithDefaults(t.TempDir(), true, 0, 0, &mockSender{}, nil, nil, nil,
+		WithSendFileDisabled(false))
+	if _, ok := reg2.Get("send_file"); !ok {
+		t.Error("send_file must be registered when not disabled")
 	}
 }

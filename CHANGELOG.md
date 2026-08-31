@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `tools.send_file_approval` gates the `send_file` tool behind a human decision
+  ("off"/"interactive"/"always"), reusing the exact same approval mechanism as
+  `tools.shell_approval` — same CLI/Telegram prompt, same fail-closed rule for
+  unattended turns. `tools.send_file_disabled` removes the tool from the
+  registry entirely instead of gating it. Closes the gap where a prompt-injected
+  `web_fetch` result or inbound document could reach an operator's own chat
+  with no confirmation (issue #304).
+
 ## [1.65.0] - 2026-08-31
 
 ### Added

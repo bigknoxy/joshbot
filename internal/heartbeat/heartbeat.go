@@ -243,7 +243,7 @@ func (s *Service) markPublished(task string) {
 // because session's is unexported and hoisting it into a common package for two
 // call sites is not yet worth the dependency.
 func writeFileAtomic(path string, data []byte) error {
-	perm := os.FileMode(0o644)
+	perm := os.FileMode(0o600)
 	if fi, err := os.Stat(path); err == nil {
 		perm = fi.Mode().Perm()
 	}

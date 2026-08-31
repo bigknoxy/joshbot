@@ -42,7 +42,7 @@ type Manager struct {
 // Options can be provided to configure behavior (e.g., WithMaxSize).
 func New(workspace string, opts ...Option) (*Manager, error) {
 	memoryDir := filepath.Join(workspace, "memory")
-	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+	if err := os.MkdirAll(memoryDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create memory dir: %w", err)
 	}
 
@@ -92,7 +92,7 @@ func (m *Manager) LoadMemory(ctx context.Context) (string, error) {
 		content = trimMemoryContent(content, m.maxSize)
 		// Write trimmed version back to disk under write lock
 		m.mu.Lock()
-		_ = os.WriteFile(path, []byte(content), 0o644)
+		_ = os.WriteFile(path, []byte(content), 0o600)
 		m.mu.Unlock()
 	}
 
@@ -184,7 +184,7 @@ func (m *Manager) WriteMemory(ctx context.Context, content string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write temp memory: %w", err)
 	}
 
@@ -214,7 +214,7 @@ func (m *Manager) AppendHistory(ctx context.Context, entry string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	f, err := os.OpenFile(m.HistoryPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(m.HistoryPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open history: %w", err)
 	}
@@ -257,7 +257,7 @@ func (m *Manager) ensureFile(path, template string) error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
-		if err := os.WriteFile(path, []byte(template), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(template), 0o600); err != nil {
 			return fmt.Errorf("write template %s: %w", path, err)
 		}
 	}
@@ -300,7 +300,7 @@ func (m *Manager) WriteFacts(ctx context.Context, facts []Fact) error {
 	// Atomic write
 	path := m.MemoryPath()
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
 		return fmt.Errorf("write temp memory: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

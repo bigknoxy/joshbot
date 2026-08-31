@@ -45,6 +45,47 @@ func TestManagerReadWrite(t *testing.T) {
 	}
 }
 
+// MEMORY.md and HISTORY.md hold the same class of unredacted personal
+// content session files do — long-term facts about the user, and a full
+// interaction log — and the codebase's own stated reasoning for session
+// files being 0600 ("relies on the 0600 mode instead" of redaction) applies
+// identically here. Found by a gosec audit: these were written world-readable
+// (0644) inside a world-readable directory (0755) on every process start.
+func TestManagerFilesAreNotWorldReadable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	mgr, err := New(dir)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := mgr.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if err := mgr.AppendHistory(ctx, "an event"); err != nil {
+		t.Fatalf("AppendHistory() error = %v", err)
+	}
+
+	memDir := filepath.Dir(mgr.MemoryPath())
+	dirInfo, err := os.Stat(memDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("memory directory mode = %o, must not grant group/other access", perm)
+	}
+
+	for _, path := range []string{mgr.MemoryPath(), mgr.HistoryPath()} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			t.Errorf("%s mode = %o, must not grant group/other access", path, perm)
+		}
+	}
+}
+
 func TestAppendHistory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

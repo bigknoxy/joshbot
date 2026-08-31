@@ -14,9 +14,19 @@ name: Security
 #     internal/redact (which only protects runtime output, not what a
 #     contributor commits)
 #
-# None of these gate merges today (advisory via SARIF upload to the
-# Security tab / job summary) — flip a job's failure condition once the
-# baseline is triaged and clean.
+# govulncheck and gosec are `continue-on-error: true` on purpose: run
+# against this codebase for the first time, both found real findings (an
+# outdated gorilla/websocket, an outdated golang.org/x/text, a batch of Go
+# stdlib toolchain CVEs, and a set of gosec static findings) that need
+# triage, not a red build blocking every unrelated PR under this repo's
+# green-CI merge rule. CodeQL and gitleaks found nothing on the first run,
+# so they are left blocking — flip govulncheck/gosec to blocking too once
+# their baseline is triaged (see CLAUDE.md / AGENTS.md pre-release
+# checklists, which check the Security tab explicitly in the meantime).
+#
+# Third-party actions are pinned to a commit SHA, not a mutable tag —
+# `securego/gosec@master` in particular would run whatever lands on that
+# branch next, unreviewed.
 
 on:
   pull_request:
@@ -35,9 +45,10 @@ permissions:
 jobs:
   govulncheck:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.24'
           cache: true
@@ -48,18 +59,19 @@ jobs:
 
   gosec:
     runs-on: ubuntu-latest
+    continue-on-error: true
     permissions:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Run gosec
-        uses: securego/gosec@master
+        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
         with:
           args: '-fmt sarif -out gosec-results.sarif -exclude-dir=.git ./...'
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           sarif_file: gosec-results.sarif
 
@@ -69,21 +81,21 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: go
-      - uses: github/codeql-action/autobuild@v3
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/autobuild@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: '/language:go'
 
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

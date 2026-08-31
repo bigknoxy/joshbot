@@ -9,16 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - CI: automated security scanning (`govulncheck`, `gosec`, `CodeQL`, `gitleaks`) runs on
-  every PR, push to main, and weekly, with findings on the Security tab. `gosec`, `CodeQL`
-  and `gitleaks` block on any finding; `govulncheck` stays advisory because some of its
-  findings are Go stdlib CVEs with no released fix yet. Dependabot now opens weekly PRs
-  for Go and GitHub Actions deps.
+  every PR, push to main, and weekly, with findings on the Security tab. `govulncheck`,
+  `CodeQL` and `gitleaks` block on any finding; `gosec` stays advisory — its first run
+  surfaced 150 untriaged findings (issue #358) that need file-by-file review, not a
+  blanket suppression. Dependabot now opens weekly PRs for Go and GitHub Actions deps.
 
 ### Changed
-- Bumped to Go 1.25.9, `gorilla/websocket` to v1.5.3, and `golang.org/x/text` to v0.39.0,
-  clearing 7 of the 18 `govulncheck` findings surfaced by the new CI scan (both real
-  dependency CVEs, plus every stdlib CVE Go 1.25.9 already fixes). The remaining 11 are
-  stdlib CVEs fixed only in Go 1.25.10-1.25.13, which are not released yet.
+- Bumped to Go 1.25.9 (minimum; CI resolves to the latest 1.25.x patch), `gorilla/websocket`
+  to v1.5.3, and `golang.org/x/text` to v0.39.0, clearing all 18 `govulncheck` findings
+  surfaced by the new CI scan (2 real dependency CVEs, 16 Go stdlib CVEs).
 
 ## [1.64.0] - 2026-08-24
 

@@ -2433,8 +2433,12 @@ func runUpdate(c *cli.Context) error {
 		return nil
 	}
 
-	// 5. Make temp binary executable
-	if err := os.Chmod(tmpFile, 0700); err != nil {
+	// 5. Make temp binary executable. 0700 rather than gosec's preferred
+	// <=0600: this file is about to replace the running binary, so it must
+	// carry the execute bit or the self-update produces a joshbot nobody
+	// can run. Owner-only (no group/other) is the tightest mode that still
+	// satisfies that requirement.
+	if err := os.Chmod(tmpFile, 0700); err != nil { // #nosec G302 -- must be executable, see above
 		os.Remove(tmpFile)
 		return fmt.Errorf("failed to make binary executable: %w", err)
 	}

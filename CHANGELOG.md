@@ -7,12 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.65.0] - 2026-08-31
+
 ### Added
 - CI: automated security scanning (`govulncheck`, `gosec`, `CodeQL`, `gitleaks`) runs on
   every PR, push to main, and weekly, with findings on the Security tab. `govulncheck`,
   `CodeQL` and `gitleaks` block on any finding; `gosec` stays advisory — its first run
   surfaced 150 untriaged findings (issue #358) that need file-by-file review, not a
   blanket suppression. Dependabot now opens weekly PRs for Go and GitHub Actions deps.
+  Branch protection on `main` now requires CI plus the three blocking security jobs.
 
 ### Changed
 - Bumped to Go 1.25.9 (minimum; CI resolves to the latest 1.25.x patch), `gorilla/websocket`

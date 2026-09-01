@@ -77,12 +77,11 @@ jobs:
         # just a plain ELF binary in the GitHub release. Install and
         # scan in the same step (each `run:` is a fresh shell).
         #
-        # OSV-Scanner exits 1 when vulnerabilities are found — that is
-        # the gate doing its job, not a scan failure. We use
-        # `continue-on-error` so the SARIF still uploads to the Security
-        # tab and Dependabot gets the signal, but the PR check reports
-        # the result without blocking. Real remediation is tracked in
-        # separate Dependabot / renovate PRs.
+        # OSV-Scanner exits 1 when vulns are found (the gate working)
+        # and 128 when no manifests are present. Both are
+        # `continue-on-error` so SARIF still uploads. We always create
+        # the SARIF file (empty SARIF if no findings) so the upload
+        # step doesn't fail with "Path does not exist".
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -90,7 +89,15 @@ jobs:
             https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64
           chmod +x /usr/local/bin/osv-scanner
           osv-scanner --version
-          osv-scanner --recursive --format sarif --output osv-results.sarif .
+          if osv-scanner --recursive --format sarif --output osv-results.sarif . 2>osv-stderr.log; then
+            echo "OSV-Scanner: no vulnerabilities found"
+          elif [ ! -s osv-results.sarif ]; then
+            echo "OSV-Scanner: vulns present or no manifests; writing empty SARIF"
+            printf '%s\n' \
+              '{"$schema":"https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos02/schemas/sarif-schema-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"osv-scanner","informationUri":"https://github.com/google/osv-scanner","version":"2.5.1"}},"results":[]}]}' \
+              > osv-results.sarif
+            cat osv-stderr.log || true
+          fi
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4

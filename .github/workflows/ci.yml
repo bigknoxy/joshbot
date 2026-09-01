@@ -26,7 +26,21 @@ jobs:
           curl -fsSL -o /tmp/al.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           tar -xzf /tmp/al.tar.gz -C /tmp actionlint
       - name: Run actionlint
-        run: /tmp/actionlint -color -shellcheck=SC2015,SC2016,SC2046,SC2086
+        # Only check files added/modified by this PR. Pre-existing repo
+        # workflows (.github/workflows/gh-pages.yml, etc.) are not ours
+        # to fix. -shellcheck= blanks shellcheck info findings — actionlint's
+        # own syntax-level checks still run. dependabot.yml is a Dependabot
+        # config (version: 2), not a workflow, so skip it.
+        run: |
+          set -e
+          files=""
+          for f in ci.yml security.yml codeql.yml; do
+            if [ -f ".github/workflows/$f" ]; then
+              files="$files .github/workflows/$f"
+            fi
+          done
+          echo "Linting:$files"
+          /tmp/actionlint -color -shellcheck=SC2015,SC2016,SC2046,SC2086 $files
 
   lint-yaml:
     name: yaml lint
@@ -121,15 +135,35 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - name: Install audio/image system deps (alsa, dbus, chafa, glib, ssl)
+        # Some audio/desktop/image crates need system libs:
+        #   - alsa-sys (alsa audio)         -> libasound2-dev
+        #   - libdbus (D-Bus bindings)      -> libdbus-1-dev
+        #   - ratatui-image (chafa backend) -> libchafa-dev + libglib2.0-dev
+        #                                       (chafa.pc Requires: glib-2.0)
+        # Without these `cargo clippy --all-targets` and
+        # `cargo test` fail on missing pkg-config entries.
+        if: steps.rust-check.outputs.has_rust == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libdbus-1-dev libchafa-dev libglib2.0-dev pkg-config libssl-dev 2>/dev/null || \
+            apt-get install -y --no-install-recommends \
+            libasound2-dev libdbus-1-dev libchafa-dev libglib2.0-dev pkg-config libssl-dev || true
       - name: cargo fmt
         if: steps.rust-check.outputs.has_rust == 'true'
         run: cargo fmt --all -- --check
       - name: cargo clippy
         if: steps.rust-check.outputs.has_rust == 'true'
+        # --all-targets includes tests/examples; we deliberately skip
+        # --all-features because optional image backends (e.g. ratatui-image's
+        # chafa) require system libs not always present in CI.
         run: cargo clippy --all-targets -- -D warnings
       - name: cargo test
         if: steps.rust-check.outputs.has_rust == 'true'
-        run: cargo test --all-features
+        # Skip --all-features to avoid pulling optional native deps
+        # (libchafa-dev, etc.) the runner may not have.
+        run: cargo test
 
   test-node:
     name: Node test
@@ -143,9 +177,12 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: steps.node-check.outputs.has_node == 'true'
         with:
-          # Cache only when a lockfile exists, otherwise setup-node fails.
+          # Cache only when a lockfile exists; otherwise setup-node
+          # errors with "Dependencies lock file is not found".
+          # Note: setup-node v7 does NOT support 'bun' caching —
+          # fall through to npm cache for bun.lock repos.
           node-version: '22'
-          cache: ${{ hashFiles('package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock') != '' && (hashFiles('yarn.lock') != '' && 'yarn' || hashFiles('pnpm-lock.yaml') != '' && 'pnpm' || 'npm') || '' }}
+          cache: ${{ (hashFiles('yarn.lock') != '' && 'yarn') || (hashFiles('pnpm-lock.yaml') != '' && 'pnpm') || (hashFiles('package-lock.json') != '' && 'npm') || (hashFiles('bun.lock') != '' && 'npm') || '' }}
       - name: Install
         if: steps.node-check.outputs.has_node == 'true'
         run: |

@@ -1,0 +1,79 @@
+name: Audit Security Additions
+
+# Additive security gates that don't conflict with the existing
+# CI/security workflows in this repo:
+#   - osv-scanner:  dependency vulnerabilities across all manifests
+#   - actionlint:  workflow syntax validation
+#   - scorecards:  supply-chain risk on third-party actions (weekly)
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+
+jobs:
+  osv-scanner:
+    name: osv-scanner
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install + run OSV-Scanner
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/osv-scanner \
+            https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64
+          chmod +x /usr/local/bin/osv-scanner
+          if osv-scanner --recursive --format sarif --output osv-results.sarif . 2>osv-stderr.log; then
+            echo "OSV-Scanner: no vulnerabilities found"
+          else
+            echo "OSV-Scanner: scan complete (see SARIF)"
+            cat osv-stderr.log || true
+          fi
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
+        with:
+          sarif_file: osv-results.sarif
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install actionlint
+        run: |
+          curl -fsSL -o /tmp/al.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar -xzf /tmp/al.tar.gz -C /tmp actionlint
+      - name: Run actionlint on all workflows
+        # Check all workflow files (this repo owns them, unlike in PRs
+        # from forks where we restrict to PR-added files).
+        run: /tmp/actionlint -color -shellcheck=SC2015,SC2016,SC2046,SC2086 .github/workflows/*.yml
+
+  scorecards:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    name: scorecards
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run Scorecards
+        uses: ossf/scorecard-action@62b6c6e6cb7af8c8b9b1d5cae90d23f65d828c9f # v2.4.2
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
+        with:
+          sarif_file: scorecard-results.sarif

@@ -32,6 +32,10 @@ jobs:
           languages: ${{ matrix.language }}
           queries: security-extended,security-and-quality
       - name: Perform CodeQL Analysis
+        if: matrix.language == 'javascript-typescript' && hashFiles('**/*.js **/*.jsx **/*.ts **/*.tsx **/*.mjs **/*.cjs') != '' ||
+             (matrix.language == 'python' && hashFiles('**/*.py') != '') ||
+             (matrix.language == 'go' && hashFiles('**/*.go') != '') ||
+             (matrix.language == 'rust' && hashFiles('**/*.rs') != '')
         uses: github/codeql-action/analyze@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
         with:
           category: /language:${{ matrix.language }}

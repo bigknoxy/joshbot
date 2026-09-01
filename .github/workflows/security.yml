@@ -43,7 +43,15 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-extended,security-and-quality
+      # CodeQL fatal-errors with exit 32 ("no source code seen during build")
+      # when the repo has no code in the matrix language. Skip the analyze
+      # step in that case so the job reports success instead of failure.
       - name: Perform CodeQL Analysis
+        if: matrix.language == 'actions' ||
+             (matrix.language == 'javascript-typescript' && hashFiles('**/*.js **/*.jsx **/*.ts **/*.tsx **/*.mjs **/*.cjs') != '') ||
+             (matrix.language == 'python' && hashFiles('**/*.py') != '') ||
+             (matrix.language == 'go' && hashFiles('**/*.go') != '') ||
+             (matrix.language == 'rust' && hashFiles('**/*.rs') != '')
         uses: github/codeql-action/analyze@486fec2a3ea2626afcd8c7e9208b4f515078dd7e # codeql-bundle-v2.26.4
         with:
           category: /language:${{ matrix.language }}
@@ -65,17 +73,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install + run OSV-Scanner
-        # Download the release binary directly: the `install.sh` script
-        # was removed from google/osv-scanner. Install and scan in the
-        # same step (each `run:` is a fresh shell, so installing in one
-        # step and invoking in another loses the binary on PATH).
+        # Download the release binary directly: there's no tarball,
+        # just a plain ELF binary in the GitHub release. Install and
+        # scan in the same step (each `run:` is a fresh shell).
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/osv-scanner.tar.gz \
-            https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64.tar.gz || \
-          curl -fsSL -o /tmp/osv-scanner.tar.gz \
-            https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64.tar.gz
-          tar -xzf /tmp/osv-scanner.tar.gz -C /usr/local/bin osv-scanner
+          curl -fsSL -o /usr/local/bin/osv-scanner \
+            https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64
+          chmod +x /usr/local/bin/osv-scanner
           osv-scanner --version
           osv-scanner --recursive --format sarif --output osv-results.sarif .
       - name: Upload SARIF

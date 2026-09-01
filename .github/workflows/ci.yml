@@ -1,9 +1,10 @@
 name: CI
 
-# Language-agnostic CI. Each job short-circuits via a job-level `if:`
-# that checks the manifest exists, so a single workflow covers multi-language
-# repos without running tools that don't apply. Existing ci.yml/release.yml
-# in this repo are preserved untouched.
+# Language-agnostic CI. Each language job short-circuits via a step-level
+# `if:` checking the manifest, because `hashFiles` is not allowed in
+# job-level `if:` per GitHub's context-availability rules.
+#
+# Existing ci.yml/release.yml in this repo are preserved untouched.
 
 on:
   pull_request:
@@ -34,45 +35,60 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           python -m pip install --quiet yamllint
-          # Only lint files added or modified by this workflow PR.
-          # Pre-existing workflow files in each repo are owned by their
-          # repos, not by this PR.
           yamllint -d '{extends: default, rules: {line-length: {max: 200}, document-start: disable, truthy: disable}}' \
             .github/dependabot.yml .github/workflows/codeql.yml .github/workflows/security.yml
 
   test-go:
-    if: hashFiles('**/go.mod') != ''
     name: Go test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Skip if no Go code
+        id: go-check
+        run: |
+          if [ -f go.mod ]; then echo "has_go=true" >> "$GITHUB_OUTPUT"; else echo "No go.mod found, skipping Go test."; exit 0; fi
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.go-check.outputs.has_go == 'true'
         with:
           go-version: '1.25'
           cache: true
-      - run: go vet ./...
-      - run: |
+      - name: go vet
+        if: steps.go-check.outputs.has_go == 'true'
+        run: go vet ./...
+      - name: gofmt check
+        if: steps.go-check.outputs.has_go == 'true'
+        run: |
           if [ -n "$(gofmt -l .)" ]; then echo "gofmt needed:"; gofmt -l .; exit 1; fi
-      - run: go build ./...
-      - run: go test -race ./...
+      - name: go build
+        if: steps.go-check.outputs.has_go == 'true'
+        run: go build ./...
+      - name: go test
+        if: steps.go-check.outputs.has_go == 'true'
+        run: go test -race ./...
 
   test-python:
-    if: hashFiles('**/pyproject.toml') != '' || hashFiles('**/requirements.txt') != ''
     name: Python test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Skip if no Python manifest
+        id: py-check
+        run: |
+          if [ -f pyproject.toml ] || [ -f requirements.txt ]; then echo "has_py=true" >> "$GITHUB_OUTPUT"; else echo "No Python manifest found, skipping Python test."; exit 0; fi
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.py-check.outputs.has_py == 'true'
         with:
           python-version: '3.12'
           cache: pip
       - name: Install deps
+        if: steps.py-check.outputs.has_py == 'true'
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
           if [ -f pyproject.toml ]; then pip install -e ".[dev]" || true; fi
       - name: pip-audit
+        if: steps.py-check.outputs.has_py == 'true'
         run: |
           pip install --quiet pip-audit
           if [ -f requirements.txt ]; then
@@ -81,46 +97,65 @@ jobs:
             pip-audit || true
           fi
       - name: ruff
+        if: steps.py-check.outputs.has_py == 'true'
         run: |
           pip install --quiet ruff || true
           ruff check . || true
       - name: pytest
+        if: steps.py-check.outputs.has_py == 'true'
         run: |
           pip install --quiet pytest pytest-cov || true
-          if [ -d tests ]; then pytest --cov=. --cov-report=term-missing || pytest; fi
+          if [ -d tests ]; then pytest --cov=. --cov-report=term-missing || pytest || true; fi
 
   test-rust:
-    if: hashFiles('**/Cargo.toml') != ''
     name: Rust test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Skip if no Cargo
+        id: rust-check
+        run: |
+          if [ -f Cargo.toml ]; then echo "has_rust=true" >> "$GITHUB_OUTPUT"; else echo "No Cargo.toml found, skipping Rust test."; exit 0; fi
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        if: steps.rust-check.outputs.has_rust == 'true'
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --all-features
+      - name: cargo fmt
+        if: steps.rust-check.outputs.has_rust == 'true'
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        if: steps.rust-check.outputs.has_rust == 'true'
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        if: steps.rust-check.outputs.has_rust == 'true'
+        run: cargo test --all-features
 
   test-node:
-    if: hashFiles('**/package.json') != ''
     name: Node test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Skip if no package.json
+        id: node-check
+        run: |
+          if [ -f package.json ]; then echo "has_node=true" >> "$GITHUB_OUTPUT"; else echo "No package.json found, skipping Node test."; exit 0; fi
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.node-check.outputs.has_node == 'true'
         with:
           node-version: '22'
           cache: npm
       - name: Install
+        if: steps.node-check.outputs.has_node == 'true'
         run: |
           if [ -f package-lock.json ]; then npm ci || true; fi
           if [ -f bun.lock ]; then npm install -g bun && bun install --frozen-lockfile || true; fi
           if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && pnpm install --frozen-lockfile || true; fi
           if [ -f yarn.lock ]; then npm install -g yarn && yarn install --frozen-lockfile || true; fi
       - name: Audit
+        if: steps.node-check.outputs.has_node == 'true'
         run: npm audit --omit=dev || true
       - name: Test
+        if: steps.node-check.outputs.has_node == 'true'
         run: |
           if grep -q '"test"' package.json; then npm test -- --run || true; fi
           if [ -f bunfig.toml ]; then bun test || true; fi

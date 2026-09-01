@@ -65,12 +65,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install + run OSV-Scanner
-        # Install and scan in the same step: each `run:` starts a fresh
-        # shell, so installing in one step and invoking in another loses
-        # the binary on PATH.
+        # Download the release binary directly: the `install.sh` script
+        # was removed from google/osv-scanner. Install and scan in the
+        # same step (each `run:` is a fresh shell, so installing in one
+        # step and invoking in another loses the binary on PATH).
         run: |
           set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/google/osv-scanner/main/install.sh | bash
+          curl -fsSL -o /tmp/osv-scanner.tar.gz \
+            https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64.tar.gz || \
+          curl -fsSL -o /tmp/osv-scanner.tar.gz \
+            https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64.tar.gz
+          tar -xzf /tmp/osv-scanner.tar.gz -C /usr/local/bin osv-scanner
+          osv-scanner --version
           osv-scanner --recursive --format sarif --output osv-results.sarif .
       - name: Upload SARIF
         if: always()

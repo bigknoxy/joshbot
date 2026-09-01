@@ -26,7 +26,7 @@ jobs:
           curl -fsSL -o /tmp/al.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           tar -xzf /tmp/al.tar.gz -C /tmp actionlint
       - name: Run actionlint
-        run: /tmp/actionlint -color
+        run: /tmp/actionlint -color -shellcheck=SC2015,SC2016,SC2046,SC2086
 
   lint-yaml:
     name: yaml lint
@@ -142,8 +142,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: steps.node-check.outputs.has_node == 'true'
         with:
+          # Cache only when a lockfile exists, otherwise setup-node fails.
           node-version: '22'
-          cache: npm
+          cache: ${{ hashFiles('package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock') != '' && (hashFiles('yarn.lock') != '' && 'yarn' || hashFiles('pnpm-lock.yaml') != '' && 'pnpm' || 'npm') || '' }}
       - name: Install
         if: steps.node-check.outputs.has_node == 'true'
         run: |

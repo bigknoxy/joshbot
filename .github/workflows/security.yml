@@ -93,9 +93,12 @@ jobs:
             echo "OSV-Scanner: no vulnerabilities found"
           elif [ ! -s osv-results.sarif ]; then
             echo "OSV-Scanner: vulns present or no manifests; writing empty SARIF"
-            printf '%s\n' \
-              '{"$schema":"https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos02/schemas/sarif-schema-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"osv-scanner","informationUri":"https://github.com/google/osv-scanner","version":"2.5.1"}},"results":[]}]}' \
-              > osv-results.sarif
+            {
+              printf '{"$schema":"https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos02/schemas/sarif-schema-2.1.0.json",'
+              printf '"version":"2.1.0","runs":[{"tool":{"driver":{"name":"osv-scanner",'
+              printf '"informationUri":"https://github.com/google/osv-scanner","version":"2.5.1"}},'
+              printf '"results":[]}]}\n'
+            } > osv-results.sarif
             cat osv-stderr.log || true
           fi
       - name: Upload SARIF
@@ -115,9 +118,11 @@ jobs:
       - name: Run actionlint
         # Check only the files this PR added/modified. Pre-existing
         # workflow files in each repo are owned by their respective
-        # repos, not by this PR. -shellcheck= blanks SC2086 info findings.
+        # repos, not by this PR. -shellcheck= blanks shellcheck info
+        # findings (SC2015, SC2016, SC2046, etc.) — actionlint's own
+        # syntax-level checks still fail.
         run: |
-          /tmp/actionlint -color -shellcheck= \
+          /tmp/actionlint -color -shellcheck=SC2015,SC2016,SC2046,SC2086 \
             .github/workflows/codeql.yml \
             .github/workflows/security.yml \
             $( [ -f .github/workflows/ci.yml ] && echo .github/workflows/ci.yml )

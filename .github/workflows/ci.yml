@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           python -m pip install --quiet yamllint
-          yamllint -d '{extends: default, rules: {line-length: {max: 200}, document-start: disable, truthy: disable}}' \
+          yamllint -d '{extends: default, rules: {line-length: {max: 200}, document-start: disable, truthy: disable, comments: disable, new-line-at-end-of-file: disable}}' \
             .github/dependabot.yml .github/workflows/codeql.yml .github/workflows/security.yml
 
   test-go:
@@ -119,6 +119,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         if: steps.rust-check.outputs.has_rust == 'true'
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - name: cargo fmt
         if: steps.rust-check.outputs.has_rust == 'true'

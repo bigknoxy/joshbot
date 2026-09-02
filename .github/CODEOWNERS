@@ -1,0 +1,9 @@
+# CODEOWNERS for bigknoxy repos
+# Security-sensitive files require bigknoxy review
+
+/.github/workflows/    @bigknoxy
+/.github/dependabot.yml @bigknoxy
+/.github/CODEOWNERS    @bigknoxy
+/security/             @bigknoxy
+*.gitleaks.toml        @bigknoxy
+*.toml                 @bigknoxy

@@ -1543,9 +1543,6 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 		return messages
 	}
 
-	// Threshold exceeded - compact messages
-	a.logger.Info("Compacting context", "total_tokens", totalTokens, "threshold_budget", thresholdBudget)
-
 	// Compress the stored session, not the provider slice.
 	//
 	// `messages` has already been through the memory-window truncation in
@@ -1572,9 +1569,35 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	if st != nil && st.active && st.prefixLen == prefixLen {
 		// Already compacted this exact prefix earlier in the turn; the excess
 		// is in the tail we refuse to summarize, so a second pass changes
-		// nothing.
+		// nothing. Checked ahead of the cheap tier below: once this prefix is
+		// already summarized, `messages` no longer holds the old content for
+		// masking to find, so trying first only spends an allocation to learn
+		// what this check already knows for free.
 		return messages
 	}
+
+	// Cheap tier next: truncating old tool/assistant content costs no LLM
+	// call, so try it before paying for a full compaction. A single oversized
+	// tool result mid-turn should not force a summarization round trip when
+	// trimming alone gets back under budget.
+	//
+	// protectTail is measured against sess.Messages, the stored session, on
+	// the same assumption the tail extraction below relies on: `messages` and
+	// sess.Messages grow in step from turn start, so the last protectTail
+	// entries of each line up even though their total lengths can differ (an
+	// earlier memory-window truncation, or a compaction already folded into
+	// `messages` this turn). If `messages` is ever shorter than protectTail —
+	// exactly those cases — maskStaleToolOutput has nothing left outside the
+	// protected tail to mask and fails closed (ok=false) rather than guessing.
+	if masked, ok := maskStaleToolOutput(messages, len(sess.Messages)-prefixLen, thresholdBudget, totalTokens); ok {
+		a.logger.Debug("Cheap tool-output masking avoided a full compaction",
+			"threshold_budget", thresholdBudget)
+		return masked
+	}
+
+	// Threshold exceeded and cheap masking could not fix it - compact messages
+	a.logger.Info("Compacting context", "total_tokens", totalTokens, "threshold_budget", thresholdBudget)
+
 	sessionMsgs := sessionToProviderMessages(&session.Session{Messages: sess.Messages[:prefixLen]})
 	prefixTokens := 0
 	for _, m := range sessionMsgs {
@@ -1656,6 +1679,72 @@ func compactionPrefixLen(sess *session.Session, st *compactionState) int {
 		return 0
 	}
 	return keepFrom
+}
+
+// maskOldToolAndAssistantContent truncates Tool and Assistant message content
+// at index < verbatimStart via truncateSummary, preserving ToolCalls and
+// ToolCallID (truncateSummary only ever rewrites Content) and leaving every
+// other index and every other role untouched. Only the content may be
+// replaced: an OpenAI-compatible provider rejects a tool message with no
+// tool_call_id, or an announced tool call with no answering result, with a
+// 400. Because RoleSystem and
+// RoleUser never match the Tool/Assistant check, a verbatimStart that
+// includes index 0 still never masks a system message — callers do not need
+// a special case for it.
+func maskOldToolAndAssistantContent(messages []providers.Message, verbatimStart int) []providers.Message {
+	if verbatimStart < 0 {
+		verbatimStart = 0
+	}
+	if verbatimStart > len(messages) {
+		verbatimStart = len(messages)
+	}
+	result := make([]providers.Message, len(messages))
+	copy(result, messages)
+	for i := 0; i < verbatimStart; i++ {
+		m := messages[i]
+		if m.Role == providers.RoleTool || m.Role == providers.RoleAssistant {
+			m.Content = truncateSummary(m.Content)
+			result[i] = m
+		}
+	}
+	return result
+}
+
+// maskStaleToolOutput is the cheap, no-LLM-call tier of context control: it
+// truncates old tool/assistant content in place — the same transform
+// applyObservationMasking already applies for buildMessages — but scoped to
+// exactly the region checkAndCompactContext would otherwise summarize:
+// everything except the last protectTail messages (the live turn plus
+// compactionKeepTail, per compactionPrefixLen) and the system message at
+// index 0, which are always left untouched.
+//
+// It reports ok=false when masking does not get the total back under budget,
+// so the caller can fall through to real compaction unchanged. A failed
+// attempt returns a nil slice rather than the partially-masked one, so a
+// caller cannot mistake it for a usable result. totalTokens is the caller's
+// already-computed token count for messages[1:]; masking only ever shrinks
+// the small prefix region, so the new total is that count adjusted by the
+// delta the truncation makes there, not a full rescan of the (potentially
+// large, unmasked) protected tail.
+func maskStaleToolOutput(messages []providers.Message, protectTail, budget, totalTokens int) ([]providers.Message, bool) {
+	verbatimStart := len(messages) - protectTail
+	if verbatimStart <= 0 {
+		// Nothing lies outside the protected tail — masking would touch
+		// nothing, so there is no point allocating a copy to prove that.
+		return nil, false
+	}
+
+	total := totalTokens
+	for i := 0; i < verbatimStart; i++ {
+		m := messages[i]
+		if m.Role == providers.RoleTool || m.Role == providers.RoleAssistant {
+			total += ctxpkg.TokenEstimator(truncateSummary(m.Content)) - ctxpkg.TokenEstimator(m.Content)
+		}
+	}
+	if total > budget {
+		return nil, false
+	}
+	return maskOldToolAndAssistantContent(messages, verbatimStart), true
 }
 
 // sessionToProviderMessages converts a session's stored messages to the
@@ -1799,29 +1888,7 @@ func (a *Agent) applyObservationMasking(messages []providers.Message, budget int
 		keepVerbatim = len(messages)
 	}
 
-	result := make([]providers.Message, len(messages))
-	// Start from the end, copy intact
-	verbatimStart := len(messages) - keepVerbatim
-	for i := verbatimStart; i < len(messages); i++ {
-		result[i] = messages[i]
-	}
-
-	// Mask tool result content in older messages. Only the content is
-	// replaced: ToolCalls and ToolCallID must survive, because an
-	// OpenAI-compatible provider rejects a tool message with no tool_call_id,
-	// or an announced tool call with no answering result, with a 400.
-	for i := 0; i < verbatimStart; i++ {
-		m := messages[i]
-		if m.Role == providers.RoleTool || m.Role == providers.RoleAssistant {
-			masked := m
-			masked.Content = truncateSummary(m.Content)
-			result[i] = masked
-		} else {
-			result[i] = m
-		}
-	}
-
-	return result
+	return maskOldToolAndAssistantContent(messages, len(messages)-keepVerbatim)
 }
 
 // truncateSummary truncates tool output to a short summary to save tokens.

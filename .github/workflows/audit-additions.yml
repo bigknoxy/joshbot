@@ -68,7 +68,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run Scorecards
-        uses: ossf/scorecard-action@62b6c6e6cb7af8c8b9b1d5cae90d23f65d828c9f # v2.4.2
+        uses: ossf/scorecard-action@55891bbd73f2425e97637d96e306fc9d491d0b21 # v2.4.4
         with:
           results_file: scorecard-results.sarif
           results_format: sarif

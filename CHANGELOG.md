@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Context compaction now tries a cheap, no-LLM-call trim of old tool/assistant
+  output before paying for a full summarization round trip. When trimming
+  alone gets the conversation back under the compaction threshold budget, the
+  compressor is never called; the live turn and the last few messages before
+  it are always left untouched. Reduces summarization calls on turns where a
+  handful of large-but-old tool results — not the live conversation — pushed
+  the context over budget.
+
 ## [1.66.0] - 2026-08-31
 
 ### Added

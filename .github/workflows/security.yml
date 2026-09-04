@@ -1,76 +1,16 @@
 name: Security
 
-# Runs alongside CI on every PR and push to main. Four independent, free
-# scanners chosen for this repo's actual attack surface (shell tool, MCP,
-# filesystem containment, credential handling) rather than a generic
-# checklist:
-#   - govulncheck: known CVEs in dependencies, call-graph aware so it only
-#     flags vulnerabilities actually reachable from this code
-#   - gosec: Go-specific static analysis (hardcoded creds, weak crypto,
-#     command injection, unsafe file perms)
-#   - CodeQL: semantic taint analysis (path traversal, command/SQL
-#     injection, SSRF) — free for public repos
-#   - gitleaks: scans commits/diffs for leaked secrets, complementing
-#     internal/redact (which only protects runtime output, not what a
-#     contributor commits)
+# Migrated to the org-wide reusable security workflow
+# (bigknoxy/.github/.github/workflows/security-reusable.yml), which now
+# provides gitleaks, dependency-review (PRs only), CodeQL, and
+# govulncheck (language=go) plus trivy-fs/trivy-image (has_docker=true).
 #
-# All four now block (no continue-on-error): a clean run against this
-# codebase found nothing, so a future finding in any of them is a real
-# regression and should turn the check red.
-#
-# govulncheck: with the Go toolchain bump (setup-go resolves
-# 'go-version: 1.25' to the latest 1.25.x patch automatically), it reports
-# 0 vulnerabilities against this codebase's current dependencies.
-#
-# gosec: issue #358 triaged all 150 findings from its first real run.
-# 129 were false positives given this codebase's documented design —
-# excluded below by rule ID, each with the specific reasoning that made it
-# a rule-wide exclusion rather than a per-site #nosec:
-#   G101 (possible hardcoded credential) — 3 hits, all public non-secret
-#     URL constants and a UI label string; no key material.
-#   G104 (unchecked error) — 75 hits, conventional best-effort patterns:
-#     interactive-prompt Scanln/Sscanf, cleanup-path Close/Remove after
-#     the primary error is already being returned, and tool Register()
-#     calls whose only failure mode is a duplicate name among a fixed,
-#     compiled-in set (a dev-time bug, not attacker-reachable).
-#   G117 (marshaling a secret-shaped struct) — 1 hit, immediately followed
-#     by an 0600 write gosec's check can't see two lines ahead.
-#   G118 (context.Background in a goroutine) — 1 hit, ExecuteAsync's
-#     documented fire-and-forget path, which must outlive the request that
-#     spawned it — using the request context would defeat the feature.
-#   G124 (cookie Secure not a literal `true`) — 2 hits, `isTLS(r)` is
-#     deliberate: unconditional Secure would make the cookie undeliverable
-#     on the plain-HTTP loopback bind that is the normal case here.
-#   G204 (subprocess with variable) — 14 hits, the shell/sandbox/MCP
-#     subsystem's entire documented reason for existing (`sh -c` on an
-#     untrusted string, gated by deny-list/allowlist/approval/sandbox
-#     layering described in AGENTS.md), plus argv-only exec.Command calls
-#     with no shell involved, plus operator-configured MCP server commands.
-#   G304 (file inclusion via variable) — 30 hits, every sampled read is a
-#     fixed filename under an operator-configured directory, a
-#     ValidateSessionID-gated session id, or CLI input AGENTS.md documents
-#     as deliberately uncontained (containment bounds the model, not the
-#     operator) — never network- or model-supplied. The actual agent-facing
-#     filesystem tool (internal/tools/filesystem.go), which AGENTS.md says
-#     must route through openat.go's Root-based helpers, does not appear
-#     in this list at all.
-#   G404 (weak random) — 1 hit, jitter on a retry backoff delay, not a
-#     security-sensitive value.
-#   G703 (taint through an internal helper) — 2 hits, both paths resolve
-#     to a fixed filename, not attacker- or model-supplied input.
-# The other 21 findings (G301/G302/G306, world-readable dirs/files for
-# MEMORY.md, HISTORY.md, dream logs, cron jobs, skill files, subagent
-# configs) were real and are fixed in the same PR that added this exclude
-# list — no exclusion for those three rules.
-#
-# Third-party actions are pinned to a commit SHA, not a mutable tag —
-# `securego/gosec@master` in particular would run whatever lands on that
-# branch next, unreviewed.
-#
-# govulncheck, codeql and gitleaks are required status checks in main's
-# branch protection. gosec is not yet added there — it only just started
-# blocking in this PR, so it gets one real run history before becoming a
-# merge gate rather than day-one.
+# gosec is kept as a separate job below, unchanged from the previous
+# version of this file: the reusable workflow only runs govulncheck for
+# go, not gosec, so it is not covered and must stay local. See its
+# extensive inline comments for the exclude-list rationale — those
+# findings were triaged in issue #358 and are unrelated to this
+# migration.
 
 on:
   pull_request:
@@ -87,18 +27,14 @@ permissions:
   contents: read
 
 jobs:
-  govulncheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: '1.25'
-          cache: true
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - name: Run govulncheck
-        run: govulncheck ./...
+  security:
+    uses: bigknoxy/.github/.github/workflows/security-reusable.yml@main
+    with:
+      language: go
+      has_docker: true
+      dockerfile: Dockerfile
+      docker_context: .
+    secrets: inherit
 
   gosec:
     runs-on: ubuntu-latest
@@ -136,28 +72,3 @@ jobs:
           import sys
           sys.exit(1 if results else 0)
           "
-
-  codeql:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          languages: go
-      - uses: github/codeql-action/autobuild@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          category: '/language:go'
-
-  gitleaks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

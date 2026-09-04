@@ -58,20 +58,29 @@ type mockLogger struct {
 	errorMsgs []string
 }
 
+// formatLogMsg renders a structured log call (message plus key/value pairs)
+// as a single string for test assertions. It must not use fmt.Sprintf(msg,
+// args...): msg is a plain message, not a format string, and treating it as
+// one causes go vet's printf analyzer to (mis)classify the Logger interface
+// methods as printf wrappers.
+func formatLogMsg(msg string, args ...interface{}) string {
+	return fmt.Sprint(append([]interface{}{msg}, args...)...)
+}
+
 func (m *mockLogger) Debug(msg string, args ...interface{}) {
-	m.debugMsgs = append(m.debugMsgs, fmt.Sprintf(msg, args...))
+	m.debugMsgs = append(m.debugMsgs, formatLogMsg(msg, args...))
 }
 
 func (m *mockLogger) Info(msg string, args ...interface{}) {
-	m.infoMsgs = append(m.infoMsgs, fmt.Sprintf(msg, args...))
+	m.infoMsgs = append(m.infoMsgs, formatLogMsg(msg, args...))
 }
 
 func (m *mockLogger) Warn(msg string, args ...interface{}) {
-	m.warnMsgs = append(m.warnMsgs, fmt.Sprintf(msg, args...))
+	m.warnMsgs = append(m.warnMsgs, formatLogMsg(msg, args...))
 }
 
 func (m *mockLogger) Error(msg string, args ...interface{}) {
-	m.errorMsgs = append(m.errorMsgs, fmt.Sprintf(msg, args...))
+	m.errorMsgs = append(m.errorMsgs, formatLogMsg(msg, args...))
 }
 
 func TestMultiProvider_RegisterUnregister(t *testing.T) {

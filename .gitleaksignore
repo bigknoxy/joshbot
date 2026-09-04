@@ -35,3 +35,5 @@ f75036dca65adaaacda9cefbae06315836dde7de:internal/redact/redact_test.go:generic-
 f75036dca65adaaacda9cefbae06315836dde7de:internal/redact/redact_test.go:generic-api-key:91
 f75036dca65adaaacda9cefbae06315836dde7de:internal/redact/redact_test.go:generic-api-key:94
 f75036dca65adaaacda9cefbae06315836dde7de:internal/session/durability_test.go:generic-api-key:411
+# docs/INSTALL.md example Discord user ID (public identifier, placeholder)
+6e5d5fa0d7dfc1119e384dc97674f7fa1a4478df:docs/INSTALL.md:discord-client-id:546

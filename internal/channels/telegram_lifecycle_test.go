@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,11 +75,21 @@ func TestTelegramChannel_StartRunsTheWholeLoop(t *testing.T) {
 		t.Fatal("a second Start should have been refused")
 	}
 
-	tg.mu.RLock()
-	bot := tg.bot
-	tg.mu.RUnlock()
-	if bot == nil {
-		t.Fatal("Start did not install a bot")
+	// runBot creates the bot on its own goroutine now, so poll for it.
+	deadline := time.After(3 * time.Second)
+	var bot *telebot.Bot
+	for {
+		tg.mu.RLock()
+		bot = tg.bot
+		tg.mu.RUnlock()
+		if bot != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("Start did not install a bot")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 
 	// The consumer Start launched must deliver a message addressed to this
@@ -91,7 +102,7 @@ func TestTelegramChannel_StartRunsTheWholeLoop(t *testing.T) {
 	// until it's seen, rather than assuming the first send won that race —
 	// a duplicate delivery doesn't change what this test checks.
 	outbound := bus.OutboundMessage{Channel: "telegram", ChannelID: "1234", Content: "delivered by the consumer"}
-	deadline := time.After(2 * time.Second)
+	deliveryDeadline := time.After(2 * time.Second)
 	for {
 		texts := srv.texts()
 		found := false
@@ -104,7 +115,7 @@ func TestTelegramChannel_StartRunsTheWholeLoop(t *testing.T) {
 			break
 		}
 		select {
-		case <-deadline:
+		case <-deliveryDeadline:
 			t.Fatalf("the outbound consumer Start launched never delivered; sent = %v", texts)
 		case <-time.After(10 * time.Millisecond):
 			tg.bus.OutboundChan() <- outbound
@@ -123,32 +134,42 @@ func TestTelegramChannel_StartRunsTheWholeLoop(t *testing.T) {
 }
 
 // TestTelegramChannel_RunBotRebindsAfterReconnect pins the reconnection path.
-// When polling dies, runBot builds a *new* bot and must rebind its own loop
+// When polling dies, runBot must build a *new* bot and rebind its own loop
 // variable to it: restarting the stale, already-stopped bot returns instantly
 // forever, which reads as a live channel that silently receives nothing.
 func TestTelegramChannel_RunBotRebindsAfterReconnect(t *testing.T) {
 	tg, _ := offlineTelegramChannel(t, "1234")
-
-	first, err := tg.createBot(context.Background())
-	if err != nil {
-		t.Fatalf("createBot: %v", err)
-	}
 	tg.mu.Lock()
 	tg.running = true
-	tg.bot = first
 	tg.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
-		tg.runBot(context.Background(), first)
+		tg.runBot(context.Background())
 		close(done)
 	}()
+
+	// Wait for runBot to create its own bot and start polling.
+	deadline := time.After(3 * time.Second)
+	var first *telebot.Bot
+	for {
+		tg.mu.RLock()
+		first = tg.bot
+		tg.mu.RUnlock()
+		if first != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("runBot never created its initial bot")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 
 	// Let the poller start, then kill it the way a dropped connection would.
 	time.Sleep(100 * time.Millisecond)
 	first.Stop()
 
-	deadline := time.After(3 * time.Second)
 	for {
 		tg.mu.RLock()
 		current := tg.bot
@@ -161,6 +182,79 @@ func TestTelegramChannel_RunBotRebindsAfterReconnect(t *testing.T) {
 			t.Fatal("runBot never reconnected after polling stopped")
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+
+	if err := tg.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runBot did not return after Stop; the reconnected poller leaked")
+	}
+}
+
+// TestTelegramChannel_RunBotSelfHealsAcrossATransientCreationFailure is the
+// regression test for issue #387. If creating the bot fails (the real failure
+// is a network/DNS outage at boot making the api.telegram.org lookup fail),
+// runBot must keep retrying with backoff and eventually connect once the
+// network recovers — instead of abandoning the channel after one attempt,
+// which left the gateway "running" with Telegram permanently dead until a
+// manual restart.
+func TestTelegramChannel_RunBotSelfHealsAcrossATransientCreationFailure(t *testing.T) {
+	tg, _ := offlineTelegramChannel(t, "1234")
+	tg.mu.Lock()
+	tg.running = true
+	// failCreation is the injected outage: the first 3 creation attempts are
+	// treated as unreachable, then the network comes back and createBot's real
+	// path (against the fake server) succeeds.
+	var attempts int
+	tg.createFunc = func(ctx context.Context) (*telebot.Bot, error) {
+		tg.mu.Lock()
+		attempts++
+		n := attempts
+		tg.mu.Unlock()
+		if n <= 3 {
+			return nil, fmt.Errorf("GetMe: Post \"https://api.telegram.org/getMe\": dial tcp: lookup api.telegram.org: no such host")
+		}
+		// Back to the real creation path now that the network is "back".
+		tg.mu.Lock()
+		tg.createFunc = nil
+		tg.mu.Unlock()
+		return tg.createBot(ctx)
+	}
+	tg.retryDelay = 2 * time.Millisecond
+	tg.maxRetryDelay = 4 * time.Millisecond
+	tg.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		tg.runBot(context.Background())
+		close(done)
+	}()
+
+	// The channel must come up on its own, without a restart, after the fake
+	// outage clears.
+	deadline := time.After(3 * time.Second)
+	for {
+		tg.mu.RLock()
+		bot := tg.bot
+		tg.mu.RUnlock()
+		if bot != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("runBot did not self-heal: after the transient creation failures it never connected")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	tg.mu.RLock()
+	n := attempts
+	tg.mu.RUnlock()
+	if n < 3 {
+		t.Fatalf("expected >=3 creation attempts during the outage, saw %d", n)
 	}
 
 	if err := tg.Stop(); err != nil {

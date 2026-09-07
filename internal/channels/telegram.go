@@ -101,6 +101,12 @@ type TelegramChannel struct {
 	// Only tests set it; in production it stays nil and the bot is used.
 	notifier telegramNotifier
 
+	// createFunc overrides bot creation. Only tests set it; in production it
+	// stays nil and createBot's real path (telebot.NewBot against the API) is
+	// used. Lets a test simulate a transient network/DNS outage at boot by
+	// failing the first N creations and then recovering.
+	createFunc func(context.Context) (*telebot.Bot, error)
+
 	// apiURL points createBot at a Bot API other than api.telegram.org: a
 	// self-hosted telegram-bot-api server in production (channels.telegram.api_url,
 	// issue #280), or a stub in tests. offline is tests only. Empty/false means
@@ -291,24 +297,16 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 			"user ID before this bot can be used.")
 	}
 
-	// Create bot with polling
-	bot, err := t.createBot(ctx)
-	if err != nil {
-		t.mu.Lock()
-		t.running = false
-		t.mu.Unlock()
-		return fmt.Errorf("failed to create Telegram bot: %w", err)
-	}
-
-	t.mu.Lock()
-	t.bot = bot
-	t.mu.Unlock()
-
-	// Start outbound message consumer
+	// Start outbound message consumer.
 	go t.consumeOutbound(ctx)
 
-	// Start the bot with reconnection handling
-	go t.runBot(ctx, bot)
+	// runBot owns the entire connection lifecycle: initial bot creation with
+	// exponential backoff, polling, and reconnection after a dropped poll. A
+	// transient network/DNS outage at boot previously made createBot fail once
+	// here and return, leaving a "running" gateway with a permanently dead
+	// Telegram channel until a manual restart. Self-healing that is the whole
+	// point: Start never aborts the channel on a transient creation failure.
+	go t.runBot(ctx)
 
 	log.Info("Telegram channel started")
 	return nil
@@ -316,6 +314,10 @@ func (t *TelegramChannel) Start(ctx context.Context) error {
 
 // createBot creates a new Telegram bot instance.
 func (t *TelegramChannel) createBot(ctx context.Context) (*telebot.Bot, error) {
+	// Test seam: a nil createFunc uses the real path below.
+	if t.createFunc != nil {
+		return t.createFunc(ctx)
+	}
 	settings := telebot.Settings{
 		Token:   t.cfg.Token,
 		Poller:  &telebot.LongPoller{Timeout: t.pollTimeout},
@@ -352,62 +354,88 @@ func (t *TelegramChannel) createBot(ctx context.Context) (*telebot.Bot, error) {
 	return bot, nil
 }
 
-// runBot runs the bot's polling with automatic reconnection on failure.
-func (t *TelegramChannel) runBot(ctx context.Context, bot *telebot.Bot) {
+// runBot owns the bot's whole connection lifecycle: initial creation with
+// exponential backoff, polling, and automatic reconnection when a poll drops.
+// It is the self-healing path — a transient failure to reach the Bot API
+// (network/DNS down at boot, api.telegram.org unreachable) retries forever
+// until it succeeds instead of abandoning the channel after one attempt.
+func (t *TelegramChannel) runBot(ctx context.Context) {
 	delay := t.retryDelay
+	var bot *telebot.Bot
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.stopCh:
-			return
-		default:
-			// Start the bot - this blocks until stopped or error
-			log.Debug("Starting Telegram bot polling")
-			bot.Start()
-
-			// Check if we should reconnect
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.stopCh:
-				return
-			default:
-			}
-
-			// Bot stopped unexpectedly, attempt reconnection
-			log.Warn("Telegram bot polling stopped, attempting to reconnect", "retry_delay", delay)
-
-			select {
-			case <-time.After(delay):
-				// Exponential backoff
-				delay = time.Duration(math.Min(float64(delay*2), float64(t.maxRetryDelay)))
-			case <-ctx.Done():
-				return
-			case <-t.stopCh:
-				return
-			}
-
-			// Create a new bot for reconnection
+		// Ensure a live bot exists before polling. nil means we need to
+		// create one: either the very first attempt, or the previous poll
+		// dropped and we are reconnecting.
+		if bot == nil {
 			newBot, err := t.createBot(ctx)
 			if err != nil {
-				log.Error("Failed to create bot for reconnection", "error", err)
+				// Transient (network/DNS/socket). Hard config errors that
+				// must fail fast (empty token) are rejected in Start before
+				// this loop runs, so every failure here is worth retrying.
+				log.Warn("Failed to create Telegram bot, retrying",
+					"retry_delay", delay,
+					"error", err)
+				if !t.waitBackoff(ctx, delay) {
+					return
+				}
+				delay = t.nextBackoff(delay)
 				continue
 			}
 
 			t.mu.Lock()
 			t.bot = newBot
 			t.mu.Unlock()
-
-			// Set up handlers on new bot
-			t.setupHandlers(newBot)
-
-			// Rebind the loop's local bot so the next iteration restarts
-			// the new bot instead of the stale one.
 			bot = newBot
 		}
+
+		log.Debug("Starting Telegram bot polling")
+		bot.Start()
+
+		// Check if we should reconnect.
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.stopCh:
+			return
+		default:
+		}
+
+		// Bot stopped unexpectedly, attempt reconnection.
+		log.Warn("Telegram bot polling stopped, attempting to reconnect", "retry_delay", delay)
+
+		if !t.waitBackoff(ctx, delay) {
+			return
+		}
+		delay = t.nextBackoff(delay)
+
+		// Force a fresh bot on the next iteration: restarting the same,
+		// already-stopped poller returns instantly forever, which reads as a
+		// live channel that silently receives nothing.
+		t.mu.Lock()
+		t.bot = nil
+		t.mu.Unlock()
+		bot = nil
 	}
+}
+
+// waitBackoff sleeps delay unless the channel is being stopped or its context
+// is cancelled, in which case it returns false so runBot can exit promptly.
+func (t *TelegramChannel) waitBackoff(ctx context.Context, delay time.Duration) bool {
+	select {
+	case <-time.After(delay):
+		return true
+	case <-ctx.Done():
+		return false
+	case <-t.stopCh:
+		return false
+	}
+}
+
+// nextBackoff doubles delay up to maxRetryDelay. It defines the retry rhythm
+// for both initial creation and reconnection.
+func (t *TelegramChannel) nextBackoff(delay time.Duration) time.Duration {
+	return time.Duration(math.Min(float64(delay*2), float64(t.maxRetryDelay)))
 }
 
 // setupHandlers registers all message handlers for the bot.

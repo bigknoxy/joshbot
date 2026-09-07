@@ -151,25 +151,23 @@ func TestTelegramChannel_StopStopsPollerGoroutine(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	bot, err := telebot.NewBot(telebot.Settings{
-		Token:   "test-token",
-		URL:     srv.URL,
-		Poller:  &telebot.LongPoller{Timeout: 10 * time.Millisecond},
-		Offline: true, // skip the getMe() network call NewBot would otherwise make
-	})
-	if err != nil {
-		t.Fatalf("failed to create test bot: %v", err)
-	}
-
 	tg := newTestTelegramChannel()
 	tg.mu.Lock()
 	tg.running = true
-	tg.bot = bot
+	// Point the channel at the fake server and drive it through runBot's own
+	// creation path, so the test covers the real lifecycle rather than a
+	// hand-built bot.
+	tg.apiURL = srv.URL
+	tg.offline = true
+	tg.pollTimeout = 10 * time.Millisecond
+	tg.retryDelay = time.Millisecond
+	tg.maxRetryDelay = 5 * time.Millisecond
+	tg.typingInterval = time.Hour
 	tg.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
-		tg.runBot(context.Background(), bot)
+		tg.runBot(context.Background())
 		close(done)
 	}()
 

@@ -44,6 +44,13 @@ type Status struct {
 	TelegramEnabled     bool `json:"telegram_enabled"`
 	WorkspaceRestricted bool `json:"workspace_restricted"`
 
+	// Gateway state — live runtime, not config. Absent when no gateway is
+	// running (the status file does not exist or is stale).
+	GatewayRunning bool              `json:"gateway_running"`
+	GatewayPID     int              `json:"gateway_pid,omitempty"`
+	GatewayUptime  string           `json:"gateway_uptime,omitempty"`
+	Channels       []ChannelStatus  `json:"channels,omitempty"`
+
 	// PendingSkills are workspace skills that are discovered but not trusted,
 	// so they are NOT in use. Reported here because in gateway mode the
 	// equivalent startup log goes to the journal where nobody reads it.
@@ -51,6 +58,12 @@ type Status struct {
 
 	MemoryBytes  int64 `json:"memory_bytes"`
 	HistoryBytes int64 `json:"history_bytes"`
+}
+
+// ChannelStatus is the live state of one channel in the running gateway.
+type ChannelStatus struct {
+	Name  string `json:"name"`
+	State string `json:"state"` // connected, reconnecting, down, disabled
 }
 
 // ProviderStatus is one legacy provider and why it will or will not register.
@@ -137,6 +150,23 @@ func RenderStatusText(w io.Writer, s Status) {
 	}
 	fmt.Fprintf(w, "Telegram:       %s\n", enabledWord(s.TelegramEnabled))
 	fmt.Fprintf(w, "Workspace restricted: %s\n", enabledWord(s.WorkspaceRestricted))
+
+	if s.GatewayRunning {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Gateway:        running")
+		if s.GatewayPID > 0 {
+			fmt.Fprintf(w, "  PID:          %d\n", s.GatewayPID)
+		}
+		if s.GatewayUptime != "" {
+			fmt.Fprintf(w, "  Uptime:       %s\n", s.GatewayUptime)
+		}
+		for _, ch := range s.Channels {
+			fmt.Fprintf(w, "  %-12s %s\n", ch.Name+":", ch.State)
+		}
+	} else {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Gateway:        not running")
+	}
 
 	if n := len(s.PendingSkills); n > 0 {
 		fmt.Fprintf(w, "Skills:         %d awaiting review (%s)\n", n, strings.Join(s.PendingSkills, ", "))

@@ -519,6 +519,21 @@ func newApp() *cli.App {
 						Usage:  "Check joshbot service status",
 						Action: runServiceStatus,
 					},
+					{
+						Name:   "start",
+						Usage:  "Start the joshbot service",
+						Action: runServiceStart,
+					},
+					{
+						Name:   "stop",
+						Usage:  "Stop the joshbot service",
+						Action: runServiceStop,
+					},
+					{
+						Name:   "restart",
+						Usage:  "Restart the joshbot service",
+						Action: runServiceRestart,
+					},
 				},
 			},
 			{
@@ -5978,6 +5993,79 @@ func runServiceStatus(c *cli.Context) error {
 		fmt.Println("The service is not running.")
 	}
 
+	return nil
+}
+
+// joshbotServiceConfig is the shared service config used by all service
+// subcommands, so the name and display name cannot drift between them.
+func joshbotServiceConfig() service.Config {
+	return service.Config{
+		Name:        "joshbot",
+		DisplayName: "Joshbot AI Assistant",
+		Description: "Personal AI assistant with Telegram integration",
+	}
+}
+
+// runServiceStart starts the joshbot system service.
+func runServiceStart(c *cli.Context) error {
+	svc, err := newServiceManager(joshbotServiceConfig())
+	if err != nil {
+		return fmt.Errorf("service not supported on this platform: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║       Starting joshbot service            ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+
+	if err := svc.Start(); err != nil {
+		return fmt.Errorf("failed to start service: %w", err)
+	}
+
+	fmt.Println("Service started successfully.")
+	return nil
+}
+
+// runServiceStop stops the joshbot system service.
+func runServiceStop(c *cli.Context) error {
+	svc, err := newServiceManager(joshbotServiceConfig())
+	if err != nil {
+		return fmt.Errorf("service not supported on this platform: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║       Stopping joshbot service            ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+
+	if err := svc.Stop(); err != nil {
+		return fmt.Errorf("failed to stop service: %w", err)
+	}
+
+	fmt.Println("Service stopped successfully.")
+	return nil
+}
+
+// runServiceRestart restarts the joshbot system service.
+func runServiceRestart(c *cli.Context) error {
+	svc, err := newServiceManager(joshbotServiceConfig())
+	if err != nil {
+		return fmt.Errorf("service not supported on this platform: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("╔═══════════════════════════════════════════╗")
+	fmt.Println("║      Restarting joshbot service           ║")
+	fmt.Println("╚═══════════════════════════════════════════╝")
+	fmt.Println()
+
+	if err := svc.Restart(); err != nil {
+		return fmt.Errorf("failed to restart service: %w", err)
+	}
+
+	fmt.Println("Service restarted successfully.")
 	return nil
 }
 

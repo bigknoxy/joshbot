@@ -3561,7 +3561,9 @@ func startGatewayStatusSink(ctx context.Context, gw *gatewaystatus.Writer, teleg
 	// shorter interval under -race.
 	interval := gatewayStatusPollInterval
 	pollCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		var last string
@@ -3581,7 +3583,14 @@ func startGatewayStatusSink(ctx context.Context, gw *gatewaystatus.Writer, teleg
 			}
 		}
 	}()
-	return cancel
+	// Stop signals the loop and waits for it to drain, so a caller that
+	// deletes the status file afterwards (gwStatus.Delete) can never race an
+	// in-flight SetChannel that would recreate the file with a stale
+	// "running" state.
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // buildGatewayDeps assembles the gateway handler's dependencies from the

@@ -122,8 +122,17 @@ func (w *Writer) write(now time.Time) {
 		log.Error("Failed to write gateway status file", "path", w.path, "error", err)
 		return
 	}
-	tmp.Close()
-	os.Rename(tmp.Name(), w.path)
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		log.Error("Failed to close gateway status file", "path", w.path, "error", err)
+		return
+	}
+	if err := os.Rename(tmp.Name(), w.path); err != nil {
+		// Leave the previous file untouched; do not litter the temp.
+		os.Remove(tmp.Name())
+		log.Error("Failed to replace gateway status file", "path", w.path, "error", err)
+		return
+	}
 }
 
 // Delete removes the status file. Called on gateway shutdown so a stale

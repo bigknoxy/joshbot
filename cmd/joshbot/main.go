@@ -5897,11 +5897,7 @@ func configureFallbackOrder(cfg *config.Config) *config.Config {
 
 // runServiceInstall installs joshbot as a system service.
 func runServiceInstall(c *cli.Context) error {
-	svc, err := newServiceManager(service.Config{
-		Name:        "joshbot",
-		DisplayName: "Joshbot AI Assistant",
-		Description: "Personal AI assistant with Telegram integration",
-	})
+	svc, err := newServiceManager(joshbotServiceConfig())
 	if err != nil {
 		return fmt.Errorf("service not supported on this platform: %w", err)
 	}
@@ -5929,11 +5925,7 @@ func runServiceInstall(c *cli.Context) error {
 
 // runServiceUninstall uninstalls the joshbot system service.
 func runServiceUninstall(c *cli.Context) error {
-	svc, err := newServiceManager(service.Config{
-		Name:        "joshbot",
-		DisplayName: "Joshbot AI Assistant",
-		Description: "Personal AI assistant with Telegram integration",
-	})
+	svc, err := newServiceManager(joshbotServiceConfig())
 	if err != nil {
 		return fmt.Errorf("service not supported on this platform: %w", err)
 	}
@@ -5955,11 +5947,7 @@ func runServiceUninstall(c *cli.Context) error {
 
 // runServiceStatus checks the joshbot service status.
 func runServiceStatus(c *cli.Context) error {
-	svc, err := newServiceManager(service.Config{
-		Name:        "joshbot",
-		DisplayName: "Joshbot AI Assistant",
-		Description: "Personal AI assistant with Telegram integration",
-	})
+	svc, err := newServiceManager(joshbotServiceConfig())
 	if err != nil {
 		return fmt.Errorf("service not supported on this platform: %w", err)
 	}

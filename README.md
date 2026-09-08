@@ -95,7 +95,7 @@ joshbot agent --debug # CLI chat with debug logging
 joshbot gateway # Start all channels (Telegram, etc.)
 joshbot serve # Start the OpenAI-compatible HTTP API
 joshbot gateway --debug # Gateway with debug logging
-joshbot status # Show configuration and status
+joshbot status # Show live gateway state, per-channel status, and configuration
 joshbot preflight # Check the config would work, without calling any provider
 joshbot skills list # Review workspace skills and approval state
 joshbot skills trust <name> # Approve a workspace skill after reviewing it
@@ -106,6 +106,9 @@ joshbot configure --fallback "nvidia,poolside" # Set the provider fallback order
 joshbot configure --migrate # Convert a legacy provider config to the model-centric format
 joshbot auth github-copilot # Authenticate with GitHub Copilot
 joshbot service install # Install joshbot as a system service
+joshbot service start # Start the system service
+joshbot service stop # Stop the system service
+joshbot service restart # Restart the system service
 joshbot update # Update to the latest release
 joshbot uninstall # Remove joshbot binary and config
 ```

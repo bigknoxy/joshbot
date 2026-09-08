@@ -251,7 +251,7 @@ Workspace: ~/.joshbot/workspace
 Quick start:
   joshbot agent    - Chat in the terminal
   joshbot gateway - Start Telegram + all channels
-  joshbot status  - Check configuration
+  joshbot status  - Show live gateway state, per-channel status, and configuration
 ```
 
 ---
@@ -367,7 +367,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot agent` | Interactive CLI chat mode |
 | `joshbot gateway` | Start all channels (Telegram, Discord) |
 | `joshbot serve [--listen host:port]` | Serve the OpenAI-compatible HTTP API (`POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/audio/transcriptions` when `stt.provider` is set, and `POST /v1/embeddings` when `embeddings.provider` is set, plus a browser chat UI at `/` when `api.webui` is true) |
-| `joshbot status` | Show configuration and status |
+| `joshbot status` | Show live gateway state, per-channel status, and configuration |
 | `joshbot preflight` | Check the config would work, without calling any provider (exits non-zero if it would not) |
 | `joshbot --output json <cmd>` | Machine-readable form of `preflight`, `status`, `skills list`, `mcp list`, `profiles list`, `auth status` and `configure --list` |
 | `joshbot profiles list` | List named model profiles and where each would send requests |
@@ -380,7 +380,7 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` \| `export <id>` | Inspect, manage and export stored conversations |
 | `joshbot memory status` \| `consolidate` | Inspect and run the Dream two-stage memory system (`agents.defaults.dream_mode`) |
 | `joshbot auth github-copilot [--force]` \| `status` | Manage OAuth authentication |
-| `joshbot service install` \| `uninstall` \| `status` | Manage joshbot as a system service |
+| `joshbot service install` \| `uninstall` \| `status` \| `start` \| `stop` \| `restart` | Manage joshbot as a system service |
 | `joshbot update` | Update to the latest release |
 | `joshbot uninstall` | Remove the binary and optionally its config |
 | `joshbot version` / `joshbot --version` | Show version |

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/bigknoxy/joshbot/internal/log"
 )
 
 // Path returns the canonical location of the gateway status file.
@@ -96,22 +98,28 @@ func (w *Writer) RemoveChannel(name string) {
 	w.write(time.Now().UTC())
 }
 
-// write serialises the document and atomically replaces the file.
+// write serialises the document and atomically replaces the file. Failures are
+// logged, never fatal: the status file is best-effort observability, and a
+// failed write just means `joshbot status` falls back to "gateway not
+// running", which is safe but must be discoverable.
 func (w *Writer) write(now time.Time) {
 	w.document.WrittenAt = now
 	data, err := json.Marshal(w.document)
 	if err != nil {
+		log.Error("Failed to marshal gateway status", "error", err)
 		return
 	}
 	// Write to a temp file in the same directory, then rename for atomicity.
 	dir := filepath.Dir(w.path)
 	tmp, err := os.CreateTemp(dir, "gateway-status-*.tmp")
 	if err != nil {
+		log.Error("Failed to write gateway status file", "path", w.path, "error", err)
 		return
 	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
+		log.Error("Failed to write gateway status file", "path", w.path, "error", err)
 		return
 	}
 	tmp.Close()

@@ -1204,6 +1204,17 @@ func llmErrorHint(err error) string {
 		return "Every provider in the fallback chain failed. Run `joshbot preflight` to check the configuration without dialling anyone, or add a fallback with `joshbot configure --fallback`."
 	}
 
+	// A context-length rejection is a 400 whose body names the limit, not a
+	// status code of its own — buildMessages already masks and compacts old
+	// history before every call, so reaching the provider with too many
+	// tokens almost always means the live turn itself (a large paste, a big
+	// tool result) is bigger than the model's window, and no local trim
+	// touches that. Matched on message text because providers do not share a
+	// status code for this the way they do for auth or rate limits.
+	if isContextLengthError(err) {
+		return "This request is larger than the model's context window. joshbot already trims and compacts older history automatically, so this usually means the current message is too big on its own — try `/new` for a clean session, break the request into smaller pieces, or switch to a larger-context model with `/model`."
+	}
+
 	provider := providers.ProviderFromError(err)
 	switch providers.StatusCodeFromError(err) {
 	case 401, 403:
@@ -1221,6 +1232,24 @@ func llmErrorHint(err error) string {
 		return "The provider is rate-limiting — a fallback provider keeps the conversation going: `joshbot configure --fallback \"<primary>,<backup>\"`."
 	}
 	return ""
+}
+
+// isContextLengthError reports whether err is a provider rejection for
+// sending more tokens than the model's context window allows. Providers
+// disagree on status code (OpenAI-compatible 400, some 413) but agree on
+// wording, so this matches the message text rather than a code.
+func isContextLengthError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "context_length_exceeded") {
+		return true
+	}
+	if strings.Contains(msg, "maximum context length") {
+		return true
+	}
+	if strings.Contains(msg, "context window") && (strings.Contains(msg, "exceed") || strings.Contains(msg, "too long") || strings.Contains(msg, "too large")) {
+		return true
+	}
+	return strings.Contains(msg, "context length") && strings.Contains(msg, "exceed")
 }
 
 // turnStream is the per-turn state shared by every LLM call of one ReAct

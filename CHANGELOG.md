@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `joshbot service start` / `service stop` / `service restart` subcommands to
+  start, stop and restart the system service, wiring up the service manager's
+  existing lifecycle methods that the CLI previously never exposed (issue #388).
+- `joshbot status` now reports live gateway state — whether the gateway is
+  running, its PID and uptime, and the per-channel runtime status (e.g.
+  `telegram: connected`) — instead of only reflecting config booleans. The
+  running gateway writes the live state to `~/.joshbot/gateway-status.json` on
+  every channel-state change, and `status` reads that file; a stopped gateway
+  removes the file so `status` never reports staleness (issue #389).
+
+### Fixed
+- The Telegram channel now self-heals across a transient network/DNS outage at
+  boot: `runBot` owns the full connect lifecycle with capped exponential backoff
+  and retries indefinitely, so a start that fails because `api.telegram.org`
+  was unreachable recovers automatically once the network returns, instead of
+  dying permanently and needing a manual restart (issue #387).
+
 ## [1.66.0] - 2026-08-31
 
 ### Added

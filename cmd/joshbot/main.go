@@ -3556,9 +3556,13 @@ func startGatewayStatusSink(ctx context.Context, gw *gatewaystatus.Writer, teleg
 		gw.SetChannel("telegram", "disabled")
 	}
 
+	// Read the interval once, on the caller's goroutine. Reading the
+	// package var inside the goroutine races a test that swaps it for a
+	// shorter interval under -race.
+	interval := gatewayStatusPollInterval
 	pollCtx, cancel := context.WithCancel(ctx)
 	go func() {
-		ticker := time.NewTicker(gatewayStatusPollInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		var last string
 		for {

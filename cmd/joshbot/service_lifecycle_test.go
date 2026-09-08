@@ -49,7 +49,7 @@ func (f *fakeServiceManager) Restart() error {
 	return f.restartErr
 }
 func (f *fakeServiceManager) IsInstalled() bool { return f.installed }
-func (f *fakeServiceManager) Name() string       { return "fake" }
+func (f *fakeServiceManager) Name() string      { return "fake" }
 
 var errTest = fmt.Errorf("test error")
 

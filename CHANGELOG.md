@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.67.0] - 2026-09-08
+
 ### Added
 - `joshbot service start` / `service stop` / `service restart` subcommands to
   start, stop and restart the system service, wiring up the service manager's

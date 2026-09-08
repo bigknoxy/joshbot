@@ -156,6 +156,8 @@ func TestRenderStatusTextGolden(t *testing.T) {
 		"Providers:      groq (disabled — missing \"api_key\")\n" +
 		"Telegram:       enabled\n" +
 		"Workspace restricted: disabled\n" +
+		"\n" +
+		"Gateway:        not running\n" +
 		"Skills:         1 awaiting review (deploy)\n" +
 		"                not in use — review then run: joshbot skills trust <name>\n" +
 		"\n" +
@@ -164,6 +166,32 @@ func TestRenderStatusTextGolden(t *testing.T) {
 
 	if buf.String() != want {
 		t.Errorf("status text changed:\n got:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+// A running gateway renders its PID, uptime and per-channel live state, and
+// a disabled/absent channel is explicitly marked rather than silently absent.
+func TestRenderStatusTextGatewayRunning(t *testing.T) {
+	var buf bytes.Buffer
+	RenderStatusText(&buf, Status{
+		GatewayRunning: true,
+		GatewayPID:     4242,
+		GatewayUptime:  "1m0s",
+		Channels: []ChannelStatus{
+			{Name: "telegram", State: "connected"},
+			{Name: "discord", State: "disabled"},
+		},
+	})
+	for _, want := range []string{
+		"Gateway:        running\n",
+		"  PID:          4242\n",
+		"  Uptime:       1m0s\n",
+		"  telegram:    connected\n",
+		"  discord:     disabled\n",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("running-gateway status missing %q:\n%s", want, buf.String())
+		}
 	}
 }
 

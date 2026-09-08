@@ -36,6 +36,7 @@ import (
 	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
 	"github.com/bigknoxy/joshbot/internal/copilot"
 	"github.com/bigknoxy/joshbot/internal/cron"
+	"github.com/bigknoxy/joshbot/internal/gatewaystatus"
 	"github.com/bigknoxy/joshbot/internal/heartbeat"
 	"github.com/bigknoxy/joshbot/internal/learning"
 	"github.com/bigknoxy/joshbot/internal/log"
@@ -3386,6 +3387,17 @@ func runGateway(c *cli.Context) error {
 	// Start message bus
 	msgBus.Start()
 
+	// Gateway status writer: records live channel state to a JSON file that
+	// `joshbot status` reads. Deleted on shutdown so a stale file never
+	// outlives the process.
+	homeDir, _ := os.UserHomeDir()
+	var gwStatus *gatewaystatus.Writer
+	if homeDir != "" {
+		gwStatus = gatewaystatus.NewWriter(gatewaystatus.Path(config.DefaultHome))
+		gwStatus.SetPID(os.Getpid(), time.Now())
+		defer gwStatus.Delete()
+	}
+
 	// The Telegram channel is created before the subscription that uses it,
 	// not after: the bus handler runs on its own goroutine, and assigning to a
 	// variable it has already captured is a data race even though no message
@@ -3482,6 +3494,18 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
+	// Write the live gateway status file. The status file bridges the running
+	// gateway to `joshbot status`: a separate process cannot reach into this
+	// one's memory, so it reads the JSON file instead.
+	if gwStatus != nil {
+		var telegramState func() string
+		if tgChannel != nil {
+			telegramState = func() string { return string(tgChannel.State()) }
+		}
+		stopStatusSink := startGatewayStatusSink(ctx, gwStatus, telegramState)
+		defer stopStatusSink()
+	}
+
 	// Print startup banner
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════╗")
@@ -3509,6 +3533,64 @@ func runGateway(c *cli.Context) error {
 
 	log.Info("Gateway stopped")
 	return nil
+}
+
+// gatewayStatusPollInterval is how often startGatewayStatusSink re-reads
+// channel state. Channel transitions happen on the order of seconds, so a
+// multi-second poll is plenty; kept a package var so tests can shorten it.
+var gatewayStatusPollInterval = 2 * time.Second
+
+// startGatewayStatusSink records the live Telegram channel state to the
+// gateway status file that `joshbot status` reads. It writes the current
+// state immediately, then re-writes only on a change so a stable channel
+// does not chew the disk. telegramState supplies the channel's live state; a
+// nil provider means the channel is not running and is recorded as disabled.
+// Telegram is the only channel with a real ConnectionState; other channels
+// are deliberately omitted rather than reported from config, which would
+// look like a live connection that was never checked. The returned func
+// stops the polling goroutine.
+func startGatewayStatusSink(ctx context.Context, gw *gatewaystatus.Writer, telegramState func() string) (stop func()) {
+	if telegramState != nil {
+		gw.SetChannel("telegram", telegramState())
+	} else {
+		gw.SetChannel("telegram", "disabled")
+	}
+
+	// Read the interval once, on the caller's goroutine. Reading the
+	// package var inside the goroutine races a test that swaps it for a
+	// shorter interval under -race.
+	interval := gatewayStatusPollInterval
+	pollCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		var last string
+		for {
+			select {
+			case <-pollCtx.Done():
+				return
+			case <-ticker.C:
+				if telegramState == nil {
+					continue
+				}
+				s := telegramState()
+				if s != last {
+					gw.SetChannel("telegram", s)
+					last = s
+				}
+			}
+		}
+	}()
+	// Stop signals the loop and waits for it to drain, so a caller that
+	// deletes the status file afterwards (gwStatus.Delete) can never race an
+	// in-flight SetChannel that would recreate the file with a stale
+	// "running" state.
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // buildGatewayDeps assembles the gateway handler's dependencies from the
@@ -4973,6 +5055,23 @@ func runStatus(c *cli.Context) error {
 		}
 	} else {
 		doc.Providers = providerStatuses(cfg.Providers)
+	}
+
+	// Read live gateway state from the status file written by the running
+	// gateway. Absent or stale → "gateway not running", never guessed.
+	gwDoc := gatewaystatus.Read(gatewaystatus.Path(config.DefaultHome))
+	if gwDoc != nil {
+		doc.GatewayRunning = true
+		doc.GatewayPID = gwDoc.PID
+		if !gwDoc.StartedAt.IsZero() {
+			doc.GatewayUptime = time.Since(gwDoc.StartedAt).Truncate(time.Second).String()
+		}
+		for _, ch := range gwDoc.Channels {
+			doc.Channels = append(doc.Channels, output.ChannelStatus{
+				Name:  ch.Name,
+				State: ch.State,
+			})
+		}
 	}
 
 	if format == output.JSON {

@@ -36,6 +36,22 @@ const TelegramMaxMessageLen = 4096
 const TelegramMaxCaptionLen = 1024
 
 // TelegramChannel implements the Channel interface for Telegram.
+// ConnectionState reports the channel's live runtime state for observability
+// (joshbot status, health checks). It is safe to call from any goroutine.
+type ConnectionState string
+
+const (
+	// ChannelDown means the channel has not connected or has permanently
+	// failed. Distinct from ChannelReconnecting, which means it is actively
+	// retrying.
+	ChannelDown ConnectionState = "down"
+	// ChannelReconnecting means the channel is retrying after a transient
+	// failure (initial creation or dropped poll).
+	ChannelReconnecting ConnectionState = "reconnecting"
+	// ChannelConnected means the bot is polling and receiving messages.
+	ChannelConnected ConnectionState = "connected"
+)
+
 type TelegramChannel struct {
 	name    string
 	bus     *bus.MessageBus
@@ -106,6 +122,11 @@ type TelegramChannel struct {
 	// used. Lets a test simulate a transient network/DNS outage at boot by
 	// failing the first N creations and then recovering.
 	createFunc func(context.Context) (*telebot.Bot, error)
+
+	// connState is the live connection state, guarded by mu. Written by
+	// runBot on each transition, read by State (and through the gateway
+	// status file by joshbot status).
+	connState ConnectionState
 
 	// apiURL points createBot at a Bot API other than api.telegram.org: a
 	// self-hosted telegram-bot-api server in production (channels.telegram.api_url,
@@ -363,6 +384,12 @@ func (t *TelegramChannel) runBot(ctx context.Context) {
 	delay := t.retryDelay
 	var bot *telebot.Bot
 
+	// The channel starts as reconnecting: runBot is the only thing that can
+	// move it to connected or back to reconnecting.
+	t.mu.Lock()
+	t.connState = ChannelReconnecting
+	t.mu.Unlock()
+
 	for {
 		// Ensure a live bot exists before polling. nil means we need to
 		// create one: either the very first attempt, or the previous poll
@@ -376,6 +403,9 @@ func (t *TelegramChannel) runBot(ctx context.Context) {
 				log.Warn("Failed to create Telegram bot, retrying",
 					"retry_delay", delay,
 					"error", err)
+				t.mu.Lock()
+				t.connState = ChannelReconnecting
+				t.mu.Unlock()
 				if !t.waitBackoff(ctx, delay) {
 					return
 				}
@@ -385,6 +415,7 @@ func (t *TelegramChannel) runBot(ctx context.Context) {
 
 			t.mu.Lock()
 			t.bot = newBot
+			t.connState = ChannelConnected
 			t.mu.Unlock()
 			bot = newBot
 		}
@@ -403,6 +434,10 @@ func (t *TelegramChannel) runBot(ctx context.Context) {
 
 		// Bot stopped unexpectedly, attempt reconnection.
 		log.Warn("Telegram bot polling stopped, attempting to reconnect", "retry_delay", delay)
+
+		t.mu.Lock()
+		t.connState = ChannelReconnecting
+		t.mu.Unlock()
 
 		if !t.waitBackoff(ctx, delay) {
 			return
@@ -1374,7 +1409,20 @@ func (t *TelegramChannel) Stop() error {
 	}
 
 	log.Info("Telegram channel stopped")
+	t.connState = ChannelDown
 	return nil
+}
+
+// State returns the channel's live connection state. Safe to call from any
+// goroutine; used by the gateway status writer and by external consumers
+// (joshbot status via the status file).
+func (t *TelegramChannel) State() ConnectionState {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.connState == "" {
+		return ChannelDown
+	}
+	return t.connState
 }
 
 // Send delivers an outbound message to Telegram.

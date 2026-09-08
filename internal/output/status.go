@@ -46,10 +46,10 @@ type Status struct {
 
 	// Gateway state — live runtime, not config. Absent when no gateway is
 	// running (the status file does not exist or is stale).
-	GatewayRunning bool              `json:"gateway_running"`
-	GatewayPID     int              `json:"gateway_pid,omitempty"`
-	GatewayUptime  string           `json:"gateway_uptime,omitempty"`
-	Channels       []ChannelStatus  `json:"channels,omitempty"`
+	GatewayRunning bool            `json:"gateway_running"`
+	GatewayPID     int             `json:"gateway_pid,omitempty"`
+	GatewayUptime  string          `json:"gateway_uptime,omitempty"`
+	Channels       []ChannelStatus `json:"channels,omitempty"`
 
 	// PendingSkills are workspace skills that are discovered but not trusted,
 	// so they are NOT in use. Reported here because in gateway mode the

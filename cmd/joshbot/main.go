@@ -3494,43 +3494,16 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
-	// Poll channel state and write the gateway status file on changes.
-	// The status file bridges the running gateway to `joshbot status`:
-	// a separate process cannot reach into this one's memory, so it
-	// reads the JSON file instead. The poll interval is generous —
-	// channel state changes on the order of seconds, not milliseconds.
+	// Write the live gateway status file. The status file bridges the running
+	// gateway to `joshbot status`: a separate process cannot reach into this
+	// one's memory, so it reads the JSON file instead.
 	if gwStatus != nil {
+		var telegramState func() string
 		if tgChannel != nil {
-			gwStatus.SetChannel("telegram", string(tgChannel.State()))
-		} else {
-			gwStatus.SetChannel("telegram", "disabled")
+			telegramState = func() string { return string(tgChannel.State()) }
 		}
-		if discordChannel != nil {
-			// Discord doesn't yet expose ConnectionState, but the gateway
-			// at least records that it is enabled.
-			gwStatus.SetChannel("discord", "connected")
-		} else {
-			gwStatus.SetChannel("discord", "disabled")
-		}
-		go func() {
-			ticker := time.NewTicker(2 * time.Second)
-			defer ticker.Stop()
-			var lastTgState string
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if tgChannel != nil {
-						s := string(tgChannel.State())
-						if s != lastTgState {
-							gwStatus.SetChannel("telegram", s)
-							lastTgState = s
-						}
-					}
-				}
-			}
-		}()
+		stopStatusSink := startGatewayStatusSink(ctx, gwStatus, telegramState)
+		defer stopStatusSink()
 	}
 
 	// Print startup banner
@@ -3560,6 +3533,51 @@ func runGateway(c *cli.Context) error {
 
 	log.Info("Gateway stopped")
 	return nil
+}
+
+// gatewayStatusPollInterval is how often startGatewayStatusSink re-reads
+// channel state. Channel transitions happen on the order of seconds, so a
+// multi-second poll is plenty; kept a package var so tests can shorten it.
+var gatewayStatusPollInterval = 2 * time.Second
+
+// startGatewayStatusSink records the live Telegram channel state to the
+// gateway status file that `joshbot status` reads. It writes the current
+// state immediately, then re-writes only on a change so a stable channel
+// does not chew the disk. telegramState supplies the channel's live state; a
+// nil provider means the channel is not running and is recorded as disabled.
+// Telegram is the only channel with a real ConnectionState; other channels
+// are deliberately omitted rather than reported from config, which would
+// look like a live connection that was never checked. The returned func
+// stops the polling goroutine.
+func startGatewayStatusSink(ctx context.Context, gw *gatewaystatus.Writer, telegramState func() string) (stop func()) {
+	if telegramState != nil {
+		gw.SetChannel("telegram", telegramState())
+	} else {
+		gw.SetChannel("telegram", "disabled")
+	}
+
+	pollCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(gatewayStatusPollInterval)
+		defer ticker.Stop()
+		var last string
+		for {
+			select {
+			case <-pollCtx.Done():
+				return
+			case <-ticker.C:
+				if telegramState == nil {
+					continue
+				}
+				s := telegramState()
+				if s != last {
+					gw.SetChannel("telegram", s)
+					last = s
+				}
+			}
+		}
+	}()
+	return cancel
 }
 
 // buildGatewayDeps assembles the gateway handler's dependencies from the

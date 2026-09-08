@@ -133,6 +133,74 @@ func TestTelegramChannel_StartRunsTheWholeLoop(t *testing.T) {
 	}
 }
 
+// TestTelegramChannel_StateTracksConnectionLifecycle pins that State()
+// reflects the channel's live runtime state: down before start, reconnecting
+// while the initial creation is retrying, connected once polling. When the
+// channel reconnects after a dropped poll it must report reconnecting, not a
+// stale connected.
+func TestTelegramChannel_StateTracksConnectionLifecycle(t *testing.T) {
+	tg, _ := offlineTelegramChannel(t, "1234")
+
+	if got := tg.State(); got != ChannelDown {
+		t.Fatalf("pre-start State = %q, want %q", got, ChannelDown)
+	}
+
+	tg.mu.Lock()
+	tg.running = true
+	// Simulate the transient-outage window from the self-heal regression test:
+	// the first attempt fails, so the channel reports reconnecting.
+	var attempts int
+	tg.createFunc = func(ctx context.Context) (*telebot.Bot, error) {
+		attempts++
+		if attempts <= 2 {
+			return nil, fmt.Errorf("dial failed")
+		}
+		// Clear the seam so the real createBot path runs from here on.
+		tg.mu.Lock()
+		tg.createFunc = nil
+		tg.mu.Unlock()
+		return tg.createBot(ctx)
+	}
+	tg.retryDelay = time.Millisecond
+	tg.maxRetryDelay = time.Millisecond
+	tg.mu.Unlock()
+
+	if got := tg.State(); got != ChannelDown {
+		t.Fatalf("State before runBot = %q, want %q", got, ChannelDown)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		tg.runBot(context.Background())
+		close(done)
+	}()
+
+	// Eventually connected once the injected outage clears.
+	deadline := time.After(3 * time.Second)
+	for {
+		if tg.State() == ChannelConnected {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("channel never reached connected")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	if err := tg.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := tg.State(); got != ChannelDown {
+		t.Fatalf("post-stop State = %q, want %q", got, ChannelDown)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runBot did not return after Stop")
+	}
+}
+
 // TestTelegramChannel_RunBotRebindsAfterReconnect pins the reconnection path.
 // When polling dies, runBot must build a *new* bot and rebind its own loop
 // variable to it: restarting the stale, already-stopped bot returns instantly

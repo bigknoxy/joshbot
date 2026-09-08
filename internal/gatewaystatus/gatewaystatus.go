@@ -22,7 +22,7 @@ func Path(joshbotHome string) string {
 // channels.ConnectionState exactly so they can be compared without import.
 type ChannelState struct {
 	Name      string    `json:"name"`
-	State     string    `json:"state"`     // connected, reconnecting, down, disabled
+	State     string    `json:"state"` // connected, reconnecting, down, disabled
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

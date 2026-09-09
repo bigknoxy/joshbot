@@ -348,7 +348,7 @@ func TestWebTool_DoSearchStatusHandling(t *testing.T) {
 
 			tool := newTestWebTool(t, srv)
 			tool.maxRetries = 0 // keep the retry backoff out of the test clock
-			res := tool.doSearch("https://example.test/search?q=x", 5)
+			res := tool.doSearch(context.Background(), "https://example.test/search?q=x", 5)
 
 			if tt.wantErr == "" {
 				if res.Error != nil {
@@ -380,7 +380,7 @@ func TestWebTool_DoSearchRefusesPrivateRedirect(t *testing.T) {
 
 	tool := newTestWebTool(t, srv)
 	tool.maxRetries = 0
-	res := tool.doSearch("https://example.test/search?q=x", 5)
+	res := tool.doSearch(context.Background(), "https://example.test/search?q=x", 5)
 	if res.Error == nil {
 		t.Fatalf("a redirect to the metadata endpoint must be refused, got %q", res.Output)
 	}
@@ -399,7 +399,7 @@ func TestWebTool_DuckDuckGoSearchAllEnginesFail(t *testing.T) {
 
 	tool := newTestWebTool(t, srv)
 	tool.maxRetries = 0
-	res := tool.duckDuckGoSearch("some query", 3)
+	res := tool.duckDuckGoSearch(context.Background(), "some query", 3)
 	if res.Error == nil {
 		t.Fatalf("expected an error when every engine fails, got %q", res.Output)
 	}
@@ -420,7 +420,7 @@ func TestWebTool_DuckDuckGoSearchNamesTheWinningEngine(t *testing.T) {
 	tool := newTestWebTool(t, srv)
 	tool.maxRetries = 0
 	tool.searchAPI = "https://custom.test/?q=%s"
-	res := tool.duckDuckGoSearch("a query", 3)
+	res := tool.duckDuckGoSearch(context.Background(), "a query", 3)
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
@@ -428,6 +428,65 @@ func TestWebTool_DuckDuckGoSearchNamesTheWinningEngine(t *testing.T) {
 	// is only ever reached when DuckDuckGo is down.
 	if !strings.Contains(res.Output, "(Search engine: Custom)") {
 		t.Errorf("output = %q, want the custom engine to have been used first", res.Output)
+	}
+}
+
+// DoSearch aborts during retry backoff when the caller's deadline expires,
+// instead of sleeping out the full backoff on a dead ctx. Before ctx was
+// threaded through, a stalled engine could burn the whole turn budget and
+// surface "processing your request took too long".
+func TestWebTool_DoSearchAbortsWhenCtxDone(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "busy", http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	tool := newTestWebTool(t, srv)
+	tool.maxRetries = 3              // leave retries in place: the deadline, not the count, must stop the loop
+	tool.baseDelay = 2 * time.Second // backoff far exceeds the deadline below
+
+	// A 50ms deadline with a 2s-backoff-per-retry server: if backoff were plain
+	// time.Sleep this would take seconds; deadline-aware it returns in ~50ms.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	res := tool.doSearch(ctx, "https://example.test/search?q=x", 5)
+	elapsed := time.Since(start)
+
+	if res.Error == nil {
+		t.Fatalf("expected an abort error on an expired ctx, got %q", res.Output)
+	}
+	if !strings.Contains(res.Error.Error(), "deadline exceeded") {
+		t.Errorf("error = %q, want the deadline-exceeded abort", res.Error)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("doSearch took %v on an expired ctx; retry backoff is not deadline-aware", elapsed)
+	}
+}
+
+// duckDuckGoSearch stops walking engines the moment the caller's deadline is
+// gone, rather than grinding into the next one with no budget left.
+func TestWebTool_DuckDuckGoSearchStopsWhenCtxDone(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	tool := newTestWebTool(t, srv)
+	tool.maxRetries = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res := tool.duckDuckGoSearch(ctx, "some query", 3)
+	if res.Error == nil {
+		t.Fatalf("expected an error on a cancelled ctx, got %q", res.Output)
+	}
+	if !strings.Contains(res.Error.Error(), "search aborted") {
+		t.Errorf("error = %q, want the abort message rather than the aggregated engine failure", res.Error)
+	}
+	if !strings.Contains(res.Error.Error(), "context canceled") && !strings.Contains(res.Error.Error(), "deadline exceeded") {
+		t.Errorf("error = %q, want the ctx cause surfaced", res.Error)
 	}
 }
 

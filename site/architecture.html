@@ -329,7 +329,7 @@ footer a:hover { text-decoration: underline; }
 <div class="container">
   <div class="page-hero">
     <h1>Architecture</h1>
-    <div class="meta"><span>joshbot</span> &middot; Go 1.25 &middot; ~40,400 LOC non-test &middot; 2,189 test functions (measured 2026-08-14)</div>
+    <div class="meta"><span>joshbot</span> &middot; Go 1.26 &middot; ~48,900 LOC non-test &middot; 2,593 test functions (measured 2026-09-09)</div>
   </div>
 
   <section>
@@ -435,18 +435,22 @@ footer a:hover { text-decoration: underline; }
     <p>The project follows Go conventions with <code>cmd/</code> for the entry point and <code>internal/</code> for all implementation packages.</p>
 
     <div class="file-tree">joshbot/
-├── <span class="dir">cmd/joshbot/</span>       <span class="highlight">← CLI entry point, service wiring (~8,560 LOC)</span>
+├── <span class="dir">cmd/joshbot/</span>       <span class="highlight">← CLI entry point, service wiring (~9,740 LOC)</span>
 │   ├── main.go             entry point, flags, gateway
 │   ├── editor.go           raw-mode line editor for the interactive CLI (Tab completion, history, multiline)
 │   ├── terminal.go         ANSI key parsing + raw-mode helpers for the editor
 │   ├── skills_cmd.go       joshbot skills subcommands (list/trust/untrust)
 │   ├── sessions_cmd.go     joshbot sessions subcommands (list/show/search/prune/new/export)
+│   ├── tuning_cmd.go       joshbot tuning subcommands (status/reset)
+│   ├── docs_cmd.go         joshbot docs check (drift sentinel)
 │   └── main_test.go, editor_test.go, utils_test.go
 ├── <span class="dir">internal/</span>             <span class="highlight">← all implementation</span>
 │   ├── <span class="dir">agent/</span>              ReAct loop, context assembly, prompt caching
 │   ├── <span class="dir">memory/</span>             structured fact store (fact.go, search.go)
 │   ├── <span class="dir">skills/</span>             discovery, detection, extraction, validation, trust
-│   ├── <span class="dir">tools/</span>              built-in tools + registry, shell sandbox, shell env allowlist
+│   ├── <span class="dir">tools/</span>              built-in tools + registry, shell sandbox, shell env allowlist, web tool fallback + timeout budgets
+│   ├── <span class="dir">tuning/</span>              per-tool timeout auto-tuner (persisted counters, off by default)
+│   ├── <span class="dir">driftscan/</span>           Tier-1 doc-drift sentinel behind <code>joshbot docs check</code>
 │   ├── <span class="dir">channels/</span>           Channel interface + Telegram and Discord implementations
 │   ├── <span class="dir">mcp/</span>                stdio MCP client + server manager (namespaced tool import)
 │   ├── <span class="dir">bus/</span>                goroutine message bus
@@ -574,6 +578,15 @@ footer a:hover { text-decoration: underline; }
 
     <h3>Message Bus (<code>internal/bus/</code>)</h3>
     <p>Goroutine-safe channel multiplexer. Inbound messages from any channel are routed to the agent goroutine. Outbound messages from the agent are routed back to the originating channel. This decoupling means channels and agent can be developed independently.</p>
+
+    <h3>Web Search Fallback &amp; Timeout Auto-Tuning (<code>internal/tools/web.go</code>, <code>internal/tuning/</code>)</h3>
+    <p><strong>Deadline-aware fallback, on all four operations.</strong> <code>web_search</code>, <code>web_code</code>, <code>web_company</code> and <code>web_research</code> each fall back exa-cli &rarr; Exa MCP &rarr; DuckDuckGo on a native failure — previously only <code>web_search</code> had the full chain. Every leg runs under its own sub-deadline (<code>webPerCallDeadline</code>), derived from whatever remains of the turn's own timeout and clamped by a per-operation budget (<code>tools.web.search_timeout</code> 25s, <code>research_timeout</code> 45s, <code>code_timeout</code>/<code>company_timeout</code> 20s each, all <code>config.Duration</code>, zero meaning "use the built-in default") minus <code>tools.web.finish_reserve</code> (5s), so one slow <code>exec.CommandContext</code> call can no longer consume the whole turn budget and leave nothing for the ReAct loop to reply with. On native failure, <code>web_code</code>/<code>web_company</code>/<code>web_research</code> degrade to a plainly-marked "degraded/best-effort" DuckDuckGo-only result instead of a hard error. A per-(operation, backend) health map (<code>webBackendHealth</code>, modeled on <code>internal/providers/health.go</code>) deprioritizes a failing backend for a short cooldown rather than dropping it, and any success resets it.</p>
+    <p><strong>DuckDuckGo hardening.</strong> The response read is capped at 2&nbsp;MiB (<code>io.LimitReader</code>) rather than an unbounded <code>io.ReadAll</code> — the earlier form was reproduced OOM-killing the process against a server that streams forever — and the capped body is run through <code>bytes.ToValidUTF8</code> before parsing, so malformed bytes from a broken page cannot corrupt downstream JSON or session content. Each search engine attempt additionally runs under its own 10s sub-deadline, composed with the outer per-operation deadline, so one hung engine can no longer starve every later engine of a try within the same call.</p>
+    <p><strong>A tool reaches the agent's progress sink through a fire-and-forget context callback</strong> (<code>tools.WithProgress</code>/<code>ProgressFromContext</code>), because <code>internal/tools</code> cannot import <code>internal/agent</code>'s sink directly. <code>reactLoop</code> bridges a tool's mid-call note (e.g. "falling back to Exa MCP") onto the existing <code>agent.ProgressFunc</code> sink as a new phase, <code>ToolProgressNote</code>, distinct from Start/Done — rendered on its own line with neither the start nor the done glyph, since it is not a new call and not a completion.</p>
+    <p><strong>Timeout auto-tuning is optional and off by default</strong> (<code>tuning.enabled</code>, <code>omitempty</code>). Enabled, a <code>Tracker</code>/<code>Tuner</code> pair (<code>internal/tuning</code>) replays an append-only per-tool timeout/success event log (<code>~/.joshbot/tuning_events.jsonl</code>) and raises or lowers each of the four web operations' effective timeout within an operator-declared ceiling (<code>tuning.max_bump</code>, default 30s) in steps of <code>tuning.step</code> (default 5s), with a cooldown between tune events so it cannot thrash on alternating success/timeout turns. The learned adjustment persists in a small overlay file (<code>~/.joshbot/tuning_overlay.json</code>), never in <code>config.json</code>, and is merged onto the configured web-tool budgets <em>once, at process startup</em> — joshbot has no live config-reload mechanism for this class of value, so a tune made mid-run takes effect on the next restart, the same story every other <code>config.Duration</code> follows. <code>joshbot tuning status</code>/<code>joshbot tuning reset</code> inspect or clear it, and work even when tuning is disabled.</p>
+
+    <h3>Documentation Drift Sentinel (<code>internal/driftscan/</code>)</h3>
+    <p><code>joshbot docs check</code> runs a bounded, read-mostly subagent that compares joshbot's own source and config against <code>README.md</code>, <code>docs/INSTALL.md</code>, <code>site/*.html</code>, <code>AGENTS.md</code>/<code>CLAUDE.md</code> and the bundled <code>SKILL.md</code> files, then writes a propose-only report to <code>workspace/reports/doc-drift-&lt;YYYY-MM-DD&gt;.md</code>. It is deliberately a standalone CLI command under its own timeout (5 minutes, distinct from <code>agents.defaults.timeout</code>), not a tool the model can call mid-chat. <strong>The fail-closed evidence rule is enforced in Go, not left to the model's own judgement:</strong> the subagent's structured answer is passed through <code>driftscan.FilterUnverified</code> before anything is written, and any item whose <code>evidence_path</code> is empty or whitespace is silently dropped regardless of what the model claims about it. The only file this command ever writes is the report itself, through the same <code>filesystem</code> tool and containment layers every other write goes through — never a raw <code>os.WriteFile</code>. Verification commands (<code>go build</code>, <code>wc -l</code>, <code>go test -cover</code>, ...) run through the shell tool like any other call; with <code>tools.shell_approval</code> on, this command installs the same interactive terminal approver <code>joshbot agent</code> uses, rather than let the fail-closed default deny every command and produce an empty report indistinguishable from a clean bill of health. Cron wiring for a scheduled run is a documented follow-up, not implemented.</p>
   </section>
 
   <section>

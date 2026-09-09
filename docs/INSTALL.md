@@ -379,6 +379,8 @@ If a provider is present but not registered, `status` says why — for example `
 | `joshbot configure --migrate` | Convert a legacy provider config to the model-centric format (refuses lossy conversions) |
 | `joshbot sessions list` \| `show <id>` \| `prune <id>` \| `new <id>` \| `export <id>` | Inspect, manage and export stored conversations |
 | `joshbot memory status` \| `consolidate` | Inspect and run the Dream two-stage memory system (`agents.defaults.dream_mode`) |
+| `joshbot tuning status` \| `reset` | Inspect or clear the per-tool web-search timeout auto-tuner's learned adjustment (`tuning.enabled`, off by default) |
+| `joshbot docs check` | Scan the repo for documentation drift against current source/config; writes `workspace/reports/doc-drift-<date>.md` |
 | `joshbot auth github-copilot [--force]` \| `status` | Manage OAuth authentication |
 | `joshbot service install` \| `uninstall` \| `status` \| `start` \| `stop` \| `restart` | Manage joshbot as a system service |
 | `joshbot update` | Update to the latest release |
@@ -612,6 +614,22 @@ The old format is still supported for backward compatibility:
 > model. Anything under a second is rejected at load, naming the key. A value
 > written by an older joshbot is a raw nanosecond count (`900000000000`); it is
 > still read correctly and rewritten as a string on the next save.
+
+> **Web tool timeouts:** `web_search`/`web_code`/`web_company`/`web_research`
+> each fall back exa-cli → Exa MCP → DuckDuckGo, and every leg of that chain
+> runs under its own sub-deadline (`tools.web.search_timeout` 25s,
+> `research_timeout` 45s, `code_timeout` 20s, `company_timeout` 20s,
+> `finish_reserve` 5s reserved for the reply — all `config.Duration`, zero
+> means "use the built-in default"), derived from whatever's left of the
+> turn's own timeout. A backend that fails is deprioritized for a short
+> cooldown, never dropped. Optionally, `tuning.enabled: true` (default
+> `false`) turns on a small auto-tuner that raises or lowers each of those
+> four timeouts based on real timeout/success history, bounded by
+> `tuning.max_bump` (default 30s) in steps of `tuning.step` (default 5s); its
+> learned adjustment persists in `~/.joshbot/tuning_overlay.json` (never in
+> `config.json`) and takes effect on the next restart — there is no live
+> config reload. `joshbot tuning status` / `joshbot tuning reset` inspect or
+> clear it.
 
 ### Environment Variables
 

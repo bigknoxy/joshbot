@@ -911,7 +911,26 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 				})
 			}
 			toolStart := time.Now()
-			result, isAsync := a.tools.ExecuteWithContext(ctx, tc.Function.Name, args, channel, channelID, nil)
+			// A tool has no way to reach this package's sink directly — this
+			// package imports internal/tools, so the reverse would be an
+			// import cycle. tools.WithProgress is the plumbing a tool uses to
+			// emit a mid-call checkpoint (see internal/tools/progress.go);
+			// this wraps it onto the very ProgressFunc already read above, so
+			// a self-authored note lands as a ToolProgressEvent between the
+			// Start and Done this loop already brackets the call with. Built
+			// only when a sink is attached — nil progress means no caller
+			// wants events at all, so there's nothing to bridge.
+			execCtx := ctx
+			if progress != nil {
+				execCtx = tools.WithProgress(ctx, func(note string) {
+					progress(ToolProgressEvent{
+						Tool:    tc.Function.Name,
+						Summary: note,
+						Phase:   ToolProgressNote,
+					})
+				})
+			}
+			result, isAsync := a.tools.ExecuteWithContext(execCtx, tc.Function.Name, args, channel, channelID, nil)
 			if progress != nil {
 				progress(ToolProgressEvent{
 					Tool:    tc.Function.Name,

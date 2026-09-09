@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `web_code`, `web_company` and `web_research` now share the same
+  exa-cli → Exa MCP → DuckDuckGo fallback chain `web_search` already had, each
+  leg bounded by its own deadline-derived sub-timeout
+  (`tools.web.search_timeout`/`research_timeout`/`code_timeout`/`company_timeout`,
+  plus `tools.web.finish_reserve`) so one slow call can no longer consume a
+  whole turn's budget. On native failure, the three specialized operations
+  degrade to a clearly-marked "degraded/best-effort" DuckDuckGo-only result
+  instead of hard-erroring.
+- Optional per-tool timeout auto-tuning (`tuning.enabled`, off by default):
+  raises or lowers each web operation's effective timeout based on a
+  persisted history of real timeouts/successes, bounded by `tuning.max_bump`
+  and moved in steps of `tuning.step`. The learned adjustment lives in
+  `~/.joshbot/tuning_overlay.json` and takes effect on the next restart.
+  `joshbot tuning status` / `joshbot tuning reset` inspect and clear it.
+- `joshbot docs check`: a bounded, read-mostly subagent (`internal/driftscan`)
+  compares joshbot's source and config against README.md, docs/INSTALL.md,
+  site/*.html, AGENTS.md/CLAUDE.md and the bundled SKILL.md files, and writes
+  a propose-only report to `workspace/reports/doc-drift-<date>.md`. Every
+  reported item must be backed by a verification command the subagent
+  actually ran; an unevidenced claim is dropped in Go rather than trusted.
+- Tool-progress events gained a third phase, `ToolProgressNote`, for a
+  self-authored mid-call checkpoint (e.g. "falling back to Exa MCP") — a
+  fire-and-forget context callback (`tools.WithProgress`) a tool can use to
+  post a status update without a matching Start/Done pair.
+
+### Fixed
+- DuckDuckGo search responses were read with an unbounded `io.ReadAll`; a
+  streaming/misbehaving response could exhaust memory. Reads are now capped
+  at 2 MiB and the result is sanitized to valid UTF-8 before parsing. A
+  hung search engine could also consume an entire operation's deadline and
+  starve every other engine of a try; each engine attempt now runs under its
+  own bounded sub-timeout.
+
 ## [1.69.0] - 2026-09-09
 
 ### Changed

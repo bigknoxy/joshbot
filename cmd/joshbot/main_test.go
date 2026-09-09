@@ -318,6 +318,32 @@ func TestCLIProgressOnToolEvent_ErrorStatus(t *testing.T) {
 	}
 }
 
+// TestCLIProgressRendersNoteLine verifies a ToolProgressNote event prints the
+// note text without the start (⏺) or done (⎿) glyphs, and that it counts as
+// a tool line for the purpose of toolShown — the state
+// TestCLIProgressStreamEventSeparatesFromToolLine depends on to insert a
+// blank line before the next streamed answer.
+func TestCLIProgressRendersNoteLine(t *testing.T) {
+	var out bytes.Buffer
+	p := newCLIProgress(&out)
+
+	p.onToolEvent(agent.ToolProgressEvent{Tool: "web", Summary: "trying exa-cli search", Phase: agent.ToolProgressNote})
+
+	got := out.String()
+	if !strings.Contains(got, "trying exa-cli search") {
+		t.Errorf("expected the note text in the output, got %q", got)
+	}
+	if strings.Contains(got, "⏺") {
+		t.Errorf("a note must not use the start glyph, got %q", got)
+	}
+	if strings.Contains(got, "⎿") {
+		t.Errorf("a note must not use the done glyph, got %q", got)
+	}
+	if !p.toolShown {
+		t.Error("a note line must set toolShown, so the next streamed delta is separated from it")
+	}
+}
+
 // TestCLIProgressStopSpinnerJoinsGoroutine proves stopSpinner cannot return
 // until the spinner goroutine has actually exited (it blocks on
 // p.spinDone), which is the guarantee against a leaked/cancellation-proof

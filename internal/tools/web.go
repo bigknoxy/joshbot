@@ -58,6 +58,112 @@ const exaCLINotAvailableMsg = `exa-cli is not installed. To use this feature, in
   npm install -g exa-cli
 or visit https://github.com/exa-dev/exa-cli`
 
+// Per-tool default budgets for one leg of a web-tool fallback chain, used by
+// NewWebTool/NewWebToolFromConfig when the operator has not set
+// tools.web.search_timeout etc (zero, per config.Duration's "zero means
+// unset" convention — see internal/config/config.go's WebToolsConfig). These
+// are starting points grounded in the pre-existing hardcoded values this
+// change replaces (exaSearch's 25s, webFetch's 30s), not measured production
+// telemetry — there is none yet.
+const (
+	defaultWebSearchTimeout   = 25 * time.Second
+	defaultWebResearchTimeout = 45 * time.Second
+	defaultWebCodeTimeout     = 20 * time.Second
+	defaultWebCompanyTimeout  = 20 * time.Second
+	defaultFinishReserve      = 5 * time.Second
+
+	// minPerCallTimeout is the floor webPerCallDeadline never goes below,
+	// even when the turn's remaining budget minus the finish reserve is
+	// already exhausted. A zero or negative timeout would make
+	// exec.CommandContext refuse to even start the process, turning a
+	// "nearly out of time" turn into a guaranteed-empty attempt; a short
+	// positive window at least lets the call try and fail with a real error.
+	minPerCallTimeout = 1 * time.Second
+
+	// maxSearchResponseBytes caps how much of a DuckDuckGo (or configured
+	// custom) search-engine response doSearch will read. Ordinary result
+	// pages are a few tens of KB; this exists purely as a backstop against a
+	// broken or malicious endpoint streaming an unbounded body, which would
+	// otherwise be read to exhaustion by a bare io.ReadAll (observed: an
+	// endlessly-streaming test server OOM-killed the process before this cap
+	// existed). Mirrors webFetch's pre-existing 100KB cap.
+	maxSearchResponseBytes = 2 * 1024 * 1024
+
+	// perEngineSearchTimeout bounds a single search-engine attempt inside
+	// duckDuckGoSearch's multi-engine loop. Without it, one hung engine could
+	// consume the entire per-op budget genericSearchChain hands to the
+	// "duckduckgo" leg (via webPerCallDeadline), leaving nothing for the
+	// remaining engines to even be tried. Each engine still gets whatever is
+	// actually left of that outer budget when its turn comes — this is only
+	// an upper bound per engine, applied via webPerCallDeadline the same way
+	// A's per-call deadlines are, so a short remaining budget still clamps
+	// down correctly instead of the engine getting the full 10s regardless.
+	perEngineSearchTimeout = 10 * time.Second
+)
+
+// DefaultWebOperationTimeout returns this package's built-in per-call timeout
+// default for one of the four tunable web operations (web_search,
+// web_research, web_code, web_company) — the single source of truth also
+// used internally by NewWebTool/NewWebToolFromConfig when the operator has
+// not set the corresponding tools.web.*_timeout config key. Callers outside
+// this package (cmd/joshbot's tuner wiring and `joshbot tuning status`) must
+// call this rather than re-declaring the literal values: a duplicated copy
+// silently stops matching the moment one of the constants above changes,
+// and the tuner would then compute or display bumps relative to a stale
+// baseline. Returns 0 for an unrecognized name.
+func DefaultWebOperationTimeout(tool string) time.Duration {
+	switch tool {
+	case "web_search":
+		return defaultWebSearchTimeout
+	case "web_research":
+		return defaultWebResearchTimeout
+	case "web_code":
+		return defaultWebCodeTimeout
+	case "web_company":
+		return defaultWebCompanyTimeout
+	default:
+		return 0
+	}
+}
+
+// webPerCallDeadline derives a bounded sub-context for one leg of a web-tool
+// fallback chain (one exec.CommandContext call, or one HTTP round trip).
+//
+// When ctx carries a deadline — the normal case, since ctx is the agent
+// turn's context — the sub-timeout is the remaining budget minus reserve:
+// reserve is time deliberately left over for the ReAct loop to format and
+// return a reply after this call returns, so a leg that ran right up to its
+// own sub-deadline does not by itself consume the whole remaining turn. The
+// result is clamped to maxBudget, which is what stops one leg of a
+// multi-tier fallback chain (exa-cli -> Exa MCP -> DuckDuckGo) from eating
+// the entire remaining turn budget on its own and leaving nothing for the
+// tiers after it.
+//
+// When ctx carries no deadline at all — a subagent or other programmatic
+// caller that never wired one up — there is no remaining budget to derive
+// anything from, so staticDefault is used as-is (the per-tool
+// config.Duration default; see NewWebToolFromConfig).
+//
+// The result is floored at minPerCallTimeout in both branches: a remaining
+// budget already exhausted still gets a short, positive window rather than
+// an instantly (or negatively) expired context.
+func webPerCallDeadline(ctx context.Context, maxBudget, staticDefault, reserve time.Duration) (context.Context, context.CancelFunc) {
+	var budget time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = time.Until(deadline) - reserve
+		if budget > maxBudget {
+			budget = maxBudget
+		}
+	} else {
+		budget = staticDefault
+	}
+	if budget < minPerCallTimeout {
+		budget = minPerCallTimeout
+	}
+	log.Debug("web tool per-call budget", "budget", budget, "max_budget", maxBudget, "reserve", reserve)
+	return context.WithTimeout(ctx, budget)
+}
+
 // exaSearchResponse for JSON-RPC response (SSE format)
 type exaSearchResponse struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -290,6 +396,46 @@ type WebTool struct {
 	// resolveIP resolves a hostname to its addresses. It exists so tests can
 	// drive the SSRF check without depending on real DNS.
 	resolveIP func(host string) ([]net.IP, error)
+
+	// Per-operation budgets for webPerCallDeadline, one leg of that
+	// operation's fallback chain each. Plain time.Duration, not
+	// config.Duration: internal/tools stays decoupled from the config
+	// schema, and cmd/joshbot converts at the registry wiring layer (see
+	// WebToolBudgets in registry.go), exactly like the pre-existing Timeout
+	// field on WebToolConfig already does.
+	searchTimeout   time.Duration
+	researchTimeout time.Duration
+	codeTimeout     time.Duration
+	companyTimeout  time.Duration
+	// finishReserve is subtracted from the remaining turn budget before
+	// deriving a per-call sub-timeout; see webPerCallDeadline.
+	finishReserve time.Duration
+
+	// health tracks per-(operation,backend) cooldown across the fallback
+	// chains, deprioritizing a repeatedly failing backend without ever
+	// dropping it. A WebTool built via a bare struct literal (as several
+	// existing tests do) leaves this nil; every access goes through
+	// markFailure/markSuccess/orderedBackendsFor, which treat a nil health
+	// map as "no cooldown tracking" rather than panicking.
+	health *webBackendHealth
+
+	// recorder observes whether each fallback-chain attempt timed out, for
+	// the per-tool timeout auto-tuner (internal/tuning). Optional and nil by
+	// default — recordOutcome nil-checks before calling it, exactly like
+	// markFailure/markSuccess do for health, so a WebTool built via a bare
+	// struct literal (as several existing tests do) never panics.
+	recorder TimeoutRecorder
+}
+
+// recordOutcome tells the configured TimeoutRecorder, if any, whether one
+// fallback-chain attempt for op ended because its own per-call deadline
+// (webPerCallDeadline) expired. A nil recorder is the common case and this
+// is a no-op — the same "optional callback, nil-checked at the call site"
+// pattern markFailure/markSuccess already follow for health.
+func (t *WebTool) recordOutcome(op string, timedOut bool) {
+	if t.recorder != nil {
+		t.recorder.Record(op, timedOut)
+	}
 }
 
 // guardedDialControl refuses to connect to a non-public address.
@@ -345,6 +491,12 @@ func NewWebTool(timeout time.Duration, searchAPI string) *WebTool {
 		baseDelay:       1 * time.Second,
 		exaCLIAvailable: exaAvailable,
 		resolveIP:       net.LookupIP,
+		searchTimeout:   defaultWebSearchTimeout,
+		researchTimeout: defaultWebResearchTimeout,
+		codeTimeout:     defaultWebCodeTimeout,
+		companyTimeout:  defaultWebCompanyTimeout,
+		finishReserve:   defaultFinishReserve,
+		health:          newWebBackendHealth(),
 	}
 }
 
@@ -415,7 +567,118 @@ func (t *WebTool) Execute(ctxArg interface{}, args map[string]any) ToolResult {
 	}
 }
 
-// webSearch performs a web search using exa-cli (primary), Exa MCP (fallback), or DuckDuckGo (last resort)
+// noteFunc returns a function that emits a checkpoint note through the
+// caller's progress sink (tools.WithProgress), or a no-op when none is
+// attached — the common case, since most callers (a subagent, a JSON/headless
+// caller with no sink wired) never install one. Fire-and-forget: see
+// progress.go's doc comment on why this must never fail closed the way
+// Approver does.
+func (t *WebTool) noteFunc(ctx context.Context) func(string) {
+	progress := ProgressFromContext(ctx)
+	if progress == nil {
+		return func(string) {}
+	}
+	return progress
+}
+
+// markFailure/markSuccess wrap webBackendHealth's methods with a nil check,
+// so a WebTool built via a bare struct literal (several existing tests do
+// exactly this) never panics — it just gets no cooldown tracking, which is
+// the same as the health map not existing at all.
+func (t *WebTool) markFailure(op, backend string) {
+	if t.health != nil {
+		t.health.markFailure(op, backend)
+	}
+}
+
+func (t *WebTool) markSuccess(op, backend string) {
+	if t.health != nil {
+		t.health.markSuccess(op, backend)
+	}
+}
+
+// searchBackendOrder returns the try order for the three generic-search
+// backends, deprioritizing (never dropping) any the health map has recently
+// marked failed for op.
+func (t *WebTool) searchBackendOrder(op string) []string {
+	names := []string{"exa-cli", "exa-mcp", "duckduckgo"}
+	if t.health != nil {
+		return t.health.orderedBackends(op, names)
+	}
+	return names
+}
+
+// genericSearchChain runs the shared three-tier web-search fallback — exa-cli
+// generic search, Exa MCP, DuckDuckGo — in the order the health map currently
+// recommends for op, emitting progress notes and updating health as it goes.
+// It backs webSearch directly, and also backs webCode/webCompany/webResearch
+// as their fallback tier once their own specialized exa-cli subcommand fails:
+// op is still "web_code" etc in that case, so a code search's fallback health
+// is tracked independently of a plain search's (see TestWebHealthIsPerOperation).
+func (t *WebTool) genericSearchChain(ctx context.Context, op, query string, maxResults int, timeout time.Duration, note func(string)) ToolResult {
+	var errs []string
+	for _, name := range t.searchBackendOrder(op) {
+		switch name {
+		case "exa-cli":
+			if !t.exaCLIAvailable {
+				note("exa-cli unavailable, trying Exa MCP")
+				continue
+			}
+			note("trying exa-cli search")
+			callCtx, cancel := webPerCallDeadline(ctx, timeout, timeout, t.finishReserve)
+			results, err := t.exaCLISearch(callCtx, query, maxResults)
+			t.recordOutcome(op, callCtx.Err() == context.DeadlineExceeded)
+			cancel()
+			if err == nil && len(results) > 0 {
+				t.markSuccess(op, name)
+				note(fmt.Sprintf("received %d results", len(results)))
+				return t.formatResults(results)
+			}
+			t.markFailure(op, name)
+			if err == nil {
+				err = errors.New("no results")
+			}
+			note("exa-cli search failed, falling back to Exa MCP")
+			errs = append(errs, fmt.Sprintf("exa-cli: %v", err))
+
+		case "exa-mcp":
+			note("trying Exa MCP search")
+			callCtx, cancel := webPerCallDeadline(ctx, timeout, timeout, t.finishReserve)
+			results, err := t.exaSearch(callCtx, query, maxResults)
+			t.recordOutcome(op, callCtx.Err() == context.DeadlineExceeded)
+			cancel()
+			if err == nil && len(results) > 0 {
+				t.markSuccess(op, name)
+				note(fmt.Sprintf("received %d results", len(results)))
+				return t.formatResults(results)
+			}
+			t.markFailure(op, name)
+			if err == nil {
+				err = errors.New("no results")
+			}
+			note("Exa MCP search failed, falling back to DuckDuckGo")
+			errs = append(errs, fmt.Sprintf("exa-mcp: %v", err))
+
+		case "duckduckgo":
+			note("trying DuckDuckGo search")
+			callCtx, cancel := webPerCallDeadline(ctx, timeout, timeout, t.finishReserve)
+			result := t.duckDuckGoSearch(callCtx, query, maxResults)
+			t.recordOutcome(op, callCtx.Err() == context.DeadlineExceeded)
+			cancel()
+			if result.Error == nil {
+				t.markSuccess(op, name)
+				return result
+			}
+			t.markFailure(op, name)
+			errs = append(errs, fmt.Sprintf("duckduckgo: %v", result.Error))
+		}
+	}
+
+	return ToolResult{Error: fmt.Errorf("all search backends failed for %s: %s", op, strings.Join(errs, "; "))}
+}
+
+// webSearch performs a web search using exa-cli (primary), Exa MCP
+// (fallback), or DuckDuckGo (last resort).
 func (t *WebTool) webSearch(ctx context.Context, args map[string]any) ToolResult {
 	query, _ := args["query"].(string)
 	if query == "" {
@@ -427,37 +690,93 @@ func (t *WebTool) webSearch(ctx context.Context, args map[string]any) ToolResult
 		maxResults = int(mr)
 	}
 
-	// Try exa-cli first (if available)
-	if t.exaCLIAvailable {
-		log.Debug("Trying exa-cli search", "query", query)
-		results, err := t.exaCLISearch(ctx, query, maxResults)
-		if err == nil && len(results) > 0 {
-			log.Debug("exa-cli search succeeded", "results", len(results))
-			return t.formatResults(results)
-		}
-		log.Debug("exa-cli search failed, falling back to Exa MCP", "error", err)
-	}
-
-	// Try Exa MCP (HTTP)
-	log.Debug("Trying Exa MCP search", "query", query)
-	results, err := t.exaSearch(ctx, query, maxResults)
-	if err == nil && len(results) > 0 {
-		log.Debug("Exa MCP search succeeded", "results", len(results))
-		return t.formatResults(results)
-	}
-
-	// Log Exa failure and fall back to DuckDuckGo
-	if err != nil {
-		log.Debug("Exa MCP search failed, falling back to DuckDuckGo", "error", err)
-	} else {
-		log.Debug("Exa MCP returned no results, falling back to DuckDuckGo")
-	}
-
-	// Fallback to DuckDuckGo
-	return t.duckDuckGoSearch(ctx, query, maxResults)
+	return t.genericSearchChain(ctx, "web_search", query, maxResults, t.searchTimeout, t.noteFunc(ctx))
 }
 
-// webCode performs a code search using exa-cli
+// degradedResultPrefix labels a fallback result from
+// webCode/webCompany/webResearch's generic-search tier so a caller never
+// mistakes an ordinary web search for the specialized result the operation
+// promised — a code search and a company/research briefing are read very
+// differently from a generic result list.
+func degradedResultPrefix(op string) string {
+	label := op
+	switch op {
+	case "web_code":
+		label = "code"
+	case "web_company":
+		label = "company"
+	case "web_research":
+		label = "research"
+	}
+	return fmt.Sprintf(
+		"Note: this is a degraded/best-effort general web-search result, not a %s-specific result "+
+			"(exa-cli's specialized %s search was unavailable or failed).\n\n", label, label)
+}
+
+// specializedWithFallback runs one exa-cli specialized subcommand
+// (web_code's `exa code`, web_company's `exa company`, web_research's `exa
+// research start`) under its own per-call deadline. exa-cli being simply not
+// installed is treated the same as the subcommand failing at runtime — both
+// are just the native leg not panning out, and both fall through to the same
+// place: extending the exa-cli -> Exa MCP -> DuckDuckGo fallback SHAPE
+// webSearch already has to these operations, per the design requirement,
+// rather than a hard error the moment exa-cli happens to be missing.
+//
+// On success it returns the native, specialized result untouched. On
+// failure it falls through to genericSearchChain (still scoped to op, so its
+// own health bookkeeping — including a fresh, redundant-looking exa-cli
+// *generic* search attempt — stays independent of a plain web_search's) and
+// labels the result as degraded: a labeled generic result is more useful to
+// the model mid-outage than a hard failure, so degrade-with-a-marker was
+// chosen here over erroring outright (the design's explicitly open
+// question) — the marker is what keeps that choice honest. If every leg
+// fails, the aggregated error names exa-cli, Exa MCP and DuckDuckGo.
+func (t *WebTool) specializedWithFallback(
+	ctx context.Context,
+	op, query string,
+	maxResults int,
+	timeout time.Duration,
+	note func(string),
+	native func(context.Context) ([]SearchResult, error),
+	noResultsMsg string,
+) ToolResult {
+	var nativeErr error
+	if t.exaCLIAvailable {
+		note("trying exa-cli " + op)
+		callCtx, cancel := webPerCallDeadline(ctx, timeout, timeout, t.finishReserve)
+		results, err := native(callCtx)
+		t.recordOutcome(op, callCtx.Err() == context.DeadlineExceeded)
+		cancel()
+		if err == nil {
+			t.markSuccess(op, "exa-cli")
+			if len(results) == 0 {
+				return ToolResult{Output: noResultsMsg}
+			}
+			note(fmt.Sprintf("received %d results", len(results)))
+			return t.formatResults(results)
+		}
+		nativeErr = err
+		t.markFailure(op, "exa-cli")
+		log.Warn("exa-cli specialized search failed", "op", op, "error", err)
+	} else {
+		nativeErr = errors.New(exaCLINotAvailableMsg)
+	}
+	note(fmt.Sprintf("exa-cli %s unavailable or failed, falling back to general web search", op))
+
+	fallback := t.genericSearchChain(ctx, op, query, maxResults, timeout, note)
+	if fallback.Error != nil {
+		return ToolResult{Error: fmt.Errorf(
+			"exa-cli %s failed (%v), and the general web-search fallback also failed: %w",
+			op, nativeErr, fallback.Error,
+		)}
+	}
+	fallback.Output = degradedResultPrefix(op) + fallback.Output
+	return fallback
+}
+
+// webCode performs a code search using exa-cli, falling back to a labeled
+// general web search (Exa MCP, then DuckDuckGo) when exa-cli is unavailable
+// or its `code` subcommand fails.
 func (t *WebTool) webCode(ctx context.Context, args map[string]any) ToolResult {
 	query, _ := args["query"].(string)
 	if query == "" {
@@ -469,31 +788,21 @@ func (t *WebTool) webCode(ctx context.Context, args map[string]any) ToolResult {
 		maxResults = int(mr)
 	}
 
-	if !t.exaCLIAvailable {
-		return ToolResult{Error: errors.New(exaCLINotAvailableMsg)}
+	native := func(callCtx context.Context) ([]SearchResult, error) {
+		cmd := exec.CommandContext(callCtx, "exa", "code", query, "--tokens", strconv.Itoa(maxResults*1000), "--format", "json")
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("exa code search failed: %w", err)
+		}
+		return parseExaCLISearchResults(string(output))
 	}
 
-	log.Debug("Running exa code search", "query", query)
-	cmd := exec.CommandContext(ctx, "exa", "code", query, "--tokens", strconv.Itoa(maxResults*1000), "--format", "json")
-	output, err := cmd.Output()
-	if err != nil {
-		log.Warn("exa code search failed", "error", err)
-		return ToolResult{Error: fmt.Errorf("exa code search failed: %w", err)}
-	}
-
-	results, err := parseExaCLISearchResults(string(output))
-	if err != nil {
-		return ToolResult{Error: fmt.Errorf("parse exa code results: %w", err)}
-	}
-
-	if len(results) == 0 {
-		return ToolResult{Output: "No code search results found"}
-	}
-
-	return t.formatResults(results)
+	return t.specializedWithFallback(ctx, "web_code", query, maxResults, t.codeTimeout, t.noteFunc(ctx), native, "No code search results found")
 }
 
-// webCompany performs company research using exa-cli
+// webCompany performs company research using exa-cli, falling back to a
+// labeled general web search when exa-cli is unavailable or its `company`
+// subcommand fails.
 func (t *WebTool) webCompany(ctx context.Context, args map[string]any) ToolResult {
 	query, _ := args["query"].(string)
 	if query == "" {
@@ -505,31 +814,21 @@ func (t *WebTool) webCompany(ctx context.Context, args map[string]any) ToolResul
 		maxResults = int(mr)
 	}
 
-	if !t.exaCLIAvailable {
-		return ToolResult{Error: errors.New(exaCLINotAvailableMsg)}
+	native := func(callCtx context.Context) ([]SearchResult, error) {
+		cmd := exec.CommandContext(callCtx, "exa", "company", query, "--num", strconv.Itoa(maxResults), "--format", "json")
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("exa company search failed: %w", err)
+		}
+		return parseExaCLISearchResults(string(output))
 	}
 
-	log.Debug("Running exa company search", "query", query)
-	cmd := exec.CommandContext(ctx, "exa", "company", query, "--num", strconv.Itoa(maxResults), "--format", "json")
-	output, err := cmd.Output()
-	if err != nil {
-		log.Warn("exa company search failed", "error", err)
-		return ToolResult{Error: fmt.Errorf("exa company search failed: %w", err)}
-	}
-
-	results, err := parseExaCLISearchResults(string(output))
-	if err != nil {
-		return ToolResult{Error: fmt.Errorf("parse exa company results: %w", err)}
-	}
-
-	if len(results) == 0 {
-		return ToolResult{Output: "No company research results found"}
-	}
-
-	return t.formatResults(results)
+	return t.specializedWithFallback(ctx, "web_company", query, maxResults, t.companyTimeout, t.noteFunc(ctx), native, "No company research results found")
 }
 
-// webResearch performs deep research using exa-cli
+// webResearch performs deep research using exa-cli, falling back to a
+// labeled general web search when exa-cli is unavailable or its `research`
+// subcommand fails.
 func (t *WebTool) webResearch(ctx context.Context, args map[string]any) ToolResult {
 	query, _ := args["query"].(string)
 	if query == "" {
@@ -541,28 +840,16 @@ func (t *WebTool) webResearch(ctx context.Context, args map[string]any) ToolResu
 		maxResults = int(mr)
 	}
 
-	if !t.exaCLIAvailable {
-		return ToolResult{Error: errors.New(exaCLINotAvailableMsg)}
+	native := func(callCtx context.Context) ([]SearchResult, error) {
+		cmd := exec.CommandContext(callCtx, "exa", "research", "start", query, "--format", "json", "--num", strconv.Itoa(maxResults))
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("exa research failed: %w", err)
+		}
+		return parseExaCLISearchResults(string(output))
 	}
 
-	log.Debug("Running exa research", "query", query)
-	cmd := exec.CommandContext(ctx, "exa", "research", "start", query, "--format", "json", "--num", strconv.Itoa(maxResults))
-	output, err := cmd.Output()
-	if err != nil {
-		log.Warn("exa research failed", "error", err)
-		return ToolResult{Error: fmt.Errorf("exa research failed: %w", err)}
-	}
-
-	results, err := parseExaCLISearchResults(string(output))
-	if err != nil {
-		return ToolResult{Error: fmt.Errorf("parse exa research results: %w", err)}
-	}
-
-	if len(results) == 0 {
-		return ToolResult{Output: "No research results found"}
-	}
-
-	return t.formatResults(results)
+	return t.specializedWithFallback(ctx, "web_research", query, maxResults, t.researchTimeout, t.noteFunc(ctx), native, "No research results found")
 }
 
 // formatResults formats search results into a ToolResult
@@ -609,7 +896,19 @@ func (t *WebTool) duckDuckGoSearch(ctx context.Context, query string, maxResults
 
 		log.Debug("Trying search engine", "engine", engine.Name, "url", searchURL)
 
-		result := t.doSearch(ctx, searchURL, maxResults)
+		// Each engine gets its own bounded sub-timeout carved out of
+		// whatever remains of the caller's budget (reserve=0: this is
+		// already nested inside genericSearchChain's own per-op deadline,
+		// which already reserved time for the turn to finish). Without this,
+		// one engine hanging past a reasonable share of the budget would
+		// consume the entire per-op deadline and the remaining engines would
+		// never even be tried. Loop-level decisions ("did the caller's own
+		// deadline expire?") still read the outer ctx below, never engineCtx
+		// — a per-engine timeout expiring on its own must fall through to
+		// the next engine, not abort the whole search.
+		engineCtx, cancel := webPerCallDeadline(ctx, perEngineSearchTimeout, perEngineSearchTimeout, 0)
+		result := t.doSearch(engineCtx, searchURL, maxResults)
+		cancel()
 		if result.Error == nil && result.Output != "" {
 			// Success - add engine name to output
 			return ToolResult{Output: result.Output + fmt.Sprintf("\n(Search engine: %s)", engine.Name)}
@@ -673,10 +972,23 @@ func (t *WebTool) doSearch(ctx context.Context, searchURL string, maxResults int
 		case http.StatusOK:
 			// Success - parse and return results
 			defer resp.Body.Close()
-			body, err := io.ReadAll(resp.Body)
+			// A malicious or broken search-engine response could stream an
+			// unbounded body; read at most maxSearchResponseBytes rather than
+			// buffering the whole thing (mirrors webFetch's existing 100KB
+			// cap for the same reason). Truncating is a safe degrade here —
+			// result markup is near the top of the page — never an error.
+			body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 			if err != nil {
 				return ToolResult{Error: fmt.Errorf("failed to read response: %w", err)}
 			}
+			if len(body) >= maxSearchResponseBytes {
+				log.Debug("search response body truncated at cap", "url", req.URL.String(), "limit", maxSearchResponseBytes)
+			}
+			// A page can answer with malformed or non-UTF8 bytes; sanitize
+			// before it reaches parsing or the model, since Go strings do not
+			// validate UTF-8 and an invalid byte sequence would otherwise be
+			// handed back verbatim in ToolResult.Output.
+			body = bytes.ToValidUTF8(body, []byte("�"))
 
 			// Parse results from HTML
 			results := t.parseSearchResults(string(body), maxResults)
@@ -1198,6 +1510,24 @@ func (t *WebTool) removeTag(html string, openTag, closeTag string) string {
 type WebToolConfig struct {
 	Timeout   time.Duration
 	SearchAPI string
+
+	// SearchTimeout, ResearchTimeout, CodeTimeout and CompanyTimeout bound
+	// one leg of the corresponding operation's fallback chain (see
+	// webPerCallDeadline). Zero falls back to this package's own default
+	// (defaultWebSearchTimeout etc), mirroring the existing Timeout field's
+	// "0 defaults in the constructor" convention immediately below.
+	SearchTimeout   time.Duration
+	ResearchTimeout time.Duration
+	CodeTimeout     time.Duration
+	CompanyTimeout  time.Duration
+	// FinishReserve is subtracted from the remaining turn budget before
+	// deriving a per-call sub-timeout. Zero falls back to defaultFinishReserve.
+	FinishReserve time.Duration
+
+	// Recorder, if set, observes whether each fallback-chain attempt timed
+	// out (see TimeoutRecorder in registry.go). Nil by default: the web tool
+	// records nothing unless a caller opts in via WithTimeoutRecorder.
+	Recorder TimeoutRecorder
 }
 
 // NewWebToolFromConfig creates a WebTool from config.
@@ -1207,5 +1537,22 @@ func NewWebToolFromConfig(cfg WebToolConfig) *WebTool {
 		timeout = 30 * time.Second
 	}
 
-	return NewWebTool(timeout, cfg.SearchAPI)
+	t := NewWebTool(timeout, cfg.SearchAPI)
+	if cfg.SearchTimeout > 0 {
+		t.searchTimeout = cfg.SearchTimeout
+	}
+	if cfg.ResearchTimeout > 0 {
+		t.researchTimeout = cfg.ResearchTimeout
+	}
+	if cfg.CodeTimeout > 0 {
+		t.codeTimeout = cfg.CodeTimeout
+	}
+	if cfg.CompanyTimeout > 0 {
+		t.companyTimeout = cfg.CompanyTimeout
+	}
+	if cfg.FinishReserve > 0 {
+		t.finishReserve = cfg.FinishReserve
+	}
+	t.recorder = cfg.Recorder
+	return t
 }

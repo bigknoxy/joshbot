@@ -9,6 +9,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/providers"
+	"github.com/bigknoxy/joshbot/internal/tools"
 )
 
 // TestSummarizeToolArgs verifies the brief, truncated key-argument summary
@@ -430,4 +431,131 @@ func TestProgressFromContextNil(t *testing.T) {
 	if p := progressFromContext(context.Background()); p != nil {
 		t.Errorf("expected nil ProgressFunc for plain context, got %v", p)
 	}
+}
+
+// TestToolProgressNoteReachesSink verifies the bridge from a tool's
+// self-authored checkpoint (tools.WithProgress / tools.ProgressFromContext,
+// which internal/tools cannot deliver directly to the agent-level sink
+// without an import cycle) onto the real agent.ProgressFunc sink installed
+// via WithSink. A tool that calls tools.ProgressFromContext(ctx)("note")
+// during Execute must cause exactly one
+// ToolProgressEvent{Phase: ToolProgressNote, Summary: "note"} to reach the
+// sink, bracketed by the existing Start/Done events — three events total, in
+// order.
+func TestToolProgressNoteReachesSink(t *testing.T) {
+	cfg := config.Defaults()
+	iteration := 0
+
+	provider := &mockProvider{
+		chatFn: func(ctx context.Context, req providers.ChatRequest) (*providers.ChatResponse, error) {
+			iteration++
+			if iteration == 1 {
+				return &providers.ChatResponse{
+					ID:    "test-id",
+					Model: req.Model,
+					Choices: []providers.Choice{
+						{
+							Message: providers.Message{
+								Role: providers.RoleAssistant,
+								ToolCalls: []providers.ToolCall{
+									{
+										ID:   "call_1",
+										Type: "function",
+										Function: providers.FunctionCall{
+											Name:      "web",
+											Arguments: `{"operation":"web_search","query":"golang"}`,
+										},
+									},
+								},
+							},
+							FinishReason: "tool_calls",
+						},
+					},
+				}, nil
+			}
+			return &providers.ChatResponse{
+				ID:    "test-id",
+				Model: req.Model,
+				Choices: []providers.Choice{
+					{
+						Message:      providers.Message{Role: providers.RoleAssistant, Content: "done"},
+						FinishReason: "stop",
+					},
+				},
+			}, nil
+		},
+	}
+
+	// This fake tool executor pulls tools.ProgressFromContext(ctx) itself,
+	// exactly as a real tool (e.g. internal/tools.WebTool) would, to prove
+	// the note reaches the caller-installed sink through the context the
+	// ReAct loop hands to ExecuteWithContext — not through any direct call
+	// into internal/agent, which internal/tools cannot make.
+	toolExec := &noteEmittingToolExecutor{note: "trying exa-cli"}
+
+	sessions := newMockSessionManager()
+	logger := newMockLogger()
+
+	var events []ToolProgressEvent
+	a := NewAgent(cfg, provider, toolExec, sessions, logger)
+
+	ctx := WithSink(context.Background(), func(e ToolProgressEvent) {
+		events = append(events, e)
+	})
+
+	msg := bus.InboundMessage{
+		SenderID:  "user123",
+		Content:   "search for golang",
+		Channel:   "cli",
+		Timestamp: time.Now(),
+	}
+
+	if _, err := a.Process(ctx, msg); err != nil {
+		t.Fatalf("process failed: %v", err)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("expected 3 progress events (start, note, done), got %d: %+v", len(events), events)
+	}
+	if events[0].Phase != ToolProgressStart {
+		t.Errorf("event 0 phase = %v, want ToolProgressStart", events[0].Phase)
+	}
+	if events[1].Phase != ToolProgressNote {
+		t.Errorf("event 1 phase = %v, want ToolProgressNote", events[1].Phase)
+	}
+	if events[1].Summary != "trying exa-cli" {
+		t.Errorf("event 1 summary = %q, want %q", events[1].Summary, "trying exa-cli")
+	}
+	if events[1].Tool != "web" {
+		t.Errorf("event 1 tool = %q, want %q", events[1].Tool, "web")
+	}
+	if events[2].Phase != ToolProgressDone {
+		t.Errorf("event 2 phase = %v, want ToolProgressDone", events[2].Phase)
+	}
+}
+
+// noteEmittingToolExecutor is a minimal ToolExecutor whose ExecuteWithContext
+// reads tools.ProgressFromContext(ctx) and, when present, emits exactly one
+// note before returning — standing in for a real tool like WebTool that does
+// the same during its fallback chain.
+type noteEmittingToolExecutor struct {
+	note string
+}
+
+func (e *noteEmittingToolExecutor) Execute(ctx context.Context, name string, args map[string]any) (string, error) {
+	if p := tools.ProgressFromContext(ctx); p != nil {
+		p(e.note)
+	}
+	return "ok", nil
+}
+
+func (e *noteEmittingToolExecutor) ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(tools.AsyncResult)) (tools.ToolResult, bool) {
+	if p := tools.ProgressFromContext(ctx); p != nil {
+		p(e.note)
+	}
+	return tools.ToolResult{Output: "ok"}, false
+}
+
+func (e *noteEmittingToolExecutor) GetSchemas() []providers.Tool {
+	return []providers.Tool{{Type: "function", Function: providers.FunctionDefinition{Name: "web"}}}
 }

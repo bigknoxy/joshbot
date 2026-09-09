@@ -38,8 +38,10 @@ joshbot is heavier on guarantees, lighter on your machine.
 - **Model-Centric Config** - Simplified model configuration with provider auto-detection and fallback chains
 - **Prompt Caching** - Intelligent caching of system prompts with mtime-based invalidation for faster responses
 - **Tool Use** - File operations, shell commands, web search, scheduling, and more
+- **Resilient Web Search** - `web_search`/`web_code`/`web_company`/`web_research` fall back exa-cli → Exa MCP → DuckDuckGo, each leg on its own deadline so one slow call can't eat the whole turn; an optional tuner (`tuning.enabled`, off by default) learns per-tool timeouts from real timeout/success history and persists the adjustment across restarts
 - **Proactive Tasks** - Heartbeat system for autonomous task processing
 - **Scheduled Reminders** - Ask for a reminder in `30m`, `2h` or `1d`, one-off or repeating; jobs *and their delivery* persist across restarts — a reminder that fires after a reboot still reaches your chat
+- **Documentation Drift Check** - `joshbot docs check` runs a bounded subagent that compares source and config against the docs and writes an evidence-gated, propose-only report
 
 ## Requirements
 
@@ -508,6 +510,35 @@ left unchecked, to retry) when no recipient chat ID is known yet; a task is only
 checked off `[x]` once it has actually been published, so it never re-fires or
 silently burns tokens against a dead end.
 
+## Documentation Drift Check
+
+```bash
+joshbot docs check
+```
+
+Runs a bounded, read-mostly subagent that compares joshbot's own source and
+config against `README.md`, `docs/INSTALL.md`, `site/*.html`,
+`AGENTS.md`/`CLAUDE.md` and the bundled `SKILL.md` files, and writes a
+propose-only report to `workspace/reports/doc-drift-<YYYY-MM-DD>.md`. It is a
+standalone CLI command, not something the model can call mid-chat, and runs
+under its own 5-minute budget independent of `agents.defaults.timeout`.
+
+Every reported item must be backed by a verification command the subagent
+actually ran (`go build`, `wc -l`, `go test -cover`, ...); this is enforced in
+Go after the scan runs — an item with no evidence path is silently dropped,
+regardless of what the model claims about it, rather than left to the model's
+own judgement. A report with zero items can mean the docs are current, or that
+nothing could be verified (e.g. no shell access) — read the report rather than
+just the count.
+
+Verification commands run through the shell tool like any other tool call.
+`tools.shell_approval`'s default (`"off"`) needs nothing further; with it
+turned on, `docs check` installs the same interactive terminal approval prompt
+`joshbot agent` does, rather than deny every command and produce an empty
+report that looks like a clean bill of health. There is no config key for this
+feature and no cron wiring yet — running it on a schedule is a manual `cron`
+job or a follow-up.
+
 ## Configuration
 
 Config file: `~/.joshbot/config.json`
@@ -852,6 +883,64 @@ fails every request the moment it is used and blames the context, not the config
 > **Upgrading:** a config written by an older joshbot stores this as a raw
 > nanosecond count (`"timeout": 900000000000`). It is still read correctly — as
 > 900s — and is rewritten in the string form the next time the config is saved.
+
+#### Web tool timeouts
+
+`web_search`, `web_code`, `web_company` and `web_research` all fall back
+exa-cli → Exa MCP → DuckDuckGo on a native failure, and each leg of that chain
+runs under its own sub-deadline derived from the turn's remaining budget — so
+one slow `exec.CommandContext` call can no longer eat the whole
+`agents.defaults.timeout` with nothing left for the ReAct loop to format a
+reply. Five keys under `tools.web` tune it, all `config.Duration` (same
+duration-string grammar as above) and all **zero-means-unset** — an
+unconfigured key uses the tool's own built-in default rather than overriding
+it to zero:
+
+| Key | Bounds | Built-in default |
+|---|---|---|
+| `tools.web.search_timeout` | one leg of `web_search` | 25s |
+| `tools.web.research_timeout` | one leg of `web_research` (deep research legitimately runs longer) | 45s |
+| `tools.web.code_timeout` | one leg of `web_code` | 20s |
+| `tools.web.company_timeout` | one leg of `web_company` | 20s |
+| `tools.web.finish_reserve` | subtracted from the remaining turn budget before deriving a leg's sub-timeout, so a leg that runs right up to its own deadline still leaves time to reply | 5s |
+
+A backend that fails for one operation is deprioritized — moved to the back
+of that operation's try order for a short cooldown — rather than dropped, so a
+wrong guess costs latency, not capability; any success resets it. On native
+failure for `web_code`/`web_company`/`web_research`, joshbot falls back to a
+plain DuckDuckGo search and marks the result as degraded/best-effort rather
+than erroring outright.
+
+#### Timeout auto-tuning (`tuning.enabled`, off by default)
+
+An optional companion to the timeouts above: when `tuning.enabled` is `true`,
+joshbot watches whether each web operation's calls are timing out or
+succeeding and nudges that operation's effective timeout up or down within a
+bound, persisting the adjustment across restarts.
+
+```json
+{ "tuning": { "enabled": true, "max_bump": "30s", "step": "5s" } }
+```
+
+- `tuning.max_bump` (default `30s`) — the most the tuner may ever raise a
+  tool's timeout above its configured/default value.
+- `tuning.step` (default `5s`, must not exceed `max_bump`) — how much one
+  tune event moves the timeout, up or down.
+
+The adjustment lives in `~/.joshbot/tuning_overlay.json`, never in
+`config.json`, and the event history it's computed from is an append-only
+`~/.joshbot/tuning_events.jsonl`. It takes effect **on the next process
+start** — joshbot has no live config-reload mechanism, so a tune made mid-run
+is picked up the same way any other config change would be, at the next
+restart.
+
+```bash
+joshbot tuning status   # each tool's base/tuned/effective timeout, recent failure rate, last few events
+joshbot tuning reset    # clear the overlay; every tool reverts to its configured timeout
+```
+
+`reset` clears the overlay only — the event log is left untouched, with a
+marker event appended rather than the log being truncated.
 
 ### Shell Sandbox
 
@@ -1649,7 +1738,10 @@ reaches the prompt.
 | `glob` | Find files by pattern |
 | `grep` | Search file contents |
 | `shell` | Execute shell commands (deny-listed, allowlisted env, optional Linux sandbox) |
-| `web_search` | Search the web (exa-cli / Exa MCP / DuckDuckGo — no key required) |
+| `web_search` | Search the web (exa-cli → Exa MCP → DuckDuckGo fallback chain — no key required) |
+| `web_code` | Search the web for code (same exa-cli → Exa MCP → DuckDuckGo fallback chain) |
+| `web_company` | Search the web for company info (same fallback chain) |
+| `web_research` | Deeper, longer-running web research (same fallback chain, longer default timeout) |
 | `web_fetch` | Fetch and extract web page content |
 | `message` | Send messages to other channels |
 | `send_file` | Send a workspace file to the chat as a native attachment (photo or document; type decided by sniffing the bytes) |

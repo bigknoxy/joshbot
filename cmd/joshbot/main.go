@@ -3390,9 +3390,8 @@ func runGateway(c *cli.Context) error {
 	// Gateway status writer: records live channel state to a JSON file that
 	// `joshbot status` reads. Deleted on shutdown so a stale file never
 	// outlives the process.
-	homeDir, _ := os.UserHomeDir()
 	var gwStatus *gatewaystatus.Writer
-	if homeDir != "" {
+	if config.DefaultHome != "" {
 		gwStatus = gatewaystatus.NewWriter(gatewaystatus.Path(config.DefaultHome))
 		gwStatus.SetPID(os.Getpid(), time.Now())
 		defer gwStatus.Delete()

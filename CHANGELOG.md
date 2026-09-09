@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Context compaction now tries a cheap, no-LLM-call trim of old tool/assistant
+  output before paying for a full summarization round trip. When trimming
+  alone gets the conversation back under the compaction threshold budget, the
+  compressor is never called; the live turn and the last few messages before
+  it are always left untouched. Reduces summarization calls on turns where a
+  handful of large-but-old tool results — not the live conversation — pushed
+  the context over budget.
+- A provider rejection for exceeding the model's context window now surfaces
+  with an actionable hint (`/new`, split the request, or switch to a
+  larger-context model with `/model`) instead of the raw provider error only.
+  Matched on message wording rather than status code, since providers do not
+  share one for this failure.
+
 ## [1.68.0] - 2026-09-09
 
 ### Fixed

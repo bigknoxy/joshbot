@@ -187,7 +187,7 @@ func parseExaCLISearchResults(output string) ([]SearchResult, error) {
 // output goes into a tool result like any other web content. If this ever grows
 // into "ask the endpoint what tools it has", it must move onto internal/mcp and
 // behind the trust store first.
-func (t *WebTool) exaSearch(query string, numResults int) ([]SearchResult, error) {
+func (t *WebTool) exaSearch(ctx context.Context, query string, numResults int) ([]SearchResult, error) {
 	// Build JSON-RPC request
 	req := exaSearchRequest{
 		JSONRPC: "2.0",
@@ -204,8 +204,11 @@ func (t *WebTool) exaSearch(query string, numResults int) ([]SearchResult, error
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	// Bound the Exa call within the caller's turn deadline: the agent owns the
+	// deadline, so a slow search engine must not outlive the turn and push the
+	// whole reply over its budget. WithTimeout pins the ceiling at 25s while the
+	// passed ctx already carries (or is capped by) the turn deadline.
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
 	// Create HTTP request
@@ -406,7 +409,7 @@ func (t *WebTool) Execute(ctxArg interface{}, args map[string]any) ToolResult {
 	case "web_research":
 		return t.webResearch(ctx, args)
 	case "web_fetch":
-		return t.webFetch(args)
+		return t.webFetch(ctx, args)
 	default:
 		return ToolResult{Error: fmt.Errorf("unknown operation: %s", operation)}
 	}
@@ -437,7 +440,7 @@ func (t *WebTool) webSearch(ctx context.Context, args map[string]any) ToolResult
 
 	// Try Exa MCP (HTTP)
 	log.Debug("Trying Exa MCP search", "query", query)
-	results, err := t.exaSearch(query, maxResults)
+	results, err := t.exaSearch(ctx, query, maxResults)
 	if err == nil && len(results) > 0 {
 		log.Debug("Exa MCP search succeeded", "results", len(results))
 		return t.formatResults(results)
@@ -451,7 +454,7 @@ func (t *WebTool) webSearch(ctx context.Context, args map[string]any) ToolResult
 	}
 
 	// Fallback to DuckDuckGo
-	return t.duckDuckGoSearch(query, maxResults)
+	return t.duckDuckGoSearch(ctx, query, maxResults)
 }
 
 // webCode performs a code search using exa-cli
@@ -585,7 +588,10 @@ func (t *WebTool) formatResults(results []SearchResult) ToolResult {
 }
 
 // duckDuckGoSearch performs a web search using DuckDuckGo with fallbacks.
-func (t *WebTool) duckDuckGoSearch(query string, maxResults int) ToolResult {
+// It honors ctx for cancellation: blocking backoff yields to the deadline so a
+// stalled engine can never outlive the caller's turn budget (that is what
+// previously produced "processing your request took too long").
+func (t *WebTool) duckDuckGoSearch(ctx context.Context, query string, maxResults int) ToolResult {
 	// Try each search engine in order
 	var lastError error
 	engines := searchEngines
@@ -603,10 +609,14 @@ func (t *WebTool) duckDuckGoSearch(query string, maxResults int) ToolResult {
 
 		log.Debug("Trying search engine", "engine", engine.Name, "url", searchURL)
 
-		result := t.doSearch(searchURL, maxResults)
+		result := t.doSearch(ctx, searchURL, maxResults)
 		if result.Error == nil && result.Output != "" {
 			// Success - add engine name to output
 			return ToolResult{Output: result.Output + fmt.Sprintf("\n(Search engine: %s)", engine.Name)}
+		} else if result.Error != nil && ctx.Err() != nil {
+			// The caller's deadline expired; stop walking engines rather than
+			// grinding into the next one with no time left.
+			return ToolResult{Error: fmt.Errorf("search aborted: %w", ctx.Err())}
 		}
 
 		// Check if it's a retryable error (202, 429, 5xx)
@@ -629,8 +639,8 @@ func (t *WebTool) duckDuckGoSearch(query string, maxResults int) ToolResult {
 }
 
 // doSearch performs a single search request with retry logic.
-func (t *WebTool) doSearch(searchURL string, maxResults int) ToolResult {
-	req, err := http.NewRequest("GET", searchURL, nil)
+func (t *WebTool) doSearch(ctx context.Context, searchURL string, maxResults int) ToolResult {
+	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to create request: %w", err)}
 	}
@@ -646,7 +656,9 @@ func (t *WebTool) doSearch(searchURL string, maxResults int) ToolResult {
 			// Exponential backoff: 1s, 2s, 4s
 			delay := t.baseDelay * time.Duration(1<<(attempt-1))
 			log.Debug("Retrying search after delay", "attempt", attempt, "delay", delay)
-			time.Sleep(delay)
+			if !sleepWithCtx(ctx, delay) {
+				return ToolResult{Error: fmt.Errorf("search aborted: deadline exceeded during retry backoff")}
+			}
 		}
 
 		resp, err := t.httpClient.Do(req)
@@ -721,7 +733,9 @@ func (t *WebTool) doSearch(searchURL string, maxResults int) ToolResult {
 				// Longer delay for rate limiting
 				delay := t.baseDelay * time.Duration(1<<attempt) * 2
 				log.Debug("Rate limited, waiting longer", "delay", delay)
-				time.Sleep(delay)
+				if !sleepWithCtx(ctx, delay) {
+					return ToolResult{Error: fmt.Errorf("search aborted: deadline exceeded during rate-limit backoff")}
+				}
 				continue
 			}
 			return ToolResult{Error: fmt.Errorf("search returned status 429 (Too Many Requests)")}
@@ -749,6 +763,18 @@ func (t *WebTool) doSearch(searchURL string, maxResults int) ToolResult {
 		defer lastResp.Body.Close()
 	}
 	return ToolResult{Error: fmt.Errorf("search failed after %d retries", t.maxRetries)}
+}
+
+// sleepWithCtx sleeps for d, returning false if ctx is done first. It replaces
+// bare time.Sleep in backoff loops so a stalled engine cannot outlive the
+// caller's turn deadline.
+func sleepWithCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
 }
 
 // searchResult represents a single search result.
@@ -842,7 +868,7 @@ func (t *WebTool) parseSearchResults(html string, maxResults int) []searchResult
 }
 
 // webFetch fetches content from a URL.
-func (t *WebTool) webFetch(args map[string]any) ToolResult {
+func (t *WebTool) webFetch(ctx context.Context, args map[string]any) ToolResult {
 	urlStr, _ := args["url"].(string)
 	if urlStr == "" {
 		return ToolResult{Error: errors.New("url is required for web_fetch")}
@@ -860,7 +886,7 @@ func (t *WebTool) webFetch(args map[string]any) ToolResult {
 
 	// Try exa crawl first (handles JS-rendered pages)
 	if t.exaCLIAvailable {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		content, err := t.exaCLICrawl(ctx, urlStr)
 		if err == nil && content != "" {
@@ -870,7 +896,7 @@ func (t *WebTool) webFetch(args map[string]any) ToolResult {
 	}
 
 	// Fallback to basic HTTP fetch
-	req, err := http.NewRequest("GET", urlStr, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
 		return ToolResult{Error: fmt.Errorf("failed to create request: %w", err)}
 	}

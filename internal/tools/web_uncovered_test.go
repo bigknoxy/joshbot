@@ -87,12 +87,22 @@ func TestWebTool_OperationsRequireTheirArgument(t *testing.T) {
 	}
 }
 
-// The exa-only operations must say exa-cli is missing and how to install it,
-// not fail with a bare exec error the model will retry forever.
+// The exa-only operations must say exa-cli is missing and how to install it
+// as part of the aggregated failure — never a bare exec error the model will
+// retry forever — even once every fallback tier has also been tried and
+// failed (see internal/tools/web_specialized_test.go for the success/degraded
+// path of the same fallback chain, added when webCode/webCompany/webResearch
+// gained the exa-cli -> Exa MCP -> DuckDuckGo shape webSearch already had).
 func TestWebTool_ExaOnlyOperationsReportMissingCLI(t *testing.T) {
-	tool := &WebTool{exaCLIAvailable: false}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
 	for _, op := range []string{"web_code", "web_company", "web_research"} {
 		t.Run(op, func(t *testing.T) {
+			tool := newTestWebTool(t, srv)
+			tool.exaCLIAvailable = false
 			res := tool.Execute(context.Background(), map[string]any{"operation": op, "query": "go generics"})
 			if res.Error == nil {
 				t.Fatalf("expected an error, got %q", res.Output)

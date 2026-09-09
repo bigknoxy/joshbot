@@ -351,6 +351,37 @@ type registrySettings struct {
 	attachmentLimits   *bus.AttachmentLimits
 	sendFileApproval   ApprovalMode
 	sendFileDisabled   bool
+	webBudgets         WebToolBudgets
+	timeoutRecorder    TimeoutRecorder
+}
+
+// TimeoutRecorder observes whether one attempt in the web tool's
+// deadline-aware fallback chain timed out, so a caller can accumulate
+// persisted counters (internal/tuning.Tracker) without internal/tools
+// importing internal/tuning — Go interfaces are satisfied structurally, so
+// Tracker's Record method matches this shape with no import needed in either
+// direction, avoiding any tools<->tuning import cycle.
+type TimeoutRecorder interface {
+	// Record is called once per fallback-chain attempt (one leg of
+	// webSearch/webCode/webCompany/webResearch), naming the tool operation
+	// ("web_search", "web_code", "web_company", "web_research") and whether
+	// that attempt's own per-call deadline (see webPerCallDeadline) was what
+	// ended it, as opposed to some other failure.
+	Record(tool string, timedOut bool)
+}
+
+// WebToolBudgets carries the per-operation timeout knobs for the web tool's
+// deadline-aware fallback chains (see webPerCallDeadline in web.go). A zero
+// field leaves the tool's own package-level default in place — the same
+// "zero means unset" rule config.Duration follows, so an operator who sets
+// only tools.web.search_timeout does not have to also repeat every other key
+// just to avoid overriding it back to zero.
+type WebToolBudgets struct {
+	SearchTimeout   time.Duration
+	ResearchTimeout time.Duration
+	CodeTimeout     time.Duration
+	CompanyTimeout  time.Duration
+	FinishReserve   time.Duration
 }
 
 // RegistryOption adjusts optional registry behaviour. Options are used rather
@@ -409,6 +440,25 @@ func WithSendFileApproval(mode ApprovalMode) RegistryOption {
 func WithSendFileDisabled(disabled bool) RegistryOption {
 	return func(s *registrySettings) {
 		s.sendFileDisabled = disabled
+	}
+}
+
+// WithWebToolBudgets overrides the per-operation timeouts the web tool's
+// deadline-aware fallback chains use (see webPerCallDeadline in web.go). Zero
+// fields leave the corresponding tool default in place.
+func WithWebToolBudgets(b WebToolBudgets) RegistryOption {
+	return func(s *registrySettings) {
+		s.webBudgets = b
+	}
+}
+
+// WithTimeoutRecorder wires a TimeoutRecorder into the web tool's
+// fallback-chain attempts, so a per-tool timeout auto-tuner can accumulate
+// persisted counters. Absent by default: a bare RegistryWithDefaults call
+// records nothing, exactly like every other opt-in RegistryOption here.
+func WithTimeoutRecorder(rec TimeoutRecorder) RegistryOption {
+	return func(s *registrySettings) {
+		s.timeoutRecorder = rec
 	}
 }
 
@@ -473,7 +523,13 @@ func RegistryWithDefaults(
 
 	// Web tool
 	webTool := NewWebToolFromConfig(WebToolConfig{
-		Timeout: 0, // Will default in constructor
+		Timeout:         0, // Will default in constructor
+		SearchTimeout:   settings.webBudgets.SearchTimeout,
+		ResearchTimeout: settings.webBudgets.ResearchTimeout,
+		CodeTimeout:     settings.webBudgets.CodeTimeout,
+		CompanyTimeout:  settings.webBudgets.CompanyTimeout,
+		FinishReserve:   settings.webBudgets.FinishReserve,
+		Recorder:        settings.timeoutRecorder,
 	})
 	_ = registry.Register(webTool)
 

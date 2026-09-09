@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bigknoxy/joshbot/internal/config"
 	"github.com/bigknoxy/joshbot/internal/mcp"
@@ -137,6 +138,74 @@ func TestRegistryWithDefaultsRegistersWebAliases(t *testing.T) {
 			t.Errorf("tool %q must not be registered without a MessageSender", name)
 		}
 	}
+}
+
+func webToolFrom(t *testing.T, reg *Registry) *WebTool {
+	t.Helper()
+	tool, ok := reg.Get("web")
+	if !ok {
+		t.Fatal("registry has no web tool")
+	}
+	w, ok := tool.(*WebTool)
+	if !ok {
+		t.Fatalf("web tool is %T, want *WebTool", tool)
+	}
+	return w
+}
+
+// WithWebToolBudgets is the only way an operator's tools.web.*_timeout config
+// reaches the web tool's deadline-aware fallback chains (webPerCallDeadline).
+// An option that is accepted but not applied leaves every call silently
+// bound by the tool's own package defaults instead of what the operator set.
+func TestRegistryOptionsReachTheWebTool(t *testing.T) {
+	ws := t.TempDir()
+
+	t.Run("defaults come from the tool's own package constants", func(t *testing.T) {
+		w := webToolFrom(t, RegistryWithDefaults(ws, true, 5, 0, nil, nil, nil, nil))
+		if w.searchTimeout != defaultWebSearchTimeout {
+			t.Errorf("searchTimeout = %v, want the package default %v", w.searchTimeout, defaultWebSearchTimeout)
+		}
+		if w.finishReserve != defaultFinishReserve {
+			t.Errorf("finishReserve = %v, want the package default %v", w.finishReserve, defaultFinishReserve)
+		}
+	})
+
+	t.Run("WithWebToolBudgets overrides every field", func(t *testing.T) {
+		w := webToolFrom(t, RegistryWithDefaults(ws, true, 5, 0, nil, nil, nil, nil,
+			WithWebToolBudgets(WebToolBudgets{
+				SearchTimeout:   11 * time.Second,
+				ResearchTimeout: 22 * time.Second,
+				CodeTimeout:     33 * time.Second,
+				CompanyTimeout:  44 * time.Second,
+				FinishReserve:   3 * time.Second,
+			})))
+		if w.searchTimeout != 11*time.Second {
+			t.Errorf("searchTimeout = %v, want 11s", w.searchTimeout)
+		}
+		if w.researchTimeout != 22*time.Second {
+			t.Errorf("researchTimeout = %v, want 22s", w.researchTimeout)
+		}
+		if w.codeTimeout != 33*time.Second {
+			t.Errorf("codeTimeout = %v, want 33s", w.codeTimeout)
+		}
+		if w.companyTimeout != 44*time.Second {
+			t.Errorf("companyTimeout = %v, want 44s", w.companyTimeout)
+		}
+		if w.finishReserve != 3*time.Second {
+			t.Errorf("finishReserve = %v, want 3s", w.finishReserve)
+		}
+	})
+
+	t.Run("a zero field in WebToolBudgets leaves the tool default in place", func(t *testing.T) {
+		w := webToolFrom(t, RegistryWithDefaults(ws, true, 5, 0, nil, nil, nil, nil,
+			WithWebToolBudgets(WebToolBudgets{SearchTimeout: 11 * time.Second})))
+		if w.searchTimeout != 11*time.Second {
+			t.Errorf("searchTimeout = %v, want the overridden 11s", w.searchTimeout)
+		}
+		if w.researchTimeout != defaultWebResearchTimeout {
+			t.Errorf("researchTimeout = %v, want the untouched package default %v", w.researchTimeout, defaultWebResearchTimeout)
+		}
+	})
 }
 
 // --- MCP registration ---

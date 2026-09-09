@@ -4,6 +4,8 @@ import (
 	"context"
 	"math/rand"
 	"time"
+
+	"github.com/bigknoxy/joshbot/internal/cooldown"
 )
 
 // Retry and cooldown tuning. A transient blip should be retried on the same
@@ -25,6 +27,10 @@ const (
 	// upstream gave no Retry-After to seed it.
 	cooldownBase = 15 * time.Second
 	cooldownMax  = 5 * time.Minute
+	// cooldownMaxShift clamps cooldown.Backoff's exponent: 15s << 5 already
+	// exceeds cooldownMax, so 5 loses no ceiling while keeping the shift far
+	// short of overflowing an int64 duration.
+	cooldownMaxShift = 5
 )
 
 // providerHealth tracks consecutive failures for one provider. It is
@@ -96,24 +102,11 @@ func (mp *MultiProvider) markFailure(name string, err error) {
 	h.failures++
 	h.lastErr = ClassifyError(err)
 
-	cool := time.Duration(0)
-	if ra := RetryAfterFromError(err); ra > 0 {
-		cool = ra
-	} else if h.failures >= cooldownThreshold {
-		// The shift is clamped before shifting, not only the result: an
-		// unbounded exponent overflows the int64 duration negative at ~40
-		// consecutive failures, and a negative cool would silently drop the
-		// cooldown for exactly the provider that is most persistently down.
-		// 15s << 5 already exceeds cooldownMax, so 5 loses nothing.
-		shift := h.failures - cooldownThreshold
-		if shift > 5 {
-			shift = 5
-		}
-		cool = cooldownBase << shift
-	}
-	if cool > cooldownMax {
-		cool = cooldownMax
-	}
+	// The backoff formula (including the overflow-safe shift clamp) lives in
+	// internal/cooldown, shared with internal/tools' web-backend health, so
+	// the two do not drift into two subtly different copies of the same
+	// algorithm.
+	cool := cooldown.Backoff(h.failures, cooldownThreshold, RetryAfterFromError(err), cooldownBase, cooldownMax, cooldownMaxShift)
 	if cool > 0 {
 		h.coolUntil = mp.now().Add(cool)
 	}

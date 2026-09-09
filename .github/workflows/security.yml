@@ -7,10 +7,14 @@ name: Security
 #   - CodeQL           now runs as GitHub's native "code scanning default
 #                      setup" (languages: go, actions; extended query suite),
 #                      configured at the repo level, not from a workflow file.
-#   - gitleaks         superseded by GitHub's native secret scanning, which
-#                      is also wired to push protection — it blocks a secret
-#                      before it lands, which a CI job running after the push
-#                      never could.
+#   - gitleaks         superseded, as a scanner, by GitHub's native secret
+#                      scanning, which is also wired to push protection — it
+#                      blocks a secret before it lands, which a CI job
+#                      running after the push never could. trivy-fs below
+#                      still runs its own secret scanner too: a second,
+#                      differently-ruled pass over the same class of finding
+#                      is defense in depth, not redundant with gitleaks
+#                      specifically being gone.
 #   - dependency-review (PR-only vuln/license gate on new deps) — its vuln
 #                      half is covered by osv-scanner in audit-additions.yml,
 #                      which already runs on every PR and push.
@@ -139,8 +143,14 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run govulncheck
+        # Pinned like every other tool in this file: an unpinned @latest
+        # here would let a new govulncheck release change output format or
+        # strictness underneath CI, unrelated to any change in this repo.
+        # The vulnerability *database* it queries is fetched fresh from
+        # vuln.go.dev on every run regardless of the tool's own version, so
+        # pinning the binary costs nothing in staleness.
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           govulncheck ./...
 
   trivy-fs:
@@ -173,8 +183,23 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@v3
       - name: Build image
-        run: docker build -f Dockerfile -t local/scan:${{ github.sha }} .
+        # Same buildx + GHA cache setup as ci.yml's docker-build job, and
+        # the two share the cache scope by default: this job usually reuses
+        # layers docker-build already built for the same commit instead of
+        # rebuilding the image from scratch a second time. load: true is
+        # required (unlike docker-build's push:false/no-load) because trivy
+        # needs the image in the local daemon to scan it by tag.
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: local/scan:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image

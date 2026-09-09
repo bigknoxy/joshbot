@@ -83,8 +83,11 @@ func (w *Writer) SetChannel(name, state string) {
 	w.write(now)
 }
 
-// RemoveChannel removes a channel from the status document (used when a
-// channel is disabled and should not appear in the status output at all).
+// RemoveChannel removes a channel from the status document entirely, for a
+// caller that wants a channel absent from status output rather than shown as
+// "disabled" via SetChannel. No current caller needs that distinction — every
+// wired-up channel today reports "disabled" through SetChannel instead — so
+// this exists for a future one and is exercised only by its own test.
 func (w *Writer) RemoveChannel(name string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

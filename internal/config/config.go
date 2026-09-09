@@ -94,6 +94,14 @@ const (
 	// delegate_subagent chains. Mirrors subagent.DefaultMaxDepth.
 	DefaultSubagentMaxDepth = 2
 
+	// DefaultTuningMaxBump and DefaultTuningStep seed TuningConfig so that
+	// enabling tuning.enabled with no other config produces sane, bounded
+	// behaviour. See TuningConfig's doc comment for why this field departs
+	// from the "zero means unset" convention the other config.Duration
+	// fields in this package follow.
+	DefaultTuningMaxBump = 30 * time.Second
+	DefaultTuningStep    = 5 * time.Second
+
 	// Dream consolidation modes for agents.defaults.dream_mode.
 	DreamModeOff    = "off"
 	DreamModeRecord = "record"
@@ -342,8 +350,37 @@ type WebSearchConfig struct {
 }
 
 // WebToolsConfig holds web tools configuration.
+//
+// The four *Timeout fields and FinishReserve bound one leg of the web tool's
+// deadline-aware fallback chains (webSearch/webCode/webCompany/webResearch,
+// each exa-cli -> Exa MCP -> DuckDuckGo): without a sub-deadline of its own, a
+// single slow exec.CommandContext call could eat the whole
+// agents.defaults.timeout budget and the turn died with no partial result and
+// no fallback attempted. Every field is a config.Duration, never a bare
+// int/time.Duration — see internal/config/duration.go's #240. Zero means
+// unset, exactly like agents.defaults.timeout and stt.timeout: the tool
+// applies its own package-level default (see internal/tools/web.go) rather
+// than Defaults() seeding a nonzero value, so an existing config gains the
+// new behaviour with nothing new written to disk and no schema migration.
 type WebToolsConfig struct {
 	Search WebSearchConfig `mapstructure:"search" json:"search" yaml:"search"`
+
+	// SearchTimeout bounds a single leg (exa-cli, Exa MCP, or one DuckDuckGo
+	// engine attempt) of web_search's fallback chain.
+	SearchTimeout Duration `mapstructure:"search_timeout" json:"search_timeout,omitempty" yaml:"search_timeout,omitempty"`
+	// ResearchTimeout bounds a single leg of web_research's fallback chain.
+	// Deep research legitimately runs longer than a plain search.
+	ResearchTimeout Duration `mapstructure:"research_timeout" json:"research_timeout,omitempty" yaml:"research_timeout,omitempty"`
+	// CodeTimeout bounds a single leg of web_code's fallback chain.
+	CodeTimeout Duration `mapstructure:"code_timeout" json:"code_timeout,omitempty" yaml:"code_timeout,omitempty"`
+	// CompanyTimeout bounds a single leg of web_company's fallback chain.
+	CompanyTimeout Duration `mapstructure:"company_timeout" json:"company_timeout,omitempty" yaml:"company_timeout,omitempty"`
+	// FinishReserve is subtracted from the turn's remaining deadline before
+	// deriving a per-call sub-timeout (webPerCallDeadline), so a leg that ran
+	// right up to its own sub-deadline still leaves the ReAct loop time to
+	// format and return a reply, instead of the whole turn dying at the outer
+	// deadline with nothing to show for it.
+	FinishReserve Duration `mapstructure:"finish_reserve" json:"finish_reserve,omitempty" yaml:"finish_reserve,omitempty"`
 }
 
 // ExecConfig holds shell execution configuration.
@@ -390,6 +427,45 @@ type ToolsConfig struct {
 	// existing behaviour — the tool stays available — for every config that
 	// predates this field.
 	SendFileDisabled bool `mapstructure:"send_file_disabled" json:"send_file_disabled,omitempty" yaml:"send_file_disabled,omitempty"`
+}
+
+// TuningConfig configures the narrow per-tool timeout auto-tuner
+// (internal/tuning, issue: the persisted counters half of "per-tool timeout
+// auto-tuning" — deliberately NOT the general multi-key MAPE-K framework).
+//
+// It is off by default (Enabled's zero value) — the tuner must do nothing at
+// all, record no signal that matters and propose no change, until an
+// operator opts in — for the same reason SendFileDisabled and dream_mode are
+// inverted-polarity/string rather than a bare bool: Enabled carries
+// omitempty, so an existing config that predates this field decodes as
+// disabled with nothing new written to disk, and no schema migration is
+// needed (the streaming v4→v5 trap this repo has hit before).
+//
+// MaxBump and Step ship non-zero defaults unconditionally, unlike every other
+// config.Duration timeout in this package (which leave zero meaning "apply
+// my own package-level default at the point of use"). That is safe here
+// specifically because TuningConfig is a brand-new field: no config on disk
+// has ever had an opinion about it, so seeding a real value in Defaults()
+// carries none of the "streaming" v4→v5 migration risk that comes from
+// changing what an *existing* field's zero value has always meant. The
+// reason to seed it at all rather than defer to a package default: MaxBump
+// is a safety bound ("never unbounded, even when enabled"), so Validate
+// below deliberately rejects a zero MaxBump once Enabled is true instead of
+// silently substituting one — flipping tuning.enabled on with the shipped
+// defaults still in place produces sane, explicit, bounded behaviour with
+// nothing further to configure.
+type TuningConfig struct {
+	// Enabled turns the tuner on. Off by default.
+	Enabled bool `mapstructure:"enabled" json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// MaxBump is the operator-declared ceiling on how far the tuner may
+	// raise a tool's timeout above its configured (or default) value. Never
+	// unbounded, even when Enabled is true — Validate rejects a non-positive
+	// value the moment the feature is turned on.
+	MaxBump Duration `mapstructure:"max_bump" json:"max_bump,omitempty" yaml:"max_bump,omitempty"`
+	// Step is how much one tune event raises or lowers a tool's timeout.
+	// Must not exceed MaxBump — a step that overshoots the ceiling on its
+	// very first move can never be taken at all.
+	Step Duration `mapstructure:"step" json:"step,omitempty" yaml:"step,omitempty"`
 }
 
 // GatewayConfig holds gateway server configuration.
@@ -546,8 +622,10 @@ type Config struct {
 	STT STTConfig `mapstructure:"stt" json:"stt,omitempty" yaml:"stt,omitempty"`
 	// Embeddings configures POST /v1/embeddings; zero value = disabled.
 	Embeddings EmbeddingsConfig `mapstructure:"embeddings" json:"embeddings,omitempty" yaml:"embeddings,omitempty"`
-	LogLevel   string           `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
-	User       UserConfig       `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
+	// Tuning configures the per-tool timeout auto-tuner; zero value = off.
+	Tuning   TuningConfig `mapstructure:"tuning" json:"tuning,omitempty" yaml:"tuning,omitempty"`
+	LogLevel string       `mapstructure:"log_level" json:"log_level" yaml:"log_level"`
+	User     UserConfig   `mapstructure:"user" json:"user,omitempty" yaml:"user,omitempty"`
 
 	// MCP configures Model Context Protocol servers whose tools are exposed to
 	// the agent. Declaring a server here is a privileged, operator-only act:
@@ -1001,6 +1079,10 @@ func Defaults() *Config {
 		// who had saved a config since, exactly the trap that made the
 		// `streaming` default a v4→v5 schema migration. The default is resolved
 		// at use time instead, in cmd/joshbot's runServe.
+		Tuning: TuningConfig{
+			MaxBump: Duration(DefaultTuningMaxBump),
+			Step:    Duration(DefaultTuningStep),
+		},
 		LogLevel: "info",
 	}
 }
@@ -1323,6 +1405,24 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateTimeout("embeddings.timeout", c.Embeddings.Timeout); err != nil {
+		return err
+	}
+	if err := validateTimeout("tools.web.search_timeout", c.Tools.Web.SearchTimeout); err != nil {
+		return err
+	}
+	if err := validateTimeout("tools.web.research_timeout", c.Tools.Web.ResearchTimeout); err != nil {
+		return err
+	}
+	if err := validateTimeout("tools.web.code_timeout", c.Tools.Web.CodeTimeout); err != nil {
+		return err
+	}
+	if err := validateTimeout("tools.web.company_timeout", c.Tools.Web.CompanyTimeout); err != nil {
+		return err
+	}
+	if err := validateTimeout("tools.web.finish_reserve", c.Tools.Web.FinishReserve); err != nil {
+		return err
+	}
+	if err := validateTuningBounds(c.Tuning); err != nil {
 		return err
 	}
 	for name, p := range c.Providers {
@@ -1740,6 +1840,37 @@ func validateTelegramAPIURL(raw string) error {
 	if u.Host == "" {
 		return fatalConfigError{fmt.Errorf(
 			"channels.telegram.api_url has no host, got %q", raw)}
+	}
+	return nil
+}
+
+// validateTuningBounds rejects an unusable tuning.max_bump/tuning.step, but
+// only once tuning.enabled is true — the bounds only matter once the feature
+// can act on them, so a disabled config with stale or inverted values sitting
+// in it (the common case: an operator who has never touched this feature)
+// must not fail to load.
+//
+// Both checks are fatal for the same reason validateTimeout's is: Load
+// answers an ordinary validation error by silently substituting Defaults(),
+// which would discard every provider, key and allowlist over a config typo
+// in a feature the operator may not even have looked at yet.
+func validateTuningBounds(t TuningConfig) error {
+	if !t.Enabled {
+		return nil
+	}
+	if t.MaxBump.Duration() <= 0 {
+		return fatalConfigError{fmt.Errorf(
+			"tuning.max_bump must be positive when tuning.enabled is true, got %s; "+
+				"the tuner is not allowed an unbounded ceiling", t.MaxBump)}
+	}
+	if t.Step.Duration() <= 0 {
+		return fatalConfigError{fmt.Errorf(
+			"tuning.step must be positive when tuning.enabled is true, got %s", t.Step)}
+	}
+	if t.Step.Duration() > t.MaxBump.Duration() {
+		return fatalConfigError{fmt.Errorf(
+			"tuning.step (%s) must not exceed tuning.max_bump (%s); a step that overshoots "+
+				"the ceiling on its first move can never be taken", t.Step, t.MaxBump)}
 	}
 	return nil
 }

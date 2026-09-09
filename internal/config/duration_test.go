@@ -234,3 +234,71 @@ func TestAgentTimeoutIsSettableFromTheEnvironment(t *testing.T) {
 		}
 	})
 }
+
+// TestValidateRejectsSubSecondWebToolTimeout is the same backstop as
+// TestValidateRejectsASubSecondTimeout, for the four per-operation web-tool
+// timeouts added for the deadline-aware fallback chains (webPerCallDeadline).
+// Each key is checked individually so a mistake in one does not mask another.
+func TestValidateRejectsSubSecondWebToolTimeout(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		set  func(c *Config, d Duration)
+	}{
+		{"search", "tools.web.search_timeout", func(c *Config, d Duration) { c.Tools.Web.SearchTimeout = d }},
+		{"research", "tools.web.research_timeout", func(c *Config, d Duration) { c.Tools.Web.ResearchTimeout = d }},
+		{"code", "tools.web.code_timeout", func(c *Config, d Duration) { c.Tools.Web.CodeTimeout = d }},
+		{"company", "tools.web.company_timeout", func(c *Config, d Duration) { c.Tools.Web.CompanyTimeout = d }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Defaults()
+			tc.set(c, Duration(500*time.Millisecond))
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("a 500ms %s was accepted", tc.key)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("error does not name the key %q: %v", tc.key, err)
+			}
+		})
+	}
+}
+
+// TestValidateAcceptsZeroWebToolTimeoutsAsUnset pins the same "zero means
+// unset" rule every other config.Duration timeout follows: the tool applies
+// its own default when the operator wrote nothing, so Defaults() must not
+// need to seed a nonzero value here either.
+func TestValidateAcceptsZeroWebToolTimeoutsAsUnset(t *testing.T) {
+	c := Defaults()
+	if err := c.Validate(); err != nil {
+		t.Fatalf("defaults with unset web-tool timeouts were rejected: %v", err)
+	}
+	if c.Tools.Web.SearchTimeout != 0 || c.Tools.Web.ResearchTimeout != 0 ||
+		c.Tools.Web.CodeTimeout != 0 || c.Tools.Web.CompanyTimeout != 0 || c.Tools.Web.FinishReserve != 0 {
+		t.Fatalf("Defaults() seeded a nonzero web-tool timeout, which would be written into every saved config: %+v", c.Tools.Web)
+	}
+}
+
+// TestWebToolTimeoutsCarryNoSchemaMigration mirrors
+// TestDefaultsCarryNoTimeout: a zero Duration with omitempty must be absent
+// from the marshaled defaults, or every config joshbot ever saves from now on
+// pins today's default forever.
+func TestWebToolTimeoutsCarryNoSchemaMigration(t *testing.T) {
+	b, err := json.Marshal(Defaults())
+	if err != nil {
+		t.Fatalf("marshal defaults: %v", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(b, &generic); err != nil {
+		t.Fatalf("decode defaults: %v", err)
+	}
+	tools_, _ := generic["tools"].(map[string]any)
+	web, _ := tools_["web"].(map[string]any)
+	for _, key := range []string{"search_timeout", "research_timeout", "code_timeout", "company_timeout", "finish_reserve"} {
+		if _, present := web[key]; present {
+			t.Fatalf("defaults serialized tools.web.%s, which would pin today's default into every saved config: %s", key, b)
+		}
+	}
+}

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.68.0] - 2026-09-09
+
+### Fixed
+- Web search no longer ignores the agent's per-turn deadline. Previously,
+  `exaSearch` rebuilt `context.Background()` and `duckDuckGoSearch`/`doSearch`
+  took no context at all, using blocking `time.Sleep` for retry backoff. When
+  Exa CLI/MCP was unavailable or slow, the tool could grind through 4 engines
+  × 3 retries × 30s client timeout on a dead context — far past the 120s turn
+  budget — cancelling the in-flight LLM call and surfacing "processing your
+  request took too long" followed by an internal error on every web-backed
+  reply. All search tiers now derive from the caller's context, backoff is
+  deadline-aware (`sleepWithCtx`), and the engine walk aborts promptly when
+  the turn deadline expires (#396).
+
 ## [1.67.0] - 2026-09-08
 
 ### Added

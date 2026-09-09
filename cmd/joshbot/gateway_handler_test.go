@@ -364,6 +364,21 @@ func TestFormatToolStatus(t *testing.T) {
 	}
 }
 
+// TestFormatToolStatusNoteIsNotRenderedAsDone is the falsifier for the
+// old if/else-treats-non-Start-as-Done bug: a ToolProgressNote must render as
+// a running/in-progress line, never with the "done" glyph and a bogus
+// zero-elapsed completion time (Elapsed and Err are meaningless on a Note —
+// see ToolProgressEvent's doc comment).
+func TestFormatToolStatusNoteIsNotRenderedAsDone(t *testing.T) {
+	note := formatToolStatus(agent.ToolProgressEvent{Tool: "web", Summary: "trying exa-cli search", Phase: agent.ToolProgressNote})
+	if note != "⚙️ web: trying exa-cli search" {
+		t.Errorf("note = %q, want the running-line format with the note as the summary", note)
+	}
+	if strings.Contains(note, "✅") || strings.Contains(note, "⚠️") {
+		t.Errorf("note = %q, must not use the done/failed glyphs", note)
+	}
+}
+
 // stubApprover records whether it was consulted.
 type stubApprover struct{ asked bool }
 

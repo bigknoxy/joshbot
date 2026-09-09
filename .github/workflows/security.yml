@@ -1,16 +1,39 @@
 name: Security
 
-# Migrated to the org-wide reusable security workflow
-# (bigknoxy/.github/.github/workflows/security-reusable.yml), which now
-# provides gitleaks, dependency-review (PRs only), CodeQL, and
-# govulncheck (language=go) plus trivy-fs/trivy-image (has_docker=true).
+# Local security gates for the three things nothing else in this repo's CI
+# covers. Three other tools used to run here too, via the org-wide reusable
+# workflow (bigknoxy/.github/.github/workflows/security-reusable.yml) — they
+# are dropped, not lost:
+#   - CodeQL           now runs as GitHub's native "code scanning default
+#                      setup" (languages: go, actions; extended query suite),
+#                      configured at the repo level, not from a workflow file.
+#   - gitleaks         superseded by GitHub's native secret scanning, which
+#                      is also wired to push protection — it blocks a secret
+#                      before it lands, which a CI job running after the push
+#                      never could.
+#   - dependency-review (PR-only vuln/license gate on new deps) — its vuln
+#                      half is covered by osv-scanner in audit-additions.yml,
+#                      which already runs on every PR and push.
 #
-# gosec is kept as a separate job below, unchanged from the previous
-# version of this file: the reusable workflow only runs govulncheck for
-# go, not gosec, so it is not covered and must stay local. See its
-# extensive inline comments for the exclude-list rationale — those
-# findings were triaged in issue #358 and are unrelated to this
-# migration.
+# What's left below has no native or additive-workflow equivalent:
+#   gosec         Go-specific security static analysis (SQL injection, weak
+#                 crypto, bad file permissions, ...). CodeQL's Go query pack
+#                 does not cover the same rule set.
+#   govulncheck   Go's own vuln DB, call-graph-aware (only flags a CVE if the
+#                 vulnerable symbol is actually reachable) — a different
+#                 method and database than osv-scanner's manifest scan.
+#   trivy-fs      Filesystem scan of the repo: Dockerfile misconfig +
+#                 lockfile CVEs.
+#   trivy-image   Builds the Dockerfile and scans the resulting image. This
+#                 repo ships that image (see docker-build in ci.yml), and
+#                 nothing else scans it.
+#
+# This file was previously "migrated" onto the reusable workflow and then
+# manually disabled entirely on 2026-09-08, silently dropping all of the
+# above — including the three with no replacement — for over a release. It
+# is now self-contained again on purpose: a workflow this repo depends on
+# for security coverage should not depend on another repo's workflow staying
+# in sync, reachable, and enabled.
 
 on:
   pull_request:
@@ -18,26 +41,56 @@ on:
     branches: [main]
   schedule:
     # Weekly, so a newly-disclosed CVE in an existing dependency surfaces
-    # even on a week with no code changes. govulncheck's DB updates
-    # independently of this repo's commits.
+    # even on a week with no code changes. govulncheck's and trivy's
+    # vulnerability DBs update independently of this repo's commits.
     - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: write
   security-events: write
 
 jobs:
-  security:
-    uses: bigknoxy/.github/.github/workflows/security-reusable.yml@main
-    with:
-      language: go
-      has_docker: true
-      dockerfile: Dockerfile
-      docker_context: .
-    secrets: inherit
-
+  # gosec: issue #358 triaged all 150 findings from its first real run. 129
+  # were false positives given this codebase's documented design — excluded
+  # below by rule ID, each with the specific reasoning that made it a
+  # rule-wide exclusion rather than a per-site #nosec:
+  #   G101 (possible hardcoded credential) — 3 hits, all public non-secret
+  #     URL constants and a UI label string; no key material.
+  #   G104 (unchecked error) — 75 hits, conventional best-effort patterns:
+  #     interactive-prompt Scanln/Sscanf, cleanup-path Close/Remove after
+  #     the primary error is already being returned, and tool Register()
+  #     calls whose only failure mode is a duplicate name among a fixed,
+  #     compiled-in set (a dev-time bug, not attacker-reachable).
+  #   G117 (marshaling a secret-shaped struct) — 1 hit, immediately followed
+  #     by an 0600 write gosec's check can't see two lines ahead.
+  #   G118 (context.Background in a goroutine) — 1 hit, ExecuteAsync's
+  #     documented fire-and-forget path, which must outlive the request that
+  #     spawned it — using the request context would defeat the feature.
+  #   G124 (cookie Secure not a literal `true`) — 2 hits, `isTLS(r)` is
+  #     deliberate: unconditional Secure would make the cookie undeliverable
+  #     on the plain-HTTP loopback bind that is the normal case here.
+  #   G204 (subprocess with variable) — 14 hits, the shell/sandbox/MCP
+  #     subsystem's entire documented reason for existing (`sh -c` on an
+  #     untrusted string, gated by deny-list/allowlist/approval/sandbox
+  #     layering described in AGENTS.md), plus argv-only exec.Command calls
+  #     with no shell involved, plus operator-configured MCP server commands.
+  #   G304 (file inclusion via variable) — 30 hits, every sampled read is a
+  #     fixed filename under an operator-configured directory, a
+  #     ValidateSessionID-gated session id, or CLI input AGENTS.md documents
+  #     as deliberately uncontained (containment bounds the model, not the
+  #     operator) — never network- or model-supplied. The actual agent-facing
+  #     filesystem tool (internal/tools/filesystem.go), which AGENTS.md says
+  #     must route through openat.go's Root-based helpers, does not appear
+  #     in this list at all.
+  #   G404 (weak random) — 1 hit, jitter on a retry backoff delay, not a
+  #     security-sensitive value.
+  #   G703 (taint through an internal helper) — 2 hits, both paths resolve
+  #     to a fixed filename, not attacker- or model-supplied input.
+  # The other 21 findings (G301/G302/G306, world-readable dirs/files for
+  # MEMORY.md, HISTORY.md, dream logs, cron jobs, skill files, subagent
+  # configs) were real and were fixed in the same PR that added this exclude
+  # list — no exclusion for those three rules.
   gosec:
     runs-on: ubuntu-latest
     permissions:
@@ -74,3 +127,65 @@ jobs:
           import sys
           sys.exit(1 if results else 0)
           "
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  trivy-fs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          format: sarif
+          output: trivy-fs.sarif
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  trivy-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build image
+        run: docker build -f Dockerfile -t local/scan:${{ github.sha }} .
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: local/scan:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          format: sarif
+          output: trivy-image.sarif
+      - uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image

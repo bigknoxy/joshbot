@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.69.0] - 2026-09-09
+
 ### Changed
 - Context compaction now tries a cheap, no-LLM-call trim of old tool/assistant
   output before paying for a full summarization round trip. When trimming
@@ -20,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   larger-context model with `/model`) instead of the raw provider error only.
   Matched on message wording rather than status code, since providers do not
   share one for this failure.
+
+### Fixed
+- The gateway-status file guard checked `os.UserHomeDir()` but built the file
+  path from `config.DefaultHome`, a separately-computed value that can be
+  overridden independently. It now checks the value it actually uses.
 
 ## [1.68.0] - 2026-09-09
 

@@ -50,6 +50,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/skills"
 	"github.com/bigknoxy/joshbot/internal/subagent"
 	"github.com/bigknoxy/joshbot/internal/tools"
+	"github.com/bigknoxy/joshbot/internal/tuning"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/urfave/cli/v2"
 )
@@ -431,6 +432,8 @@ func newApp() *cli.App {
 				},
 			},
 			sessionsCommand(),
+			tuningCommand(),
+			docsCommand(),
 			memoryCommand(),
 			{
 				Name:    "configure",
@@ -1086,6 +1089,67 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	// background services.
 	cronSvc := cron.NewService(msgBus, cfg.Agents.Defaults.Workspace)
 
+	// The per-tool timeout auto-tuner (internal/tuning) is off by default
+	// and, when off, this block builds nothing at all -- no Tracker, no
+	// event file, no recorder -- so an operator who has never touched
+	// tuning.enabled sees zero new behaviour. When enabled, its overlay
+	// (persisted separately from config.json) is merged onto the
+	// config-file timeouts once, here at startup: joshbot has no live
+	// config-reload mechanism for this kind of value (SIGHUP restarts the
+	// process rather than reloading in place), so "loaded at startup" is
+	// also the correct place for a later tune to take effect -- the next
+	// restart, exactly like every other config.Duration in this package.
+	webBudgets := tools.WebToolBudgets{
+		SearchTimeout:   cfg.Tools.Web.SearchTimeout.Duration(),
+		ResearchTimeout: cfg.Tools.Web.ResearchTimeout.Duration(),
+		CodeTimeout:     cfg.Tools.Web.CodeTimeout.Duration(),
+		CompanyTimeout:  cfg.Tools.Web.CompanyTimeout.Duration(),
+		FinishReserve:   cfg.Tools.Web.FinishReserve.Duration(),
+	}
+	var timeoutRecorder tools.TimeoutRecorder
+	if cfg.Tuning.Enabled {
+		eventsPath, overlayPath := tuningPaths(cfg)
+		tracker, err := tuning.NewTracker(eventsPath)
+		if err != nil {
+			log.Warn("tuning: failed to open event history, tuning disabled for this run", "error", err)
+		} else {
+			tunerCfg := tuning.DefaultTunerConfig(cfg.Tuning.MaxBump.Duration(), cfg.Tuning.Step.Duration())
+			tuner, err := tuning.NewTuner(tracker, overlayPath, tunerCfg)
+			if err != nil {
+				log.Warn("tuning: failed to open overlay, tuning disabled for this run", "error", err)
+			} else {
+				base := func(d config.Duration, def time.Duration) time.Duration {
+					if v := d.Duration(); v > 0 {
+						return v
+					}
+					return def
+				}
+				webBudgets.SearchTimeout = tuner.EffectiveTimeout("web_search", base(cfg.Tools.Web.SearchTimeout, tools.DefaultWebOperationTimeout("web_search")))
+				webBudgets.ResearchTimeout = tuner.EffectiveTimeout("web_research", base(cfg.Tools.Web.ResearchTimeout, tools.DefaultWebOperationTimeout("web_research")))
+				webBudgets.CodeTimeout = tuner.EffectiveTimeout("web_code", base(cfg.Tools.Web.CodeTimeout, tools.DefaultWebOperationTimeout("web_code")))
+				webBudgets.CompanyTimeout = tuner.EffectiveTimeout("web_company", base(cfg.Tools.Web.CompanyTimeout, tools.DefaultWebOperationTimeout("web_company")))
+				timeoutRecorder = tuner
+
+				stop := tuner.Start(tuning.DefaultCooldown)
+				registerBackgroundService(stop)
+				log.Info("Tuning enabled", "max_bump", cfg.Tuning.MaxBump.Duration(), "step", cfg.Tuning.Step.Duration())
+			}
+		}
+	}
+
+	registryOpts := []tools.RegistryOption{
+		tools.WithShellSandbox(sandboxMode, cfg.Tools.ShellSandboxAllowNetwork),
+		tools.WithShellApproval(approvalMode),
+		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
+		tools.WithAttachmentLimits(outboundAttachmentLimits(cfg)),
+		tools.WithSendFileApproval(sendFileApprovalMode),
+		tools.WithSendFileDisabled(cfg.Tools.SendFileDisabled),
+		tools.WithWebToolBudgets(webBudgets),
+	}
+	if timeoutRecorder != nil {
+		registryOpts = append(registryOpts, tools.WithTimeoutRecorder(timeoutRecorder))
+	}
+
 	toolsRegistry := tools.RegistryWithDefaults(
 		cfg.Agents.Defaults.Workspace,
 		cfg.Tools.RestrictToWorkspace,
@@ -1095,12 +1159,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		cfg.Tools.ShellAllowList,
 		cfg.Tools.FilesystemAllowedPaths,
 		skillsLoader,
-		tools.WithShellSandbox(sandboxMode, cfg.Tools.ShellSandboxAllowNetwork),
-		tools.WithShellApproval(approvalMode),
-		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
-		tools.WithAttachmentLimits(outboundAttachmentLimits(cfg)),
-		tools.WithSendFileApproval(sendFileApprovalMode),
-		tools.WithSendFileDisabled(cfg.Tools.SendFileDisabled),
+		registryOpts...,
 	)
 
 	// Connect any configured MCP servers and register their tools. Fail-soft by
@@ -1727,6 +1786,15 @@ func (p *cliProgress) onToolEvent(e agent.ToolProgressEvent) {
 			status = "error"
 		}
 		fmt.Fprintf(p.out, "⎿ %s (%.1fs)\n", status, e.Elapsed.Seconds())
+	case agent.ToolProgressNote:
+		// A self-authored mid-call checkpoint (e.g. "falling back to Exa
+		// MCP"). Rendered plainly, with neither the start (⏺) nor done (⎿)
+		// glyph — it is not a new tool call and not a completion, just a
+		// status update on the one already running — but it still counts as
+		// a tool line for toolShown, so the next streamed delta gets the
+		// same blank-line separation a start/done line would earn it.
+		fmt.Fprintf(p.out, "%s\n", e.Summary)
+		p.toolShown = true
 	}
 }
 
@@ -2258,9 +2326,17 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 		}
 		if stream {
 			evt := map[string]any{"tool": e.Tool, "summary": e.Summary}
-			if e.Phase == agent.ToolProgressStart {
+			// An explicit three-way switch, not "Start vs everything else":
+			// that shape rendered a Note (a self-authored mid-call
+			// checkpoint) as tool_done, complete with a bogus
+			// elapsed_seconds=0 — Elapsed and Err are meaningless on a Note,
+			// see ToolProgressEvent's doc comment.
+			switch e.Phase {
+			case agent.ToolProgressStart:
 				evt["type"] = "tool_start"
-			} else {
+			case agent.ToolProgressNote:
+				evt["type"] = "tool_note"
+			default: // agent.ToolProgressDone
 				evt["type"] = "tool_done"
 				evt["elapsed_seconds"] = e.Elapsed.Seconds()
 				if e.Err != nil {
@@ -3020,22 +3096,31 @@ func (noStreamer) Status(string)     {}
 func (noStreamer) Finish(error) bool { return false }
 
 // formatToolStatus renders a tool-progress event as the one-line status shown
-// in the chat while the agent works. Start events say what is running; done
-// events say how it went, and are shown so a long gap between tools reads as
-// progress rather than a hang.
+// in the chat while the agent works. Start and Note events say what is
+// running (a Note is a self-authored mid-call checkpoint, e.g. "falling back
+// to Exa MCP" — it reuses the running-line format, since it is not a new call
+// and not a completion); Done events say how it went, and are shown so a
+// long gap between tools reads as progress rather than a hang.
+//
+// This is an explicit three-way switch rather than an if/else treating
+// "anything that is not Start" as Done: that shape rendered a Note with the
+// done format — a bogus zero-elapsed "✅ ... (0s)" line — because Elapsed and
+// Err are meaningless on a Note (see ToolProgressEvent's doc comment).
 func formatToolStatus(e agent.ToolProgressEvent) string {
 	name := e.Tool
 	if e.Summary != "" {
 		name += ": " + e.Summary
 	}
-	if e.Phase == agent.ToolProgressStart {
+	switch e.Phase {
+	case agent.ToolProgressStart, agent.ToolProgressNote:
 		return "⚙️ " + name
+	default: // agent.ToolProgressDone
+		elapsed := e.Elapsed.Round(100 * time.Millisecond).String()
+		if e.Err != nil {
+			return "⚠️ " + name + " failed (" + elapsed + ")"
+		}
+		return "✅ " + name + " (" + elapsed + ")"
 	}
-	elapsed := e.Elapsed.Round(100 * time.Millisecond).String()
-	if e.Err != nil {
-		return "⚠️ " + name + " failed (" + elapsed + ")"
-	}
-	return "✅ " + name + " (" + elapsed + ")"
 }
 
 // gatewayDeps is everything gatewayHandler needs from the running gateway.

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.70.0] - 2026-09-10
+
 ### Added
 - `web_code`, `web_company` and `web_research` now share the same
   exa-cli → Exa MCP → DuckDuckGo fallback chain `web_search` already had, each

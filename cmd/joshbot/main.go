@@ -38,6 +38,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/cron"
 	"github.com/bigknoxy/joshbot/internal/gatewaystatus"
 	"github.com/bigknoxy/joshbot/internal/heartbeat"
+	"github.com/bigknoxy/joshbot/internal/incidents"
 	"github.com/bigknoxy/joshbot/internal/learning"
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/mcp"
@@ -433,6 +434,7 @@ func newApp() *cli.App {
 			},
 			sessionsCommand(),
 			tuningCommand(),
+			incidentsCommand(),
 			docsCommand(),
 			memoryCommand(),
 			{
@@ -1137,6 +1139,24 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 	}
 
+	// Incident log + self-heal. The bump is computed once at startup from the
+	// incident file and takes effect on the next restart — there is no live
+	// config reload for this class of value, mirroring the tuning overlay.
+	incidentsLog, err := incidents.NewLog(filepath.Join(cfg.HomeDir(), incidents.FileName))
+	if err != nil {
+		// Fail-soft: a broken incident file disables recording, never the agent.
+		log.Warn("incidents: failed to open incident log, incident recording disabled for this run", "error", err)
+		incidentsLog = nil
+	}
+
+	turnTimeout := cfg.Agents.Defaults.Timeout.Duration()
+	if incidentsLog != nil && cfg.Agents.Defaults.HealTimeouts == incidents.HealBump {
+		if bump := incidentsLog.TimeoutBump(); bump > 0 {
+			turnTimeout += bump
+			log.Info("Incident self-heal enabled", "base", cfg.Agents.Defaults.Timeout.Duration(), "bump", bump, "effective", turnTimeout)
+		}
+	}
+
 	registryOpts := []tools.RegistryOption{
 		tools.WithShellSandbox(sandboxMode, cfg.Tools.ShellSandboxAllowNetwork),
 		tools.WithShellApproval(approvalMode),
@@ -1239,9 +1259,12 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		agent.WithSkillLoader(skillsLoader),
 		agent.WithBudgetManager(budget),
 		agent.WithCompressor(compressor),
+		// Nil-safe: a failed incident-log open disables recording, never
+		// the agent.
+		agent.WithIncidentLog(incidentsLog),
 		// Zero is ignored by WithTimeout, so an unset key keeps
 		// agent.DefaultTimeout without a special case here.
-		agent.WithTimeout(cfg.Agents.Defaults.Timeout.Duration()),
+		agent.WithTimeout(turnTimeout),
 	)
 
 	// Start background services (best-effort). Every service started here is
@@ -5156,6 +5179,13 @@ func runStatus(c *cli.Context) error {
 				State: ch.State,
 			})
 		}
+	}
+
+	// Incident count for the same lookback window the self-heal bump uses. A
+	// missing file is a fresh install and leaves the field zero, so the line
+	// is not printed.
+	if incLog, err := incidents.NewLog(filepath.Join(cfg.HomeDir(), incidents.FileName)); err == nil {
+		doc.Incidents = incLog.CountSince(incidents.HealLookbackWindow, "")
 	}
 
 	if format == output.JSON {

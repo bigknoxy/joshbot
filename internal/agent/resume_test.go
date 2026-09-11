@@ -323,7 +323,7 @@ func TestIterationLimitOffersResumeOnlyWhenCheckpointPersisted(t *testing.T) {
 		}
 		agent.sessions = nil
 
-		resp, err := agent.reactLoop(context.Background(), nil, sess, "cli", "user", "loop forever", &compactionState{})
+		resp, err := agent.reactLoop(context.Background(), nil, sess, "cli", "user", "loop forever", &compactionState{}, &turnStream{})
 		if err != nil {
 			t.Fatalf("reactLoop returned %v", err)
 		}

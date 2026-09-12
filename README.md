@@ -942,6 +942,32 @@ joshbot tuning reset    # clear the overlay; every tool reverts to its configure
 `reset` clears the overlay only — the event log is left untouched, with a
 marker event appended rather than the log being truncated.
 
+### Incident Log & Self-Heal
+
+When a turn fails in a way nothing else explains — the agent's own timeout
+budget killed it (`turn_timeout`), an LLM call failed in band (`llm_failure`),
+or a stream died mid-answer (`stream_died`) — joshbot records an incident to
+`~/.joshbot/incidents.jsonl`: owner-only, redacted, capped in memory (500),
+malformed lines skipped on load. One WARN log line accompanies each record.
+A dead-before-content stream retries invisibly and is not an incident.
+
+```bash
+joshbot incidents list      # recent incidents, newest first (optional limit arg)
+joshbot incidents summary   # counts in the last 24h + self-heal state
+joshbot incidents clear     # remove the history (a truncating clear, not an audit trail)
+```
+
+`joshbot status` prints an `Incidents:` line whenever any incident fired in
+the last 24h.
+
+**Optional self-heal** — `agents.defaults.heal_timeouts` is a string
+(`""`/`"off"`/`"bump"`, off by default). With `"bump"`, the effective turn
+timeout at the next process start is the configured timeout plus 30s per
+`turn_timeout` incident in the last 24h, capped at 4 timeouts (+2m). It
+applies **on the next restart**, the same next-restart convention the tuning
+overlay uses. `llm_failure` incidents deliberately do not drive the bump — a
+failing provider is not a budget problem.
+
 ### Shell Sandbox
 
 `tools.shell_sandbox` adds OS-level containment for shell commands, on top of the deny list (which screens command text — a filter, not a boundary). It's off by default so upgrading doesn't silently change what an existing setup can do.

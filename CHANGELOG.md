@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Bounded incident log (`internal/incidents`): turn failures that would
+  otherwise leave only a generic message in the chat — a turn that hit its
+  timeout budget (`turn_timeout`), an LLM call that failed in band
+  (`llm_failure`) and a stream that died mid-answer (`stream_died`) — are
+  recorded to `~/.joshbot/incidents.jsonl` (owner-only, redacted, capped in
+  memory and pruned on demand). One WARN line accompanies each record, so an
+  incident is greppable without bloating the log.
+- `joshbot incidents list|summary|clear` inspects and administers the record.
+  `joshbot status` gains an `Incidents:` line when any incident fired in the
+  last 24h.
+- Optional timeout self-heal (`agents.defaults.heal_timeouts: "bump"`, off by
+  default): counts recent `turn_timeout` incidents and raises the effective
+  turn timeout at startup, +30s per timeout in the last 24h up to 4 timeouts
+  (+2m cap). The bump applies on the next restart, the same next-restart
+  convention the tuning overlay uses.
+
 ## [1.70.0] - 2026-09-10
 
 ### Added

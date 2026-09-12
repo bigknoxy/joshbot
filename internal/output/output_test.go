@@ -195,6 +195,23 @@ func TestRenderStatusTextGatewayRunning(t *testing.T) {
 	}
 }
 
+// The incident line is conditional like the skills one: a healthy install
+// (zero incidents) must not grow a new status line, which is what the golden
+// test above would catch.
+func TestRenderStatusTextIncidents(t *testing.T) {
+	var without bytes.Buffer
+	RenderStatusText(&without, Status{Model: "openrouter/x"})
+	if strings.Contains(without.String(), "Incidents:") {
+		t.Errorf("zero incidents printed the incident line:\n%s", without.String())
+	}
+
+	var with bytes.Buffer
+	RenderStatusText(&with, Status{Model: "openrouter/x", Incidents: 3})
+	if !strings.Contains(with.String(), "Incidents:      3 in the last 24h — run: joshbot incidents list\n") {
+		t.Errorf("missing incident line:\n%s", with.String())
+	}
+}
+
 func TestRenderStatusTextModelCentric(t *testing.T) {
 	var buf bytes.Buffer
 	RenderStatusText(&buf, Status{

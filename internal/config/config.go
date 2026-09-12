@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bigknoxy/joshbot/internal/incidents"
 	"github.com/bigknoxy/joshbot/internal/redact"
 )
 
@@ -194,6 +195,14 @@ type AgentDefaults struct {
 	// patch the binary: a cold local model with a large prompt runs past it,
 	// and the operator had no knob at all (#241).
 	Timeout Duration `mapstructure:"timeout" json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	// HealTimeouts opts the agent into bounded self-healing of turn timeouts:
+	// "" (default, off) or "bump" (add a small per-timeout bump to the turn
+	// timeout at startup, computed from the incident log, capped by the
+	// incidents package constants). It is a string rather than a bool for the
+	// same reason dream_mode is: an empty value means off, so configs written
+	// before this key existed keep the old behaviour without a schema
+	// migration.
+	HealTimeouts string `mapstructure:"heal_timeouts" json:"heal_timeouts,omitempty" yaml:"heal_timeouts,omitempty"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -1387,6 +1396,16 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("dream_mode must be one of %q, %q or %q, got %q",
 			DreamModeOff, DreamModeRecord, DreamModeFull, c.Agents.Defaults.DreamMode)
+	}
+
+	// Validate heal_timeouts. An unknown value is a startup error rather than
+	// a silent fallback to off, mirroring dream_mode: an operator who typed
+	// "bump_timeout" would otherwise get no healing and no explanation.
+	switch c.Agents.Defaults.HealTimeouts {
+	case "", incidents.HealOff, incidents.HealBump:
+	default:
+		return fmt.Errorf("heal_timeouts must be %q or %q, got %q",
+			incidents.HealOff, incidents.HealBump, c.Agents.Defaults.HealTimeouts)
 	}
 
 	// Validate exec timeout is positive

@@ -56,6 +56,13 @@ type Status struct {
 	// equivalent startup log goes to the journal where nobody reads it.
 	PendingSkills []string `json:"pending_skills,omitempty"`
 
+	// Incidents is the count of turn failures recorded in the trailing
+	// self-heal lookback window. Shown for the same reason PendingSkills is:
+	// a gateway running under systemd writes its incident log where nobody
+	// reads it, and `joshbot incidents` is easy to miss until something is
+	// already wrong.
+	Incidents int `json:"incidents,omitempty"`
+
 	MemoryBytes  int64 `json:"memory_bytes"`
 	HistoryBytes int64 `json:"history_bytes"`
 }
@@ -171,6 +178,9 @@ func RenderStatusText(w io.Writer, s Status) {
 	if n := len(s.PendingSkills); n > 0 {
 		fmt.Fprintf(w, "Skills:         %d awaiting review (%s)\n", n, strings.Join(s.PendingSkills, ", "))
 		fmt.Fprintln(w, "                not in use — review then run: joshbot skills trust <name>")
+	}
+	if s.Incidents > 0 {
+		fmt.Fprintf(w, "Incidents:      %d in the last 24h — run: joshbot incidents list\n", s.Incidents)
 	}
 	fmt.Fprintln(w)
 

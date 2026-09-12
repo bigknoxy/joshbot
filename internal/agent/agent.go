@@ -16,6 +16,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/commands"
 	"github.com/bigknoxy/joshbot/internal/config"
 	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
+	"github.com/bigknoxy/joshbot/internal/incidents"
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/providers"
 	"github.com/bigknoxy/joshbot/internal/session"
@@ -91,6 +92,10 @@ type Agent struct {
 	skillDetector   *skills.SkillDetector
 	extractor       *skills.Extractor
 	skillLoader     *skills.Loader
+	// incidents records bounded turn incidents (timeouts, LLM failures,
+	// stream deaths) to ~/.joshbot/incidents.jsonl. Nil-safe: nil disables
+	// recording entirely, and every record point nil-checks.
+	incidents *incidents.Log
 	// modelName holds a runtime global model override set by `joshbot`
 	// /model ... --global. It is read on every model resolution, so it is
 	// mutex-guarded: two sessions processed concurrently (the Telegram bus
@@ -313,6 +318,17 @@ func WithSkillsLoader(loader SkillsLoader) Option {
 	return func(a *Agent) {
 		if loader != nil {
 			a.skills = loader
+		}
+	}
+}
+
+// WithIncidentLog injects a bounded incident log. A nil log (or a nil *Log
+// inside a typed nil) disables incident recording — the same guard
+// WithCompressor applies against a typed nil.
+func WithIncidentLog(l *incidents.Log) Option {
+	return func(a *Agent) {
+		if l != nil {
+			a.incidents = l
 		}
 	}
 }
@@ -573,7 +589,11 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	// Run ReAct loop with channel info for async callbacks
 	channelID := msg.SenderID // Use SenderID as the channel identifier
 	compaction := compactionState{turnStart: len(sess.Messages) - 1}
-	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &compaction)
+	// Turn-scoped stream state, created here so the timeout/failure paths
+	// below can report the loop's iteration and tool-call counts in the
+	// incident they record.
+	ts := &turnStream{}
+	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &compaction, ts)
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
 		// A spent turn budget must not take the accumulated conversation with
@@ -604,6 +624,16 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 			// separator goes to the sink only; the returned text is a
 			// message of its own on every non-streaming path.
 			emitThroughSink(ctx, narrationSeparator(a.cfg.Agents.Defaults.Streaming, sess.Messages[startSessionLen:])+reply)
+			a.recordIncident(incidents.Incident{
+				Type:         incidents.TurnTimeout,
+				Session:      sess.ID,
+				Channel:      msg.Channel,
+				Model:        a.modelForSession(sess),
+				ElapsedNanos: int64(time.Since(startTime)),
+				Iterations:   ts.iterations,
+				ToolCalls:    ts.toolCalls,
+				Detail:       err.Error(),
+			})
 			return reply, nil
 		}
 		reply := fmt.Sprintf("Error processing request: %v", err)
@@ -614,6 +644,16 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 		if hint := llmErrorHint(err); hint != "" {
 			reply += "\n\n" + hint
 		}
+		a.recordIncident(incidents.Incident{
+			Type:         incidents.LLMFailure,
+			Session:      sess.ID,
+			Channel:      msg.Channel,
+			Model:        a.modelForSession(sess),
+			ElapsedNanos: int64(time.Since(startTime)),
+			Iterations:   ts.iterations,
+			ToolCalls:    ts.toolCalls,
+			Detail:       err.Error(),
+		})
 		return reply, nil
 	}
 
@@ -681,10 +721,15 @@ func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
 }
 
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.
-func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string, st *compactionState) (string, error) {
+//
+// ts is created by the caller (process) and passed in so that, when the loop
+// fails, process can still report the turn's iteration/tool-call counts in
+// the incident it records — the failure path lives one frame above this
+// function, and these counters are the only loop state it needs.
+func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, sess *session.Session, channel, channelID, userMessage string, st *compactionState, ts *turnStream) (string, error) {
 	var toolRecords []skills.ToolCallRecord
 
-	// Turn-scoped stream state. The fallback notice is captured once for the
+	// Turn-scoped stream state (ts, passed in by the caller). The fallback notice is captured once for the
 	// whole turn, not once per LLM call: a turn that calls a tool makes two
 	// or more LLM calls, and a per-call notice reached the chat once per
 	// call — twice at the top of a reply, and glued mid-sentence onto the
@@ -697,7 +742,6 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	// life of the session and the same paragraph at the top of every reply
 	// buries the one instruction in it (#348). The key is persisted on the
 	// session and cleared when the addressed provider answers again.
-	ts := &turnStream{}
 	if !a.cfg.Agents.Defaults.QuietFallback {
 		ctx = providers.WithFallbackNotice(ctx, func(n providers.FallbackNotice) {
 			if ts.notice == "" {
@@ -728,6 +772,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 	}
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
+		ts.iterations++
 
 		// Get tool schemas if available
 		var toolSchemas []providers.Tool
@@ -931,6 +976,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 				})
 			}
 			result, isAsync := a.tools.ExecuteWithContext(execCtx, tc.Function.Name, args, channel, channelID, nil)
+			ts.toolCalls++
 			if progress != nil {
 				progress(ToolProgressEvent{
 					Tool:    tc.Function.Name,
@@ -1143,6 +1189,11 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 			marker := streamErrorMarker(err, true)
 			sink(StreamEvent{Delta: marker, Done: true})
 			accumulatedContent += marker
+			a.recordIncident(incidents.Incident{
+				Type:   incidents.StreamDied,
+				Model:  req.Model,
+				Detail: err.Error(),
+			})
 
 			return &providers.ChatResponse{
 				ID:    "stream-error",
@@ -1189,6 +1240,11 @@ func (a *Agent) streamChat(ctx context.Context, req providers.ChatRequest, sink 
 			marker := streamErrorMarker(err, accumulatedContent != "")
 			sink(StreamEvent{Delta: marker, Done: true})
 			accumulatedContent += marker
+			a.recordIncident(incidents.Incident{
+				Type:   incidents.StreamDied,
+				Model:  req.Model,
+				Detail: err.Error(),
+			})
 		}
 		return &providers.ChatResponse{
 			ID:    "stream-error",
@@ -1288,6 +1344,11 @@ type turnStream struct {
 	// tailNewline whether the last one ended its line.
 	streamed    bool
 	tailNewline bool
+	// iterations counts ReAct loop passes and toolCalls executed tool
+	// invocations for this turn; read by the failure paths in process when
+	// recording an incident.
+	iterations int
+	toolCalls  int
 }
 
 // fallbackNoticeKey identifies an outage for once-per-outage notice purposes:
@@ -1358,6 +1419,27 @@ func turnMessages(sess *session.Session, st *compactionState) []session.Message 
 		return nil
 	}
 	return sess.Messages[st.turnStart:]
+}
+
+// recordIncident appends one incident to the agent's bounded incident log,
+// when one is wired. A nil log is a no-op: incident recording is optional
+// wiring, and a personal assistant must not fail a turn over an audit
+// artifact. The companion WARN log line is emitted here too — one line per
+// incident, no more, so an incident is greppable without bloating the log.
+func (a *Agent) recordIncident(inc incidents.Incident) {
+	if a.incidents == nil {
+		return
+	}
+	a.incidents.Record(inc)
+	a.logger.Warn("Turn incident recorded",
+		"type", inc.Type,
+		"session", inc.Session,
+		"channel", inc.Channel,
+		"model", inc.Model,
+		"iterations", inc.Iterations,
+		"tool_calls", inc.ToolCalls,
+		"elapsed", time.Duration(inc.ElapsedNanos).Round(time.Millisecond),
+	)
 }
 
 // formatFallbackNotice renders the one-line, user-facing note that a reply

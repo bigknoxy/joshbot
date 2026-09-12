@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [1.71.0] - 2026-09-12
 
 ### Added
 - Bounded incident log (`internal/incidents`): turn failures that would
@@ -23,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn timeout at startup, +30s per timeout in the last 24h up to 4 timeouts
   (+2m cap). The bump applies on the next restart, the same next-restart
   convention the tuning overlay uses.
+
+### Changed
+- Upgraded Go to 1.26 (matching go.mod minimum) in CI and release workflows.
+- Bumped goreleaser-action v5→v6, download-artifact v4→v8, upload-artifact v4→v7,
+  docker/build-push-action v3→v4, setup-go v5→v7.
+- Bumped lipgloss v0.13→v1.1, log v0.4→v1.0, go-landlock v0.9→v0.10,
+  termenv v0.15→v0.16, go-isatty v0.0.20→v0.0.24.
+
 
 ## [1.70.0] - 2026-09-10
 

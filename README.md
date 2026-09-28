@@ -1798,7 +1798,7 @@ menu, the Discord and CLI command lists, `/help` and the unknown-command reply.
 | `/start` | Telegram, Discord, CLI | Show the help text |
 | `[⏹ Stop]` button | Telegram | Shown on the in-progress reply while a turn is streaming; tapping it cancels the turn immediately — it reaches the running turn directly, never queued behind it — and the reply ends with "stopped by you" |
 | `/new` | Telegram, Discord, CLI | Start a fresh session (clears context, model override and personality). Takes effect immediately even while a long turn is still running — it is the one command not queued behind the in-flight turn |
-| `/status` | Telegram, Discord, CLI | Show the current model, tool count, memory window and max iterations |
+| `/status` | Telegram, Discord, CLI | Show the current model, tool count, memory window, max iterations and provider health, stamped "As of HH:MM". On Telegram a bare `/status` carries `[🔃 Refresh]` and `[📌 Pin]` buttons: Refresh re-renders it in place; Pin pins it silently (in a group the bot needs pin permission). A refresh that fails keeps the old text, marked outdated |
 | `/model [name]` | Telegram, Discord, CLI | Switch model for this session (`--global` makes it the default for all sessions). On Telegram a bare `/model` lists the choices as inline buttons — tap one to switch; the ✅ marks the current one |
 | `/personality [name]` | Telegram, Discord, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear. On Telegram a bare `/personality` shows the presets as buttons |
 | `/compact` | Telegram, Discord, CLI | Summarize older conversation context now |

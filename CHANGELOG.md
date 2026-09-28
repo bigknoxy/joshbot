@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`/status` on Telegram gets `[🔃 Refresh]` and `[📌 Pin]` buttons (#318).** Refresh re-runs `/status` for the presser's session and edits the message in place; Pin pins it silently, after which only Refresh is offered — the keyboard itself remembers the pin, so the press path reads and writes no store. `/status` now carries an `As of: HH:MM <zone>` line on every channel, so a pinned or left-on-screen snapshot never passes for a live view. A refresh that fails keeps the last good text, prefixed "⚠️ Outdated — refresh failed", rather than replacing it with an error; a pin the bot lacks permission for says so. The message is never auto-updated: every edit spends the per-chat budget, so refresh is manual by design.
+
 ### Changed
 - CI: CodeQL now runs from `.github/workflows/codeql.yml` (advanced setup) instead of
   GitHub's default setup, which skipped every Dependabot PR and left the required

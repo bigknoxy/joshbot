@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -608,6 +609,11 @@ func TestAgentProcessCommandStatus(t *testing.T) {
 	expected := "Status:"
 	if len(response) == 0 || response[:len(expected)] != expected {
 		t.Errorf("expected status text, got: %s", response)
+	}
+	// The as-of stamp is what keeps a pinned or refreshed status honest
+	// (#318): without it a stale render reads as current.
+	if !regexp.MustCompile(`\n  As of: \d\d:\d\d \S+\n`).MatchString(response) {
+		t.Errorf("status should carry an As of stamp, got: %s", response)
 	}
 }
 

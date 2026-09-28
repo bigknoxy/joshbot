@@ -2149,11 +2149,16 @@ Just type normally to chat with me!`,
 		if sess, err := a.sessions.GetOrCreate(ctx, getSessionKey(msg)); err == nil {
 			model = a.modelForSession(sess)
 		}
+		// The as-of stamp is what makes a status message honest once it is
+		// pinned or left on screen: the text is a snapshot, not a live view
+		// (#318). Server-local time with its zone, so it is unambiguous.
 		status := fmt.Sprintf(`Status:
+  As of: %s
   Model: %s
   Tools: %d registered
   Memory window: %d
   Max iterations: %d`,
+			time.Now().Format(StatusStampLayout),
 			model,
 			toolCount,
 			a.cfg.Agents.Defaults.MemoryWindow,
@@ -2189,6 +2194,10 @@ Just type normally to chat with me!`,
 
 	return "" // Not a known command, process normally
 }
+
+// StatusStampLayout formats the "As of" line of /status: hour, minute and
+// zone, which is enough to tell a fresh render from a stale one.
+const StatusStampLayout = "15:04 MST"
 
 // handleModelCommand implements /model. With no argument it lists the current
 // model and the ones a user can switch to. With an argument it sets a

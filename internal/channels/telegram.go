@@ -1068,12 +1068,13 @@ func (t *TelegramChannel) handleCallback(ctx telebot.Context) error {
 	if action, err := DecodeCallback(cb.Data); err == nil {
 		if h, ok := t.callbackHandler(action.Namespace); ok {
 			press := CallbackPress{
-				Action:     action,
-				CallbackID: cb.ID,
-				ChatID:     cb.Message.Chat.ID,
-				MessageID:  cb.Message.ID,
-				SenderID:   int64(cb.Sender.ID),
-				Username:   cb.Sender.Username,
+				Action:      action,
+				CallbackID:  cb.ID,
+				ChatID:      cb.Message.Chat.ID,
+				MessageID:   cb.Message.ID,
+				SenderID:    int64(cb.Sender.ID),
+				Username:    cb.Sender.Username,
+				MessageText: cb.Message.Text,
 			}
 			if err := h(context.Background(), press); err != nil {
 				log.Error("callback handler failed",

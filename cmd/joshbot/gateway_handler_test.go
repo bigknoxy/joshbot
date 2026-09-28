@@ -618,3 +618,28 @@ func TestGatewayHandlerAttachesThePickerToARetiredModelNotice(t *testing.T) {
 		}
 	})
 }
+
+// Command keyboards compose: the pickers answer nil for /status, so the
+// status panel's keyboard is the one attached, and a command nothing claims
+// gets none (#318).
+func TestBuildGatewayDepsComposesCommandKeyboards(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	tg := channels.NewTelegramChannel(msgBus, &config.TelegramConfig{Enabled: true, Token: "t"})
+	sp, err := tg.NewStatusPanel(fakeStatusProcess{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := buildGatewayDeps(msgBus, nil, nil, tg, true, nil, nil, nil, sp.Keyboard)
+	if d.commandKeyboard(context.Background(), telegramMsg("u", "/status")) == nil {
+		t.Error("bare /status should get the status panel keyboard")
+	}
+	if d.commandKeyboard(context.Background(), telegramMsg("u", "/help")) != nil {
+		t.Error("a command no keyboard claims gets none")
+	}
+}
+
+type fakeStatusProcess struct{}
+
+func (fakeStatusProcess) Process(context.Context, bus.InboundMessage) (string, error) {
+	return "Status:", nil
+}

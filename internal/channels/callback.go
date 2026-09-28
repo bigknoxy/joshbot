@@ -172,6 +172,10 @@ type CallbackPress struct {
 	MessageID  int
 	SenderID   int64
 	Username   string
+	// MessageText is the text of the message the button is attached to, as
+	// Telegram rendered it (entities stripped). A handler that must keep
+	// showing the old content when its refresh fails reads it from here.
+	MessageText string
 }
 
 // CallbackHandler handles a press for one namespace. Returning an error is

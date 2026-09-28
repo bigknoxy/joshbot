@@ -3567,6 +3567,17 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
+	// [🔃 Refresh] [📌 Pin] on a bare /status reply (#318).
+	var commandKeyboards []func(context.Context, bus.InboundMessage) *channels.Keyboard
+	if tgChannel != nil {
+		sp, err := tgChannel.NewStatusPanel(pickerBackend{agentInstance})
+		if err != nil {
+			log.Error("Status refresh button unavailable; /status still works", "error", err)
+		} else {
+			commandKeyboards = append(commandKeyboards, sp.Keyboard)
+		}
+	}
+
 	// [⏹ Stop] on the streaming message (#310).
 	var stops *channels.StopCoordinator
 	if tgChannel != nil {
@@ -3579,7 +3590,7 @@ func runGateway(c *cli.Context) error {
 	}
 
 	msgBus.Subscribe("all", gatewayHandler(buildGatewayDeps(
-		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals, picker, stops)))
+		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals, picker, stops, commandKeyboards...)))
 
 	// Start Telegram channel if enabled
 	if tgChannel != nil {
@@ -3741,10 +3752,21 @@ func buildGatewayDeps(
 	shellApprovals *channels.ShellApprovalCoordinator,
 	picker *channels.Picker,
 	stops *channels.StopCoordinator,
+	commandKeyboards ...func(context.Context, bus.InboundMessage) *channels.Keyboard,
 ) gatewayDeps {
+	// The pickers and every other command keyboard each answer nil for a
+	// command that is not theirs, so the first non-nil one wins.
+	commandKeyboards = append([]func(context.Context, bus.InboundMessage) *channels.Keyboard{picker.Keyboard}, commandKeyboards...)
 	return gatewayDeps{
-		commandKeyboard: picker.Keyboard,
-		noticeKeyboard:  picker.NoticeKeyboard,
+		commandKeyboard: func(ctx context.Context, msg bus.InboundMessage) *channels.Keyboard {
+			for _, kb := range commandKeyboards {
+				if k := kb(ctx, msg); k != nil {
+					return k
+				}
+			}
+			return nil
+		},
+		noticeKeyboard: picker.NoticeKeyboard,
 		armStop: func(msg bus.InboundMessage, s gatewayStreamer, cancel context.CancelFunc) (func() bool, func()) {
 			ts, ok := s.(*channels.TelegramStreamer)
 			if stops == nil || !ok {

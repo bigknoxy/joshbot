@@ -169,3 +169,24 @@ func TestCLIApprover_ConcurrentPromptsSerialise(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// The shared approver takes the more restrictive of the two tools' modes, in
+// either argument order: always > interactive > off.
+func TestCombinedApprovalModePicksTheMoreRestrictive(t *testing.T) {
+	off, inter, always := tools.ApprovalOff, tools.ApprovalInteractive, tools.ApprovalAlways
+	for _, tc := range []struct{ a, b, want tools.ApprovalMode }{
+		{off, off, off},
+		{off, inter, inter},
+		{inter, off, inter},
+		{inter, inter, inter},
+		{off, always, always},
+		{always, off, always},
+		{inter, always, always},
+		{always, inter, always},
+		{always, always, always},
+	} {
+		if got := combinedApprovalMode(tc.a, tc.b); got != tc.want {
+			t.Errorf("combinedApprovalMode(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

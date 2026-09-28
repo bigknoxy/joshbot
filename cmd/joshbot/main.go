@@ -3567,16 +3567,7 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
-	// [🔃 Refresh] [📌 Pin] on a bare /status reply (#318).
-	var commandKeyboards []func(context.Context, bus.InboundMessage) *channels.Keyboard
-	if tgChannel != nil {
-		sp, err := tgChannel.NewStatusPanel(statusBackend{agentInstance.Process})
-		if err != nil {
-			log.Error("Status refresh button unavailable; /status still works", "error", err)
-		} else {
-			commandKeyboards = append(commandKeyboards, sp.Keyboard)
-		}
-	}
+	commandKeyboards := buildCommandKeyboards(tgChannel, agentInstance.Process)
 
 	// [⏹ Stop] on the streaming message (#310).
 	var stops *channels.StopCoordinator
@@ -3730,6 +3721,24 @@ func (p pickerBackend) PersonalityChoices(ctx context.Context, msg bus.InboundMe
 
 func (p pickerBackend) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
 	return p.a.Process(ctx, msg)
+}
+
+// buildCommandKeyboards registers the Telegram command keyboards beyond the
+// pickers and returns them for buildGatewayDeps. Each is best-effort: a
+// registration failure is logged and the command keeps working as text.
+// Must run before the channel starts, like every RegisterCallback.
+func buildCommandKeyboards(tg *channels.TelegramChannel, process func(context.Context, bus.InboundMessage) (string, error)) []func(context.Context, bus.InboundMessage) *channels.Keyboard {
+	if tg == nil {
+		return nil
+	}
+	var kbs []func(context.Context, bus.InboundMessage) *channels.Keyboard
+	// [🔃 Refresh] [📌 Pin] on a bare /status reply (#318).
+	if sp, err := tg.NewStatusPanel(statusBackend{process}); err != nil {
+		log.Error("Status refresh button unavailable; /status still works", "error", err)
+	} else {
+		kbs = append(kbs, sp.Keyboard)
+	}
+	return kbs
 }
 
 // statusBackend adapts agent.Process to channels.StatusBackend, turning an

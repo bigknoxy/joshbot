@@ -179,6 +179,6 @@ func (hb *HeartbeatBoard) handlePress(_ context.Context, press CallbackPress) er
 			opts.ReplyMarkup = rm
 		}
 	}
-	_, err = editor.Edit(pickerTarget{chatID: press.ChatID, messageID: press.MessageID}, text, opts)
+	_, err = editMarkdown(editor, pickerTarget{chatID: press.ChatID, messageID: press.MessageID}, text, opts)
 	return err
 }

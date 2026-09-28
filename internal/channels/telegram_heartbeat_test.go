@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
+	"gopkg.in/telebot.v3"
 )
 
 type fakeHeartbeatBackend struct {
@@ -193,5 +194,32 @@ func TestHeartbeatBoard_IgnoresMalformedPressesAndClaimsNamespaceOnce(t *testing
 	}
 	if _, err := tg.NewHeartbeatBoard(nil); err == nil {
 		t.Error("nil backend must be refused")
+	}
+}
+
+// An in-place edit renders Markdown the way the first send did (HTML at the
+// wire), and a parse refusal falls back to the Markdown source as plain text,
+// never to the HTML (review of #411; the #315 rule).
+func TestEditMarkdownConvertsAndFallsBackToTheSource(t *testing.T) {
+	ed := &fakeEditor{}
+	target := pickerTarget{chatID: 42, messageID: 7}
+	if _, err := editMarkdown(ed, target, "Check **inbox** & reply", &telebot.SendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if ed.calls[0].text != "Check <b>inbox</b> &amp; reply" || ed.calls[0].mode != telebot.ModeHTML {
+		t.Errorf("edit = %+v, want HTML", ed.calls[0])
+	}
+
+	ed2 := &fakeEditor{editErrs: []error{errors.New("telegram: Bad Request: can't parse entities: bad tag (400)")}}
+	if _, err := editMarkdown(ed2, target, "Check **inbox** & reply", &telebot.SendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ed2.calls) != 2 || ed2.calls[1].text != "Check **inbox** & reply" || ed2.calls[1].mode != telebot.ModeDefault {
+		t.Errorf("fallback = %+v, want the Markdown source with no parse mode", ed2.calls)
+	}
+
+	ed3 := &fakeEditor{editErrs: []error{errors.New("telegram: message to edit not found (400)")}}
+	if _, err := editMarkdown(ed3, target, "x", &telebot.SendOptions{}); err == nil || len(ed3.calls) != 1 {
+		t.Errorf("a non-parse error must be returned without a retry: %v, %d calls", err, len(ed3.calls))
 	}
 }

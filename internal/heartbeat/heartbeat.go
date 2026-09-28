@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/log"
@@ -373,11 +374,16 @@ func (s *Service) Tasks() ([]Task, error) {
 	return ListTasks(s.path)
 }
 
-// Toggle flips the box of the task at line, provided it still carries key,
-// and returns the tasks after the write. Re-opening a done task also forgets
-// that this process published it: otherwise the next tick would find it in
-// the published set and check it straight back off without ever running it.
-func (s *Service) Toggle(line int, key string) ([]Task, error) {
+// Toggle flips the box of the task at line, provided it still carries key and
+// is still in the state the caller was shown (shownDone), and returns the
+// tasks after the write. The state check is what makes a tap mean what the
+// user saw: a button drawn while a task was open must not re-open it after
+// the tick has since run and checked it off, and a double tap (two callbacks
+// from one keyboard) must not flip it and straight back. Re-opening a done
+// task also forgets that this process published it: otherwise the next tick
+// would find it in the published set and check it straight back off without
+// ever running it.
+func (s *Service) Toggle(line int, key string, shownDone bool) ([]Task, error) {
 	s.fileMu.Lock()
 	defer s.fileMu.Unlock()
 	data, err := os.ReadFile(s.path)
@@ -389,7 +395,7 @@ func (s *Service) Toggle(line int, key string) ([]Task, error) {
 		return nil, ErrTaskChanged
 	}
 	text, done, flipped, ok := parseLine(lines[line])
-	if !ok || TaskKey(text) != key {
+	if !ok || TaskKey(text) != key || done != shownDone {
 		return nil, ErrTaskChanged
 	}
 	lines[line] = flipped
@@ -404,8 +410,16 @@ func (s *Service) Toggle(line int, key string) ([]Task, error) {
 	return tasksIn(lines), nil
 }
 
+// summaryBudget bounds the /heartbeat text in UTF-16 code units, the unit
+// Telegram's 4096 limit counts in. The keyboard rides the one message this
+// text is sent as and every toggle edits that message with a fresh Summary,
+// so a longer text would be split on send and every later edit refused as too
+// long — the file changing while the chat kept showing the old state.
+const summaryBudget = 3800
+
 // Summary renders tasks as the /heartbeat reply: counts, then one line per
-// task. The same text answers the command and each toggle, on every channel.
+// task, cut off with a count of the rest once summaryBudget is reached. The
+// same text answers the command and each toggle, on every channel.
 func Summary(tasks []Task) string {
 	if len(tasks) == 0 {
 		return "No heartbeat tasks. Add \"- [ ] task\" lines to HEARTBEAT.md in the workspace."
@@ -418,12 +432,30 @@ func Summary(tasks []Task) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Heartbeat tasks: %d open, %d done. Open tasks run at the next heartbeat check, then are checked off.", open, len(tasks)-open)
-	for _, t := range tasks {
+	used := utf16Len(b.String())
+	for i, t := range tasks {
 		box := "☐"
 		if t.Done {
 			box = "✅"
 		}
-		fmt.Fprintf(&b, "\n%s %s", box, t.Text)
+		line := fmt.Sprintf("\n%s %s", box, t.Text)
+		// Reserve room for the "more" line whenever a task is left out.
+		more := fmt.Sprintf("\n…and %d more in HEARTBEAT.md", len(tasks)-i)
+		if used+utf16Len(line)+utf16Len(more) > summaryBudget && i < len(tasks)-1 ||
+			used+utf16Len(line) > summaryBudget {
+			b.WriteString(more)
+			break
+		}
+		b.WriteString(line)
+		used += utf16Len(line)
 	}
 	return b.String()
+}
+
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	return n
 }

@@ -45,9 +45,10 @@ var ErrHeartbeatTaskChanged = errors.New("heartbeat task changed")
 // in cmd/joshbot over *heartbeat.Service, whose file lock the tick shares.
 type HeartbeatBackend interface {
 	Tasks() ([]HeartbeatTask, error)
-	// Toggle flips the task at line if it still carries key, and returns
-	// the tasks after the write plus the text the message should show.
-	Toggle(line int, key string) (tasks []HeartbeatTask, summary string, err error)
+	// Toggle flips the task at line if it still carries key and is still in
+	// the state the button showed, and returns the tasks after the write
+	// plus the text the message should show.
+	Toggle(line int, key string, shownDone bool) (tasks []HeartbeatTask, summary string, err error)
 	// Summary renders tasks as the /heartbeat text.
 	Summary(tasks []HeartbeatTask) string
 }
@@ -92,21 +93,22 @@ func (hb *HeartbeatBoard) Keyboard(_ context.Context, msg bus.InboundMessage) *K
 
 // heartbeatKeyboard draws one button per task, one column. Each button's
 // label carries the state it shows (☐ open, ✅ done), and its payload names
-// the line and the task's key — so a press says exactly which task it saw,
-// and a press drawn from an older file is refused rather than flipping
-// whatever now sits on that line.
+// the line, the task's key and that state — so a press says exactly which
+// task it saw and in which state, and a press drawn from an older file (or
+// the second callback of a double tap) is refused rather than flipping
+// whatever now sits on that line, or flipping the task back.
 func heartbeatKeyboard(tasks []HeartbeatTask) *Keyboard {
 	kb := &Keyboard{}
 	for _, task := range tasks {
 		if len(kb.Rows) == heartbeatMaxButtons {
 			break
 		}
-		box := "☐ "
+		box, state := "☐ ", "0"
 		if task.Done {
-			box = "✅ "
+			box, state = "✅ ", "1"
 		}
 		b := ActionButton(box+truncateRunes(task.Text, heartbeatLabelRunes), HeartbeatBoardNamespace,
-			heartbeatToggleAction, strconv.Itoa(task.Line)+":"+task.Key)
+			heartbeatToggleAction, strconv.Itoa(task.Line)+":"+task.Key+":"+state)
 		if _, err := b.Action.Encode(); err != nil {
 			log.Warn("heartbeat task left off the keyboard", "line", task.Line, "error", err)
 			continue
@@ -127,16 +129,18 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-func parseHeartbeatPayload(p string) (int, string, bool) {
-	lineStr, key, ok := strings.Cut(p, ":")
-	if !ok || key == "" {
-		return 0, "", false
+// parseHeartbeatPayload splits "<line>:<key>:<0|1>", the last field being
+// the state the button showed (1 = done).
+func parseHeartbeatPayload(p string) (line int, key string, shownDone bool, ok bool) {
+	parts := strings.Split(p, ":")
+	if len(parts) != 3 || parts[1] == "" || (parts[2] != "0" && parts[2] != "1") {
+		return 0, "", false, false
 	}
-	line, err := strconv.Atoi(lineStr)
+	line, err := strconv.Atoi(parts[0])
 	if err != nil || line < 0 {
-		return 0, "", false
+		return 0, "", false, false
 	}
-	return line, key, true
+	return line, parts[1], parts[2] == "1", true
 }
 
 // handlePress toggles one task and edits the message in place with the new
@@ -145,7 +149,7 @@ func (hb *HeartbeatBoard) handlePress(_ context.Context, press CallbackPress) er
 	if press.Action.Action != heartbeatToggleAction {
 		return nil
 	}
-	line, key, ok := parseHeartbeatPayload(press.Action.Payload)
+	line, key, shownDone, ok := parseHeartbeatPayload(press.Action.Payload)
 	if !ok {
 		return nil
 	}
@@ -153,7 +157,7 @@ func (hb *HeartbeatBoard) handlePress(_ context.Context, press CallbackPress) er
 	if editor == nil {
 		return fmt.Errorf("heartbeat board: channel not connected")
 	}
-	tasks, text, err := hb.backend.Toggle(line, key)
+	tasks, text, err := hb.backend.Toggle(line, key, shownDone)
 	if err != nil {
 		note := heartbeatFailed
 		if errors.Is(err, ErrHeartbeatTaskChanged) {

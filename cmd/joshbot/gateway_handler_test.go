@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/bigknoxy/joshbot/internal/heartbeat"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -625,16 +628,16 @@ func TestGatewayHandlerAttachesThePickerToARetiredModelNotice(t *testing.T) {
 func TestBuildGatewayDepsComposesCommandKeyboards(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	tg := channels.NewTelegramChannel(msgBus, &config.TelegramConfig{Enabled: true, Token: "t"})
-	kbs := buildCommandKeyboards(tg, fakeStatusProcess{}.Process)
+	kbs := buildCommandKeyboards(tg, fakeStatusProcess{}.Process, nil)
 	if len(kbs) != 1 {
 		t.Fatalf("want the status keyboard registered, got %d", len(kbs))
 	}
-	if buildCommandKeyboards(nil, nil) != nil {
+	if buildCommandKeyboards(nil, nil, nil) != nil {
 		t.Error("no Telegram channel: no keyboards")
 	}
 	// A second registration of the same namespace fails and is skipped,
 	// leaving the command working as text.
-	if again := buildCommandKeyboards(tg, fakeStatusProcess{}.Process); len(again) != 0 {
+	if again := buildCommandKeyboards(tg, fakeStatusProcess{}.Process, nil); len(again) != 0 {
 		t.Errorf("a failed registration must be skipped, got %d", len(again))
 	}
 	d := buildGatewayDeps(msgBus, nil, nil, tg, true, nil, nil, nil, kbs...)
@@ -692,5 +695,48 @@ func TestBuildGatewayDepsDeclinesWithNothingWired(t *testing.T) {
 	}
 	if d.commandKeyboard(context.Background(), telegramMsg("u", "/status")) != nil {
 		t.Error("no keyboards registered: none attached")
+	}
+}
+
+// With a heartbeat service, /heartbeat gets the toggle keyboard; the adapter
+// maps the service's stale-press error onto the channel's.
+func TestBuildCommandKeyboardsRegistersTheHeartbeatBoard(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "HEARTBEAT.md"), []byte("- [ ] a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := heartbeat.NewService(bus.NewMessageBus(), dir)
+	tg := channels.NewTelegramChannel(bus.NewMessageBus(), &config.TelegramConfig{Enabled: true, Token: "t"})
+	kbs := buildCommandKeyboards(tg, fakeStatusProcess{}.Process, svc)
+	if len(kbs) != 2 {
+		t.Fatalf("want status and heartbeat keyboards, got %d", len(kbs))
+	}
+	d := buildGatewayDeps(bus.NewMessageBus(), nil, nil, tg, true, nil, nil, nil, kbs...)
+	if d.commandKeyboard(context.Background(), telegramMsg("u", "/heartbeat")) == nil {
+		t.Error("bare /heartbeat should get the toggle keyboard")
+	}
+
+	hb := heartbeatBackend{svc}
+	tasks, err := hb.Tasks()
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("tasks = %v, %v", tasks, err)
+	}
+	if _, _, err := hb.Toggle(0, tasks[0].Key, true); !errors.Is(err, channels.ErrHeartbeatTaskChanged) {
+		t.Errorf("stale state: err = %v, want channels.ErrHeartbeatTaskChanged", err)
+	}
+	after, text, err := hb.Toggle(0, tasks[0].Key, false)
+	if err != nil || !after[0].Done || !strings.Contains(text, "0 open, 1 done") {
+		t.Errorf("toggle: %v %q %v", after, text, err)
+	}
+	if got := hb.Summary(after); got != text {
+		t.Errorf("Summary disagrees with Toggle's text: %q vs %q", got, text)
+	}
+	if _, _, err := (heartbeatBackend{heartbeat.NewService(bus.NewMessageBus(), t.TempDir())}).Toggle(0, "k", false); err == nil || errors.Is(err, channels.ErrHeartbeatTaskChanged) {
+		t.Errorf("an unreadable file is a real error, not a stale press: %v", err)
+	}
+	setHeartbeatService(svc)
+	defer setHeartbeatService(nil)
+	if currentHeartbeatService() != svc {
+		t.Error("heartbeat service accessor")
 	}
 }

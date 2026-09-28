@@ -19,8 +19,8 @@ type fakeHeartbeatBackend struct {
 
 func (f *fakeHeartbeatBackend) Tasks() ([]HeartbeatTask, error) { return f.tasks, f.tasksErr }
 
-func (f *fakeHeartbeatBackend) Toggle(line int, key string) ([]HeartbeatTask, string, error) {
-	f.toggled = append(f.toggled, fmt.Sprintf("%d:%s", line, key))
+func (f *fakeHeartbeatBackend) Toggle(line int, key string, shownDone bool) ([]HeartbeatTask, string, error) {
+	f.toggled = append(f.toggled, fmt.Sprintf("%d:%s:%v", line, key, shownDone))
 	if f.toggleErr != nil {
 		return nil, "", f.toggleErr
 	}
@@ -76,7 +76,7 @@ func TestHeartbeatBoard_KeyboardIsOneColumnWithStateInTheLabels(t *testing.T) {
 		t.Errorf("buttons = %s", got)
 	}
 	act, err := DecodeCallback(rm.InlineKeyboard[1][0].Data)
-	if err != nil || act.Namespace != HeartbeatBoardNamespace || act.Payload != "3:bbbbbbbb" {
+	if err != nil || act.Namespace != HeartbeatBoardNamespace || act.Payload != "3:bbbbbbbb:1" {
 		t.Errorf("second button decodes to %+v, %v", act, err)
 	}
 	for _, msg := range []bus.InboundMessage{
@@ -126,10 +126,10 @@ func TestHeartbeatBoard_LongListsAndLabelsAreBounded(t *testing.T) {
 
 func TestHeartbeatBoard_PressTogglesAndEditsInPlace(t *testing.T) {
 	_, hb, b, ed := heartbeatTestChannel(t)
-	if err := hb.handlePress(context.Background(), hbPress("1:aaaaaaaa")); err != nil {
+	if err := hb.handlePress(context.Background(), hbPress("1:aaaaaaaa:0")); err != nil {
 		t.Fatal(err)
 	}
-	if len(b.toggled) != 1 || b.toggled[0] != "1:aaaaaaaa" {
+	if len(b.toggled) != 1 || b.toggled[0] != "1:aaaaaaaa:false" {
 		t.Fatalf("toggled = %v", b.toggled)
 	}
 	if len(ed.calls) != 1 || !ed.calls[0].edit || ed.calls[0].chat != "42" || ed.calls[0].text != "summary of 2" {
@@ -154,7 +154,7 @@ func TestHeartbeatBoard_StaleOrFailedPressRerendersCurrentList(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, hb, b, ed := heartbeatTestChannel(t)
 			b.toggleErr = tc.err
-			if err := hb.handlePress(context.Background(), hbPress("1:aaaaaaaa")); err != nil {
+			if err := hb.handlePress(context.Background(), hbPress("1:aaaaaaaa:0")); err != nil {
 				t.Fatal(err)
 			}
 			if len(ed.calls) != 1 || ed.calls[0].text != tc.want+"\n\nsummary of 2" {
@@ -173,11 +173,13 @@ func TestHeartbeatBoard_StaleOrFailedPressRerendersCurrentList(t *testing.T) {
 func TestHeartbeatBoard_IgnoresMalformedPressesAndClaimsNamespaceOnce(t *testing.T) {
 	tg, hb, b, ed := heartbeatTestChannel(t)
 	for _, p := range []CallbackPress{
-		{Action: CallbackAction{Namespace: HeartbeatBoardNamespace, Action: "other", Payload: "1:aaaaaaaa"}},
-		hbPress("x:aaaaaaaa"),
-		hbPress("-1:aaaaaaaa"),
-		hbPress("1:"),
-		hbPress("1"),
+		{Action: CallbackAction{Namespace: HeartbeatBoardNamespace, Action: "other", Payload: "1:aaaaaaaa:0"}},
+		hbPress("x:aaaaaaaa:0"),
+		hbPress("-1:aaaaaaaa:0"),
+		hbPress("1::0"),
+		hbPress("1:aaaaaaaa"),
+		hbPress("1:aaaaaaaa:2"),
+		hbPress("1:aaaaaaaa:0:extra"),
 	} {
 		if err := hb.handlePress(context.Background(), p); err != nil {
 			t.Fatal(err)

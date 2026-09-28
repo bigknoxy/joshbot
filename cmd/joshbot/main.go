@@ -1333,8 +1333,8 @@ func (h heartbeatBackend) Tasks() ([]channels.HeartbeatTask, error) {
 	return toHeartbeatTasks(tasks), err
 }
 
-func (h heartbeatBackend) Toggle(line int, key string) ([]channels.HeartbeatTask, string, error) {
-	tasks, err := h.s.Toggle(line, key)
+func (h heartbeatBackend) Toggle(line int, key string, shownDone bool) ([]channels.HeartbeatTask, string, error) {
+	tasks, err := h.s.Toggle(line, key, shownDone)
 	if errors.Is(err, heartbeat.ErrTaskChanged) {
 		return nil, "", channels.ErrHeartbeatTaskChanged
 	}
@@ -3624,17 +3624,7 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
-	commandKeyboards := buildCommandKeyboards(tgChannel, agentInstance.Process)
-
-	// HEARTBEAT.md as a tap-to-toggle keyboard on a bare /heartbeat (#317).
-	if hbSvc := currentHeartbeatService(); tgChannel != nil && hbSvc != nil {
-		board, err := tgChannel.NewHeartbeatBoard(heartbeatBackend{hbSvc})
-		if err != nil {
-			log.Error("Heartbeat toggle keyboard unavailable; /heartbeat still lists tasks", "error", err)
-		} else {
-			commandKeyboards = append(commandKeyboards, board.Keyboard)
-		}
-	}
+	commandKeyboards := buildCommandKeyboards(tgChannel, agentInstance.Process, currentHeartbeatService())
 
 	// [⏹ Stop] on the streaming message (#310).
 	var stops *channels.StopCoordinator
@@ -3794,7 +3784,7 @@ func (p pickerBackend) Process(ctx context.Context, msg bus.InboundMessage) (str
 // pickers and returns them for buildGatewayDeps. Each is best-effort: a
 // registration failure is logged and the command keeps working as text.
 // Must run before the channel starts, like every RegisterCallback.
-func buildCommandKeyboards(tg *channels.TelegramChannel, process func(context.Context, bus.InboundMessage) (string, error)) []func(context.Context, bus.InboundMessage) *channels.Keyboard {
+func buildCommandKeyboards(tg *channels.TelegramChannel, process func(context.Context, bus.InboundMessage) (string, error), hb *heartbeat.Service) []func(context.Context, bus.InboundMessage) *channels.Keyboard {
 	if tg == nil {
 		return nil
 	}
@@ -3804,6 +3794,14 @@ func buildCommandKeyboards(tg *channels.TelegramChannel, process func(context.Co
 		log.Error("Status refresh button unavailable; /status still works", "error", err)
 	} else {
 		kbs = append(kbs, sp.Keyboard)
+	}
+	// HEARTBEAT.md as a tap-to-toggle keyboard on a bare /heartbeat (#317).
+	if hb != nil {
+		if board, err := tg.NewHeartbeatBoard(heartbeatBackend{hb}); err != nil {
+			log.Error("Heartbeat toggle keyboard unavailable; /heartbeat still lists tasks", "error", err)
+		} else {
+			kbs = append(kbs, board.Keyboard)
+		}
 	}
 	return kbs
 }

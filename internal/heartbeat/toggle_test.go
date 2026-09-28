@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,7 @@ func TestListTasks(t *testing.T) {
 
 func TestToggleFlipsBothWaysInPlace(t *testing.T) {
 	svc, _, path := writeHeartbeat(t, "# Tasks\r\n  - [ ]  water plants\r\n* [x] pay rent\r\n")
-	tasks, err := svc.Toggle(1, TaskKey("water plants"))
+	tasks, err := svc.Toggle(1, TaskKey("water plants"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestToggleFlipsBothWaysInPlace(t *testing.T) {
 	if !tasks[0].Done {
 		t.Error("returned tasks should reflect the write")
 	}
-	if _, err := svc.Toggle(2, TaskKey("pay rent")); err != nil {
+	if _, err := svc.Toggle(2, TaskKey("pay rent"), true); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(t, path); got != "# Tasks\r\n  - [x]  water plants\r\n* [ ] pay rent\r\n" {
@@ -121,7 +122,7 @@ func TestToggleRefusesAStalePress(t *testing.T) {
 		{-1, TaskKey("a")},
 		{0, ""},
 	} {
-		if _, err := svc.Toggle(tc.line, tc.key); !errors.Is(err, ErrTaskChanged) {
+		if _, err := svc.Toggle(tc.line, tc.key, false); !errors.Is(err, ErrTaskChanged) {
 			t.Errorf("Toggle(%d, %q) err = %v, want ErrTaskChanged", tc.line, tc.key, err)
 		}
 	}
@@ -142,7 +143,7 @@ func TestToggleReopenedTaskPublishesAgain(t *testing.T) {
 	if !strings.Contains(readFile(t, path), "[x]") {
 		t.Fatal("the tick should have checked it off")
 	}
-	if _, err := svc.Toggle(0, TaskKey("check the disk")); err != nil {
+	if _, err := svc.Toggle(0, TaskKey("check the disk"), true); err != nil {
 		t.Fatal(err)
 	}
 	svc.scanAndPublish()
@@ -159,12 +160,71 @@ func TestToggleAndTickDoNotLoseWrites(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		wg.Add(2)
 		go func() { defer wg.Done(); svc.scanAndPublish() }()
-		go func() { defer wg.Done(); _, _ = svc.Toggle(0, TaskKey("done one")) }()
+		go func() { defer wg.Done(); _, _ = svc.Toggle(0, TaskKey("done one"), true) }()
 	}
 	wg.Wait()
 	drainInbound(b)
 	if _, _, _, ok := parseLine(strings.TrimSpace(readFile(t, path))); !ok {
 		t.Errorf("file corrupted: %q", readFile(t, path))
+	}
+}
+
+// A tap means what the user saw. A button drawn while a task was open must not
+// re-open it after the tick has run and checked it off, and the second callback
+// of a double tap must not flip the task straight back (review of #411).
+func TestToggleRefusesAPressWhoseStateIsStale(t *testing.T) {
+	svc, b, path := writeHeartbeat(t, "- [ ] send report\n")
+	// The keyboard showed it open; the tick runs and checks it off first.
+	svc.scanAndPublish()
+	if n := len(drainInbound(b)); n != 1 {
+		t.Fatalf("tick published %d, want 1", n)
+	}
+	checkedOff := readFile(t, path)
+	if _, err := svc.Toggle(0, TaskKey("send report"), false); !errors.Is(err, ErrTaskChanged) {
+		t.Fatalf("press drawn as open, file now done: err = %v, want ErrTaskChanged", err)
+	}
+	if readFile(t, path) != checkedOff {
+		t.Error("the refused press re-opened the task")
+	}
+	svc.scanAndPublish()
+	if n := len(drainInbound(b)); n != 0 {
+		t.Errorf("the task ran again: %d publishes", n)
+	}
+
+	// Double tap on one keyboard: both callbacks carry the same shown state.
+	svc2, _, path2 := writeHeartbeat(t, "* [x] pay rent\n")
+	if _, err := svc2.Toggle(0, TaskKey("pay rent"), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc2.Toggle(0, TaskKey("pay rent"), true); !errors.Is(err, ErrTaskChanged) {
+		t.Fatalf("second tap of a double tap: err = %v, want ErrTaskChanged", err)
+	}
+	if got := readFile(t, path2); got != "* [ ] pay rent\n" {
+		t.Errorf("after a double tap: %q, want it re-opened exactly once", got)
+	}
+}
+
+// The summary is the text the keyboard rides and every toggle edits, so it
+// must fit one Telegram message, counted in UTF-16 units as Telegram counts.
+func TestSummaryFitsOneTelegramMessage(t *testing.T) {
+	var tasks []Task
+	for i := 0; i < 200; i++ {
+		tasks = append(tasks, Task{Text: strings.Repeat("😀", 30)}) // 2 UTF-16 units each
+	}
+	got := Summary(tasks)
+	if n := utf16Len(got); n > summaryBudget {
+		t.Fatalf("summary is %d UTF-16 units, over the %d budget", n, summaryBudget)
+	}
+	if !strings.Contains(got, "more in HEARTBEAT.md") {
+		t.Error("a cut summary must say how many tasks are not shown")
+	}
+	shown := strings.Count(got, "\n☐ ")
+	if !strings.Contains(got, fmt.Sprintf("…and %d more", 200-shown)) {
+		t.Errorf("the 'more' count does not match the tasks left out (shown %d)", shown)
+	}
+	// A short list is shown whole, with no "more" line.
+	if short := Summary(tasks[:3]); strings.Contains(short, "more in") || strings.Count(short, "\n☐ ") != 3 {
+		t.Errorf("short summary = %q", short)
 	}
 }
 

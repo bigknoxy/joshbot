@@ -1,0 +1,65 @@
+name: CodeQL
+
+# CodeQL "advanced setup", replacing the repo-level default setup. Default
+# setup reported "skipping" on every Dependabot PR (#406, #407, #408 -- even
+# #407, which changed a workflow file), so the required `Analyze (go)` and
+# `Analyze (actions)` checks never arrived and each dependency bump needed an
+# admin merge to land. A workflow in the repo runs on every PR, Dependabot's
+# included, and keeps the configuration reviewable like everything else in
+# CI. Default setup must stay disabled: code scanning rejects an advanced
+# upload while it is enabled.
+#
+# The job name renders as `Analyze (<language>)` -- the exact context strings
+# main's branch protection requires. Renaming the job breaks that gate.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Same suite default setup ran ("extended").
+          queries: security-extended
+      - if: matrix.build-mode == 'manual'
+        run: go build ./...
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: /language:${{ matrix.language }}

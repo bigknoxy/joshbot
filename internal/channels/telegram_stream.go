@@ -566,3 +566,21 @@ func floodRetryAfter(err error) time.Duration {
 	}
 	return defaultStreamInterval
 }
+
+// editMarkdown edits msg to Markdown-authored text the way Send delivers it:
+// converted to HTML at the wire, and on a `can't parse entities` refusal
+// re-sent as the *pre-conversion* source with no parse mode (#315 — the HTML
+// sent without a parse mode would show its entity references literally).
+// The pickers, the /status panel and the /heartbeat board all edit through
+// it, so a list reads the same after a tap as when it was first sent.
+func editMarkdown(editor telegramEditor, msg telebot.Editable, text string, opts *telebot.SendOptions) (*telebot.Message, error) {
+	htmlOpts := *opts
+	htmlOpts.ParseMode = telebot.ModeHTML
+	m, err := editor.Edit(msg, MarkdownToHTML(text), &htmlOpts)
+	if !isParseEntityError(err) {
+		return m, err
+	}
+	plainOpts := *opts
+	plainOpts.ParseMode = telebot.ModeDefault
+	return editor.Edit(msg, text, &plainOpts)
+}

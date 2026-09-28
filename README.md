@@ -1331,7 +1331,7 @@ the turn and never part of it, so a failure is logged at debug and the reply is
 unaffected. A sender the allowlist rejects is never acknowledged.
 
 On startup joshbot registers its command menu with Telegram (`/start`, `/new`,
-`/status`, `/model`, `/personality`, `/compact`, `/resume`, `/help`), so they
+`/status`, `/heartbeat`, `/model`, `/personality`, `/compact`, `/resume`, `/help`), so they
 appear behind the menu button and autocomplete as you type. If Telegram rejects
 the registration it is logged and the bot starts anyway. A command that does not
 exist gets an "Unknown command" reply listing the real ones instead of silence.
@@ -1346,7 +1346,7 @@ denies everyone) the menu is simply deleted. An allowlisted user who has never
 started the bot makes Telegram answer "chat not found" for their scope; that is
 logged and the remaining users still get their menus.
 
-The commands whose behaviour lives in the agent (`/status`, `/model`,
+The commands whose behaviour lives in the agent (`/status`, `/heartbeat`, `/model`,
 `/personality`, `/compact`, `/resume`) are forwarded to it with the same
 allowlist gate as a direct message, so they work identically in the Telegram
 menu and the CLI. This completes **command names only** — Telegram has no
@@ -1799,6 +1799,7 @@ menu, the Discord and CLI command lists, `/help` and the unknown-command reply.
 | `[⏹ Stop]` button | Telegram | Shown on the in-progress reply while a turn is streaming; tapping it cancels the turn immediately — it reaches the running turn directly, never queued behind it — and the reply ends with "stopped by you" |
 | `/new` | Telegram, Discord, CLI | Start a fresh session (clears context, model override and personality). Takes effect immediately even while a long turn is still running — it is the one command not queued behind the in-flight turn |
 | `/status` | Telegram, Discord, CLI | Show the current model, tool count, memory window, max iterations and provider health, stamped "As of HH:MM". On Telegram a bare `/status` carries `[🔃 Refresh]` and `[📌 Pin]` buttons: Refresh re-renders it in place; Pin pins it silently (in a group the bot needs pin permission). A refresh that fails keeps the old text, marked outdated |
+| `/heartbeat` | Telegram, Discord, CLI | List the tasks in `HEARTBEAT.md` with open/done counts. On Telegram a bare `/heartbeat` also shows one button per task (☐ open, ✅ done, first 30 tasks); a tap flips that box in the file. Checking a task off dismisses it; re-opening a done task makes it run again at the next heartbeat check. A tap from an out-of-date list, including one on a task the heartbeat already ran, is refused and the current list is shown instead; a long list is cut to fit one message |
 | `/model [name]` | Telegram, Discord, CLI | Switch model for this session (`--global` makes it the default for all sessions). On Telegram a bare `/model` lists the choices as inline buttons — tap one to switch; the ✅ marks the current one |
 | `/personality [name]` | Telegram, Discord, CLI | Set a named personality (`concise`, `technical`, `pirate`, `cheerful`, `formal`), any custom instruction, or `none` to clear. On Telegram a bare `/personality` shows the presets as buttons |
 | `/compact` | Telegram, Discord, CLI | Summarize older conversation context now |

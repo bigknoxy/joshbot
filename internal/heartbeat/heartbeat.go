@@ -1,6 +1,9 @@
 package heartbeat
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
 	"github.com/bigknoxy/joshbot/internal/log"
@@ -47,6 +51,12 @@ type Service struct {
 	// because a restart is also when the write may have started succeeding.
 	publishedMu sync.Mutex
 	published   map[string]struct{}
+
+	// fileMu serialises every read-modify-write of HEARTBEAT.md: the tick's
+	// check-off and a Telegram toggle (#317). Without it a toggle landing
+	// mid-tick is overwritten by the tick's rewrite of the file it read
+	// before the toggle.
+	fileMu sync.Mutex
 }
 
 // NewService creates a heartbeat service. interval defaults to 30m if zero.
@@ -115,33 +125,51 @@ func (s *Service) Stop() {
 	s.wg.Wait()
 }
 
-// uncheckedRE matches a single unchecked task line. It is deliberately the ONLY
-// pattern in this file: publishing and checking off must agree exactly, or a
-// line that can be published but not checked off re-fires on every tick,
-// forever. Two separate patterns used to disagree here — "-[ ] task" and
-// "* [ ]task" published but never got checked off.
+// taskRE matches a single task line, open or done. It is deliberately the ONLY
+// pattern in this file: publishing, checking off and the Telegram toggle
+// (#317) must agree exactly, or a line that can be published but not checked
+// off re-fires on every tick, forever. Two separate patterns used to disagree
+// here — "-[ ] task" and "* [ ]task" published but never got checked off.
 //
-// Group 1 is the indent + bullet prefix, group 2 the whitespace between the box
-// and the task text, group 3 the task text. Keeping 1 and 2 verbatim lets the
-// box be flipped to [x] in place, preserving indent, bullet style and spacing.
-var uncheckedRE = regexp.MustCompile(`^([ \t]*[-*+][ \t]*)\[ \]([ \t]*)(\S.*?)[ \t]*$`)
+// Group 1 is the indent + bullet prefix, group 2 the box character (space for
+// open, x or X for done), group 3 the whitespace between the box and the task
+// text, group 4 the task text. Keeping 1 and 3 verbatim lets the box be
+// flipped in place, preserving indent, bullet style and spacing.
+var taskRE = regexp.MustCompile(`^([ \t]*[-*+][ \t]*)\[([ xX])\]([ \t]*)(\S.*?)[ \t]*$`)
 
-// parseTask reports whether line is an unchecked task, returning the task text
-// and the line with its box flipped to [x].
-func parseTask(line string) (task, checked string, ok bool) {
+// parseLine reports whether line is a task, open or done, returning its text,
+// whether it is done, and the line with its box flipped to the other state.
+func parseLine(line string) (task string, done bool, flipped string, ok bool) {
 	// Preserve a trailing CR so CRLF files survive the rewrite unchanged.
 	body, cr := line, ""
 	if strings.HasSuffix(body, "\r") {
 		body, cr = body[:len(body)-1], "\r"
 	}
-	m := uncheckedRE.FindStringSubmatch(body)
+	m := taskRE.FindStringSubmatch(body)
 	if m == nil {
+		return "", false, "", false
+	}
+	done = m[2] != " "
+	box := "[x]"
+	if done {
+		box = "[ ]"
+	}
+	return m[4], done, m[1] + box + m[3] + m[4] + cr, true
+}
+
+// parseTask reports whether line is an unchecked task, returning the task text
+// and the line with its box flipped to [x].
+func parseTask(line string) (task, checked string, ok bool) {
+	task, done, flipped, ok := parseLine(line)
+	if !ok || done {
 		return "", "", false
 	}
-	return m[3], m[1] + "[x]" + m[2] + m[3] + cr, true
+	return task, flipped, true
 }
 
 func (s *Service) scanAndPublish() {
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return
@@ -287,4 +315,147 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = dirF.Close()
 	}
 	return nil
+}
+
+// Task is one checkbox line of HEARTBEAT.md, as shown by /heartbeat and its
+// Telegram toggle keyboard (#317).
+type Task struct {
+	// Line is the task's 0-based line index in the file.
+	Line int
+	// Key is a short digest of Text. A toggle names both Line and Key, so a
+	// press rendered from an older file is refused rather than flipping
+	// whatever line now sits at that index.
+	Key  string
+	Text string
+	Done bool
+}
+
+// ErrTaskChanged is returned by Toggle when the named line no longer holds
+// the task the caller saw: the file was edited, or the tick rewrote it.
+var ErrTaskChanged = errors.New("heartbeat task list changed since it was shown")
+
+// TaskKey is the digest a Task carries in Key: 8 hex characters, enough to
+// tell apart the tasks one short file holds and small enough for callback_data.
+func TaskKey(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:4])
+}
+
+// ListTasks reads the tasks in the HEARTBEAT.md at path. A missing file is
+// no tasks, not an error: a fresh workspace has none.
+func ListTasks(path string) ([]Task, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return tasksIn(strings.Split(string(data), "\n")), nil
+}
+
+func tasksIn(lines []string) []Task {
+	var out []Task
+	for i, line := range lines {
+		if text, done, _, ok := parseLine(line); ok {
+			out = append(out, Task{Line: i, Key: TaskKey(text), Text: text, Done: done})
+		}
+	}
+	return out
+}
+
+// Path is the HEARTBEAT.md this service watches.
+func (s *Service) Path() string { return s.path }
+
+// Tasks lists the current tasks.
+func (s *Service) Tasks() ([]Task, error) {
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
+	return ListTasks(s.path)
+}
+
+// Toggle flips the box of the task at line, provided it still carries key and
+// is still in the state the caller was shown (shownDone), and returns the
+// tasks after the write. The state check is what makes a tap mean what the
+// user saw: a button drawn while a task was open must not re-open it after
+// the tick has since run and checked it off, and a double tap (two callbacks
+// from one keyboard) must not flip it and straight back. Re-opening a done
+// task also forgets that this process published it: otherwise the next tick
+// would find it in the published set and check it straight back off without
+// ever running it.
+func (s *Service) Toggle(line int, key string, shownDone bool) ([]Task, error) {
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
+	if line < 0 || line >= len(lines) {
+		return nil, ErrTaskChanged
+	}
+	text, done, flipped, ok := parseLine(lines[line])
+	if !ok || TaskKey(text) != key || done != shownDone {
+		return nil, ErrTaskChanged
+	}
+	lines[line] = flipped
+	if err := writeFileAtomic(s.path, []byte(strings.Join(lines, "\n"))); err != nil {
+		return nil, err
+	}
+	if done {
+		s.publishedMu.Lock()
+		delete(s.published, text)
+		s.publishedMu.Unlock()
+	}
+	return tasksIn(lines), nil
+}
+
+// summaryBudget bounds the /heartbeat text in UTF-16 code units, the unit
+// Telegram's 4096 limit counts in. The keyboard rides the one message this
+// text is sent as and every toggle edits that message with a fresh Summary,
+// so a longer text would be split on send and every later edit refused as too
+// long — the file changing while the chat kept showing the old state.
+const summaryBudget = 3800
+
+// Summary renders tasks as the /heartbeat reply: counts, then one line per
+// task, cut off with a count of the rest once summaryBudget is reached. The
+// same text answers the command and each toggle, on every channel.
+func Summary(tasks []Task) string {
+	if len(tasks) == 0 {
+		return "No heartbeat tasks. Add \"- [ ] task\" lines to HEARTBEAT.md in the workspace."
+	}
+	open := 0
+	for _, t := range tasks {
+		if !t.Done {
+			open++
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Heartbeat tasks: %d open, %d done. Open tasks run at the next heartbeat check, then are checked off.", open, len(tasks)-open)
+	used := utf16Len(b.String())
+	for i, t := range tasks {
+		box := "☐"
+		if t.Done {
+			box = "✅"
+		}
+		line := fmt.Sprintf("\n%s %s", box, t.Text)
+		// Reserve room for the "more" line whenever a task is left out.
+		more := fmt.Sprintf("\n…and %d more in HEARTBEAT.md", len(tasks)-i)
+		if used+utf16Len(line)+utf16Len(more) > summaryBudget && i < len(tasks)-1 ||
+			used+utf16Len(line) > summaryBudget {
+			b.WriteString(more)
+			break
+		}
+		b.WriteString(line)
+		used += utf16Len(line)
+	}
+	return b.String()
+}
+
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	return n
 }

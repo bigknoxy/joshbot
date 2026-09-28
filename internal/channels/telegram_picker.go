@@ -218,7 +218,7 @@ func (p *Picker) handlePress(ctx context.Context, ns, command string, press Call
 			}
 		}
 	}
-	_, err = editor.Edit(pickerTarget{chatID: press.ChatID, messageID: press.MessageID}, reply, opts)
+	_, err = editMarkdown(editor, pickerTarget{chatID: press.ChatID, messageID: press.MessageID}, reply, opts)
 	return err
 }
 

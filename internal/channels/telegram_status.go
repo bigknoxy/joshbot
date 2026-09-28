@@ -163,7 +163,7 @@ func (sp *StatusPanel) handlePress(ctx context.Context, press CallbackPress) err
 	if rm, berr := statusKeyboard(pinned).Build(); berr == nil {
 		opts.ReplyMarkup = rm
 	}
-	_, err = editor.Edit(target, reply, opts)
+	_, err = editMarkdown(editor, target, reply, opts)
 	if err != nil && strings.Contains(err.Error(), "message is not modified") {
 		// Two presses inside the same minute render identical text; that is
 		// a successful refresh, not a failure.

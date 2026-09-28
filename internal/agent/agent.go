@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/commands"
 	"github.com/bigknoxy/joshbot/internal/config"
 	ctxpkg "github.com/bigknoxy/joshbot/internal/context"
+	"github.com/bigknoxy/joshbot/internal/heartbeat"
 	"github.com/bigknoxy/joshbot/internal/incidents"
 	"github.com/bigknoxy/joshbot/internal/log"
 	"github.com/bigknoxy/joshbot/internal/providers"
@@ -2182,6 +2184,15 @@ Just type normally to chat with me!`,
 			}
 		}
 		return status
+	case "heartbeat":
+		// Read-only here; toggling is the Telegram keyboard's job (#317) and
+		// goes through heartbeat.Service so it shares the tick's file lock.
+		tasks, err := heartbeat.ListTasks(filepath.Join(a.cfg.Agents.Defaults.Workspace, "HEARTBEAT.md"))
+		if err != nil {
+			log.Warn("heartbeat: could not read HEARTBEAT.md", "error", err)
+			return ReplyPrefix + "could not read HEARTBEAT.md"
+		}
+		return heartbeat.Summary(tasks)
 	case "model":
 		return a.handleModelCommand(ctx, msg)
 	case "personality":

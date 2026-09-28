@@ -32,6 +32,7 @@ var All = []Command{
 	{Name: "start", Description: "Show what this bot can do"},
 	{Name: "new", Description: "Start a fresh conversation (clears the session's model and personality)"},
 	{Name: "status", Description: "Show the current model, tools and memory window"},
+	{Name: "heartbeat", Description: "List HEARTBEAT.md tasks (tap to toggle on Telegram)"},
 	{Name: "model", Args: "[name]", Description: "Switch model for this session (--global for all sessions)"},
 	{Name: "personality", Args: "[name]", Description: "Set a personality, or none to clear it"},
 	{Name: "compact", Description: "Summarize older context now"},

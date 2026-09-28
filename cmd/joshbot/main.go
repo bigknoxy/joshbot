@@ -1284,6 +1284,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	hb.SetChatIDResolver(messageSender.GetChatID)
 	hb.Start()
 	registerBackgroundService(hb.Stop)
+	setHeartbeatService(hb)
 
 	// Start consolidator (self-learning memory consolidation)
 	consolidator := learning.NewConsolidator(memoryManager, multiProvider, 10*time.Minute)
@@ -1293,6 +1294,62 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
 	return msgBus, multiProvider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
+}
+
+// heartbeatMu guards heartbeatSvc, the running heartbeat service. The gateway's
+// /heartbeat toggle keyboard (#317) must go through it, not a second reader of
+// HEARTBEAT.md, so a toggle shares the tick's file lock and can clear the
+// service's published set. A package var for the same reason as mcpManager.
+var (
+	heartbeatMu  sync.Mutex
+	heartbeatSvc *heartbeat.Service
+)
+
+func setHeartbeatService(s *heartbeat.Service) {
+	heartbeatMu.Lock()
+	defer heartbeatMu.Unlock()
+	heartbeatSvc = s
+}
+
+func currentHeartbeatService() *heartbeat.Service {
+	heartbeatMu.Lock()
+	defer heartbeatMu.Unlock()
+	return heartbeatSvc
+}
+
+// heartbeatBackend adapts *heartbeat.Service to channels.HeartbeatBackend.
+type heartbeatBackend struct{ s *heartbeat.Service }
+
+func toHeartbeatTasks(in []heartbeat.Task) []channels.HeartbeatTask {
+	out := make([]channels.HeartbeatTask, len(in))
+	for i, t := range in {
+		out[i] = channels.HeartbeatTask{Line: t.Line, Key: t.Key, Text: t.Text, Done: t.Done}
+	}
+	return out
+}
+
+func (h heartbeatBackend) Tasks() ([]channels.HeartbeatTask, error) {
+	tasks, err := h.s.Tasks()
+	return toHeartbeatTasks(tasks), err
+}
+
+func (h heartbeatBackend) Toggle(line int, key string, shownDone bool) ([]channels.HeartbeatTask, string, error) {
+	tasks, err := h.s.Toggle(line, key, shownDone)
+	if errors.Is(err, heartbeat.ErrTaskChanged) {
+		return nil, "", channels.ErrHeartbeatTaskChanged
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return toHeartbeatTasks(tasks), heartbeat.Summary(tasks), nil
+}
+
+func (h heartbeatBackend) Summary(tasks []channels.HeartbeatTask) string {
+	in := make([]heartbeat.Task, len(tasks))
+	for i, t := range tasks {
+		in[i] = heartbeat.Task{Line: t.Line, Key: t.Key, Text: t.Text, Done: t.Done}
+	}
+	return heartbeat.Summary(in)
 }
 
 // mcpMu guards mcpManager, which holds the MCP server processes spawned during
@@ -3567,7 +3624,7 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
-	commandKeyboards := buildCommandKeyboards(tgChannel, agentInstance.Process)
+	commandKeyboards := buildCommandKeyboards(tgChannel, agentInstance.Process, currentHeartbeatService())
 
 	// [⏹ Stop] on the streaming message (#310).
 	var stops *channels.StopCoordinator
@@ -3727,7 +3784,7 @@ func (p pickerBackend) Process(ctx context.Context, msg bus.InboundMessage) (str
 // pickers and returns them for buildGatewayDeps. Each is best-effort: a
 // registration failure is logged and the command keeps working as text.
 // Must run before the channel starts, like every RegisterCallback.
-func buildCommandKeyboards(tg *channels.TelegramChannel, process func(context.Context, bus.InboundMessage) (string, error)) []func(context.Context, bus.InboundMessage) *channels.Keyboard {
+func buildCommandKeyboards(tg *channels.TelegramChannel, process func(context.Context, bus.InboundMessage) (string, error), hb *heartbeat.Service) []func(context.Context, bus.InboundMessage) *channels.Keyboard {
 	if tg == nil {
 		return nil
 	}
@@ -3737,6 +3794,14 @@ func buildCommandKeyboards(tg *channels.TelegramChannel, process func(context.Co
 		log.Error("Status refresh button unavailable; /status still works", "error", err)
 	} else {
 		kbs = append(kbs, sp.Keyboard)
+	}
+	// HEARTBEAT.md as a tap-to-toggle keyboard on a bare /heartbeat (#317).
+	if hb != nil {
+		if board, err := tg.NewHeartbeatBoard(heartbeatBackend{hb}); err != nil {
+			log.Error("Heartbeat toggle keyboard unavailable; /heartbeat still lists tasks", "error", err)
+		} else {
+			kbs = append(kbs, board.Keyboard)
+		}
 	}
 	return kbs
 }

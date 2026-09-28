@@ -3567,6 +3567,8 @@ func runGateway(c *cli.Context) error {
 		}
 	}
 
+	commandKeyboards := buildCommandKeyboards(tgChannel, agentInstance.Process)
+
 	// [⏹ Stop] on the streaming message (#310).
 	var stops *channels.StopCoordinator
 	if tgChannel != nil {
@@ -3579,7 +3581,7 @@ func runGateway(c *cli.Context) error {
 	}
 
 	msgBus.Subscribe("all", gatewayHandler(buildGatewayDeps(
-		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals, picker, stops)))
+		msgBus, agentInstance.Process, sender, tgChannel, streaming, shellApprovals, picker, stops, commandKeyboards...)))
 
 	// Start Telegram channel if enabled
 	if tgChannel != nil {
@@ -3721,6 +3723,43 @@ func (p pickerBackend) Process(ctx context.Context, msg bus.InboundMessage) (str
 	return p.a.Process(ctx, msg)
 }
 
+// buildCommandKeyboards registers the Telegram command keyboards beyond the
+// pickers and returns them for buildGatewayDeps. Each is best-effort: a
+// registration failure is logged and the command keeps working as text.
+// Must run before the channel starts, like every RegisterCallback.
+func buildCommandKeyboards(tg *channels.TelegramChannel, process func(context.Context, bus.InboundMessage) (string, error)) []func(context.Context, bus.InboundMessage) *channels.Keyboard {
+	if tg == nil {
+		return nil
+	}
+	var kbs []func(context.Context, bus.InboundMessage) *channels.Keyboard
+	// [🔃 Refresh] [📌 Pin] on a bare /status reply (#318).
+	if sp, err := tg.NewStatusPanel(statusBackend{process}); err != nil {
+		log.Error("Status refresh button unavailable; /status still works", "error", err)
+	} else {
+		kbs = append(kbs, sp.Keyboard)
+	}
+	return kbs
+}
+
+// statusBackend adapts agent.Process to channels.StatusBackend, turning an
+// in-band failure (agent.ReplyPrefix reply text with a nil error) back into
+// an error. The status panel keeps the last good render on an error; given
+// the text instead it would overwrite that render with the failure.
+type statusBackend struct {
+	process func(context.Context, bus.InboundMessage) (string, error)
+}
+
+func (s statusBackend) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	reply, err := s.process(ctx, msg)
+	if err != nil {
+		return "", err
+	}
+	if rerr := agentReplyError(reply); rerr != nil {
+		return "", rerr
+	}
+	return reply, nil
+}
+
 func toPickerChoices(in []agent.Choice, err error) ([]channels.PickerChoice, error) {
 	if err != nil {
 		return nil, err
@@ -3741,10 +3780,21 @@ func buildGatewayDeps(
 	shellApprovals *channels.ShellApprovalCoordinator,
 	picker *channels.Picker,
 	stops *channels.StopCoordinator,
+	commandKeyboards ...func(context.Context, bus.InboundMessage) *channels.Keyboard,
 ) gatewayDeps {
+	// The pickers and every other command keyboard each answer nil for a
+	// command that is not theirs, so the first non-nil one wins.
+	commandKeyboards = append([]func(context.Context, bus.InboundMessage) *channels.Keyboard{picker.Keyboard}, commandKeyboards...)
 	return gatewayDeps{
-		commandKeyboard: picker.Keyboard,
-		noticeKeyboard:  picker.NoticeKeyboard,
+		commandKeyboard: func(ctx context.Context, msg bus.InboundMessage) *channels.Keyboard {
+			for _, kb := range commandKeyboards {
+				if k := kb(ctx, msg); k != nil {
+					return k
+				}
+			}
+			return nil
+		},
+		noticeKeyboard: picker.NoticeKeyboard,
 		armStop: func(msg bus.InboundMessage, s gatewayStreamer, cancel context.CancelFunc) (func() bool, func()) {
 			ts, ok := s.(*channels.TelegramStreamer)
 			if stops == nil || !ok {

@@ -618,3 +618,79 @@ func TestGatewayHandlerAttachesThePickerToARetiredModelNotice(t *testing.T) {
 		}
 	})
 }
+
+// Command keyboards compose: the pickers answer nil for /status, so the
+// status panel's keyboard is the one attached, and a command nothing claims
+// gets none (#318).
+func TestBuildGatewayDepsComposesCommandKeyboards(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	tg := channels.NewTelegramChannel(msgBus, &config.TelegramConfig{Enabled: true, Token: "t"})
+	kbs := buildCommandKeyboards(tg, fakeStatusProcess{}.Process)
+	if len(kbs) != 1 {
+		t.Fatalf("want the status keyboard registered, got %d", len(kbs))
+	}
+	if buildCommandKeyboards(nil, nil) != nil {
+		t.Error("no Telegram channel: no keyboards")
+	}
+	// A second registration of the same namespace fails and is skipped,
+	// leaving the command working as text.
+	if again := buildCommandKeyboards(tg, fakeStatusProcess{}.Process); len(again) != 0 {
+		t.Errorf("a failed registration must be skipped, got %d", len(again))
+	}
+	d := buildGatewayDeps(msgBus, nil, nil, tg, true, nil, nil, nil, kbs...)
+	if d.commandKeyboard(context.Background(), telegramMsg("u", "/status")) == nil {
+		t.Error("bare /status should get the status panel keyboard")
+	}
+	if d.commandKeyboard(context.Background(), telegramMsg("u", "/help")) != nil {
+		t.Error("a command no keyboard claims gets none")
+	}
+}
+
+type fakeStatusProcess struct{}
+
+func (fakeStatusProcess) Process(context.Context, bus.InboundMessage) (string, error) {
+	return "Status:", nil
+}
+
+// An in-band failure from Process must reach the status panel as an error, so
+// it keeps the last good render instead of overwriting it with the failure.
+func TestStatusBackendTranslatesInBandFailures(t *testing.T) {
+	failed := statusBackend{func(context.Context, bus.InboundMessage) (string, error) {
+		return agent.ReplyPrefix + "provider unreachable", nil
+	}}
+	if reply, err := failed.Process(context.Background(), bus.InboundMessage{}); err == nil || reply != "" {
+		t.Errorf("in-band failure: reply=%q err=%v, want an error and no text", reply, err)
+	}
+	ok := statusBackend{func(context.Context, bus.InboundMessage) (string, error) {
+		return "Status:\n  As of: 10:00 UTC", nil
+	}}
+	if reply, err := ok.Process(context.Background(), bus.InboundMessage{}); err != nil || !strings.HasPrefix(reply, "Status:") {
+		t.Errorf("success: reply=%q err=%v", reply, err)
+	}
+	boom := statusBackend{func(context.Context, bus.InboundMessage) (string, error) {
+		return "", errors.New("boom")
+	}}
+	if _, err := boom.Process(context.Background(), bus.InboundMessage{}); err == nil {
+		t.Error("a Process error must pass through")
+	}
+}
+
+// With nothing optional wired, every gatewayDeps hook declines rather than
+// panicking: no sender, no approvals, no streaming, a non-Telegram message.
+func TestBuildGatewayDepsDeclinesWithNothingWired(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	d := buildGatewayDeps(msgBus, nil, nil, nil, false, nil, nil, nil)
+	d.setChatID("telegram", "1") // must not panic with a nil sender
+	if id, ok := d.getChatID("telegram"); ok || id != "" {
+		t.Errorf("nil sender: getChatID = %q, %v", id, ok)
+	}
+	if d.newStreamer(telegramMsg("u", "hi")) != nil {
+		t.Error("streaming off: no streamer")
+	}
+	if d.approverFor(telegramMsg("u", "hi")) != nil {
+		t.Error("no approval coordinator: no approver")
+	}
+	if d.commandKeyboard(context.Background(), telegramMsg("u", "/status")) != nil {
+		t.Error("no keyboards registered: none attached")
+	}
+}

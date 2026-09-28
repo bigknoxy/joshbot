@@ -4,9 +4,9 @@ name: Security
 # covers. Three other tools used to run here too, via the org-wide reusable
 # workflow (bigknoxy/.github/.github/workflows/security-reusable.yml) — they
 # are dropped, not lost:
-#   - CodeQL           now runs as GitHub's native "code scanning default
-#                      setup" (languages: go, actions; extended query suite),
-#                      configured at the repo level, not from a workflow file.
+#   - CodeQL           now runs from its own workflow, codeql.yml (advanced
+#                      setup: go + actions, security-extended suite). Default
+#                      setup was tried first and skipped every Dependabot PR.
 #   - gitleaks         superseded, as a scanner, by GitHub's native secret
 #                      scanning, which is also wired to push protection — it
 #                      blocks a secret before it lands, which a CI job

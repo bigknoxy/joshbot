@@ -612,7 +612,7 @@ Documentation gate — a release does not go out with any of these unchecked:
 - [ ] `CHANGELOG.md` — entry under `[Unreleased]`
 - [ ] Every quoted count or size re-measured, not carried over
 - [ ] The Security tab has no new unreviewed finding since the last release
-      (`.github/workflows/security.yml` — govulncheck/gosec/CodeQL/gitleaks; advisory, does not gate merges)
+      (`security.yml`, `codeql.yml`, `audit-additions.yml` — required status checks on main; secret scanning is GitHub-native)
 
 ## Release Process
 1. Push changes to main first

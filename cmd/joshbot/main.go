@@ -3570,7 +3570,7 @@ func runGateway(c *cli.Context) error {
 	// [🔃 Refresh] [📌 Pin] on a bare /status reply (#318).
 	var commandKeyboards []func(context.Context, bus.InboundMessage) *channels.Keyboard
 	if tgChannel != nil {
-		sp, err := tgChannel.NewStatusPanel(pickerBackend{agentInstance})
+		sp, err := tgChannel.NewStatusPanel(statusBackend{agentInstance.Process})
 		if err != nil {
 			log.Error("Status refresh button unavailable; /status still works", "error", err)
 		} else {
@@ -3730,6 +3730,25 @@ func (p pickerBackend) PersonalityChoices(ctx context.Context, msg bus.InboundMe
 
 func (p pickerBackend) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
 	return p.a.Process(ctx, msg)
+}
+
+// statusBackend adapts agent.Process to channels.StatusBackend, turning an
+// in-band failure (agent.ReplyPrefix reply text with a nil error) back into
+// an error. The status panel keeps the last good render on an error; given
+// the text instead it would overwrite that render with the failure.
+type statusBackend struct {
+	process func(context.Context, bus.InboundMessage) (string, error)
+}
+
+func (s statusBackend) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	reply, err := s.process(ctx, msg)
+	if err != nil {
+		return "", err
+	}
+	if rerr := agentReplyError(reply); rerr != nil {
+		return "", rerr
+	}
+	return reply, nil
 }
 
 func toPickerChoices(in []agent.Choice, err error) ([]channels.PickerChoice, error) {

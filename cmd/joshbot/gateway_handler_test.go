@@ -643,3 +643,26 @@ type fakeStatusProcess struct{}
 func (fakeStatusProcess) Process(context.Context, bus.InboundMessage) (string, error) {
 	return "Status:", nil
 }
+
+// An in-band failure from Process must reach the status panel as an error, so
+// it keeps the last good render instead of overwriting it with the failure.
+func TestStatusBackendTranslatesInBandFailures(t *testing.T) {
+	failed := statusBackend{func(context.Context, bus.InboundMessage) (string, error) {
+		return agent.ReplyPrefix + "provider unreachable", nil
+	}}
+	if reply, err := failed.Process(context.Background(), bus.InboundMessage{}); err == nil || reply != "" {
+		t.Errorf("in-band failure: reply=%q err=%v, want an error and no text", reply, err)
+	}
+	ok := statusBackend{func(context.Context, bus.InboundMessage) (string, error) {
+		return "Status:\n  As of: 10:00 UTC", nil
+	}}
+	if reply, err := ok.Process(context.Background(), bus.InboundMessage{}); err != nil || !strings.HasPrefix(reply, "Status:") {
+		t.Errorf("success: reply=%q err=%v", reply, err)
+	}
+	boom := statusBackend{func(context.Context, bus.InboundMessage) (string, error) {
+		return "", errors.New("boom")
+	}}
+	if _, err := boom.Process(context.Background(), bus.InboundMessage{}); err == nil {
+		t.Error("a Process error must pass through")
+	}
+}

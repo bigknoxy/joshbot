@@ -200,7 +200,6 @@ func TestStatusPanel_FailedRefreshMarksTheOldRenderOutdated(t *testing.T) {
 		err   error
 	}{
 		{"process error", "", errors.New("dial tcp 10.0.0.7: secret detail")},
-		{"in-band error", "Error processing request: boom", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ed := &fakeEditor{}

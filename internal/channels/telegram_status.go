@@ -35,8 +35,10 @@ const (
 	statusPinFailed   = "📌 Could not pin — in a group the bot needs permission to pin messages."
 )
 
-// StatusBackend runs the /status command turn a press refreshes with. It is
-// satisfied by the same cmd/joshbot adapter over *agent.Agent as the pickers.
+// StatusBackend runs the /status command turn a press refreshes with. A turn
+// that failed in band (agent.ReplyPrefix) must come back as an error, not as
+// reply text: the in-band contract belongs to the agent package, which
+// channels does not import, so the cmd/joshbot adapter translates it.
 type StatusBackend interface {
 	Process(ctx context.Context, msg bus.InboundMessage) (string, error)
 }
@@ -143,11 +145,11 @@ func (sp *StatusPanel) handlePress(ctx context.Context, press CallbackPress) err
 			"is_command": true,
 		},
 	})
-	if err != nil || strings.HasPrefix(reply, "Error") {
+	if err != nil {
 		// Keep the last good render and say it is outdated, rather than
 		// replacing it with an error or pretending it is current. The raw
 		// error stays in the log: it can wrap provider or path detail.
-		log.Warn("status panel: refresh failed", "error", err, "reply_is_error", err == nil)
+		log.Warn("status panel: refresh failed", "error", err)
 		reply = statusStalePrefix
 		if old := stripStatusNotes(press.MessageText); old != "" {
 			reply += "\n\n" + old

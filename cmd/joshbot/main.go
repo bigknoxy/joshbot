@@ -1284,6 +1284,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	hb.SetChatIDResolver(messageSender.GetChatID)
 	hb.Start()
 	registerBackgroundService(hb.Stop)
+	setHeartbeatService(hb)
 
 	// Start consolidator (self-learning memory consolidation)
 	consolidator := learning.NewConsolidator(memoryManager, multiProvider, 10*time.Minute)
@@ -1293,6 +1294,62 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
 	return msgBus, multiProvider, sessionMgr, agentInstance, toolsRegistry, messageSender, nil
+}
+
+// heartbeatMu guards heartbeatSvc, the running heartbeat service. The gateway's
+// /heartbeat toggle keyboard (#317) must go through it, not a second reader of
+// HEARTBEAT.md, so a toggle shares the tick's file lock and can clear the
+// service's published set. A package var for the same reason as mcpManager.
+var (
+	heartbeatMu  sync.Mutex
+	heartbeatSvc *heartbeat.Service
+)
+
+func setHeartbeatService(s *heartbeat.Service) {
+	heartbeatMu.Lock()
+	defer heartbeatMu.Unlock()
+	heartbeatSvc = s
+}
+
+func currentHeartbeatService() *heartbeat.Service {
+	heartbeatMu.Lock()
+	defer heartbeatMu.Unlock()
+	return heartbeatSvc
+}
+
+// heartbeatBackend adapts *heartbeat.Service to channels.HeartbeatBackend.
+type heartbeatBackend struct{ s *heartbeat.Service }
+
+func toHeartbeatTasks(in []heartbeat.Task) []channels.HeartbeatTask {
+	out := make([]channels.HeartbeatTask, len(in))
+	for i, t := range in {
+		out[i] = channels.HeartbeatTask{Line: t.Line, Key: t.Key, Text: t.Text, Done: t.Done}
+	}
+	return out
+}
+
+func (h heartbeatBackend) Tasks() ([]channels.HeartbeatTask, error) {
+	tasks, err := h.s.Tasks()
+	return toHeartbeatTasks(tasks), err
+}
+
+func (h heartbeatBackend) Toggle(line int, key string) ([]channels.HeartbeatTask, string, error) {
+	tasks, err := h.s.Toggle(line, key)
+	if errors.Is(err, heartbeat.ErrTaskChanged) {
+		return nil, "", channels.ErrHeartbeatTaskChanged
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return toHeartbeatTasks(tasks), heartbeat.Summary(tasks), nil
+}
+
+func (h heartbeatBackend) Summary(tasks []channels.HeartbeatTask) string {
+	in := make([]heartbeat.Task, len(tasks))
+	for i, t := range tasks {
+		in[i] = heartbeat.Task{Line: t.Line, Key: t.Key, Text: t.Text, Done: t.Done}
+	}
+	return heartbeat.Summary(in)
 }
 
 // mcpMu guards mcpManager, which holds the MCP server processes spawned during
@@ -3568,6 +3625,16 @@ func runGateway(c *cli.Context) error {
 	}
 
 	commandKeyboards := buildCommandKeyboards(tgChannel, agentInstance.Process)
+
+	// HEARTBEAT.md as a tap-to-toggle keyboard on a bare /heartbeat (#317).
+	if hbSvc := currentHeartbeatService(); tgChannel != nil && hbSvc != nil {
+		board, err := tgChannel.NewHeartbeatBoard(heartbeatBackend{hbSvc})
+		if err != nil {
+			log.Error("Heartbeat toggle keyboard unavailable; /heartbeat still lists tasks", "error", err)
+		} else {
+			commandKeyboards = append(commandKeyboards, board.Keyboard)
+		}
+	}
 
 	// [⏹ Stop] on the streaming message (#310).
 	var stops *channels.StopCoordinator

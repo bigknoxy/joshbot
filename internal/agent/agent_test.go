@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -1343,5 +1345,25 @@ func TestProcessFailureRepliesCarryReplyPrefix(t *testing.T) {
 	}
 	if ReplyError(reply) == nil {
 		t.Fatalf("a failed turn's reply must match ReplyError, got %q", reply)
+	}
+}
+
+// /heartbeat lists HEARTBEAT.md read-only on every channel (#317).
+func TestAgentProcessCommandHeartbeat(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	agent := NewAgent(cfg, &mockProvider{}, &mockToolExecutor{}, newMockSessionManager(), newMockLogger())
+	msg := bus.InboundMessage{SenderID: "u", Content: "/heartbeat", Channel: "cli", Timestamp: time.Now()}
+
+	reply, err := agent.Process(context.Background(), msg)
+	if err != nil || !strings.Contains(reply, "No heartbeat tasks") {
+		t.Fatalf("no file: reply=%q err=%v", reply, err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Agents.Defaults.Workspace, "HEARTBEAT.md"), []byte("- [ ] a\n- [x] b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reply, err = agent.Process(context.Background(), msg)
+	if err != nil || !strings.Contains(reply, "1 open, 1 done") || !strings.Contains(reply, "☐ a") {
+		t.Errorf("reply=%q err=%v", reply, err)
 	}
 }

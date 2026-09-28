@@ -689,7 +689,7 @@ func TestTelegramChannel_RegisterCommands(t *testing.T) {
 		}
 		got = append(got, c.Text)
 	}
-	want := []string{"start", "new", "status", "model", "personality", "compact", "resume", "help"}
+	want := []string{"start", "new", "status", "heartbeat", "model", "personality", "compact", "resume", "help"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("registered commands = %v, want %v", got, want)
 	}

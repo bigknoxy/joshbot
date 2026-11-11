@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Token usage and cost are aggregated and persisted, with an optional spend ceiling (#436).**
+  Every main-loop LLM call records its token usage onto `~/.joshbot/usage.json` (owner-only,
+  atomically rewritten), keyed process-lifetime, per answering model and per session; totals
+  survive a restart. `joshbot status` reports tokens, calls and estimated spend (lifetime, per
+  model, recent sessions) and the in-chat `/status` shows the same for its session and the
+  process lifetime. Cost is estimated from a small documented pricing table
+  (`internal/usage/pricing.go` — list prices per 1M tokens, dated, never scraped at runtime);
+  a model not in the table reports usage with a **unknown** cost — `cost_usd` stays `null` in
+  the JSON output and the status output counts the unpriced calls openly — so joshbot never
+  prints a fabricated cost. `agents.defaults.spend_ceiling_usd` (default 0 = off) halts every
+  further turn before its next LLM call once recorded lifetime spend reaches it, with the in
+  chat reply carrying the spend, the ceiling and the config key; unpriced models contribute
+  tokens but no cost, and the check runs before the request, so only the call that tripped the
+  ceiling can overshoot it.
 - **`/status` on Telegram gets `[🔃 Refresh]` and `[📌 Pin]` buttons (#318).** Refresh re-runs `/status` for the presser's session and edits the message in place; Pin pins it silently, after which only Refresh is offered — the keyboard itself remembers the pin, so the press path reads and writes no store. `/status` now carries an `As of: HH:MM <zone>` line on every channel, so a pinned or left-on-screen snapshot never passes for a live view. A refresh that fails keeps the last good text, prefixed "⚠️ Outdated — refresh failed", rather than replacing it with an error; a pin the bot lacks permission for says so. The message is never auto-updated: every edit spends the per-chat budget, so refresh is manual by design.
 - **`/heartbeat` lists `HEARTBEAT.md`, and on Telegram each task is a toggle button (#317).** The command shows open/done counts and every task on every channel. On Telegram a bare `/heartbeat` adds a one-column keyboard (☐ open, ✅ done; the first 30 tasks), and a tap flips that box in the file and redraws the list in place. Checking a task off dismisses it; re-opening a done task makes it run at the next heartbeat check — including a task this process already ran, which the service now forgets so the tick does not silently check it back off. Each button names its line, a digest of the task text and the state it showed, so a tap from a list drawn before the file changed — including a task the heartbeat ran and checked off in the meantime, and the second tap of a double tap — is refused and the current list is shown. A long list is cut to fit one Telegram message ("…and N more in HEARTBEAT.md") so each toggle's in-place edit always fits. Toggles go through the heartbeat service's single checkbox regex (which now also recognises done `[x]` lines) and its new file lock, shared with the tick's check-off, so a toggle landing mid-tick is not overwritten.
 

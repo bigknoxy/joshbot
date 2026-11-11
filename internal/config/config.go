@@ -203,6 +203,16 @@ type AgentDefaults struct {
 	// before this key existed keep the old behaviour without a schema
 	// migration.
 	HealTimeouts string `mapstructure:"heal_timeouts" json:"heal_timeouts,omitempty" yaml:"heal_timeouts,omitempty"`
+	// SpendCeilingUSD is a process-lifetime spend ceiling in US dollars over
+	// recorded token-usage cost (internal/usage): once total spend reaches
+	// it, every turn stops before its next LLM call with a clear message,
+	// instead of draining the wallet. Zero (the default) disables it. Only
+	// pricing-table models count — unpriced models report usage with an
+	// unknown cost rather than a fabricated one — so a configuration running
+	// only unpriced models never trips the ceiling. omitempty for the same
+	// reason as every key above: no config in the wild carries it yet, and a
+	// stored zero is a genuine opt-out that must not be migrated away.
+	SpendCeilingUSD float64 `mapstructure:"spend_ceiling_usd" json:"spend_ceiling_usd,omitempty" yaml:"spend_ceiling_usd,omitempty"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -1443,6 +1453,10 @@ func (c *Config) Validate() error {
 	}
 	if err := validateTuningBounds(c.Tuning); err != nil {
 		return err
+	}
+	if c.Agents.Defaults.SpendCeilingUSD < 0 {
+		return fatalConfigError{fmt.Errorf(
+			"agents.defaults.spend_ceiling_usd cannot be negative, got %.2f; zero disables the ceiling", c.Agents.Defaults.SpendCeilingUSD)}
 	}
 	for name, p := range c.Providers {
 		if err := validateTimeout("providers."+name+".timeout", p.Timeout); err != nil {

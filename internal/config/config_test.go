@@ -393,7 +393,7 @@ func TestConfigString(t *testing.T) {
 	cfg := Defaults()
 	str := cfg.String()
 
-	expected := "Config{SchemaVersion: 5, Model: openrouter/free, LogLevel: info, Gateway: 0.0.0.0:18790}"
+	expected := "Config{SchemaVersion: 6, Model: openrouter/free, LogLevel: info, Gateway: 0.0.0.0:18790}"
 	if str != expected {
 		t.Errorf("String() = %v, want %v", str, expected)
 	}
@@ -1092,8 +1092,101 @@ func TestToolsEnvOverrides(t *testing.T) {
 }
 
 func TestSchemaVersion(t *testing.T) {
-	if CurrentSchemaVersion != 5 {
-		t.Errorf("expected schema version 5, got %d", CurrentSchemaVersion)
+	if CurrentSchemaVersion != 6 {
+		t.Errorf("expected schema version 6, got %d", CurrentSchemaVersion)
+	}
+}
+
+// TestDefaultsContainmentIsOnByDefault covers the audit finding that a fresh
+// install shipped with no OS-level containment at all: "off" left the deny
+// list as the only boundary, and the deny list is provably incomplete.
+func TestDefaultsContainmentIsOnByDefault(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Tools.ShellSandbox != DefaultShellSandbox {
+		t.Errorf("default tools.shell_sandbox = %q, want %q", cfg.Tools.ShellSandbox, DefaultShellSandbox)
+	}
+	if cfg.Tools.ShellSandbox != "auto" {
+		t.Errorf("default tools.shell_sandbox = %q, want \"auto\"", cfg.Tools.ShellSandbox)
+	}
+	if cfg.Tools.SendFileApproval != DefaultSendFileApproval {
+		t.Errorf("default tools.send_file_approval = %q, want %q", cfg.Tools.SendFileApproval, DefaultSendFileApproval)
+	}
+	if cfg.Tools.SendFileApproval != "interactive" {
+		t.Errorf("default tools.send_file_approval = %q, want \"interactive\"", cfg.Tools.SendFileApproval)
+	}
+}
+
+// TestExplicitToolString covers the helper the v5->v6 migration uses to tell
+// "the operator never chose this" from "the operator chose this and it
+// happens to be the old default".
+func TestExplicitToolString(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		key     string
+		want    string
+		wantSet bool
+	}{
+		{"key absent", `{"tools":{"exec":{"timeout":60}}}`, "shell_sandbox", "", false},
+		{"tools absent", `{"schema_version":5}`, "shell_sandbox", "", false},
+		{"explicit off", `{"tools":{"shell_sandbox":"off"}}`, "shell_sandbox", "off", true},
+		{"explicit workspace", `{"tools":{"shell_sandbox":"workspace"}}`, "shell_sandbox", "workspace", true},
+		{"empty string counts as unset", `{"tools":{"shell_sandbox":""}}`, "shell_sandbox", "", false},
+		{"wrong type counts as unset", `{"tools":{"shell_sandbox":true}}`, "shell_sandbox", "", false},
+		{"other key", `{"tools":{"send_file_approval":"always"}}`, "shell_sandbox", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := explicitToolString([]byte(tc.raw), tc.key)
+			if ok != tc.wantSet || got != tc.want {
+				t.Errorf("explicitToolString = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantSet)
+			}
+		})
+	}
+}
+
+// TestMigrateV5ToV6LeavesAnExplicitChoiceAlone covers the migration's one
+// hard rule: a value the operator wrote down is theirs, and the new defaults
+// do not overwrite it.
+func TestMigrateV5ToV6LeavesAnExplicitChoiceAlone(t *testing.T) {
+	raw := []byte(`{"schema_version":5,"tools":{"shell_sandbox":"off","send_file_approval":"always"}}`)
+	cfg := Defaults()
+	cfg.SchemaVersion = 5
+	cfg.Tools.ShellSandbox = "off"
+	cfg.Tools.SendFileApproval = "always"
+
+	if err := migrateConfig(cfg, raw); err != nil {
+		t.Fatalf("migrateConfig() error = %v", err)
+	}
+	if cfg.Tools.ShellSandbox != "off" {
+		t.Errorf("an explicit shell_sandbox was overwritten: got %q, want \"off\"", cfg.Tools.ShellSandbox)
+	}
+	if cfg.Tools.SendFileApproval != "always" {
+		t.Errorf("an explicit send_file_approval was overwritten: got %q, want \"always\"", cfg.Tools.SendFileApproval)
+	}
+	if cfg.SchemaVersion != 6 {
+		t.Errorf("schema version = %d, want 6", cfg.SchemaVersion)
+	}
+}
+
+// TestMigrateV5ToV6AppliesTheNewDefaultsWhenNothingWasChosen covers the
+// other half: a config that never mentioned the keys gets the safer ones.
+func TestMigrateV5ToV6AppliesTheNewDefaultsWhenNothingWasChosen(t *testing.T) {
+	raw := []byte(`{"schema_version":5}`)
+	cfg := Defaults()
+	cfg.SchemaVersion = 5
+
+	if err := migrateConfig(cfg, raw); err != nil {
+		t.Fatalf("migrateConfig() error = %v", err)
+	}
+	if cfg.Tools.ShellSandbox != "auto" {
+		t.Errorf("tools.shell_sandbox = %q, want \"auto\"", cfg.Tools.ShellSandbox)
+	}
+	if cfg.Tools.SendFileApproval != "interactive" {
+		t.Errorf("tools.send_file_approval = %q, want \"interactive\"", cfg.Tools.SendFileApproval)
+	}
+	if cfg.SchemaVersion != 6 {
+		t.Errorf("schema version = %d, want 6", cfg.SchemaVersion)
 	}
 }
 

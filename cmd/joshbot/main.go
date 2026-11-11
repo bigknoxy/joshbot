@@ -1035,20 +1035,31 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	sandboxMode, ok := tools.ParseSandboxMode(cfg.Tools.ShellSandbox)
 	if !ok {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf(
-			"tools.shell_sandbox has unknown value %q; use \"off\" or \"workspace\"", cfg.Tools.ShellSandbox)
+			"tools.shell_sandbox has unknown value %q; use \"off\", \"auto\" or \"workspace\"", cfg.Tools.ShellSandbox)
 	}
-	if sandboxMode != tools.SandboxOff {
+	// "auto" is a request for the strongest containment this machine can
+	// enforce, not a mode in its own right. Resolve it before the checks
+	// below: an explicit "workspace" on a platform without a backend is an
+	// error the operator must see, but the shipped default has to be able to
+	// start everywhere — including Windows, which has neither Landlock nor
+	// Seatbelt, and a Linux kernel old enough to lack Landlock.
+	resolvedSandbox := tools.ResolveSandboxMode(sandboxMode)
+	if sandboxMode == tools.SandboxAuto && resolvedSandbox == tools.SandboxOff {
+		log.Warn("Shell sandbox unavailable on this platform; shell commands run with the allowlist-only boundary",
+			"mechanism", tools.SandboxDescription())
+	}
+	if resolvedSandbox != tools.SandboxOff {
 		if !tools.SandboxAvailable() {
 			return nil, nil, nil, nil, nil, nil, fmt.Errorf(
 				"tools.shell_sandbox is %q but %s; set it to \"off\" to run without containment",
-				sandboxMode, tools.SandboxDescription())
+				resolvedSandbox, tools.SandboxDescription())
 		}
 		if !tools.SandboxSupported() {
 			return nil, nil, nil, nil, nil, nil, fmt.Errorf(
 				"tools.shell_sandbox is %q but the running kernel does not provide %s; "+
-					"set it to \"off\" to run without containment", sandboxMode, tools.SandboxDescription())
+					"set it to \"off\" to run without containment", resolvedSandbox, tools.SandboxDescription())
 		}
-		log.Info("Shell sandbox enabled", "mode", sandboxMode,
+		log.Info("Shell sandbox enabled", "mode", resolvedSandbox,
 			"mechanism", tools.SandboxDescription(), "network", cfg.Tools.ShellSandboxAllowNetwork)
 	}
 
@@ -1158,7 +1169,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	}
 
 	registryOpts := []tools.RegistryOption{
-		tools.WithShellSandbox(sandboxMode, cfg.Tools.ShellSandboxAllowNetwork),
+		tools.WithShellSandbox(resolvedSandbox, cfg.Tools.ShellSandboxAllowNetwork),
 		tools.WithShellApproval(approvalMode),
 		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
 		tools.WithAttachmentLimits(outboundAttachmentLimits(cfg)),

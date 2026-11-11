@@ -30,10 +30,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -o joshbot ./cmd/joshbot
 
 # Runtime stage - minimal image
-FROM alpine:3.21 AS runtime
+FROM alpine:3.24 AS runtime
 
-# Install CA certificates for HTTPS and runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+# Install CA certificates for HTTPS and runtime dependencies.
+# --upgrade: the base image ships the zlib it was built with, and `apk add`
+# leaves an already-installed package alone, so CVE-2026-4738 (zlib < 1.4-r0)
+# survived a base bump until it was named explicitly.
+RUN apk add --no-cache --upgrade ca-certificates tzdata zlib
 
 # Create non-root user for security
 RUN adduser -D -g '' joshbot

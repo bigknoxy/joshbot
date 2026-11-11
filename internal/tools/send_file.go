@@ -168,10 +168,7 @@ func (t *SendFileTool) checkApproval(ctx context.Context, att Attachment, channe
 	if decision == Approve && err == nil {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrDenied, strings.TrimPrefix(err.Error(), ErrDenied.Error()+": "))
-	}
-	return fmt.Errorf("%w: run it yourself, or ask the user to approve it", ErrDenied)
+	return denialError(err)
 }
 
 // buildAttachment resolves, contains, measures and sniffs the file. It is

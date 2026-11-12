@@ -2,8 +2,11 @@ package tools
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -158,6 +161,54 @@ func (r *Registry) ExecuteWithContext(
 
 	// Execute synchronously
 	result := tool.Execute(ctx, args)
+
+	// Spill large results if a threshold is configured.
+	// The SpillSink is default-off: when Threshold is 0, no spilling
+	// occurs and output is byte-identical to today's behaviour.
+	if sink := SpillSinkFromContext(ctx); sink.Threshold > 0 && len(result.Output) > sink.Threshold {
+		// Write the full result to a file in the spill directory.
+		dir := sink.Dir
+		if dir == "" {
+			// Default to a ".joshbot/spill" subdirectory under the
+			// workspace, so the existing read_file/grep tools can reach
+			// it without a separate allowance. The workspace context key
+			// is set by the caller.
+			if ws, ok := ctx.Value(ContextKeyWorkspace).(string); ok && ws != "" {
+				dir = filepath.Join(ws, ".joshbot", "spill")
+			}
+		}
+		if dir != "" {
+			// The spill file holds raw tool output, which can carry
+			// credentials or other sensitive content the tool printed.
+			// Owner-only, like the rest of joshbot's private state.
+			if err := os.MkdirAll(dir, 0o700); err == nil {
+				// A short stable handle so the model can name the spill;
+				// the path is returned alongside it so the model can act on
+				// it with the tools it already has.
+				//
+				// The handle is hex, never the UUID's raw bytes: a
+				// filename has to survive the filesystem, and a random
+				// byte can be a NUL or a path separator. On macOS a raw
+				// byte made the write fail, so the spill silently did
+				// not happen.
+				u, err := uuid.NewRandom()
+				if err == nil {
+					handle := "spill_" + hex.EncodeToString(u[:4])
+					path := filepath.Join(dir, handle)
+					if abs, err := filepath.Abs(path); err == nil {
+						path = abs
+					}
+					if err := os.WriteFile(path, []byte(result.Output), 0o600); err == nil {
+						result.Output = fmt.Sprintf("%s (%d bytes) at %s", handle, len(result.Output), path)
+					}
+				}
+				// A failed write is not the tool's failure: the tool ran
+				// and produced its result. Leave the output intact rather
+				// than replacing it with a handle that points nowhere.
+			}
+		}
+	}
+
 	return result, false
 }
 

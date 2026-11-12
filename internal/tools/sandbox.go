@@ -31,6 +31,20 @@ const (
 	// small set of caches, allows reads of system directories, and denies
 	// outbound network by default.
 	SandboxWorkspace SandboxMode = "workspace"
+
+	// SandboxAuto asks for the strongest containment this platform can
+	// actually enforce: workspace confinement where an OS backend exists,
+	// and the allowlist-only boundary where one does not.
+	//
+	// It exists because "workspace" is not portable. Linux has Landlock and
+	// macOS has Seatbelt; Windows has neither, and a Linux kernel older
+	// than 5.13 has no Landlock either. Asking for "workspace" there is a
+	// startup error, which is the right answer for a value the operator
+	// typed — but it is the wrong answer for a default, because a default
+	// that cannot start on Windows is not a default. "auto" is what the
+	// shipped configuration uses; "workspace" stays an explicit request
+	// that fails loudly rather than quietly running unconfined.
+	SandboxAuto SandboxMode = "auto"
 )
 
 // ParseSandboxMode maps a config string to a mode, defaulting to off for
@@ -43,9 +57,35 @@ func ParseSandboxMode(s string) (SandboxMode, bool) {
 		return SandboxOff, true
 	case "workspace", "on", "true":
 		return SandboxWorkspace, true
+	case "auto":
+		return SandboxAuto, true
 	default:
 		return SandboxOff, false
 	}
+}
+
+// ResolveSandboxMode turns a requested mode into the one this machine can
+// actually enforce.
+//
+// Only "auto" resolves to anything different: it becomes workspace
+// confinement where the OS provides a backend and a working kernel, and off
+// everywhere else — where the shell tool's allowlist-only fallback is the
+// boundary instead. Every other mode is returned unchanged, so an explicit
+// "workspace" still fails loudly rather than running unconfined.
+func ResolveSandboxMode(mode SandboxMode) SandboxMode {
+	return resolveSandboxMode(mode, SandboxAvailable(), SandboxSupported())
+}
+
+// resolveSandboxMode is ResolveSandboxMode with the capability answers
+// supplied, so the resolution can be tested on any machine.
+func resolveSandboxMode(mode SandboxMode, available, supported bool) SandboxMode {
+	if mode != SandboxAuto {
+		return mode
+	}
+	if available && supported {
+		return SandboxWorkspace
+	}
+	return SandboxOff
 }
 
 // SandboxPolicy is the concrete access a sandboxed command gets.
@@ -132,6 +172,9 @@ func DefaultSandboxPolicy(workspace string) SandboxPolicy {
 // testable on any machine — otherwise the refusal paths could only be
 // exercised on a kernel that happens to lack Landlock.
 func sandboxPreflight(mode SandboxMode, available, supported bool) error {
+	// "auto" is a request, not a mode: resolve it before deciding whether
+	// containment can be delivered.
+	mode = resolveSandboxMode(mode, available, supported)
 	// The zero value of SandboxMode is "", not SandboxOff. A bare-constructed
 	// ShellTool (no SetSandbox / NewShellToolFromConfig) leaves the field empty,
 	// and empty must mean off — otherwise the tool takes the sandbox path and

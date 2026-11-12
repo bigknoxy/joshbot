@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"regexp"
 	"testing"
 
 	"strings"
@@ -674,6 +675,13 @@ func (e *testError) Error() string {
 	return e.msg
 }
 
+// spillHandlePattern pins the handle's shape. The handle is used as a
+// filename, so it has to be one every filesystem accepts: lowercase hex and
+// an underscore, nothing else. A UUID's raw bytes are not -- a random byte
+// can be a NUL, and on macOS that made the write fail so the spill silently
+// did not happen.
+var spillHandlePattern = regexp.MustCompile(`^spill_[0-9a-f]{8}$`)
+
 func TestExecuteWithContext_SpillThresholdUnset(t *testing.T) {
 	// When Threshold is 0 (default-off), output must be byte-identical to today.
 	// The spill sink should not be invoked, and the full result should be returned.
@@ -750,6 +758,13 @@ func TestExecuteWithContext_SpillThresholdExceeded(t *testing.T) {
 	// Verify the handle file was created, and that its contents are the
 	// full result the model did not get inline.
 	handle := strings.Fields(result.Output)[0]
+	// The handle becomes a filename, so it has to be one the filesystem
+	// accepts on every platform. A UUID's raw bytes are not: a random byte
+	// can be a NUL, and on macOS that made the write fail so the spill
+	// silently did not happen.
+	if !spillHandlePattern.MatchString(handle) {
+		t.Fatalf("handle %q is not a filesystem-safe name", handle)
+	}
 	expectedFile := filepath.Join(tmpDir, handle)
 	data, err := os.ReadFile(expectedFile)
 	if err != nil {

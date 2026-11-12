@@ -416,7 +416,15 @@ func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) Tool
 
 	// Start execution
 	if err := execCmd.Start(); err != nil {
-		return ToolResult{Error: fmt.Errorf("failed to start command: %w", err)}
+		// A command that names a program which does not exist is the same
+		// class of failure as a path that does not exist: a named thing that
+		// is missing. Anything else here (a permission problem, a resource
+		// limit) is not "not found" and must not be reported as one.
+		code := ToolErrorCode("")
+		if errors.Is(err, exec.ErrNotFound) {
+			code = CodeNotFound
+		}
+		return ToolResult{Error: WithCode(fmt.Errorf("failed to start command: %w", err), code)}
 	}
 
 	// Read outputs

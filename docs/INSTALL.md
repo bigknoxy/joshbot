@@ -1011,6 +1011,27 @@ workspace/
 | `HISTORY.md` | Timestamped log of past conversations (grep-searchable) |
 | `HEARTBEAT.md` | Tasks for autonomous processing (checked every 5 min) |
 
+### Editing MEMORY.md
+
+`MEMORY.md` is yours as much as the bot's. When joshbot consolidates, it
+**merges**: a fact that is still live is updated where it stands, and every
+other line — your prose, your headings, your comments — is left exactly as you
+wrote it. Consolidation never rebuilds the file from the facts alone.
+
+The bot's own facts live in `## user_info`, `## preference`, `## project`,
+`## decision`, `## skill` and `## system` sections. A note under a heading of
+your own is never touched.
+
+To remove a fact, delete its line. A fact line carries a date and a
+confidence, like:
+
+```
+- [2026-05-17] User prefers dark mode (confidence: 0.9)
+```
+
+A line in any other shape is treated as your own writing, so it is never
+removed for you and never counts against the 100-fact limit.
+
 ### Streaming Responses
 
 `agents.defaults.streaming` (default `true` since v1.48.0; set it to `false` to

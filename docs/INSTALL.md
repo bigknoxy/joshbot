@@ -570,7 +570,7 @@ The old format is still supported for backward compatibility:
     "restrict_to_workspace": true,
     "shell_allow_list": [],
     "filesystem_allowed_paths": [],
-    "shell_sandbox": "off",
+    "shell_sandbox": "auto",
     "shell_sandbox_allow_network": false,
     "shell_approval": "off"
   },
@@ -780,23 +780,32 @@ Example:
 
 > Tip: When `shell_allow_list` is non-empty, commands must match an entry exactly or use it as a prefix (e.g., `git status`).
 
-#### Shell Sandbox (Linux and macOS, opt-in)
+#### Shell Sandbox (on by default)
 
 `restrict_to_workspace` and `shell_allow_list` are text-based checks — useful, but not a hard boundary. `tools.shell_sandbox` adds real OS-level containment — [Landlock](https://landlock.io/) on Linux, Seatbelt (`sandbox-exec`) on macOS:
 
 ```json
 {
   "tools": {
-    "shell_sandbox": "workspace",
+    "shell_sandbox": "auto",
     "shell_sandbox_allow_network": false
   }
 }
 ```
 
-- `"off"` (default) — no containment beyond the checks above.
-- `"workspace"` — confines shell commands' filesystem access to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); everything else, including the rest of `$HOME`, is unreachable. Outbound TCP is denied unless `shell_sandbox_allow_network` is `true`.
+- `"auto"` (default) — the strongest containment this machine can actually enforce: workspace confinement where an OS backend exists (Landlock on Linux, Seatbelt on macOS), and the allowlist-only boundary where one does not (Windows, BSD, a Linux kernel older than 5.13).
+- `"off"` — no containment beyond the checks above.
+- `"workspace"` — always asks for workspace confinement, and refuses to start if this machine cannot deliver it.
 
-It fails closed: an unrecognized value, a platform with no sandbox implementation (Windows, BSD), or a Linux kernel without Landlock support makes joshbot refuse to start rather than run unconfined. Set it back to `"off"` if that happens and you don't need containment. On platforms with no sandbox available, the shell tool instead defaults to allowlist-only when `tools.shell_allow_list` is unset.
+`"workspace"` and `"auto"` confine the same way: shell commands' filesystem access is limited to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); everything else, including the rest of `$HOME`, is unreachable. Outbound TCP is denied unless `shell_sandbox_allow_network` is `true`.
+
+They differ in what happens when the machine cannot enforce it. An explicit `"workspace"` fails closed — joshbot refuses to start rather than run unconfined. `"auto"` degrades to the allowlist-only boundary and says so in the log, because a default that cannot start on Windows is not a default.
+
+**If your scheduled commands need the network** — `go build` fetching a new module, `pip install`, `curl` — set `tools.shell_sandbox_allow_network` to `true`. Network denial is enforced on Landlock ABI v4 and later (Linux 6.7+) and on macOS; on older kernels the sandbox confines the filesystem and leaves the network alone.
+
+**If you want the old behaviour** — no containment, no approval — set `tools.shell_sandbox` to `"off"`. An explicit value in `config.json` is yours and the defaults never overwrite it.
+
+It still fails closed on a typo: an unrecognized value is a startup error, never a silent fallback to `"off"`.
 
 #### Shell Approval (opt-in)
 
@@ -822,7 +831,7 @@ Separately, spawned shell commands no longer inherit joshbot's own environment �
 
 #### Send File Approval (opt-in)
 
-`tools.send_file_approval` gates the `send_file` tool the same way — same values (`"off"`/`"interactive"`/`"always"`), same CLI/Telegram prompt, same fail-closed rule for unattended turns. It reuses the shell approval mechanism verbatim rather than a second one; the two are independent settings but share one installed approver. The prompt names the file, its size, and the recipient. See [Send File Approval](../README.md#send-file-approval) in the README for the full picture. To remove the tool entirely instead of gating it, set `tools.send_file_disabled: true`.
+`tools.send_file_approval` gates the `send_file` tool the same way — same values (`"off"`/`"interactive"`/`"always"`), same CLI/Telegram prompt, same fail-closed rule for unattended turns. It defaults to `"interactive"`, so a fresh install asks before sending; set it to `"always"` if your scheduled jobs need to send unattended. It reuses the shell approval mechanism verbatim rather than a second one; the two are independent settings but share one installed approver. The prompt names the file, its size, and the recipient. See [Send File Approval](../README.md#send-file-approval) in the README for the full picture. To remove the tool entirely instead of gating it, set `tools.send_file_disabled: true`.
 
 #### Web Fetch SSRF Protection
 

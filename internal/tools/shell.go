@@ -345,11 +345,15 @@ func (t *ShellTool) isDenied(cmd string) string {
 func (t *ShellTool) buildExecCmd(ctx context.Context, cmd, workingDir string) (*exec.Cmd, error) {
 	// "" is the zero value and means off (see sandboxPreflight); only a mode
 	// that was explicitly set to something other than off takes the sandbox path.
-	if t.sandbox == SandboxOff || t.sandbox == "" {
+	// "auto" resolves here to the strongest containment this machine can
+	// actually enforce, so a default that cannot be delivered on this platform
+	// falls back to the allowlist-only boundary instead of refusing to run.
+	mode := resolveSandboxMode(t.sandbox, SandboxAvailable(), SandboxSupported())
+	if mode == SandboxOff || mode == "" {
 		return exec.CommandContext(ctx, "sh", "-c", cmd), nil
 	}
 
-	if err := sandboxPreflight(t.sandbox, SandboxAvailable(), SandboxSupported()); err != nil {
+	if err := sandboxPreflight(mode, SandboxAvailable(), SandboxSupported()); err != nil {
 		return nil, err
 	}
 

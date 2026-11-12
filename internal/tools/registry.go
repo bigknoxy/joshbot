@@ -129,7 +129,7 @@ func (r *Registry) Count() int {
 func (r *Registry) Execute(ctx context.Context, name string, args map[string]any) (string, error) {
 	tool, ok := r.Get(name)
 	if !ok {
-		return "", fmt.Errorf("tool not found: %s", name)
+		return "", WithCode(fmt.Errorf("tool not found: %s", name), CodeNotFound)
 	}
 
 	result := tool.Execute(ctx, args)
@@ -151,7 +151,7 @@ func (r *Registry) ExecuteWithContext(
 ) (ToolResult, bool) {
 	tool, ok := r.Get(name)
 	if !ok {
-		return ToolResult{Error: fmt.Errorf("tool not found: %s", name)}, false
+		return ToolResult{Error: WithCode(fmt.Errorf("tool not found: %s", name), CodeNotFound)}, false
 	}
 
 	// Check if tool supports async

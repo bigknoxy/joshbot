@@ -128,11 +128,12 @@ type toolInvocation struct {
 // recordingTools implements ToolExecutor, recording invocations and returning
 // scripted output per tool name.
 type recordingTools struct {
-	mu      sync.Mutex
-	calls   []toolInvocation
-	outputs map[string]string
-	errs    map[string]error
-	schemas []providers.Tool
+	mu       sync.Mutex
+	calls    []toolInvocation
+	outputs  map[string]string
+	errs     map[string]error
+	schemas  []providers.Tool
+	spillCfg tools.SpillConfig
 }
 
 func (r *recordingTools) Execute(ctx context.Context, name string, args map[string]any) (string, error) {
@@ -157,6 +158,8 @@ func (r *recordingTools) ExecuteWithContext(ctx context.Context, name string, ar
 }
 
 func (r *recordingTools) GetSchemas() []providers.Tool { return r.schemas }
+
+func (r *recordingTools) GetSpillConfig() tools.SpillConfig { return r.spillCfg }
 
 func (r *recordingTools) invocations() []toolInvocation {
 	r.mu.Lock()

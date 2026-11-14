@@ -27,6 +27,7 @@ type Registry struct {
 	pendingAsync    map[string]*PendingAsync
 	pendingMu       sync.RWMutex
 	asyncCallbackCh chan AsyncResult
+	spillConfig     SpillConfig
 }
 
 // Option is a functional option for configuring the Registry.
@@ -125,6 +126,11 @@ func (r *Registry) Count() int {
 	return len(r.tools)
 }
 
+// GetSpillConfig returns the spill configuration for the registry.
+func (r *Registry) GetSpillConfig() SpillConfig {
+	return r.spillConfig
+}
+
 // Execute runs a tool by name with the given arguments.
 func (r *Registry) Execute(ctx context.Context, name string, args map[string]any) (string, error) {
 	tool, ok := r.Get(name)
@@ -169,12 +175,12 @@ func (r *Registry) ExecuteWithContext(
 		// Write the full result to a file in the spill directory.
 		dir := sink.Dir
 		if dir == "" {
-			// Default to a ".joshbot/spill" subdirectory under the
+			// Default to a ".joshbot-tmp/spill" subdirectory under the
 			// workspace, so the existing read_file/grep tools can reach
 			// it without a separate allowance. The workspace context key
 			// is set by the caller.
 			if ws, ok := ctx.Value(ContextKeyWorkspace).(string); ok && ws != "" {
-				dir = filepath.Join(ws, ".joshbot", "spill")
+				dir = filepath.Join(ws, ".joshbot-tmp", "spill")
 			}
 		}
 		if dir != "" {
@@ -182,6 +188,11 @@ func (r *Registry) ExecuteWithContext(
 			// credentials or other sensitive content the tool printed.
 			// Owner-only, like the rest of joshbot's private state.
 			if err := os.MkdirAll(dir, 0o700); err == nil {
+				// Prune old spill files if MaxAge is configured.
+				if sink.MaxAge > 0 {
+					pruneSpillFiles(dir, sink.MaxAge)
+				}
+
 				// A short stable handle so the model can name the spill;
 				// the path is returned alongside it so the model can act on
 				// it with the tools it already has.
@@ -198,8 +209,29 @@ func (r *Registry) ExecuteWithContext(
 					if abs, err := filepath.Abs(path); err == nil {
 						path = abs
 					}
-					if err := os.WriteFile(path, []byte(result.Output), 0o600); err == nil {
-						result.Output = fmt.Sprintf("%s (%d bytes) at %s", handle, len(result.Output), path)
+
+					// Determine content to write: respect MaxSize cap.
+					content := []byte(result.Output)
+					truncated := false
+					if sink.MaxSize > 0 && len(content) > sink.MaxSize {
+						// Preserve head and tail.
+						headSize := sink.MaxSize / 2
+						tailSize := sink.MaxSize - headSize
+						content = append(content[:headSize], content[len(content)-tailSize:]...)
+						truncated = true
+					}
+
+					if err := os.WriteFile(path, content, 0o600); err == nil {
+						originalSize := len(result.Output)
+						storedSize := len(content)
+						if truncated {
+							result.Output = fmt.Sprintf("%s (%d bytes, stored %d bytes, truncated) at %s\n\n[HEAD]\n%s\n\n[TAIL]\n%s",
+								handle, originalSize, storedSize, path,
+								result.Output[:sink.MaxSize/2],
+								result.Output[len(result.Output)-sink.MaxSize/2:])
+						} else {
+							result.Output = fmt.Sprintf("%s (%d bytes) at %s", handle, originalSize, path)
+						}
 					}
 				}
 				// A failed write is not the tool's failure: the tool ran
@@ -210,6 +242,27 @@ func (r *Registry) ExecuteWithContext(
 	}
 
 	return result, false
+}
+
+// pruneSpillFiles removes spill files older than maxAge from the given directory.
+func pruneSpillFiles(dir string, maxAge time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
 }
 
 // executeAsync runs an async tool in a goroutine.
@@ -404,6 +457,7 @@ type registrySettings struct {
 	sendFileDisabled   bool
 	webBudgets         WebToolBudgets
 	timeoutRecorder    TimeoutRecorder
+	spillConfig        SpillConfig
 }
 
 // TimeoutRecorder observes whether one attempt in the web tool's
@@ -513,6 +567,13 @@ func WithTimeoutRecorder(rec TimeoutRecorder) RegistryOption {
 	}
 }
 
+// WithSpillConfig sets the spill configuration for oversized tool results.
+func WithSpillConfig(cfg SpillConfig) RegistryOption {
+	return func(s *registrySettings) {
+		s.spillConfig = cfg
+	}
+}
+
 // RegistryWithDefaults creates a registry with standard tools configured.
 func RegistryWithDefaults(
 	workspace string,
@@ -531,6 +592,7 @@ func RegistryWithDefaults(
 	}
 
 	registry := NewRegistry()
+	registry.spillConfig = settings.spillConfig
 
 	// Filesystem tool
 	fsTool := NewFilesystemToolFromConfig(FilesystemToolConfig{

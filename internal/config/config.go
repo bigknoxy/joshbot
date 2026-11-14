@@ -127,6 +127,16 @@ const (
 	// outright rather than left blocking.
 	DefaultSendFileApproval = "interactive"
 
+	// DefaultSpillThreshold is the default threshold for spilling tool results.
+	// 8192 bytes (~8k chars) matches the issue spec "past ~8k chars".
+	DefaultSpillThreshold = 8192
+	// DefaultSpillMaxSize is the default max size for a single spill file.
+	// 1 MB provides room for large tool outputs without unbounded growth.
+	DefaultSpillMaxSize = 1024 * 1024
+	// DefaultSpillMaxAge is the default max age for spill files.
+	// 7 days (168h) balances cleanup with recoverability.
+	DefaultSpillMaxAge = 168 * time.Hour
+
 	// CurrentSchemaVersion is the current config schema version.
 	CurrentSchemaVersion = 6
 )
@@ -426,6 +436,15 @@ type ExecConfig struct {
 	Timeout int `mapstructure:"timeout" json:"timeout" yaml:"timeout"`
 }
 
+// SpillConfig holds configuration for the spill sink.
+// Threshold is the maximum result size in bytes before spilling occurs.
+// A value of 0 means spilling is disabled (default-off behavior).
+type SpillConfig struct {
+	Threshold int    `mapstructure:"threshold" json:"threshold,omitempty" yaml:"threshold,omitempty"`
+	MaxSize   int    `mapstructure:"max_size" json:"max_size,omitempty" yaml:"max_size,omitempty"`
+	MaxAge    string `mapstructure:"max_age" json:"max_age,omitempty" yaml:"max_age,omitempty"`
+}
+
 // ToolsConfig holds tools configuration.
 type ToolsConfig struct {
 	Web                    WebToolsConfig `mapstructure:"web" json:"web" yaml:"web"`
@@ -434,6 +453,7 @@ type ToolsConfig struct {
 	ShellAllowList         []string       `mapstructure:"shell_allow_list" json:"shell_allow_list" yaml:"shell_allow_list"`
 	FilesystemAllowedPaths []string       `mapstructure:"filesystem_allowed_paths" json:"filesystem_allowed_paths" yaml:"filesystem_allowed_paths"`
 	ToolOutputMaxChars     int            `mapstructure:"tool_output_max_chars" json:"tool_output_max_chars" yaml:"tool_output_max_chars"`
+	Spill                  SpillConfig    `mapstructure:"spill" json:"spill,omitempty" yaml:"spill,omitempty"`
 	// ShellSandbox selects OS-level containment for shell commands:
 	// "off" (default) or "workspace". Enforced on Linux (Landlock) and macOS
 	// (Seatbelt); on a platform with no sandbox a non-off value is reported as
@@ -1119,6 +1139,11 @@ func Defaults() *Config {
 			// boundary that works unattended; the approval gate is for
 			// operators who want a human in the loop, and the named
 			// permission tiers make it one command away.
+			Spill: SpillConfig{
+				Threshold: DefaultSpillThreshold,
+				MaxSize:   DefaultSpillMaxSize,
+				MaxAge:    DefaultSpillMaxAge.String(),
+			},
 		},
 		Gateway: GatewayConfig{
 			Host: DefaultGatewayHost,

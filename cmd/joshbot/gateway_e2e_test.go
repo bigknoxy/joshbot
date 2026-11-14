@@ -177,7 +177,8 @@ func (noTools) Execute(context.Context, string, map[string]any) (string, error) 
 func (noTools) ExecuteWithContext(context.Context, string, map[string]any, string, string, func(tools.AsyncResult)) (tools.ToolResult, bool) {
 	return tools.ToolResult{}, false
 }
-func (noTools) GetSchemas() []providers.Tool { return nil }
+func (noTools) GetSchemas() []providers.Tool      { return nil }
+func (noTools) GetSpillConfig() tools.SpillConfig { return tools.SpillConfig{} }
 
 func TestGatewayEndToEnd_TelegramUpdateToWire(t *testing.T) {
 	if testing.Short() {

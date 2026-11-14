@@ -238,3 +238,67 @@ func TestSetupComponentsModelCentricWithNoResolvableModelIsAStartupError(t *test
 		t.Errorf("error = %v, want it to name the empty models config", err)
 	}
 }
+
+// When both models_config and legacy providers are configured, models_config
+// wins and takes precedence. The legacy providers are ignored and a warning is
+// issued to the user.
+func TestSetupComponentsBothModelsConfigAndProvidersPopulated(t *testing.T) {
+	cfg := setupConfig(t)
+	// Seed legacy provider
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openrouter": {Enabled: true, APIKey: "sk-legacy-openrouter"},
+	}
+	// Seed model-centric configuration
+	cfg.ModelsConfig.Models = []config.ModelConfig{
+		{Name: "model-smart", Model: "groq/llama-3", APIKey: "gsk-test"},
+	}
+	cfg.ModelsConfig.Agent.Model = "model-smart"
+
+	if !cfg.UseModelsConfig() {
+		t.Fatal("fixture should use models config")
+	}
+
+	mp := multiProviderFrom(t, cfg)
+	if !mp.HasProvider("model-smart") {
+		t.Errorf("expected model-smart to be registered from models_config; registered: %v", mp.GetProviderNames())
+	}
+	if mp.HasProvider("openrouter") {
+		t.Errorf("openrouter from legacy providers should have been ignored when models_config is present; registered: %v", mp.GetProviderNames())
+	}
+}
+
+func TestSetupComponentsOnlyModelsConfig(t *testing.T) {
+	cfg := setupConfig(t)
+	cfg.Providers = nil
+	cfg.ModelsConfig.Models = []config.ModelConfig{
+		{Name: "only-model", Model: "groq/llama-3", APIKey: "gsk-test"},
+	}
+	cfg.ModelsConfig.Agent.Model = "only-model"
+
+	if !cfg.UseModelsConfig() {
+		t.Fatal("fixture should use models config")
+	}
+
+	mp := multiProviderFrom(t, cfg)
+	if !mp.HasProvider("only-model") {
+		t.Errorf("expected only-model to be registered; registered: %v", mp.GetProviderNames())
+	}
+}
+
+func TestSetupComponentsOnlyLegacyProviders(t *testing.T) {
+	cfg := setupConfig(t)
+	cfg.ModelsConfig.Models = nil
+	cfg.Providers = map[string]config.ProviderConfig{
+		"openrouter": {Enabled: true, APIKey: "sk-openrouter", APIBase: "https://example.invalid/v1"},
+	}
+	cfg.ProviderDefaults.Default = "openrouter"
+
+	if cfg.UseModelsConfig() {
+		t.Fatal("fixture should not use models config")
+	}
+
+	mp := multiProviderFrom(t, cfg)
+	if !mp.HasProvider("openrouter") {
+		t.Errorf("expected openrouter to be registered from legacy providers; registered: %v", mp.GetProviderNames())
+	}
+}

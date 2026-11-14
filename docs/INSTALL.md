@@ -520,6 +520,10 @@ joshbot automatically detects the provider from the model name prefix:
 
 For models without a recognized prefix, you must provide `api_base`.
 
+### Precedence Between `models_config` and `providers`
+
+When both `models_config` and legacy `providers` blocks are present in `config.json`, **`models_config` takes precedence**. The runtime will use the models configured in `models_config` and ignore legacy `providers`. A warning is displayed whenever both are present. To use legacy providers, empty or remove `models_config.models`, or run `joshbot configure --migrate` to convert legacy settings.
+
 ### Legacy Provider Configuration
 
 The old format is still supported for backward compatibility:

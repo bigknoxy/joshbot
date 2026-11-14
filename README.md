@@ -1169,6 +1169,7 @@ Where two sources set the same value, the later one in this list wins:
 
 1. **Defaults** — compiled in (`config.Defaults()`).
 2. **Config file** — `~/.joshbot/config.json`, or whatever `--config` points at.
+   - Note: If both `models_config` and `providers` are defined in the config file, **`models_config` takes precedence** and the legacy `providers` section is ignored.
 3. **Environment variables** — any `JOSHBOT_*` variable overrides the file value
    for that key (`config.Load` applies the file first, then the env overrides).
 4. **Command flags** — a flag that carries a config value (`onboard --provider`,

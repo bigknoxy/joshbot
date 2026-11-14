@@ -1311,10 +1311,50 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	registerBackgroundService(hb.Stop)
 	setHeartbeatService(hb)
 
-	// Start consolidator (self-learning memory consolidation)
-	consolidator := learning.NewConsolidator(memoryManager, multiProvider, 10*time.Minute)
-	consolidator.Start()
-	registerBackgroundService(consolidator.Stop)
+	// Start consolidator (self-learning memory consolidation).
+	// If Dream is enabled in "full" mode, the Dream system's own two-stage
+	// consolidation (DreamManager.Consolidate + PromoteToFacts) runs instead,
+	// because it produces higher-confidence facts with proper categorization
+	// and age decay. The learning consolidator is kept for "record" mode and
+	// when Dream is off entirely.
+	if dreamMode != memory.DreamFull {
+		consolidator := learning.NewConsolidator(memoryManager, multiProvider, 10*time.Minute)
+		consolidator.Start()
+		registerBackgroundService(consolidator.Stop)
+	} else {
+		// Dream full mode: run Dream's Stage 2 consolidation periodically.
+		// Consolidate -> PromoteToFacts -> ReconcileFacts.
+		dreamStopCh := make(chan struct{})
+		dreamWg := sync.WaitGroup{}
+		dreamWg.Add(1)
+		go func() {
+			defer dreamWg.Done()
+			ticker := time.NewTicker(10 * time.Minute)
+			defer ticker.Stop()
+			// Run once immediately on startup (best-effort).
+			if dm := memoryManager.Dream(); dm != nil {
+				if err := runDreamConsolidation(context.Background(), dm, memoryManager); err != nil {
+					logger.Warn("Dream consolidation failed", "error", err)
+				}
+			}
+			for {
+				select {
+				case <-ticker.C:
+					if dm := memoryManager.Dream(); dm != nil {
+						if err := runDreamConsolidation(context.Background(), dm, memoryManager); err != nil {
+							logger.Warn("Dream consolidation failed", "error", err)
+						}
+					}
+				case <-dreamStopCh:
+					return
+				}
+			}
+		}()
+		registerBackgroundService(func() {
+			close(dreamStopCh)
+			dreamWg.Wait()
+		})
+	}
 
 	logger.Info("Background services started", "cron_jobs_file", cfg.Agents.Defaults.Workspace)
 
@@ -1428,6 +1468,27 @@ func publishAsyncResults(ch <-chan tools.AsyncResult, msgBus *bus.MessageBus) {
 			Content:   asyncResultMessage(result),
 		})
 	}
+}
+
+// runDreamConsolidation runs one pass of Dream Stage 2 consolidation:
+// Consolidate raw records -> PromoteToFacts -> ReconcileFacts into MEMORY.md.
+// This replaces the learning consolidator when dream_mode == full.
+func runDreamConsolidation(ctx context.Context, dm *memory.DreamManager, mem *memory.Manager) error {
+	insights, err := dm.Consolidate(ctx)
+	if err != nil {
+		return fmt.Errorf("dream consolidate: %w", err)
+	}
+	if len(insights) == 0 {
+		return nil
+	}
+	facts := dm.PromoteToFacts(insights)
+	if len(facts) == 0 {
+		return nil
+	}
+	if err := mem.ReconcileFacts(ctx, facts); err != nil {
+		return fmt.Errorf("reconcile dream facts: %w", err)
+	}
+	return nil
 }
 
 func registerMCPServers(ctx context.Context, reg *tools.Registry, cfg config.MCPConfig) {

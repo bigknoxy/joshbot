@@ -3,7 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"regexp"
 	"testing"
+
+	"strings"
+
+	"path/filepath"
 )
 
 // mockTool is a simple tool implementation for testing.
@@ -667,4 +673,250 @@ type testError struct {
 
 func (e *testError) Error() string {
 	return e.msg
+}
+
+// spillHandlePattern pins the handle's shape. The handle is used as a
+// filename, so it has to be one every filesystem accepts: lowercase hex and
+// an underscore, nothing else. A UUID's raw bytes are not -- a random byte
+// can be a NUL, and on macOS that made the write fail so the spill silently
+// did not happen.
+var spillHandlePattern = regexp.MustCompile(`^spill_[0-9a-f]{8}$`)
+
+func TestExecuteWithContext_SpillThresholdUnset(t *testing.T) {
+	// When Threshold is 0 (default-off), output must be byte-identical to today.
+	// The spill sink should not be invoked, and the full result should be returned.
+	largeOutput := strings.Repeat("A", 500) // 500 chars, well above any reasonable threshold
+
+	mock := &mockTool{
+		name: "testtool",
+		executeFn: func(ctx interface{}, args map[string]any) ToolResult {
+			return ToolResult{Output: largeOutput}
+		},
+	}
+	registry := NewRegistry()
+	_ = registry.Register(mock)
+
+	// ExecuteWithContext without attaching any SpillSink (threshold effectively 0)
+	result, async := registry.ExecuteWithContext(context.Background(), "testtool", nil, "", "", nil)
+
+	if async {
+		t.Fatal("expected synchronous execution")
+	}
+	if result.Error != nil {
+		t.Fatalf("expected no error, got: %v", result.Error)
+	}
+	if result.Output != largeOutput {
+		t.Fatalf("expected byte-identical output, got %q vs %q", result.Output, largeOutput)
+	}
+}
+
+func TestExecuteWithContext_SpillThresholdExceeded(t *testing.T) {
+	// When Threshold is set and result exceeds it, a handle is returned
+	// and the full result is written to the spill directory.
+
+	largeOutput := strings.Repeat("B", 500) // 500 chars
+
+	mock := &mockTool{
+		name: "testtool",
+		executeFn: func(ctx interface{}, args map[string]any) ToolResult {
+			return ToolResult{Output: largeOutput}
+		},
+	}
+	registry := NewRegistry()
+	_ = registry.Register(mock)
+
+	// Create a temp directory for spill storage
+	tmpDir := t.TempDir()
+
+	// Attach a SpillSink with a low threshold
+	ctx := WithSpillSink(context.Background(), SpillConfig{
+		Threshold: 100, // lower than 500
+		Dir:       tmpDir,
+	})
+
+	result, async := registry.ExecuteWithContext(ctx, "testtool", nil, "", "", nil)
+
+	if async {
+		t.Fatal("expected synchronous execution")
+	}
+	if result.Error != nil {
+		t.Fatalf("expected no error, got: %v", result.Error)
+	}
+	// The output should be a handle, not the full result.
+	if !strings.HasPrefix(result.Output, "spill_") {
+		t.Fatalf("expected output to start with 'spill_', got: %q", result.Output)
+	}
+	// The handle alone is not actionable: the model has to be able to find
+	// the file without guessing where it went.
+	if !strings.Contains(result.Output, tmpDir) {
+		t.Fatalf("expected output to name the spill path %q, got: %q", tmpDir, result.Output)
+	}
+	if !strings.Contains(result.Output, "500 bytes") {
+		t.Fatalf("expected output to report the spilled size, got: %q", result.Output)
+	}
+
+	// Verify the handle file was created, and that its contents are the
+	// full result the model did not get inline.
+	handle := strings.Fields(result.Output)[0]
+	// The handle becomes a filename, so it has to be one the filesystem
+	// accepts on every platform. A UUID's raw bytes are not: a random byte
+	// can be a NUL, and on macOS that made the write fail so the spill
+	// silently did not happen.
+	if !spillHandlePattern.MatchString(handle) {
+		t.Fatalf("handle %q is not a filesystem-safe name", handle)
+	}
+	expectedFile := filepath.Join(tmpDir, handle)
+	data, err := os.ReadFile(expectedFile)
+	if err != nil {
+		t.Fatalf("expected spill file to exist at %s, got error: %v", expectedFile, err)
+	}
+	if string(data) != largeOutput {
+		t.Fatalf("spilled content mismatch: got %q, want %q", string(data), largeOutput)
+	}
+
+	// The path in the output has to be the real one, absolute, and readable
+	// — the model will paste it straight into read_file.
+	path := expectedFile
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if !strings.Contains(result.Output, path) {
+		t.Fatalf("expected output to carry the absolute path %q, got: %q", path, result.Output)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected the path in the output to exist: %v", err)
+	}
+}
+
+func TestExecuteWithContext_SpillFileIsOwnerOnly(t *testing.T) {
+	// A spilled result is raw tool output, which can carry credentials the
+	// tool printed. It must not be world-readable.
+	largeOutput := strings.Repeat("D", 500)
+
+	mock := &mockTool{
+		name: "testtool",
+		executeFn: func(ctx interface{}, args map[string]any) ToolResult {
+			return ToolResult{Output: largeOutput}
+		},
+	}
+	registry := NewRegistry()
+	_ = registry.Register(mock)
+
+	tmpDir := t.TempDir()
+	ctx := WithSpillSink(context.Background(), SpillConfig{Threshold: 100, Dir: tmpDir})
+
+	result, _ := registry.ExecuteWithContext(ctx, "testtool", nil, "", "", nil)
+	handle := strings.Fields(result.Output)[0]
+
+	info, err := os.Stat(filepath.Join(tmpDir, handle))
+	if err != nil {
+		t.Fatalf("expected spill file to exist: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("expected spill file mode 0600, got %04o", mode)
+	}
+}
+
+func TestExecuteWithContext_SpillDefaultsToWorkspaceDirectory(t *testing.T) {
+	// With no explicit Dir, the spill lands under the workspace, so the
+	// read_file and grep tools can reach it without a separate allowance.
+	largeOutput := strings.Repeat("E", 500)
+
+	mock := &mockTool{
+		name: "testtool",
+		executeFn: func(ctx interface{}, args map[string]any) ToolResult {
+			return ToolResult{Output: largeOutput}
+		},
+	}
+	registry := NewRegistry()
+	_ = registry.Register(mock)
+
+	ws := t.TempDir()
+	ctx := WithSpillSink(context.Background(), SpillConfig{Threshold: 100})
+	ctx = context.WithValue(ctx, ContextKeyWorkspace, ws)
+
+	result, _ := registry.ExecuteWithContext(ctx, "testtool", nil, "", "", nil)
+	handle := strings.Fields(result.Output)[0]
+
+	want := filepath.Join(ws, ".joshbot", "spill", handle)
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("expected spill at %s: %v", want, err)
+	}
+}
+
+func TestExecuteWithContext_SpillThresholdNotExceeded(t *testing.T) {
+	// When Threshold is set but result does NOT exceed it, the full result
+	// should be returned unchanged (no spilling).
+
+	shortOutput := "Hello world"
+
+	mock := &mockTool{
+		name: "testtool",
+		executeFn: func(ctx interface{}, args map[string]any) ToolResult {
+			return ToolResult{Output: shortOutput}
+		},
+	}
+	registry := NewRegistry()
+	_ = registry.Register(mock)
+
+	tmpDir := t.TempDir()
+
+	ctx := WithSpillSink(context.Background(), SpillConfig{
+		Threshold: 100, // higher than "Hello world" (11 chars)
+		Dir:       tmpDir,
+	})
+
+	result, async := registry.ExecuteWithContext(ctx, "testtool", nil, "", "", nil)
+
+	if async {
+		t.Fatal("expected synchronous execution")
+	}
+	if result.Error != nil {
+		t.Fatalf("expected no error, got: %v", result.Error)
+	}
+	// Output should be the original short content, not a handle
+	if result.Output != shortOutput {
+		t.Fatalf("expected original output %q, got %q", shortOutput, result.Output)
+	}
+}
+
+func TestExecuteWithContext_SpillWriteFailurePreservesResult(t *testing.T) {
+	// When the spill write fails (e.g., invalid directory), the original
+	// result should be preserved and no handle should be returned.
+
+	largeOutput := strings.Repeat("C", 500)
+
+	mock := &mockTool{
+		name: "testtool",
+		executeFn: func(ctx interface{}, args map[string]any) ToolResult {
+			return ToolResult{Output: largeOutput}
+		},
+	}
+	registry := NewRegistry()
+	_ = registry.Register(mock)
+
+	// Point the sink at a directory that cannot be created: a path under a
+	// regular file. MkdirAll fails, so the write never happens.
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+	ctx := WithSpillSink(context.Background(), SpillConfig{
+		Threshold: 100,
+		Dir:       filepath.Join(blocker, "spill"),
+	})
+
+	result, async := registry.ExecuteWithContext(ctx, "testtool", nil, "", "", nil)
+
+	if async {
+		t.Fatal("expected synchronous execution")
+	}
+	if result.Error != nil {
+		t.Fatalf("expected no error, got: %v", result.Error)
+	}
+	// The tool succeeded; losing its result would be worse than spilling
+	// it, so the original output survives the failed write.
+	if result.Output != largeOutput {
+		t.Fatalf("expected original output preserved, got %q", result.Output)
+	}
 }

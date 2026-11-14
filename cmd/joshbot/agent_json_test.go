@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,12 @@ import (
 type sinkAgent struct {
 	reply string
 	err   error
+	// usageDetail drives the model-carrying usage sink the real ReAct loop
+	// fires alongside the plain one, one entry per LLM call.
+	usageDetail []struct {
+		model string
+		usage providers.Usage
+	}
 }
 
 func (a *sinkAgent) Process(ctx context.Context, msg bus.InboundMessage) (string, error) {
@@ -34,6 +41,11 @@ func (a *sinkAgent) Process(ctx context.Context, msg bus.InboundMessage) (string
 	if p := agent.ProgressFromContext(ctx); p != nil {
 		p(agent.ToolProgressEvent{Tool: "shell", Summary: "echo hi", Phase: agent.ToolProgressStart})
 		p(agent.ToolProgressEvent{Tool: "shell", Summary: "echo hi", Phase: agent.ToolProgressDone, Elapsed: 20 * time.Millisecond})
+	}
+	if d := agent.UsageDetailFromContext(ctx); d != nil {
+		for _, ud := range a.usageDetail {
+			d(ud.model, ud.usage)
+		}
 	}
 	if u := agent.UsageFromContext(ctx); u != nil {
 		u(providers.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15})
@@ -94,6 +106,81 @@ func TestRunAgentJSON_DefaultSessionID(t *testing.T) {
 	}
 	if res.SessionID != "cli:cli_user" {
 		t.Errorf("session_id = %q, want cli:cli_user", res.SessionID)
+	}
+}
+
+// --- #436: cost_usd comes from the documented pricing table and stays null
+// when any model in the turn is unknown to it ---
+
+func TestRunAgentJSON_CostUSDKnownModel(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	m := &sinkAgent{reply: "ok"}
+	m.usageDetail = append(m.usageDetail, struct {
+		model string
+		usage providers.Usage
+	}{"anthropic/claude-sonnet-4.5", providers.Usage{PromptTokens: 100000, CompletionTokens: 50000}})
+	if err := runAgentJSON(context.Background(), m, "hi", "json", "", &stdout, &stderr, nil); err != nil {
+		t.Fatal(err)
+	}
+	var res jsonResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.CostUSD == nil {
+		t.Fatal("cost_usd should be priced (claude-sonnet is in the table)")
+	}
+	// 100k input at $3/1M + 50k output at $15/1M = $0.30 + $0.75 = $1.05.
+	if math.Abs(*res.CostUSD-1.05) > 1e-9 {
+		t.Errorf("cost_usd = %f, want 1.05", *res.CostUSD)
+	}
+}
+
+func TestRunAgentJSON_CostUSDNullForUnknownModel(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	m := &sinkAgent{reply: "ok"}
+	m.usageDetail = append(m.usageDetail, struct {
+		model string
+		usage providers.Usage
+	}{"z-ai/glm-5.2", providers.Usage{PromptTokens: 100000, CompletionTokens: 50000}})
+	if err := runAgentJSON(context.Background(), m, "hi", "json", "", &stdout, &stderr, nil); err != nil {
+		t.Fatal(err)
+	}
+	var res jsonResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.CostUSD != nil {
+		t.Errorf("unknown model must leave cost_usd null, got %v", *res.CostUSD)
+	}
+	if res.Usage.TotalTokens == 0 {
+		t.Errorf("usage must still be reported for an unpriced model: %+v", res.Usage)
+	}
+}
+
+// A partially priced turn is unreportable as one number: the null wins, so a
+// consumer never reads an understated figure as the whole spend.
+func TestRunAgentJSON_CostUSDNullWhenAnyModelUnpriced(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	m := &sinkAgent{reply: "ok"}
+	m.usageDetail = append(m.usageDetail,
+		struct {
+			model string
+			usage providers.Usage
+		}{"claude-haiku-4", providers.Usage{PromptTokens: 1000, CompletionTokens: 100}},
+		struct {
+			model string
+			usage providers.Usage
+		}{"unlisted/model", providers.Usage{PromptTokens: 1000, CompletionTokens: 100}},
+	)
+	if err := runAgentJSON(context.Background(), m, "hi", "json", "", &stdout, &stderr, nil); err != nil {
+		t.Fatal(err)
+	}
+	var res jsonResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.CostUSD != nil {
+		t.Errorf("one unpriced model among priced ones must null the cost, got %v", *res.CostUSD)
 	}
 }
 

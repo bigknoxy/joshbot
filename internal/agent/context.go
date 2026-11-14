@@ -74,21 +74,6 @@ func collectSourceFiles(workspace string) map[string]bool {
 		files[path] = err == nil
 	}
 
-	memPath := filepath.Join(workspace, "memory", "MEMORY.md")
-	_, err := os.Stat(memPath)
-	files[memPath] = err == nil
-
-	skillsDir := filepath.Join(workspace, "skills")
-	filepath.Walk(skillsDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !info.IsDir() && (strings.HasSuffix(path, "SKILL.md") || strings.HasSuffix(path, "skill.md")) {
-			files[path] = true
-		}
-		return nil
-	})
-
 	return files
 }
 
@@ -150,18 +135,6 @@ func buildStaticPrompt(workspace string, skills SkillsLoader, memory MemoryLoade
 		}
 	}
 
-	if memory != nil {
-		if memContent, err := memory.LoadMemory(context.Background()); err == nil && memContent != "" {
-			parts = append(parts, fmt.Sprintf("<memory>\n%s\n</memory>", memContent))
-		}
-	}
-
-	if skills != nil {
-		if summary, err := skills.LoadSummary(context.Background()); err == nil && summary != "" {
-			parts = append(parts, fmt.Sprintf("<skills>\n%s\n</skills>", summary))
-		}
-	}
-
 	return joinParts(parts)
 }
 
@@ -183,6 +156,18 @@ func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, use
 		parts = append(parts, staticPrompt)
 	}
 
+	if memory != nil {
+		if memContent, err := memory.LoadMemory(context.Background()); err == nil && memContent != "" {
+			parts = append(parts, fmt.Sprintf("<memory>\n%s\n</memory>", memContent))
+		}
+	}
+
+	if skills != nil {
+		if summary, err := skills.LoadSummary(context.Background()); err == nil && summary != "" {
+			parts = append(parts, fmt.Sprintf("<skills>\n%s\n</skills>", summary))
+		}
+	}
+
 	if userName != "" {
 		parts = append(parts, fmt.Sprintf(`The user's name is %s. Use their name sparingly and naturally - occasional greetings, sign-offs, or personal touches are appropriate. Do not overuse it.`, userName))
 	}
@@ -201,6 +186,18 @@ func BuildSmartPrompt(workspace string, skills SkillsLoader, mem MemoryLoader, u
 	staticPrompt := BuildPromptCached(workspace, skills, mem)
 	if staticPrompt != "" {
 		parts = append(parts, staticPrompt)
+	}
+
+	if mem != nil {
+		if memContent, err := mem.LoadMemory(context.Background()); err == nil && memContent != "" {
+			parts = append(parts, fmt.Sprintf("<memory>\n%s\n</memory>", memContent))
+		}
+	}
+
+	if skills != nil {
+		if summary, err := skills.LoadSummary(context.Background()); err == nil && summary != "" {
+			parts = append(parts, fmt.Sprintf("<skills>\n%s\n</skills>", summary))
+		}
 	}
 
 	if userName != "" {

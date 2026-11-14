@@ -151,8 +151,8 @@ func TestValidateProviderCredentials_SendsBearerAndAcceptsOK(t *testing.T) {
 	if gotAuth != "Bearer sk-live-key" {
 		t.Errorf("Authorization = %q, want the bearer key", gotAuth)
 	}
-	if gotPath != "/models" {
-		t.Errorf("path = %q, want /models", gotPath)
+	if gotPath != "/chat/completions" {
+		t.Errorf("path = %q, want /chat/completions", gotPath)
 	}
 }
 
@@ -188,5 +188,44 @@ func TestValidateProviderCredentials_UnknownProviderMakesNoRequest(t *testing.T)
 	}
 	if called {
 		t.Error("an unvalidatable provider issued an HTTP request anyway")
+	}
+}
+
+// The whole point of the probe. Listing models authenticated nothing: a
+// provider that answers /models to any Authorization header would hand a
+// typo'd key a checkmark, and the key would then fail on the first real
+// message. The probe must therefore be a request the provider actually
+// authenticates, and a rejection from it must not be reported as valid.
+func TestValidateProviderCredentials_RejectedByTheProbeIsNotValidated(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	err := validateProviderCredentials("openrouter", "sk-wrong", srv.URL)
+	if err == nil {
+		t.Fatal("a key rejected by the completion probe was reported as validated")
+	}
+	if !strings.Contains(err.Error(), "invalid API key") {
+		t.Errorf("error = %v, want it to name the invalid key", err)
+	}
+	if !called {
+		t.Error("the probe did not make an authenticated request")
+	}
+}
+
+// A rate limit is issued to an authenticated key. The credential is good;
+// only the quota is spent, so the wizard must not send the operator hunting
+// for a typo that is not there.
+func TestValidateProviderCredentials_RateLimitedKeyStillCountsAsValid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	if err := validateProviderCredentials("openrouter", "sk-live", srv.URL); err != nil {
+		t.Fatalf("a rate-limited key was reported as invalid: %v", err)
 	}
 }

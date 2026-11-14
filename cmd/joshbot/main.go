@@ -4563,7 +4563,11 @@ func promptProviderAPIKey(provider string, existingCfg *config.Config) (string, 
 	}
 
 	var apiKey string
-	fmt.Scanln(&apiKey)
+	var err error
+	apiKey, err = readSecret()
+	if err != nil {
+		return "", err
+	}
 	apiKey = strings.TrimSpace(apiKey)
 
 	// Pressing Enter means "keep the current key", not "clear the provider".
@@ -4808,8 +4812,11 @@ func setupTelegram(existingCfg *config.Config) *config.TelegramConfig {
 	for prompt := 1; prompt <= 2; prompt++ {
 		fmt.Printf("Bot token: ")
 
-		var token string
-		fmt.Scanln(&token)
+		token, err := readSecret()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Warning: failed to read token, skipping Telegram setup")
+			return nil
+		}
 
 		if token == "cancel" || token == "" {
 			if existingEnabled && existingToken != "" {
@@ -4905,6 +4912,24 @@ func readLine() string {
 		sb.WriteByte(buf[0])
 	}
 	return strings.TrimRight(sb.String(), "\r")
+}
+
+// readSecret reads a secret from stdin with echo disabled.
+// If stdin is a terminal, it uses term.ReadPassword to avoid echoing.
+// If stdin is not a terminal (piped, CI, script), it falls back to readLine
+// so the wizard does not fail when stdin is not a TTY.
+// The returned value has the trailing newline stripped.
+func readSecret() (string, error) {
+	// Try term.ReadPassword first when stdin is a terminal.
+	if isatty.IsTerminal(uintptr(os.Stdin.Fd())) {
+		password, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err == nil {
+			return strings.TrimSpace(string(password)), nil
+		}
+		// term.ReadPassword failed (e.g. not a TTY), fall through to readLine
+	}
+	// Fallback: plain line read for non-TTY stdin (piped, CI, etc.)
+	return readLine(), nil
 }
 
 // telegramValidationFailed decides what to do when a freshly-entered token
@@ -5609,8 +5634,12 @@ func configureProvider(cfg *config.Config, provider string) *config.Config {
 		}
 		fmt.Print(": ")
 
-		fmt.Scanln(&apiKey)
-		apiKey = strings.TrimSpace(apiKey)
+		secret, err := readSecret()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to read API key: %v\n", err)
+		} else {
+			apiKey = secret
+		}
 
 		// If user entered something, use it; otherwise keep existing
 		if apiKey != "" {

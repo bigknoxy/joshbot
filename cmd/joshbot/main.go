@@ -442,6 +442,7 @@ func newApp() *cli.App {
 			incidentsCommand(),
 			docsCommand(),
 			memoryCommand(),
+			permissionCommand(),
 			{
 				Name:    "configure",
 				Aliases: []string{"config"},
@@ -5370,6 +5371,7 @@ func runStatus(c *cli.Context) error {
 		MemoryWindow:        cfg.Agents.Defaults.MemoryWindow,
 		TelegramEnabled:     cfg.Channels.Telegram.Enabled,
 		WorkspaceRestricted: cfg.Tools.RestrictToWorkspace,
+		PermissionTier:      cfg.Tools.PermissionTier,
 		PendingSkills:       pendingSkillNames(cfg),
 		MemoryBytes:         memorySize,
 		HistoryBytes:        historySize,

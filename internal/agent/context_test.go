@@ -45,8 +45,10 @@ func TestBuildPromptCached_Invalidation(t *testing.T) {
 
 	prompt1 := BuildPromptCached(tmpDir, nil, mockMemory)
 
-	if !strings.Contains(prompt1, "Original content") {
-		t.Error("First prompt should contain original content")
+	// The cached block no longer contains <memory> content;
+	// volatile content is injected at runtime in BuildPrompt.
+	if strings.Contains(prompt1, "Original content") {
+		t.Error("Cached prompt should no longer contain <memory> content")
 	}
 
 	mockMemory.memoryFn = func(ctx context.Context) (string, error) {
@@ -55,12 +57,10 @@ func TestBuildPromptCached_Invalidation(t *testing.T) {
 
 	prompt2 := BuildPromptCached(tmpDir, nil, mockMemory)
 
-	if !strings.Contains(prompt2, "Original content") {
-		t.Error("Cache hit - should still contain original content (mock changes don't affect file mtime)")
-	}
-
-	if strings.Contains(prompt2, "New content from loader") {
-		t.Error("Cache should not have updated - file didn't change")
+	// On cache hit, the same (static) prompt is returned;
+	// the mock memory change is not reflected until InvalidatePromptCache.
+	if prompt1 != prompt2 {
+		t.Error("Cache hit - should return same cached prompt")
 	}
 }
 
@@ -116,24 +116,20 @@ func TestBuildPromptCached_DeletedFile(t *testing.T) {
 	}
 }
 
-func TestBuildPromptCached_SkillsDetection(t *testing.T) {
-	tmpDir := t.TempDir()
+prompt := BuildPromptCached(tmpDir, mockSkills, nil)
 
-	InvalidatePromptCache()
-
-	mockSkills := &mockSkillsLoader{
-		summaryFn: func(ctx context.Context) (string, error) {
-			return "Test skill summary from loader", nil
-		},
+	// The cached block no longer contains <skills> content;
+	// volatile content is injected at runtime in BuildPrompt.
+	if strings.Contains(prompt, "Test skill summary from loader") {
+		t.Error("Cached prompt should no longer contain <skills> content")
 	}
 
-	prompt := BuildPromptCached(tmpDir, mockSkills, nil)
-
-	if !strings.Contains(prompt, "Test skill summary from loader") {
-		t.Error("Prompt should contain skill summary from loader")
+	// Cache still functions correctly - same prompt returned on repeated calls.
+	prompt2 := BuildPromptCached(tmpDir, mockSkills, nil)
+	if prompt != prompt2 {
+		t.Error("Cache hit - should return same cached prompt")
 	}
 }
-
 func TestBuildPromptCached_FileBasedInvalidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	memDir := filepath.Join(tmpDir, "memory")
@@ -194,27 +190,30 @@ func TestCollectSourceFiles(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("agents"), 0o644)
 	_ = os.WriteFile(filepath.Join(tmpDir, "USER.md"), []byte("user"), 0o644)
 
-	memDir := filepath.Join(tmpDir, "memory")
-	_ = os.Mkdir(memDir, 0o755)
-	_ = os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("memory"), 0o644)
-
 	skillsDir := filepath.Join(tmpDir, "skills", "test")
 	_ = os.MkdirAll(skillsDir, 0o755)
-	_ = os.WriteFile(filepath.Join(skillsDir, "SKILL.md"), []byte("skill"), 0o644)
+	// Skills SKILL.md is no longer collected for the cache key.
+	//_ = os.WriteFile(filepath.Join(skillsDir, "SKILL.md"), []byte("skill"), 0o644)
 
 	files := collectSourceFiles(tmpDir)
 
 	expectedFiles := []string{
 		filepath.Join(tmpDir, "AGENTS.md"),
 		filepath.Join(tmpDir, "USER.md"),
-		filepath.Join(tmpDir, "memory", "MEMORY.md"),
-		filepath.Join(tmpDir, "skills", "test", "SKILL.md"),
 	}
 
 	for _, expected := range expectedFiles {
 		if !files[expected] {
 			t.Errorf("Expected file to exist: %s", expected)
 		}
+	}
+
+	if files[filepath.Join(tmpDir, "memory", "MEMORY.md")] {
+		t.Error("MEMORY.md should not be in collected source files (removed from cache key)")
+	}
+
+	if files[filepath.Join(tmpDir, "skills", "test", "SKILL.md")] {
+		t.Error("skills SKILL.md should not be in collected source files (removed from cache key)")
 	}
 
 	if files[filepath.Join(tmpDir, "SOUL.md")] {

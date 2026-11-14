@@ -1004,8 +1004,10 @@ reaches the ceiling, every further turn stops before its next LLM call and
 replies in chat with the recorded spend, the ceiling and the key that sets
 it. Two honest caveats: cost is only recorded **after** a call returns, so
 the overshoot is bounded to the one call that tripped the ceiling — never
-the ones after it — and only pricing-table models count toward the total, so
-a setup running only unpriced models never trips it.
+the ones after it — and if two turns run at once, each can pass the check
+before either records, so the bound is one call per concurrent turn. Only
+pricing-table models count toward the total, so a setup running only
+unpriced models never trips it.
 
 ### Shell Sandbox
 

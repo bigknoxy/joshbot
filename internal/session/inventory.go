@@ -23,6 +23,7 @@ const (
 	suffixSession    = ".jsonl"
 	suffixMetadata   = ".meta.json"
 	suffixArchive    = ".history.jsonl"
+	suffixEvents     = ".events.jsonl"
 	suffixQuarantine = ".jsonl.corrupt"
 	suffixReset      = ".jsonl.archive-"
 )
@@ -84,7 +85,7 @@ func isSessionFile(name string) (string, bool) {
 		return "", false
 	}
 	// A sidecar that happens to end in .jsonl is not a session.
-	if strings.HasSuffix(name, suffixArchive) {
+	if strings.HasSuffix(name, suffixArchive) || strings.HasSuffix(name, suffixEvents) {
 		return "", false
 	}
 	id := strings.TrimSuffix(name, suffixSession)
@@ -326,6 +327,12 @@ func (m *Manager) Reset(ctx context.Context, sessionID string) (string, error) {
 	// not mean "destroy the conversation".
 	if _, err := os.Stat(m.archiveFilePath(sessionID)); err == nil {
 		_ = os.Rename(m.archiveFilePath(sessionID), archived+".history")
+	}
+
+	// Move the event log aside as well so the new conversation starts with
+	// a fresh event stream and doesn't inherit past events.
+	if _, err := os.Stat(m.logFilePath(sessionID)); err == nil {
+		_ = os.Rename(m.logFilePath(sessionID), archived+".events")
 	}
 
 	return filepath.Base(archived), nil

@@ -121,6 +121,16 @@ func sessionsCommand() *cli.Command {
 				},
 				Action: runSessionsNew,
 			},
+			{
+				Name:      "replay",
+				Usage:     "Replay the append-only event log for a session",
+				ArgsUsage: "<session id>",
+				Description: "Shows the event log (message additions, compactions, resets, metadata changes)\n" +
+					"in human-readable form. Only works for sessions that have an event log\n" +
+					"(created after this feature was added). Legacy sessions fall back to\n" +
+					"the snapshot and show a message.",
+				Action: runSessionsReplay,
+			},
 		},
 	}
 }
@@ -312,6 +322,42 @@ func runSessionsNew(c *cli.Context) error {
 		return sessionError(id, err)
 	}
 	fmt.Fprintf(out, "Session %q is now empty. Previous history archived as %s\n", id, archived)
+	return nil
+}
+
+// runSessionsReplay prints the event log for a session in human-readable form.
+func runSessionsReplay(c *cli.Context) error {
+	parsed, err := parseSessionArgs(c.Args().Slice(), false, false, false)
+	if err != nil {
+		return usageError("%v", err)
+	}
+	id := strings.TrimSpace(parsed.id)
+	if id == "" {
+		return usageError("sessions replay needs a session id (see: joshbot sessions list)")
+	}
+
+	mgr, err := sessionManagerForCLI(c)
+	if err != nil {
+		return err
+	}
+
+	replay, err := mgr.Replay(c.Context, id)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) || errors.Is(err, session.ErrInvalidSessionID) {
+			return sessionError(id, err)
+		}
+		// Legacy session without event log
+		if strings.Contains(err.Error(), "legacy session") {
+			out := sessionsOut()
+			fmt.Fprintf(out, "Session %q has no event log (legacy session).\n", id)
+			fmt.Fprintln(out, "Event logs are created for new sessions after this feature was added.")
+			return nil
+		}
+		return cli.Exit(redact.String(err.Error()), 1)
+	}
+
+	out := sessionsOut()
+	fmt.Fprint(out, replay)
 	return nil
 }
 

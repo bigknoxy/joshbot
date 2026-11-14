@@ -286,3 +286,29 @@ Return a helpful error message explaining alternatives when systemctl is not fou
 **Self-heal**: `agents.defaults.heal_timeouts` (string ""/off/bump, omitempty — string-not-bare-bool rule), off by default. With "bump", `setupComponents` computes effective turn timeout = base + `log.TimeoutBump()` (+30s per turn_timeout in 24h, max 4 = +2m cap) once at startup and passes it to `agent.WithTimeout`. Next-restart semantics, same as the tuning overlay.
 **Files changed**: `internal/incidents/{incidents.go,incidents_test.go}` (12 tests), `internal/agent/agent.go` (field + option + 4 record points + turnStream counters; ts creation moved to process(), reactLoop signature gained ts arg, resume_test.go:326 updated), `internal/agent/incidents_test.go` (5 tests), `internal/config/config.go` (`HealTimeouts` + Validate), `cmd/joshbot/main.go` (incidents wiring + heal bump + CLI registration), `cmd/joshbot/incidents_cmd.go` + `_test.go` (6 tests), `internal/output/status.go` (+ test).
 **Verification**: go build ./cmd/joshbot; gofmt -d empty; go vet clean; go test -race on incidents/agent/config/output/cmd green.
+
+---
+
+## 2026-11-11 Consolidation Merges MEMORY.md Instead of Rebuilding It (#428)
+
+**Context**: `ReconcileFacts` rebuilt `MEMORY.md` from the fact set alone: it loaded the facts, merged them, and wrote a fresh document — a title, then one section per category. Every line that was not a fact was discarded, including the shipped template's own `## Important Notes` section, whose comment tells the user it holds "critical reminders the agent must never forget". The first successful consolidation silently erased whatever the user had written there.
+
+**Root cause**: The write path treated `MEMORY.md` as a *rendering of the fact set* rather than as a document the facts live in. The two were kept apart by accident: `WriteFacts` rendered, `ReconcileFacts` reconciled, and nothing joined them.
+
+**Fix**: `ReconcileFacts` now merges into the document as it stands on disk (`mergeFactsDocument`, `internal/memory/merge.go`):
+
+- a system fact line whose fact is still live is updated in place;
+- a system fact line whose fact was evicted by the 100-fact cap is removed;
+- every other line — prose, HTML comments, headings the user added, bullets written by hand — is preserved byte for byte;
+- a fact whose category has no section yet gets one.
+
+Two distinctions carry the fix:
+
+- **A "system fact" is a line joshbot wrote** — it carries a date and a confidence, the exact shape `FormatFactMarkdown` emits. `parseFacts` is permissive and reads any `- ` bullet with text as a fact, so a hand-written `- Remember to call the dentist` would otherwise have been rewritten and evicted. Only the strict shape may be touched.
+- **The fact cap counts facts only.** The reconciler reads existing facts with the strict parser, so a hand-written bullet does not take one of the hundred slots. It used to: such a bullet parsed as a fact with confidence 1.0, outranked everything the system had learned, and spent a slot.
+
+`WriteFacts` is unchanged and is now documented as the destructive primitive it always was. It has no production callers.
+
+**Prevention Rule**: A file that holds both machine-written and human-written content must never be rewritten from the machine-written subset alone. Merge into the document, and make the writer's own lines identifiable so the machine can tell them from the human's.
+
+**Verification**: `internal/memory/merge_test.go` — prose, comments, unknown headings and hand-written bullets survive byte for byte; facts update in place without being duplicated; the cap evicts facts and only facts; reconciling the same facts twice is idempotent.

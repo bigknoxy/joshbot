@@ -168,10 +168,7 @@ func (t *SendFileTool) checkApproval(ctx context.Context, att Attachment, channe
 	if decision == Approve && err == nil {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrDenied, strings.TrimPrefix(err.Error(), ErrDenied.Error()+": "))
-	}
-	return fmt.Errorf("%w: run it yourself, or ask the user to approve it", ErrDenied)
+	return denialError(err)
 }
 
 // buildAttachment resolves, contains, measures and sniffs the file. It is
@@ -186,13 +183,13 @@ func (t *SendFileTool) buildAttachment(workspace, path string) (Attachment, erro
 
 	f, err := openInRoot(root, resolved, os.O_RDONLY, 0)
 	if err != nil {
-		return Attachment{}, fmt.Errorf("open %s: %w", path, err)
+		return Attachment{}, WithCode(fmt.Errorf("open %s: %w", path, err), notFoundCode(err))
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return Attachment{}, fmt.Errorf("stat %s: %w", path, err)
+		return Attachment{}, WithCode(fmt.Errorf("stat %s: %w", path, err), notFoundCode(err))
 	}
 	if info.IsDir() {
 		return Attachment{}, fmt.Errorf("%s is a directory, not a file", path)

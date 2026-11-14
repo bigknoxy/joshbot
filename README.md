@@ -848,7 +848,7 @@ For backward compatibility, the old format still works:
     "restrict_to_workspace": true,
     "shell_allow_list": [],
     "filesystem_allowed_paths": [],
-    "shell_sandbox": "off",
+    "shell_sandbox": "auto",
     "shell_sandbox_allow_network": false,
     "shell_approval": "off"
   }
@@ -1011,17 +1011,20 @@ unpriced models never trips it.
 
 ### Shell Sandbox
 
-`tools.shell_sandbox` adds OS-level containment for shell commands, on top of the deny list (which screens command text — a filter, not a boundary). It's off by default so upgrading doesn't silently change what an existing setup can do.
+`tools.shell_sandbox` adds OS-level containment for shell commands, on top of the deny list (which screens command text — a filter, not a boundary). It is on by default: a fresh install confines commands to the workspace wherever the OS can enforce it.
 
-- `"off"` (default) — no containment beyond the deny list.
-- `"workspace"` — confines the filesystem to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); `$HOME` and everything else outside that is unreachable. Outbound TCP is denied unless `tools.shell_sandbox_allow_network` is `true`.
+- `"auto"` (default) — the strongest containment this machine can actually enforce: workspace confinement where an OS backend exists, and the allowlist-only boundary where one does not.
+- `"off"` — no containment beyond the deny list.
+- `"workspace"` — always asks for workspace confinement, and refuses to start if this machine cannot deliver it.
+
+`"workspace"` and `"auto"` confine the same way: shell commands' filesystem access is limited to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); `$HOME` and everything else outside that is unreachable. Outbound TCP is denied unless `tools.shell_sandbox_allow_network` is `true`.
 
 **Per-platform enforcement:**
 
-| Platform | Mechanism when `"workspace"` | Default (`"off"`) posture |
-|----------|------------------------------|---------------------------|
-| Linux | [Landlock](https://landlock.io/) LSM (re-exec helper) | Deny-list only |
-| macOS | Seatbelt (`sandbox-exec` profile) | Deny-list only |
+| Platform | Mechanism when confined | `"auto"` resolves to |
+|----------|-------------------------|---------------------|
+| Linux | [Landlock](https://landlock.io/) LSM (re-exec helper) | Workspace confinement |
+| macOS | Seatbelt (`sandbox-exec` profile) | Workspace confinement |
 | Other (no sandbox available) | n/a | **Allowlist-only** — the shell tool falls back to a small set of non-escaping read/inspect commands unless the operator sets an explicit `shell_allow_list` |
 
 While an allowlist is in force — whether set explicitly or defaulted on a
@@ -1033,7 +1036,9 @@ default list deliberately omits `find`, `go` and `git`, each of which launches a
 program of the caller's choosing; name them in `shell_allow_list` if you need
 them.
 
-It fails closed: an unrecognized value, or `"workspace"` on a host whose kernel lacks the needed support, is a startup error rather than a silent no-op — set it back to `"off"` to run without containment. The runtime default is intentionally **not** the sandbox: network-denied-by-default breaks common workflows, so macOS/Linux still rely on the deny list by default and you opt in with `tools.shell_sandbox: "workspace"`.
+It still fails closed on a typo: an unrecognized value is a startup error, never a silent fallback to `"off"`. An **explicit** `"workspace"` on a host whose kernel lacks the needed support is a startup error too — you asked for containment, and joshbot will not quietly run without it. The default `"auto"` degrades to the allowlist-only boundary and says so in the log, because a default that cannot start on Windows is not a default.
+
+**If your commands need the network** — `go build` fetching a new module, `pip install`, `curl` — set `tools.shell_sandbox_allow_network` to `true`. Network denial is enforced on Landlock ABI v4 and later (Linux 6.7+) and on macOS; on older kernels the sandbox confines the filesystem and leaves the network alone. **To keep the old behaviour**, set `tools.shell_sandbox` to `"off"` — an explicit value in `config.json` is yours, and the defaults never overwrite it.
 
 ### Shell Approval
 

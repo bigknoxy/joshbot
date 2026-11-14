@@ -245,11 +245,22 @@ func init() {
 			return NewLiteLLMProvider(cfg), nil
 		},
 		DefaultAPIBase: "https://integrate.api.nvidia.com/v1",
-		// A hosted default rots: the previous one (moonshotai/kimi-k2-thinking)
-		// started answering HTTP 410 Gone, so a fresh nvidia onboarding got a
-		// dead model out of the box — caught by the live eval, 2026-08.
-		// Verified live before changing; do the same when this one rots.
-		DefaultModel: "deepseek-ai/deepseek-v4-flash-0731",
+		// A hosted default rots, and this one has rotted twice. The first
+		// default (moonshotai/kimi-k2-thinking) started answering HTTP 410
+		// Gone, so a fresh nvidia onboarding got a dead model out of the box
+		// — caught by the live eval, 2026-08 (#336). Its replacement
+		// (deepseek-ai/deepseek-v4-flash-0731) reached end-of-life too, and
+		// nothing noticed: the live eval reads the operator's own config and
+		// skips without one, and no CI job ran it, so the default could rot
+		// again unnoticed — it did, and a fresh install could not make its
+		// first call (2026-11, #443).
+		//
+		// The guard is now two parts: an offline test that refuses a
+		// confirmed-retired default, and a scheduled CI job that calls the
+		// live catalog. Verify live BEFORE changing this line — including
+		// that the model returns tool_calls, because a default that cannot
+		// call tools breaks every agent turn.
+		DefaultModel: "nvidia/nemotron-3.5-lightning-30b-a3b",
 		DisplayName:  "NVIDIA NIM",
 		Description:  "Free tier available",
 	})

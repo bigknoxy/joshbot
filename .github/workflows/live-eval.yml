@@ -1,0 +1,92 @@
+name: Live Eval
+
+# The NVIDIA default model is a hosted default, and hosted defaults rot: the
+# first one (moonshotai/kimi-k2-thinking) reached end-of-life and a fresh
+# install could not make its first LLM call; its replacement rotted the same
+# way a few months later and nothing noticed, because the live eval reads the
+# operator's own ~/.joshbot/config.json and skips when there is none, and no
+# CI job ran it. Two defaults died this way before anything caught the second
+# one.
+#
+# This job is the missing guard. It runs against a *defaults-configured*
+# sandbox — no model named, so the provider registry's default is what gets
+# used — which is exactly the configuration that broke.
+#
+# It is scheduled, not per-commit: the free tier is rate-limited, and a
+# per-commit live call would make ordinary CI flaky for a reason that has
+# nothing to do with the change under test. The offline half of the guard
+# (internal/providers/default_model_test.go) refuses a confirmed-retired
+# default and runs on every commit with no network and no key.
+on:
+  schedule:
+    # Weekly, Monday 05:17 UTC. Off the hour on purpose: the top of the hour
+    # is when every other scheduled job on the platform fires.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Look for the free-tier key
+        id: key
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NVIDIA_API_KEY}" ]; then
+            echo "::notice::No NVIDIA_API_KEY repository secret is configured, so the live eval cannot run. Add one (a free NIM key is enough) to enable this guard."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: The NVIDIA default model is live and can call tools
+        if: steps.key.outputs.found == 'true'
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          JOSHBOT_LIVE_MODEL_CHECK: '1'
+        run: |
+          set -euo pipefail
+          go test -count=1 -v -run 'TestNVIDIADefaultModelIsLive' ./internal/providers/
+
+      - name: The defaults-configured sandbox makes its first call
+        if: steps.key.outputs.found == 'true'
+        env:
+          JOSHBOT_PROVIDERS__NVIDIA__API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/joshbot-home"
+          mkdir -p "$HOME"
+          go build -o "$RUNNER_TEMP/joshbot" ./cmd/joshbot
+          # --force with no model named: the wizard writes the provider
+          # registry's default, which is the model that rotted twice.
+          "$RUNNER_TEMP/joshbot" onboard --provider nvidia --force
+          # A real turn through the real agent, not just a provider probe:
+          # the default has to survive the whole path to answer.
+          "$RUNNER_TEMP/joshbot" agent -m "Reply with exactly: LIVEEVAL_OK"
+
+      - name: The live prompt-behaviour eval
+        if: steps.key.outputs.found == 'true'
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          JOSHBOT_PROVIDERS__NVIDIA__API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          JOSHBOT_EVAL_K: '3'
+          JOSHBOT_EVAL_MIN_PASS: '0.8'
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/joshbot-home"
+          go test -count=1 -v -run 'TestLiveEval' ./cmd/joshbot/

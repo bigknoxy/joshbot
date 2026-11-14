@@ -13,6 +13,13 @@ import (
 // context, never touching shared Agent state.
 type UsageSink func(providers.Usage)
 
+// UsageDetailSink receives the same per-LLM-call usage as UsageSink, with
+// the model id the provider actually answered with. Cost cannot be derived
+// from the aggregate tokens alone — a fallback provider answers a different
+// model with a different price — so any caller that prices the turn needs
+// the per-call model id. It rides the same per-request context.
+type UsageDetailSink func(model string, u providers.Usage)
+
 // StreamEvent is emitted during streaming to deliver incremental assistant
 // text to a per-request sink.
 //
@@ -40,9 +47,10 @@ type StreamSink func(StreamEvent)
 // (StreamSink) ride the same mechanism, since they share the identical
 // shape and the identical trap: per-request, side-channel, bus-invisible.
 type requestSink struct {
-	progress ProgressFunc
-	stream   StreamSink
-	usage    UsageSink
+	progress    ProgressFunc
+	stream      StreamSink
+	usage       UsageSink
+	usageDetail UsageDetailSink
 }
 
 // sinkKey is an unexported context key type to avoid collisions.
@@ -135,6 +143,36 @@ func WithUsageSink(ctx context.Context, usage UsageSink) context.Context {
 		return context.WithValue(ctx, sinkKey{}, &s)
 	}
 	return context.WithValue(ctx, sinkKey{}, &requestSink{usage: usage})
+}
+
+// WithUsageDetailSink attaches a per-request usage callback that also carries
+// the answering model. Passing nil clears it while preserving the other
+// callbacks. A caller may attach both this and WithUsageSink; the loop fires
+// both, one with the model and one without.
+func WithUsageDetailSink(ctx context.Context, sink UsageDetailSink) context.Context {
+	existing := sinkFromContext(ctx)
+	if existing != nil {
+		s := *existing
+		s.usageDetail = sink
+		return context.WithValue(ctx, sinkKey{}, &s)
+	}
+	return context.WithValue(ctx, sinkKey{}, &requestSink{usageDetail: sink})
+}
+
+// usageDetailFromContext returns the per-request model-carrying usage
+// callback from the context, or nil if none is attached.
+func usageDetailFromContext(ctx context.Context) UsageDetailSink {
+	if s := sinkFromContext(ctx); s != nil {
+		return s.usageDetail
+	}
+	return nil
+}
+
+// UsageDetailFromContext is the exported form of usageDetailFromContext for
+// package cmd: it exposes the callback the real ReAct loop drives so test
+// doubles can drive the same path without a live provider.
+func UsageDetailFromContext(ctx context.Context) UsageDetailSink {
+	return usageDetailFromContext(ctx)
 }
 
 // usageFromContext returns the per-request usage callback from the context,

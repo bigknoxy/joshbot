@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Token usage and cost are aggregated and persisted, with an optional spend ceiling (#436).**
+  Every main-loop LLM call records its token usage onto `~/.joshbot/usage.json` (owner-only,
+  atomically rewritten), keyed process-lifetime, per answering model and per session; totals
+  survive a restart. `joshbot status` reports tokens, calls and estimated spend (lifetime, per
+  model, recent sessions) and the in-chat `/status` shows the same for its session and the
+  process lifetime. Cost is estimated from a small documented pricing table
+  (`internal/usage/pricing.go` — list prices per 1M tokens, dated, never scraped at runtime);
+  a model not in the table reports usage with a **unknown** cost — `cost_usd` stays `null` in
+  the JSON output and the status output counts the unpriced calls openly — so joshbot never
+  prints a fabricated cost. `agents.defaults.spend_ceiling_usd` (default 0 = off) halts every
+  further turn before its next LLM call once recorded lifetime spend reaches it, with the in
+  chat reply carrying the spend, the ceiling and the config key; unpriced models contribute
+  tokens but no cost, and the check runs before the request, so only the call that tripped the
+  ceiling can overshoot it.
 - **A mechanism to spill a large tool result to a file instead of destroying it (#430).** `truncateSummary` keeps 80 head + 80 tail characters with no reference to the rest, MCP results are cut at 4000 chars, and web bodies at 2 MiB — so the model answers confidently from a fragment. A new `tools.SpillSink`, carried on the tool execution context, lets a result above a configured threshold be written to disk and replaced by a short handle. `Registry.ExecuteWithContext` is the single choke point every tool result passes through, so one mechanism covers all of them. **The threshold is unset by default, so nothing changes at runtime** — this change adds the mechanism only; turning it on is a separate one. The returned handle names the file, its absolute path and how many bytes were spilled, so the model can read the content back with the `read_file` and `grep` tools it already has. Spilled files are written owner-only (`0600` inside a `0700` directory) because raw tool output can carry credentials the tool printed. With no explicit directory, spills land under `<workspace>/.joshbot/spill`, where the existing file tools can reach them without a separate allowance. A failed write is not the tool's failure — the tool ran and produced a result — so the original output survives rather than being replaced by a handle that points nowhere.
 - **Stable machine error codes on tool failures (#433).** `ToolResult.Error` errors from `internal/tools` can now carry a `ToolErrorCode` — `deny`, `approval_timeout`, `timeout`, `not_found` — read with `tools.ErrorCode(err)` through any `%w` wrapping. The codes cover the shell deny list and allowlist, the approval gates (an expired prompt is `approval_timeout`; a cancelled one is `deny`), the shell command deadline, missing filesystem paths and working directories, and unknown tool names in the registry. The human-readable text is byte-for-byte unchanged; unclassified failures read as an empty code. Documented in `docs/TOOLS.md`.
 - **`/status` on Telegram gets `[🔃 Refresh]` and `[📌 Pin]` buttons (#318).** Refresh re-runs `/status` for the presser's session and edits the message in place; Pin pins it silently, after which only Refresh is offered — the keyboard itself remembers the pin, so the press path reads and writes no store. `/status` now carries an `As of: HH:MM <zone>` line on every channel, so a pinned or left-on-screen snapshot never passes for a live view. A refresh that fails keeps the last good text, prefixed "⚠️ Outdated — refresh failed", rather than replacing it with an error; a pin the bot lacks permission for says so. The message is never auto-updated: every edit spends the per-chat budget, so refresh is manual by design.

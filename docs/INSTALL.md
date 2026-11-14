@@ -546,7 +546,8 @@ The old format is still supported for backward compatibility:
       "dream_mode": "off",
       "streaming": true,
       "subagent_max_depth": 2,
-      "timeout": "10m"
+      "timeout": "10m",
+      "spend_ceiling_usd": 0
     }
   },
   "channels": {
@@ -601,6 +602,15 @@ The old format is still supported for backward compatibility:
 > for a cooldown window rather than re-dialled on every turn. When a fallback
 > answers, the reply opens with a one-line notice naming the failed provider and
 > who answered; `agents.defaults.quiet_fallback: true` suppresses it.
+
+> **Usage & spend ceiling:** every main-loop LLM call records its token usage and
+> estimated cost to `~/.joshbot/usage.json`; `joshbot status` reports tokens,
+> calls and estimated spend (lifetime, per model, recent sessions), and the
+> in-chat `/status` shows the same for its session. `agents.defaults.spend_ceiling_usd`
+> (a dollar figure, `0` = off, default off) halts further turns before their next
+> LLM call once recorded lifetime spend reaches it. Cost is an estimate from a
+> small documented pricing table (`internal/usage/pricing.go`); a model that is
+> not in the table reports usage but a `null` cost, never a fabricated number.
 
 > **Streaming token usage:** streaming requests send OpenAI's
 > `stream_options: {"include_usage": true}` so the final chunk carries real token
@@ -1010,6 +1020,27 @@ workspace/
 | `MEMORY.md` | Important facts the bot remembers across conversations |
 | `HISTORY.md` | Timestamped log of past conversations (grep-searchable) |
 | `HEARTBEAT.md` | Tasks for autonomous processing (checked every 5 min) |
+
+### Editing MEMORY.md
+
+`MEMORY.md` is yours as much as the bot's. When joshbot consolidates, it
+**merges**: a fact that is still live is updated where it stands, and every
+other line — your prose, your headings, your comments — is left exactly as you
+wrote it. Consolidation never rebuilds the file from the facts alone.
+
+The bot's own facts live in `## user_info`, `## preference`, `## project`,
+`## decision`, `## skill` and `## system` sections. A note under a heading of
+your own is never touched.
+
+To remove a fact, delete its line. A fact line carries a date and a
+confidence, like:
+
+```
+- [2026-05-17] User prefers dark mode (confidence: 0.9)
+```
+
+A line in any other shape is treated as your own writing, so it is never
+removed for you and never counts against the 100-fact limit.
 
 ### Streaming Responses
 

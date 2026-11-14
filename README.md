@@ -216,8 +216,11 @@ content.
 `--output-format` accepts `text` (default), `json`, or `stream-json`. The JSON
 modes are non-interactive and require `-m`/`--message`. In JSON modes stdout
 carries **only** the result document — logs are routed to stderr — so consumers
-can parse stdout directly. `cost_usd` is emitted as `null` (no pricing table is
-bundled; compute cost from the returned token `usage`).
+can parse stdout directly. `cost_usd` is the turn's estimated cost from the
+documented pricing table (`internal/usage/pricing.go`, below); it comes back
+`null` when any model the turn used is not in the table — a partially priced
+turn is unreportable as one number, so compute nothing from `null` and check
+the `usage` block instead.
 
 #### Exit codes
 
@@ -967,6 +970,44 @@ timeout at the next process start is the configured timeout plus 30s per
 applies **on the next restart**, the same next-restart convention the tuning
 overlay uses. `llm_failure` incidents deliberately do not drive the bump — a
 failing provider is not a budget problem.
+
+### Usage, Cost & Spend Ceiling
+
+Every LLM call in the main ReAct loop records its token usage onto
+`~/.joshbot/usage.json` (owner-only, rewritten atomically), keyed overall —
+process lifetime — per answering model and per session. Totals survive a
+restart, so a runaway loop cannot outlive the signal about it.
+
+```bash
+joshbot status     # Usage: tokens, calls and estimated spend (lifetime, per model, recent sessions)
+```
+
+The in-chat `/status` reports the same figures for its own session and the
+process lifetime. The JSON output of `joshbot agent -m --output-format json`
+carries `cost_usd` per turn.
+
+**Cost is an estimate from a small, documented pricing table** — published
+list prices per 1M tokens for a handful of common model families (Claude
+Opus/Sonnet/Haiku, GPT-4o/4.1), kept as a literal in
+`internal/usage/pricing.go` with the date each rate was checked. It is never
+scraped at runtime and it is a list-price estimate: cached-token discounts,
+provider markup and price moves all make the real bill differ.
+
+**An unknown model never reports a cost.** Tokens are still recorded, but
+`cost_usd` comes back `null` and the status output counts the unpriced calls
+openly ("cost unknown on N call(s)"), because a partially known figure
+understates spend and a guessed number fabricates it.
+
+**Spend ceiling** — `agents.defaults.spend_ceiling_usd` (a dollar figure,
+`0` = off) halts turns before they overspend: once recorded lifetime spend
+reaches the ceiling, every further turn stops before its next LLM call and
+replies in chat with the recorded spend, the ceiling and the key that sets
+it. Two honest caveats: cost is only recorded **after** a call returns, so
+the overshoot is bounded to the one call that tripped the ceiling — never
+the ones after it — and if two turns run at once, each can pass the check
+before either records, so the bound is one call per concurrent turn. Only
+pricing-table models count toward the total, so a setup running only
+unpriced models never trips it.
 
 ### Shell Sandbox
 

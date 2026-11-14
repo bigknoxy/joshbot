@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -63,8 +64,41 @@ type Status struct {
 	// already wrong.
 	Incidents int `json:"incidents,omitempty"`
 
+	// Usage is the recorded token usage and estimated spend (issue #436).
+	// nil — the field omitted in JSON — is fresh-install / no-ledger state,
+	// not zero spend.
+	Usage *UsageSummary `json:"usage,omitempty"`
+
 	MemoryBytes  int64 `json:"memory_bytes"`
 	HistoryBytes int64 `json:"history_bytes"`
+}
+
+// UsageTotals is the aggregate shape of recorded token usage. CostUSD carries
+// only known-cost calls; UnknownCostCalls counts the ones the pricing table
+// could not price, so "0 cost with N unknown" reads as a coverage gap rather
+// than a free run.
+type UsageTotals struct {
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	Calls            int     `json:"calls"`
+	CostUSD          float64 `json:"cost_usd"`
+	UnknownCostCalls int     `json:"unknown_cost_calls,omitempty"`
+}
+
+// UsageSummary is the `joshbot status` usage block: process-lifetime totals,
+// the per-model breakdown and the most recently seen sessions.
+type UsageSummary struct {
+	Lifetime UsageTotals  `json:"lifetime"`
+	Models   []UsageEntry `json:"models,omitempty"`
+	Sessions []UsageEntry `json:"sessions,omitempty"`
+}
+
+// UsageEntry is one named slice of the ledger — a model or a session — with
+// its totals.
+type UsageEntry struct {
+	Name string `json:"name"`
+	UsageTotals
 }
 
 // ChannelStatus is the live state of one channel in the running gateway.
@@ -182,6 +216,25 @@ func RenderStatusText(w io.Writer, s Status) {
 	if s.Incidents > 0 {
 		fmt.Fprintf(w, "Incidents:      %d in the last 24h — run: joshbot incidents list\n", s.Incidents)
 	}
+	if s.Usage != nil && s.Usage.Lifetime.Calls > 0 {
+		u := s.Usage.Lifetime
+		// The unknown-cost count is said out loud rather than folded into a
+		// lower-spend figure: a model outside the pricing table reports an
+		// unknown cost, never a fabricated one (issue #436).
+		if u.UnknownCostCalls > 0 {
+			fmt.Fprintf(w, "Usage:          %s tokens across %d calls — est. spend %s (cost unknown on %d call(s) — model not in the pricing table)\n",
+				formatTokens(u.TotalTokens), u.Calls, formatUSD(u.CostUSD), u.UnknownCostCalls)
+		} else {
+			fmt.Fprintf(w, "Usage:          %s tokens across %d calls — est. spend %s\n",
+				formatTokens(u.TotalTokens), u.Calls, formatUSD(u.CostUSD))
+		}
+		for _, m := range s.Usage.Models {
+			fmt.Fprintf(w, "  %-8s %-38s %12s tokens, est. %s\n", "model:", m.Name, formatTokens(m.TotalTokens), formatUSD(m.CostUSD))
+		}
+		for _, ses := range s.Usage.Sessions {
+			fmt.Fprintf(w, "  %-8s %-38s %12s tokens, est. %s\n", "session:", ses.Name, formatTokens(ses.TotalTokens), formatUSD(ses.CostUSD))
+		}
+	}
 	fmt.Fprintln(w)
 
 	if s.MemoryBytes > 0 || s.HistoryBytes > 0 {
@@ -208,4 +261,27 @@ func enabledWord(b bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+// formatTokens groups digits by thousands so a big number reads: 1,234,567.
+func formatTokens(n int) string {
+	digits := strconv.Itoa(n)
+	neg := strings.HasPrefix(digits, "-")
+	digits = strings.TrimPrefix(digits, "-")
+	var out string
+	for len(digits) > 3 {
+		out = "," + digits[len(digits)-3:] + out
+		digits = digits[:len(digits)-3]
+	}
+	out = digits + out
+	if neg {
+		out = "-" + out
+	}
+	return out
+}
+
+// formatUSD renders a spend figure, zero included — a $0.00 is a real
+// reading for an unpriced-model configuration and stays visible.
+func formatUSD(usd float64) string {
+	return fmt.Sprintf("$%.2f", usd)
 }

@@ -98,6 +98,13 @@ type Agent struct {
 	// stream deaths) to ~/.joshbot/incidents.jsonl. Nil-safe: nil disables
 	// recording entirely, and every record point nil-checks.
 	incidents *incidents.Log
+	// usageLedger records per-call token usage and cost (internal/usage) and
+	// enforces the spend ceiling's queries. Nil-safe like incidents: nil
+	// disables recording and the ceiling. Injected once before the agent
+	// runs; the implementation is mutex-guarded, so concurrent turns are
+	// safe (see UsageLedger's doc comment for why this unlike the sinks is
+	// not a per-request value).
+	usageLedger UsageLedger
 	// modelName holds a runtime global model override set by `joshbot`
 	// /model ... --global. It is read on every model resolution, so it is
 	// mutex-guarded: two sessions processed concurrently (the Telegram bus
@@ -638,6 +645,22 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 			})
 			return reply, nil
 		}
+		// A spent budget stops the turn on purpose (#436): the reply is
+		// in-band chat text with a nil error, the same contract as the
+		// timeout path — a ceiling is a configured outcome, not a provider
+		// failure — and the accumulated conversation is persisted, since the
+		// loop had appended the user message and maybe tool results before
+		// stopping.
+		if errors.Is(err, errSpendCeiling) {
+			persistCtx, pcancel := a.persistenceCtx(ctx)
+			defer pcancel()
+			if serr := a.sessions.Save(persistCtx, sess); serr != nil {
+				a.logger.Warn("Failed to save session after a spent-ceiling stop", "session", sess.ID, "error", serr)
+			}
+			reply := a.spendCeilingReply(sess)
+			emitThroughSink(ctx, narrationSeparator(a.cfg.Agents.Defaults.Streaming, sess.Messages[startSessionLen:])+reply)
+			return reply, nil
+		}
 		reply := fmt.Sprintf("Error processing request: %v", err)
 		// A raw provider error tells the user what broke, never what to do
 		// about it. The hint is appended, not substituted: callers that
@@ -776,6 +799,19 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
 		ts.iterations++
 
+		// Budget ceiling (#436): checked before the request is built, so a
+		// spent ledger stops the loop BEFORE the next LLM call. Cost is only
+		// recorded after a call returns, so the overshoot is bounded to the
+		// one call that tripped the ceiling — the calls after it never start.
+		// With a nil ledger no ceiling exists; the check needs both.
+		if a.usageLedger != nil {
+			if ceiling := a.cfg.Agents.Defaults.SpendCeilingUSD; ceiling > 0 {
+				if _, total := a.usageLedger.Spend(sess.ID); total >= ceiling {
+					return "", fmt.Errorf("%w: $%.2f recorded against a $%.2f ceiling", errSpendCeiling, total, ceiling)
+				}
+			}
+		}
+
 		// Get tool schemas if available
 		var toolSchemas []providers.Tool
 		if a.tools != nil {
@@ -830,8 +866,22 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		// Surface per-call token usage to any headless caller (e.g. the CLI
 		// JSON output modes) via the per-request usage sink. Concurrency-safe:
 		// the sink rides the context, never shared Agent state.
+		// The answering model is resp.Model when the provider reported one —
+		// with a fallback chain that is not the addressed model, and the
+		// pricing lookup is per model — falling back to the addressed one,
+		// which is a better guess than "".
+		callModel := resp.Model
+		if callModel == "" {
+			callModel = req.Model
+		}
+		if ds := usageDetailFromContext(ctx); ds != nil {
+			ds(callModel, resp.Usage)
+		}
 		if usageSink := usageFromContext(ctx); usageSink != nil {
 			usageSink(resp.Usage)
+		}
+		if a.usageLedger != nil {
+			a.usageLedger.RecordUsage(sess.ID, callModel, resp.Usage)
 		}
 		ts.answered = true
 
@@ -2148,8 +2198,10 @@ Just type normally to chat with me!`,
 			toolCount = len(a.tools.GetSchemas())
 		}
 		model := a.getModelName()
+		var sessID string
 		if sess, err := a.sessions.GetOrCreate(ctx, getSessionKey(msg)); err == nil {
 			model = a.modelForSession(sess)
+			sessID = sess.ID
 		}
 		// The as-of stamp is what makes a status message honest once it is
 		// pinned or left on screen: the text is a snapshot, not a live view
@@ -2166,6 +2218,14 @@ Just type normally to chat with me!`,
 			a.cfg.Agents.Defaults.MemoryWindow,
 			a.cfg.Agents.Defaults.MaxToolIterations,
 		)
+		// Token usage and spend come from the ledger when one is wired
+		// (#436). Priced models only; the caveat is stated so a $0.00 does
+		// not read as a free run.
+		if a.usageLedger != nil {
+			sessionUSD, totalUSD := a.usageLedger.Spend(sessID)
+			status += fmt.Sprintf("\n  Spend (this session): $%.2f\n  Spend (lifetime): $%.2f — priced models only",
+				sessionUSD, totalUSD)
+		}
 		// Provider health is optional (checked by type assertion, like
 		// session.Archiver) and process-local, so it only appears when the
 		// LLM is a MultiProvider with something to report.

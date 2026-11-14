@@ -31,12 +31,15 @@ import (
 func emptyModelsServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/models") {
-			http.NotFound(w, r)
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[]}`))
+		// The credential probe is a 1-token chat completion. The probe
+		// checks the status code only, so an empty 200 is enough to stand
+		// in for a provider that accepted the key.
+		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
 	return srv

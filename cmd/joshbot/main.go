@@ -52,6 +52,7 @@ import (
 	"github.com/bigknoxy/joshbot/internal/subagent"
 	"github.com/bigknoxy/joshbot/internal/tools"
 	"github.com/bigknoxy/joshbot/internal/tuning"
+	"github.com/bigknoxy/joshbot/internal/usage"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/urfave/cli/v2"
 )
@@ -1168,6 +1169,16 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		}
 	}
 
+	// Usage ledger (#436): per-model token totals and known-cost spend,
+	// persisted across restarts and feeding the spend ceiling. Nil-safe like
+	// incidentsLog: a broken file disables recording and the ceiling, never
+	// the agent.
+	usageLedger, err := usage.NewLedger(filepath.Join(cfg.HomeDir(), usage.FileName))
+	if err != nil {
+		log.Warn("usage: failed to open usage ledger, usage recording disabled for this run", "error", err)
+		usageLedger = nil
+	}
+
 	registryOpts := []tools.RegistryOption{
 		tools.WithShellSandbox(resolvedSandbox, cfg.Tools.ShellSandboxAllowNetwork),
 		tools.WithShellApproval(approvalMode),
@@ -1273,6 +1284,9 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		// Nil-safe: a failed incident-log open disables recording, never
 		// the agent.
 		agent.WithIncidentLog(incidentsLog),
+		// Nil-safe the same way: a failed ledger open disables usage
+		// recording and the spend ceiling, never the agent (#436).
+		agent.WithUsageLedger(usageLedger),
 		// Zero is ignored by WithTimeout, so an unset key keeps
 		// agent.DefaultTimeout without a special case here.
 		agent.WithTimeout(turnTimeout),
@@ -2332,9 +2346,7 @@ func headlessSession(resume string) (channel, sender string) {
 	return "cli", resume
 }
 
-// jsonUsage is the token-usage block emitted in JSON output. Cost is omitted
-// (null) because joshbot has no per-model pricing table; consumers compute
-// cost from the token counts and their own rate card.
+// jsonUsage is the token-usage block emitted in JSON output.
 type jsonUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -2350,12 +2362,16 @@ type jsonToolCall struct {
 // jsonResult is the single document emitted on stdout in --output-format json,
 // and the terminal line in stream-json.
 type jsonResult struct {
-	Type      string         `json:"type"` // always "result"
-	SessionID string         `json:"session_id"`
-	Result    string         `json:"result"`
-	IsError   bool           `json:"is_error"`
-	Usage     jsonUsage      `json:"usage"`
-	CostUSD   *float64       `json:"cost_usd"` // null: no pricing table
+	Type      string    `json:"type"` // always "result"
+	SessionID string    `json:"session_id"`
+	Result    string    `json:"result"`
+	IsError   bool      `json:"is_error"`
+	Usage     jsonUsage `json:"usage"`
+	// CostUSD is the turn's estimated cost from the documented pricing table
+	// (internal/usage), or null when ANY model the turn used is not in the
+	// table: a partially known cost understates spend, so the honest value
+	// for an unknown model is null, never 0 (issue #436).
+	CostUSD   *float64       `json:"cost_usd"` // null: unknown model in the turn
 	ToolCalls []jsonToolCall `json:"tool_calls"`
 }
 
@@ -2401,9 +2417,10 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 	stream := format == "stream-json"
 
 	var (
-		mu        sync.Mutex
-		usage     jsonUsage
-		toolCalls []jsonToolCall
+		mu           sync.Mutex
+		usage        jsonUsage
+		toolCalls    []jsonToolCall
+		usageByModel = map[string]providers.Usage{}
 	)
 	enc := json.NewEncoder(stdout)
 
@@ -2445,6 +2462,18 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 		usage.CompletionTokens += u.CompletionTokens
 		usage.TotalTokens += u.TotalTokens
 	})
+	// Per-model usage for the cost figure. Cost cannot be derived from the
+	// aggregate alone — a fallback provider answers a different model with a
+	// different price — so the detail sink carries the per-call model id.
+	fullCtx = agent.WithUsageDetailSink(fullCtx, func(model string, u providers.Usage) {
+		mu.Lock()
+		defer mu.Unlock()
+		agg := usageByModel[model]
+		agg.PromptTokens += u.PromptTokens
+		agg.CompletionTokens += u.CompletionTokens
+		agg.TotalTokens += u.TotalTokens
+		usageByModel[model] = agg
+	})
 
 	msg := bus.InboundMessage{
 		SenderID:  sender,
@@ -2479,7 +2508,7 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 		Result:    strings.TrimSpace(response),
 		IsError:   replyErr != nil,
 		Usage:     usage,
-		CostUSD:   nil,
+		CostUSD:   turnCostUSD(usageByModel),
 		ToolCalls: toolCalls,
 	}
 	if err := enc.Encode(res); err != nil {
@@ -2491,6 +2520,37 @@ func runAgentJSON(ctx context.Context, agentInstance agentProcessor, message, fo
 		return err
 	}
 	return nil
+}
+
+// turnCostUSD prices a turn's per-model token aggregates against the
+// documented pricing table. It returns nil when any model seen this turn is
+// not in the table — a partially priced turn cannot be reported as a number
+// without understating spend (issue #436).
+func turnCostUSD(usageByModel map[string]providers.Usage) *float64 {
+	if len(usageByModel) == 0 {
+		return nil
+	}
+	var total float64
+	for model, u := range usageByModel {
+		cost, known := usage.CostOf(model, u)
+		if !known {
+			return nil
+		}
+		total += cost
+	}
+	return &total
+}
+
+// outputUsageTotals maps the ledger's totals onto the status document's.
+func outputUsageTotals(t usage.Totals) output.UsageTotals {
+	return output.UsageTotals{
+		PromptTokens:     t.PromptTokens,
+		CompletionTokens: t.CompletionTokens,
+		TotalTokens:      t.TotalTokens,
+		Calls:            t.Calls,
+		CostUSD:          t.CostUSD,
+		UnknownCostCalls: t.UnknownCostCalls,
+	}
 }
 
 // runAgentSingleMessage sends a single message and prints the response. When
@@ -5339,6 +5399,21 @@ func runStatus(c *cli.Context) error {
 		doc.Incidents = incLog.CountSince(incidents.HealLookbackWindow, "")
 	}
 
+	// Token usage and spend (#436), read straight off the ledger on disk.
+	// A fresh install has no file; the field stays unset so the JSON
+	// consumer distinguishes "nothing recorded" (omitted) from zero spend.
+	if led, err := usage.NewLedger(filepath.Join(cfg.HomeDir(), usage.FileName)); err == nil {
+		if total, models, sessions := led.Snapshot(); total.Calls > 0 || len(models) > 0 {
+			doc.Usage = &output.UsageSummary{Lifetime: outputUsageTotals(total)}
+			for _, m := range models {
+				doc.Usage.Models = append(doc.Usage.Models, output.UsageEntry{Name: m.Model, UsageTotals: outputUsageTotals(m.Totals)})
+			}
+			for _, s := range sessions {
+				doc.Usage.Sessions = append(doc.Usage.Sessions, output.UsageEntry{Name: s.Session, UsageTotals: outputUsageTotals(s.Totals)})
+			}
+		}
+	}
+
 	if format == output.JSON {
 		return output.WriteJSON(jsonWriter(), doc)
 	}
@@ -6106,29 +6181,55 @@ func filterModels(models []string, filter string) []string {
 	return result
 }
 
-// validateProviderCredentials tests the API credentials for a provider.
+// validateProviderCredentials tests the API credentials for a provider by
+// making an authenticated 1-token chat completion via ProbeCredential.
+// Several providers' /models endpoint is unauthenticated (OpenRouter answers
+// 200 to any Authorization header), so listing models validated nothing and a
+// typo'd key earned a checkmark and then a raw 401 on the first real message.
+// ProbeCredential avoids this false-OK by performing a real authenticated request.
+//
+// Return contract (same as providers.ProbeCredential):
+//   - nil: the credential was accepted (2xx, or a post-auth 429 — a rate
+//     limit is issued to an authenticated key)
+//   - error: the credential was rejected or could not be verified; the error
+//     text matches what onboard reports via configure.ValidateProviderCredentials.
 func validateProviderCredentials(provider, apiKey, apiBase string) error {
 	switch provider {
 	case "openrouter", "groq", "nvidia", "poolside":
-		// Test call to list models
-		req, err := http.NewRequest("GET", apiBase+"/models", nil)
+		// The old check listed models and called the result "validated".
+		// Several of these providers answer /models to any Authorization
+		// header, so a typo'd key earned a checkmark and then a raw 401 on
+		// the first real message. Probe with a request that actually
+		// authenticates instead: one chat completion capped at a single
+		// token, which is the cheapest request that proves the key works.
+		req, err := http.NewRequest("POST", apiBase+"/chat/completions", strings.NewReader(`{"model":"probe","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`))
 		if err != nil {
 			return fmt.Errorf("connection failed: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("connection failed: %w", err)
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode == 401 {
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusAccepted:
+			return nil
+		case http.StatusUnauthorized:
 			return fmt.Errorf("invalid API key")
-		}
-		if resp.StatusCode != 200 {
+		case http.StatusTooManyRequests:
+			// A rate limit is issued to an authenticated key, so the
+			// credential itself is good — only the quota is spent.
+			return nil
+		default:
 			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		}
-		return nil
 	case "ollama":
+		// Ollama runs locally and has no API key: there is no credential to
+		// authenticate, only a server to reach. The listing below proves
+		// the endpoint exists. It does not authenticate anything, and it is
+		// not reported as if it did.
 		resp, err := http.Get(apiBase + "/api/tags")
 		if err != nil {
 			return fmt.Errorf("cannot connect to Ollama at %s", apiBase)
@@ -6139,6 +6240,8 @@ func validateProviderCredentials(provider, apiKey, apiBase string) error {
 		}
 		return nil
 	}
+	// A provider with no known endpoint is not validated by dialling
+	// somebody else's API. Make no request and report nothing.
 	return nil
 }
 

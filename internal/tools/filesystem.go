@@ -355,7 +355,7 @@ func (t *FilesystemTool) readFile(root, path string, args map[string]any) ToolRe
 
 	data, err := safeReadFile(root, path)
 	if err != nil {
-		return ToolResult{Error: fmt.Errorf("failed to read file: %w", err)}
+		return ToolResult{Error: WithCode(fmt.Errorf("failed to read file: %w", err), notFoundCode(err))}
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -414,7 +414,7 @@ func (t *FilesystemTool) editFile(root, path string, args map[string]any) ToolRe
 
 	data, err := safeReadFile(root, path)
 	if err != nil {
-		return ToolResult{Error: fmt.Errorf("failed to read file: %w", err)}
+		return ToolResult{Error: WithCode(fmt.Errorf("failed to read file: %w", err), notFoundCode(err))}
 	}
 
 	content := string(data)
@@ -436,7 +436,7 @@ func (t *FilesystemTool) listDir(root, path string) ToolResult {
 	entries, err := readDirIn(root, path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return ToolResult{Error: fmt.Errorf("directory does not exist: %s", path)}
+			return ToolResult{Error: WithCode(fmt.Errorf("directory does not exist: %s", path), CodeNotFound)}
 		}
 		return ToolResult{Error: fmt.Errorf("failed to read directory: %w", err)}
 	}

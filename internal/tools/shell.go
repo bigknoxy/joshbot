@@ -251,12 +251,13 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 
 	// Check allowlist first - if allowlist is set, only allow listed commands
 	if err := t.checkAllowList(cmd); err != nil {
-		return ToolResult{Error: err}
+		return ToolResult{Error: WithCode(err, CodeDeny)}
 	}
 
 	// Check for dangerous patterns
 	if denied := t.isDenied(cmd); denied != "" {
-		return ToolResult{Error: fmt.Errorf("command denied: potentially dangerous pattern detected (%s)", denied)}
+		return ToolResult{Error: WithCode(
+			fmt.Errorf("command denied: potentially dangerous pattern detected (%s)", denied), CodeDeny)}
 	}
 
 	// Get working directory
@@ -320,12 +321,7 @@ func (t *ShellTool) checkApproval(ctx interface{}, cmd, workingDir string) error
 	if decision == Approve && err == nil {
 		return nil
 	}
-	if err != nil {
-		// Wrapped, not replaced: the approver's message is what says *why*
-		// (no human attached, prompt timed out, operator said no).
-		return fmt.Errorf("%w: %s", ErrDenied, strings.TrimPrefix(err.Error(), ErrDenied.Error()+": "))
-	}
-	return fmt.Errorf("%w: run it yourself, or ask the user to approve it", ErrDenied)
+	return denialError(err)
 }
 
 // isDenied checks whether a command is too dangerous to run, returning a
@@ -406,7 +402,7 @@ func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) Tool
 	if workingDir != "" {
 		// Verify the directory exists
 		if _, err := os.Stat(workingDir); err != nil {
-			return ToolResult{Error: fmt.Errorf("working directory does not exist: %w", err)}
+			return ToolResult{Error: WithCode(fmt.Errorf("working directory does not exist: %w", err), notFoundCode(err))}
 		}
 		execCmd.Dir = workingDir
 	}
@@ -424,7 +420,15 @@ func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) Tool
 
 	// Start execution
 	if err := execCmd.Start(); err != nil {
-		return ToolResult{Error: fmt.Errorf("failed to start command: %w", err)}
+		// A command that names a program which does not exist is the same
+		// class of failure as a path that does not exist: a named thing that
+		// is missing. Anything else here (a permission problem, a resource
+		// limit) is not "not found" and must not be reported as one.
+		code := ToolErrorCode("")
+		if errors.Is(err, exec.ErrNotFound) {
+			code = CodeNotFound
+		}
+		return ToolResult{Error: WithCode(fmt.Errorf("failed to start command: %w", err), code)}
 	}
 
 	// Read outputs
@@ -439,7 +443,7 @@ func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) Tool
 
 	// Check for context timeout
 	if ctx.Err() == context.DeadlineExceeded {
-		return ToolResult{Error: fmt.Errorf("command timed out after %v", t.timeout)}
+		return ToolResult{Error: WithCode(fmt.Errorf("command timed out after %v", t.timeout), CodeTimeout)}
 	}
 
 	if err != nil {
@@ -559,13 +563,14 @@ func (t *ShellTool) ExecuteAsync(ctx context.Context, args map[string]any, callb
 
 	// Check allowlist — identical screening to Execute, via the same helper.
 	if err := t.checkAllowList(cmd); err != nil {
+		err = WithCode(err, CodeDeny)
 		callback(AsyncResult{Error: err})
 		return ToolResult{Error: err}
 	}
 
 	// Check deny list
 	if denied := t.isDenied(cmd); denied != "" {
-		err := fmt.Errorf("command denied: %s", denied)
+		err := WithCode(fmt.Errorf("command denied: %s", denied), CodeDeny)
 		callback(AsyncResult{Error: err})
 		return ToolResult{Error: err}
 	}

@@ -559,3 +559,7 @@ func (e *noteEmittingToolExecutor) ExecuteWithContext(ctx context.Context, name 
 func (e *noteEmittingToolExecutor) GetSchemas() []providers.Tool {
 	return []providers.Tool{{Type: "function", Function: providers.FunctionDefinition{Name: "web"}}}
 }
+
+func (e *noteEmittingToolExecutor) GetSpillConfig() tools.SpillConfig {
+	return tools.SpillConfig{}
+}

@@ -176,6 +176,10 @@ func (a *toolExecutorAdapter) GetSchemas() []providers.Tool {
 	return a.registry.GetSchemas()
 }
 
+func (a *toolExecutorAdapter) GetSpillConfig() tools.SpillConfig {
+	return a.registry.GetSpillConfig()
+}
+
 func (a *toolExecutorAdapter) ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(subagent.AsyncResult)) (subagent.ToolResult, bool) {
 	toolsResult, isAsync := a.registry.ExecuteWithContext(ctx, name, args, channel, channelID, func(ar tools.AsyncResult) {
 		if callback != nil {
@@ -1187,6 +1191,11 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 		tools.WithSendFileApproval(sendFileApprovalMode),
 		tools.WithSendFileDisabled(cfg.Tools.SendFileDisabled),
 		tools.WithWebToolBudgets(webBudgets),
+		tools.WithSpillConfig(tools.SpillConfig{
+			Threshold: cfg.Tools.Spill.Threshold,
+			MaxSize:   cfg.Tools.Spill.MaxSize,
+			MaxAge:    parseDuration(cfg.Tools.Spill.MaxAge),
+		}),
 	}
 	if timeoutRecorder != nil {
 		registryOpts = append(registryOpts, tools.WithTimeoutRecorder(timeoutRecorder))
@@ -6971,4 +6980,15 @@ func outboundAttachmentLimits(cfg *config.Config) bus.AttachmentLimits {
 		return bus.DefaultAttachmentLimits()
 	}
 	return channels.TelegramAttachmentLimitsFor(cfg.Channels.Telegram.APIURL)
+}
+
+func parseDuration(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0
+	}
+	return d
 }

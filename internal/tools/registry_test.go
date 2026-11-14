@@ -838,7 +838,7 @@ func TestExecuteWithContext_SpillDefaultsToWorkspaceDirectory(t *testing.T) {
 	result, _ := registry.ExecuteWithContext(ctx, "testtool", nil, "", "", nil)
 	handle := strings.Fields(result.Output)[0]
 
-	want := filepath.Join(ws, ".joshbot", "spill", handle)
+	want := filepath.Join(ws, ".joshbot-tmp", "spill", handle)
 	if _, err := os.Stat(want); err != nil {
 		t.Fatalf("expected spill at %s: %v", want, err)
 	}

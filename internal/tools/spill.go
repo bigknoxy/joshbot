@@ -1,15 +1,27 @@
 package tools
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // SpillConfig holds configuration for the spill sink.
 // Threshold is the maximum result size in bytes before spilling occurs.
 // A value of 0 means spilling is disabled (default-off behavior).
 //
+// MaxSize is the maximum size in bytes for a single spill file. Results
+// larger than this will be truncated to MaxSize with head/tail preserved.
+// Zero means no per-file cap (only Threshold applies).
+//
+// MaxAge is the maximum age of spill files before they are pruned. Zero
+// means no age-based pruning.
+//
 // Dir is where spilled results are written. Empty means the sink derives a
 // location from the workspace on the context.
 type SpillConfig struct {
 	Threshold int
+	MaxSize   int
+	MaxAge    time.Duration
 	Dir       string
 }
 

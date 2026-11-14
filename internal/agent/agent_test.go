@@ -67,6 +67,7 @@ func (m *mockProvider) Config() providers.Config {
 type mockToolExecutor struct {
 	executeFn func(ctx context.Context, name string, args map[string]any) (string, error)
 	schemas   []providers.Tool
+	spillCfg  tools.SpillConfig
 }
 
 func (m *mockToolExecutor) Execute(ctx context.Context, name string, args map[string]any) (string, error) {
@@ -86,6 +87,10 @@ func (m *mockToolExecutor) ExecuteWithContext(ctx context.Context, name string, 
 
 func (m *mockToolExecutor) GetSchemas() []providers.Tool {
 	return m.schemas
+}
+
+func (m *mockToolExecutor) GetSpillConfig() tools.SpillConfig {
+	return m.spillCfg
 }
 
 // mockSessionManager is a mock session manager for testing.

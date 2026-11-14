@@ -6077,29 +6077,55 @@ func filterModels(models []string, filter string) []string {
 	return result
 }
 
-// validateProviderCredentials tests the API credentials for a provider.
+// validateProviderCredentials tests the API credentials for a provider by
+// making an authenticated 1-token chat completion via ProbeCredential.
+// Several providers' /models endpoint is unauthenticated (OpenRouter answers
+// 200 to any Authorization header), so listing models validated nothing and a
+// typo'd key earned a checkmark and then a raw 401 on the first real message.
+// ProbeCredential avoids this false-OK by performing a real authenticated request.
+//
+// Return contract (same as providers.ProbeCredential):
+//   - nil: the credential was accepted (2xx, or a post-auth 429 — a rate
+//     limit is issued to an authenticated key)
+//   - error: the credential was rejected or could not be verified; the error
+//     text matches what onboard reports via configure.ValidateProviderCredentials.
 func validateProviderCredentials(provider, apiKey, apiBase string) error {
 	switch provider {
 	case "openrouter", "groq", "nvidia", "poolside":
-		// Test call to list models
-		req, err := http.NewRequest("GET", apiBase+"/models", nil)
+		// The old check listed models and called the result "validated".
+		// Several of these providers answer /models to any Authorization
+		// header, so a typo'd key earned a checkmark and then a raw 401 on
+		// the first real message. Probe with a request that actually
+		// authenticates instead: one chat completion capped at a single
+		// token, which is the cheapest request that proves the key works.
+		req, err := http.NewRequest("POST", apiBase+"/chat/completions", strings.NewReader(`{"model":"probe","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`))
 		if err != nil {
 			return fmt.Errorf("connection failed: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("connection failed: %w", err)
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode == 401 {
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusAccepted:
+			return nil
+		case http.StatusUnauthorized:
 			return fmt.Errorf("invalid API key")
-		}
-		if resp.StatusCode != 200 {
+		case http.StatusTooManyRequests:
+			// A rate limit is issued to an authenticated key, so the
+			// credential itself is good — only the quota is spent.
+			return nil
+		default:
 			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		}
-		return nil
 	case "ollama":
+		// Ollama runs locally and has no API key: there is no credential to
+		// authenticate, only a server to reach. The listing below proves
+		// the endpoint exists. It does not authenticate anything, and it is
+		// not reported as if it did.
 		resp, err := http.Get(apiBase + "/api/tags")
 		if err != nil {
 			return fmt.Errorf("cannot connect to Ollama at %s", apiBase)
@@ -6110,6 +6136,8 @@ func validateProviderCredentials(provider, apiKey, apiBase string) error {
 		}
 		return nil
 	}
+	// A provider with no known endpoint is not validated by dialling
+	// somebody else's API. Make no request and report nothing.
 	return nil
 }
 

@@ -42,8 +42,9 @@ type Status struct {
 	Temperature  float64 `json:"temperature"`
 	MemoryWindow int     `json:"memory_window"`
 
-	TelegramEnabled     bool `json:"telegram_enabled"`
-	WorkspaceRestricted bool `json:"workspace_restricted"`
+	TelegramEnabled     bool   `json:"telegram_enabled"`
+	WorkspaceRestricted bool   `json:"workspace_restricted"`
+	PermissionTier      string `json:"permission_tier,omitempty"`
 
 	// Gateway state — live runtime, not config. Absent when no gateway is
 	// running (the status file does not exist or is stale).
@@ -191,6 +192,9 @@ func RenderStatusText(w io.Writer, s Status) {
 	}
 	fmt.Fprintf(w, "Telegram:       %s\n", enabledWord(s.TelegramEnabled))
 	fmt.Fprintf(w, "Workspace restricted: %s\n", enabledWord(s.WorkspaceRestricted))
+	if s.PermissionTier != "" {
+		fmt.Fprintf(w, "Permission tier:  %s\n", s.PermissionTier)
+	}
 
 	if s.GatewayRunning {
 		fmt.Fprintln(w)

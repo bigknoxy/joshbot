@@ -127,6 +127,13 @@ const (
 	// outright rather than left blocking.
 	DefaultSendFileApproval = "interactive"
 
+	// PermissionTier constants define the named presets for tool permissions.
+	// They map onto the underlying tool settings. An explicit per-tool
+	// override in config still wins over the tier.
+	PermissionTierReadOnly       = "read-only"
+	PermissionTierWorkspaceWrite = "workspace-write"
+	PermissionTierFull           = "full"
+
 	// CurrentSchemaVersion is the current config schema version.
 	CurrentSchemaVersion = 6
 )
@@ -465,6 +472,14 @@ type ToolsConfig struct {
 	// existing behaviour — the tool stays available — for every config that
 	// predates this field.
 	SendFileDisabled bool `mapstructure:"send_file_disabled" json:"send_file_disabled,omitempty" yaml:"send_file_disabled,omitempty"`
+
+	// PermissionTier is a named preset that maps onto the underlying tool
+	// settings. It is a convenience for operators -- selecting a tier sets
+	// every relevant flag consistently. An explicit per-tool override in
+	// config still wins over the tier. Valid values: "read-only",
+	// "workspace-write", "full". Empty means no tier is active and the
+	// individual settings control behaviour.
+	PermissionTier string `mapstructure:"permission_tier" json:"permission_tier,omitempty" yaml:"permission_tier,omitempty"`
 }
 
 // TuningConfig configures the narrow per-tool timeout auto-tuner
@@ -1521,7 +1536,91 @@ func (c *Config) Validate() error {
 		return errors.New("log_level must be one of: debug, info, warn, error")
 	}
 
+	// Validate permission tier
+	validTiers := map[string]bool{
+		"":                           true,
+		PermissionTierReadOnly:       true,
+		PermissionTierWorkspaceWrite: true,
+		PermissionTierFull:           true,
+	}
+	if !validTiers[c.Tools.PermissionTier] {
+		return fmt.Errorf("permission_tier must be one of %q, %q, %q, or empty, got %q",
+			PermissionTierReadOnly, PermissionTierWorkspaceWrite, PermissionTierFull, c.Tools.PermissionTier)
+	}
+
 	return nil
+}
+
+// ApplyPermissionTier applies the named permission tier to the tool settings.
+// It only sets flags that are at their default values (i.e., not explicitly
+// overridden by the user in config.json). An explicit per-tool override in
+// config wins over the tier.
+func (c *Config) ApplyPermissionTier() {
+	// Get default values to compare against
+	def := Defaults()
+
+	switch c.Tools.PermissionTier {
+	case PermissionTierReadOnly:
+		// read-only: no shell, no send_file, workspace restricted, no network
+		if c.Tools.RestrictToWorkspace == def.Tools.RestrictToWorkspace {
+			c.Tools.RestrictToWorkspace = true
+		}
+		if c.Tools.ShellSandbox == def.Tools.ShellSandbox {
+			c.Tools.ShellSandbox = "off"
+		}
+		if c.Tools.ShellSandboxAllowNetwork == def.Tools.ShellSandboxAllowNetwork {
+			c.Tools.ShellSandboxAllowNetwork = false
+		}
+		if c.Tools.ShellApproval == def.Tools.ShellApproval {
+			c.Tools.ShellApproval = "always"
+		}
+		if c.Tools.SendFileApproval == def.Tools.SendFileApproval {
+			c.Tools.SendFileApproval = "always"
+		}
+		if c.Tools.SendFileDisabled == def.Tools.SendFileDisabled {
+			c.Tools.SendFileDisabled = true
+		}
+	case PermissionTierWorkspaceWrite:
+		// workspace-write: shell in sandbox, send_file with approval, workspace restricted
+		if c.Tools.RestrictToWorkspace == def.Tools.RestrictToWorkspace {
+			c.Tools.RestrictToWorkspace = true
+		}
+		if c.Tools.ShellSandbox == def.Tools.ShellSandbox {
+			c.Tools.ShellSandbox = "workspace"
+		}
+		if c.Tools.ShellSandboxAllowNetwork == def.Tools.ShellSandboxAllowNetwork {
+			c.Tools.ShellSandboxAllowNetwork = false
+		}
+		if c.Tools.ShellApproval == def.Tools.ShellApproval {
+			c.Tools.ShellApproval = "interactive"
+		}
+		if c.Tools.SendFileApproval == def.Tools.SendFileApproval {
+			c.Tools.SendFileApproval = "interactive"
+		}
+		if c.Tools.SendFileDisabled == def.Tools.SendFileDisabled {
+			c.Tools.SendFileDisabled = false
+		}
+	case PermissionTierFull:
+		// full: no restrictions (danger-full-access)
+		if c.Tools.RestrictToWorkspace == def.Tools.RestrictToWorkspace {
+			c.Tools.RestrictToWorkspace = false
+		}
+		if c.Tools.ShellSandbox == def.Tools.ShellSandbox {
+			c.Tools.ShellSandbox = "off"
+		}
+		if c.Tools.ShellSandboxAllowNetwork == def.Tools.ShellSandboxAllowNetwork {
+			c.Tools.ShellSandboxAllowNetwork = true
+		}
+		if c.Tools.ShellApproval == def.Tools.ShellApproval {
+			c.Tools.ShellApproval = "off"
+		}
+		if c.Tools.SendFileApproval == def.Tools.SendFileApproval {
+			c.Tools.SendFileApproval = "off"
+		}
+		if c.Tools.SendFileDisabled == def.Tools.SendFileDisabled {
+			c.Tools.SendFileDisabled = false
+		}
+	}
 }
 
 // Load loads configuration from file and environment variables.
@@ -1576,6 +1675,9 @@ func loadFileConfig(data []byte) (*Config, error) {
 	}
 	cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
 	cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)
+
+	// Apply permission tier settings after all overrides are applied.
+	cfg.ApplyPermissionTier()
 
 	if cfg.SchemaVersion < CurrentSchemaVersion {
 		if err := migrateConfig(cfg, data); err != nil {
@@ -1666,6 +1768,9 @@ func Load() (*Config, error) {
 	}
 	cfg.Channels.Telegram.Token = strings.TrimSpace(cfg.Channels.Telegram.Token)
 	cfg.Agents.Defaults.Model = strings.TrimSpace(cfg.Agents.Defaults.Model)
+
+	// Apply permission tier settings after all overrides are applied.
+	cfg.ApplyPermissionTier()
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err

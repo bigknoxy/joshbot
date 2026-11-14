@@ -112,8 +112,47 @@ func (c *Client) currentSession() *procSession {
 // Name returns the server's configured name.
 func (c *Client) Name() string { return c.server.Name }
 
+// IsClosed reports whether the client has been closed.
+func (c *Client) IsClosed() bool {
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+	return c.closed
+}
+
+// IsConnected reports whether the client has a running process whose read loop is alive.
+func (c *Client) IsConnected() bool {
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+	if c.closed || !c.started {
+		return false
+	}
+	sess := c.currentSession()
+	if sess == nil || sess.done == nil {
+		return false
+	}
+	select {
+	case <-sess.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// SessionDone returns a channel that is closed when the current process session terminates.
+// If the client is not yet started or has no live session, it returns an already-closed channel.
+func (c *Client) SessionDone() <-chan struct{} {
+	sess := c.currentSession()
+	if sess == nil || sess.done == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return sess.done
+}
+
 // Connect starts the server process if it is not already running and completes
-// the MCP initialize handshake. It is idempotent and safe to call repeatedly.
+// the MCP initialize handshake. If an earlier process has died, Connect resets
+// the process state and connects afresh. It is safe to call repeatedly.
 // The ctx bounds only the handshake; the process outlives it.
 func (c *Client) Connect(ctx context.Context) error {
 	c.startMu.Lock()
@@ -123,7 +162,16 @@ func (c *Client) Connect(ctx context.Context) error {
 		return errors.New("mcp: client is closed")
 	}
 	if c.started {
-		return nil
+		sess := c.currentSession()
+		// If started but the session died (readLoop closed sess.done), reset started
+		// and clean up the dead process so we can reconnect cleanly.
+		select {
+		case <-sess.done:
+			c.shutdownProcess()
+			c.started = false
+		default:
+			return nil
+		}
 	}
 
 	if c.server.Command == "" {

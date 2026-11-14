@@ -108,8 +108,27 @@ const (
 	DreamModeRecord = "record"
 	DreamModeFull   = "full"
 
+	// DefaultShellSandbox asks for the strongest containment the running
+	// platform can actually enforce: workspace confinement where an OS
+	// backend exists (Landlock on Linux, Seatbelt on macOS) and the
+	// allowlist-only boundary where one does not (Windows, or a Linux
+	// kernel older than 5.13).
+	//
+	// It was "off", which meant the deny list was the only boundary — and
+	// the deny list is provably incomplete, because it has to predict every
+	// dangerous shape an attacker might write. The config documented
+	// "workspace" as the hardened option, but a default install never got
+	// it, so a fresh joshbot could read the operator's whole home directory.
+	DefaultShellSandbox = "auto"
+
+	// DefaultSendFileApproval asks before sending a file. send_file is the
+	// outbound path, so it is where anything the agent managed to read
+	// leaves the machine; unattended turns have no approver and are denied
+	// outright rather than left blocking.
+	DefaultSendFileApproval = "interactive"
+
 	// CurrentSchemaVersion is the current config schema version.
-	CurrentSchemaVersion = 5
+	CurrentSchemaVersion = 6
 )
 
 // DefaultHome is the default joshbot home directory.
@@ -203,6 +222,16 @@ type AgentDefaults struct {
 	// before this key existed keep the old behaviour without a schema
 	// migration.
 	HealTimeouts string `mapstructure:"heal_timeouts" json:"heal_timeouts,omitempty" yaml:"heal_timeouts,omitempty"`
+	// SpendCeilingUSD is a process-lifetime spend ceiling in US dollars over
+	// recorded token-usage cost (internal/usage): once total spend reaches
+	// it, every turn stops before its next LLM call with a clear message,
+	// instead of draining the wallet. Zero (the default) disables it. Only
+	// pricing-table models count — unpriced models report usage with an
+	// unknown cost rather than a fabricated one — so a configuration running
+	// only unpriced models never trips the ceiling. omitempty for the same
+	// reason as every key above: no config in the wild carries it yet, and a
+	// stored zero is a genuine opt-out that must not be migrated away.
+	SpendCeilingUSD float64 `mapstructure:"spend_ceiling_usd" json:"spend_ceiling_usd,omitempty" yaml:"spend_ceiling_usd,omitempty"`
 }
 
 // ModelConfig defines a single model with its API configuration.
@@ -1075,6 +1104,21 @@ func Defaults() *Config {
 			ShellAllowList:         []string{},
 			FilesystemAllowedPaths: []string{},
 			ToolOutputMaxChars:     DefaultToolOutputMaxChars,
+			// "auto" confines commands to the workspace wherever the OS can
+			// enforce it, and falls back to the allowlist-only boundary where
+			// it cannot. An explicit "off" or "workspace" in a saved config
+			// still wins — see the v5->v6 migration.
+			ShellSandbox: DefaultShellSandbox,
+			// send_file is the outbound path, so it asks first.
+			SendFileApproval: DefaultSendFileApproval,
+			// ShellApproval stays "off" by default: a gated shell command
+			// has no approver on an unattended turn (cron, heartbeat) and is
+			// denied outright, so switching it on by default would silently
+			// stop every scheduled command from running — which is what the
+			// assistant is for. The sandbox above is the containment
+			// boundary that works unattended; the approval gate is for
+			// operators who want a human in the loop, and the named
+			// permission tiers make it one command away.
 		},
 		Gateway: GatewayConfig{
 			Host: DefaultGatewayHost,
@@ -1443,6 +1487,10 @@ func (c *Config) Validate() error {
 	}
 	if err := validateTuningBounds(c.Tuning); err != nil {
 		return err
+	}
+	if c.Agents.Defaults.SpendCeilingUSD < 0 {
+		return fatalConfigError{fmt.Errorf(
+			"agents.defaults.spend_ceiling_usd cannot be negative, got %.2f; zero disables the ceiling", c.Agents.Defaults.SpendCeilingUSD)}
 	}
 	for name, p := range c.Providers {
 		if err := validateTimeout("providers."+name+".timeout", p.Timeout); err != nil {
@@ -1822,7 +1870,64 @@ func migrateConfig(cfg *Config, rawJSON []byte) error {
 		cfg.SchemaVersion = 5
 	}
 
+	// Migration from v5 to v6
+	if cfg.SchemaVersion < 6 {
+		// The shell sandbox default moved from "off" to "auto" — workspace
+		// confinement wherever the OS can enforce it — and send_file moved
+		// from "off" to "interactive".
+		//
+		// A stored value is the operator's own choice and is left exactly as
+		// it is: both fields carry omitempty, so an explicit "off" is written
+		// into the file and survives the load. Only a config that never
+		// mentioned the key gets the new default, and it is told so — the
+		// change is visible rather than silent, because it changes what the
+		// agent can reach.
+		if _, explicit := explicitToolString(rawJSON, "shell_sandbox"); !explicit {
+			logger.Warn("Migrated config to v6: shell commands are now confined to the workspace wherever this platform can enforce it; " +
+				"set tools.shell_sandbox to \"off\" to opt out")
+		}
+		if _, explicit := explicitToolString(rawJSON, "send_file_approval"); !explicit {
+			logger.Warn("Migrated config to v6: send_file now asks before sending a file; " +
+				"set tools.send_file_approval to \"always\" to allow unattended sends")
+		}
+		cfg.SchemaVersion = 6
+	}
+
 	return nil
+}
+
+// explicitToolString reports whether rawJSON sets tools.<key> to a non-empty
+// string, and what that string is.
+//
+// It exists so a migration can tell "the operator never chose this" from
+// "the operator chose this and it happens to be the old default". The
+// permissive parseFacts-style reading cannot: both arrive as the same empty
+// string once the defaults have been laid over the file.
+func explicitToolString(rawJSON []byte, key string) (string, bool) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(rawJSON, &top); err != nil {
+		return "", false
+	}
+	toolsRaw, ok := top["tools"]
+	if !ok {
+		return "", false
+	}
+	var tools map[string]json.RawMessage
+	if err := json.Unmarshal(toolsRaw, &tools); err != nil {
+		return "", false
+	}
+	raw, ok := tools[key]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	if s == "" {
+		return "", false
+	}
+	return s, true
 }
 
 // String returns a string representation of the config (for debugging).

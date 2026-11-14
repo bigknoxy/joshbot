@@ -216,8 +216,11 @@ content.
 `--output-format` accepts `text` (default), `json`, or `stream-json`. The JSON
 modes are non-interactive and require `-m`/`--message`. In JSON modes stdout
 carries **only** the result document — logs are routed to stderr — so consumers
-can parse stdout directly. `cost_usd` is emitted as `null` (no pricing table is
-bundled; compute cost from the returned token `usage`).
+can parse stdout directly. `cost_usd` is the turn's estimated cost from the
+documented pricing table (`internal/usage/pricing.go`, below); it comes back
+`null` when any model the turn used is not in the table — a partially priced
+turn is unreportable as one number, so compute nothing from `null` and check
+the `usage` block instead.
 
 #### Exit codes
 
@@ -845,7 +848,7 @@ For backward compatibility, the old format still works:
     "restrict_to_workspace": true,
     "shell_allow_list": [],
     "filesystem_allowed_paths": [],
-    "shell_sandbox": "off",
+    "shell_sandbox": "auto",
     "shell_sandbox_allow_network": false,
     "shell_approval": "off"
   }
@@ -968,19 +971,60 @@ applies **on the next restart**, the same next-restart convention the tuning
 overlay uses. `llm_failure` incidents deliberately do not drive the bump — a
 failing provider is not a budget problem.
 
+### Usage, Cost & Spend Ceiling
+
+Every LLM call in the main ReAct loop records its token usage onto
+`~/.joshbot/usage.json` (owner-only, rewritten atomically), keyed overall —
+process lifetime — per answering model and per session. Totals survive a
+restart, so a runaway loop cannot outlive the signal about it.
+
+```bash
+joshbot status     # Usage: tokens, calls and estimated spend (lifetime, per model, recent sessions)
+```
+
+The in-chat `/status` reports the same figures for its own session and the
+process lifetime. The JSON output of `joshbot agent -m --output-format json`
+carries `cost_usd` per turn.
+
+**Cost is an estimate from a small, documented pricing table** — published
+list prices per 1M tokens for a handful of common model families (Claude
+Opus/Sonnet/Haiku, GPT-4o/4.1), kept as a literal in
+`internal/usage/pricing.go` with the date each rate was checked. It is never
+scraped at runtime and it is a list-price estimate: cached-token discounts,
+provider markup and price moves all make the real bill differ.
+
+**An unknown model never reports a cost.** Tokens are still recorded, but
+`cost_usd` comes back `null` and the status output counts the unpriced calls
+openly ("cost unknown on N call(s)"), because a partially known figure
+understates spend and a guessed number fabricates it.
+
+**Spend ceiling** — `agents.defaults.spend_ceiling_usd` (a dollar figure,
+`0` = off) halts turns before they overspend: once recorded lifetime spend
+reaches the ceiling, every further turn stops before its next LLM call and
+replies in chat with the recorded spend, the ceiling and the key that sets
+it. Two honest caveats: cost is only recorded **after** a call returns, so
+the overshoot is bounded to the one call that tripped the ceiling — never
+the ones after it — and if two turns run at once, each can pass the check
+before either records, so the bound is one call per concurrent turn. Only
+pricing-table models count toward the total, so a setup running only
+unpriced models never trips it.
+
 ### Shell Sandbox
 
-`tools.shell_sandbox` adds OS-level containment for shell commands, on top of the deny list (which screens command text — a filter, not a boundary). It's off by default so upgrading doesn't silently change what an existing setup can do.
+`tools.shell_sandbox` adds OS-level containment for shell commands, on top of the deny list (which screens command text — a filter, not a boundary). It is on by default: a fresh install confines commands to the workspace wherever the OS can enforce it.
 
-- `"off"` (default) — no containment beyond the deny list.
-- `"workspace"` — confines the filesystem to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); `$HOME` and everything else outside that is unreachable. Outbound TCP is denied unless `tools.shell_sandbox_allow_network` is `true`.
+- `"auto"` (default) — the strongest containment this machine can actually enforce: workspace confinement where an OS backend exists, and the allowlist-only boundary where one does not.
+- `"off"` — no containment beyond the deny list.
+- `"workspace"` — always asks for workspace confinement, and refuses to start if this machine cannot deliver it.
+
+`"workspace"` and `"auto"` confine the same way: shell commands' filesystem access is limited to the workspace plus toolchain build caches (e.g. `GOCACHE`, `~/.cache`); `$HOME` and everything else outside that is unreachable. Outbound TCP is denied unless `tools.shell_sandbox_allow_network` is `true`.
 
 **Per-platform enforcement:**
 
-| Platform | Mechanism when `"workspace"` | Default (`"off"`) posture |
-|----------|------------------------------|---------------------------|
-| Linux | [Landlock](https://landlock.io/) LSM (re-exec helper) | Deny-list only |
-| macOS | Seatbelt (`sandbox-exec` profile) | Deny-list only |
+| Platform | Mechanism when confined | `"auto"` resolves to |
+|----------|-------------------------|---------------------|
+| Linux | [Landlock](https://landlock.io/) LSM (re-exec helper) | Workspace confinement |
+| macOS | Seatbelt (`sandbox-exec` profile) | Workspace confinement |
 | Other (no sandbox available) | n/a | **Allowlist-only** — the shell tool falls back to a small set of non-escaping read/inspect commands unless the operator sets an explicit `shell_allow_list` |
 
 While an allowlist is in force — whether set explicitly or defaulted on a
@@ -992,7 +1036,9 @@ default list deliberately omits `find`, `go` and `git`, each of which launches a
 program of the caller's choosing; name them in `shell_allow_list` if you need
 them.
 
-It fails closed: an unrecognized value, or `"workspace"` on a host whose kernel lacks the needed support, is a startup error rather than a silent no-op — set it back to `"off"` to run without containment. The runtime default is intentionally **not** the sandbox: network-denied-by-default breaks common workflows, so macOS/Linux still rely on the deny list by default and you opt in with `tools.shell_sandbox: "workspace"`.
+It still fails closed on a typo: an unrecognized value is a startup error, never a silent fallback to `"off"`. An **explicit** `"workspace"` on a host whose kernel lacks the needed support is a startup error too — you asked for containment, and joshbot will not quietly run without it. The default `"auto"` degrades to the allowlist-only boundary and says so in the log, because a default that cannot start on Windows is not a default.
+
+**If your commands need the network** — `go build` fetching a new module, `pip install`, `curl` — set `tools.shell_sandbox_allow_network` to `true`. Network denial is enforced on Landlock ABI v4 and later (Linux 6.7+) and on macOS; on older kernels the sandbox confines the filesystem and leaves the network alone. **To keep the old behaviour**, set `tools.shell_sandbox` to `"off"` — an explicit value in `config.json` is yours, and the defaults never overwrite it.
 
 ### Shell Approval
 

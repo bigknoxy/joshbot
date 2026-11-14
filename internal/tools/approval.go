@@ -69,6 +69,31 @@ type Approver interface {
 // answer.
 var ErrDenied = errors.New("command not approved by the user")
 
+// denialError turns a gate's refusal into the error the model sees, already
+// carrying its machine code. An expired prompt is CodeApprovalTimeout, every
+// other refusal is CodeDeny; the distinction matters because the remedies
+// differ — a denial is final, a timeout means the command may simply never
+// have reached a human in time.
+//
+// A deadline is how a prompt expires: approvers wait on the request context
+// and report ctx.Err() when it goes. Cancellation is deliberately NOT a
+// timeout — the Stop button and Ctrl-C actively end the wait, which is a
+// refusal, not an expiry.
+//
+// The text is wrapped, not replaced — the approver's message is what says
+// *why* (no human attached, prompt timed out, operator said no) — and
+// ErrDenied stays in the chain, which is what existing callers match on.
+func denialError(err error) error {
+	if err == nil {
+		return WithCode(fmt.Errorf("%w: run it yourself, or ask the user to approve it", ErrDenied), CodeDeny)
+	}
+	denied := fmt.Errorf("%w: %s", ErrDenied, strings.TrimPrefix(err.Error(), ErrDenied.Error()+": "))
+	if errors.Is(err, context.DeadlineExceeded) {
+		return WithCode(denied, CodeApprovalTimeout)
+	}
+	return WithCode(denied, CodeDeny)
+}
+
 // denyAll refuses everything without blocking.
 type denyAll struct{}
 

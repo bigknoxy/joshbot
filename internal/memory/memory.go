@@ -264,63 +264,63 @@ func (m *Manager) ensureFile(path, template string) error {
 	return nil
 }
 
-// WriteFacts writes structured facts into MEMORY.md, organized by category.
+// WriteFacts replaces the fact sections of MEMORY.md with the given facts.
+//
+// This is the destructive primitive: it rewrites the whole document from the
+// fact set, so any content that is not a fact is discarded — including the
+// default template's own sections. ReconcileFacts is the merging path and is
+// what the consolidation flow uses; prefer it unless replacing the document
+// is exactly what you want.
 func (m *Manager) WriteFacts(ctx context.Context, facts []Fact) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Group facts by category
-	byCategory := map[FactCategory][]Fact{}
-	for _, f := range facts {
-		byCategory[f.Category] = append(byCategory[f.Category], f)
-	}
+	return m.writeDocument(renderFactsDocument(facts))
+}
 
-	// Build markdown content
-	var b strings.Builder
-	b.WriteString("# Long-Term Memory\n\n")
-
-	// Sort categories for deterministic output
-	categories := make([]FactCategory, 0, len(byCategory))
-	for cat := range byCategory {
-		categories = append(categories, cat)
-	}
-	sort.Slice(categories, func(i, j int) bool {
-		return categories[i] < categories[j]
-	})
-
-	for _, cat := range categories {
-		b.WriteString(fmt.Sprintf("## %s\n", string(cat)))
-		for _, f := range byCategory[cat] {
-			b.WriteString(FormatFactMarkdown(f))
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
-	}
-
-	// Atomic write
+// writeDocument writes content to MEMORY.md atomically. The caller holds the
+// write lock.
+func (m *Manager) writeDocument(content string) error {
 	path := m.MemoryPath()
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write temp memory: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename memory: %w", err)
 	}
-
 	return nil
 }
 
 // ReconcileFacts merges new facts with existing memory (upsert + dedup + evict).
+//
+// The document is merged, not rebuilt: the fact lines are updated in place and
+// every other line — the user's prose, the template's comments, headings they
+// added — is preserved byte for byte. Rebuilding the file from the fact set,
+// which is what this used to do, erased all of it on the first consolidation,
+// including the default template's "critical reminders the agent must never
+// forget".
 func (m *Manager) ReconcileFacts(ctx context.Context, facts []Fact) error {
-	existing, err := m.loadFactsLocked()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Read the document as it stands on disk. Reading it here, under the
+	// write lock, is what keeps the read-modify-write atomic against a
+	// concurrent consolidation.
+	document, err := osReadFile(m.MemoryPath())
 	if err != nil {
-		// Treat missing file as no existing facts
 		if !os.IsNotExist(err) {
-			return err
+			return fmt.Errorf("read memory: %w", err)
 		}
-		existing = nil
+		document = nil
 	}
+
+	// Only the facts joshbot itself wrote count here. parseFacts is
+	// permissive enough to read the user's own bullets as facts, and
+	// counting those would give their prose a confidence of 1.0, rank it
+	// above everything the system learned, and spend a fact slot on it.
+	existing := parseSystemFacts(string(document))
 
 	factMap := make(map[string]Fact, len(existing))
 	for _, f := range existing {
@@ -352,7 +352,7 @@ func (m *Manager) ReconcileFacts(ctx context.Context, facts []Fact) error {
 		merged = merged[:maxFacts]
 	}
 
-	return m.WriteFacts(ctx, merged)
+	return m.writeDocument(mergeFactsDocument(string(document), merged))
 }
 
 const defaultMemoryTemplate = `# Long-Term Memory

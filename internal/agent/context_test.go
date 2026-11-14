@@ -116,7 +116,18 @@ func TestBuildPromptCached_DeletedFile(t *testing.T) {
 	}
 }
 
-prompt := BuildPromptCached(tmpDir, mockSkills, nil)
+func TestBuildPromptCached_SkillsExcludedFromCache(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	InvalidatePromptCache()
+
+	mockSkills := &mockSkillsLoader{
+		summaryFn: func(ctx context.Context) (string, error) {
+			return "Test skill summary from loader", nil
+		},
+	}
+
+	prompt := BuildPromptCached(tmpDir, mockSkills, nil)
 
 	// The cached block no longer contains <skills> content;
 	// volatile content is injected at runtime in BuildPrompt.
@@ -131,6 +142,33 @@ prompt := BuildPromptCached(tmpDir, mockSkills, nil)
 	}
 }
 func TestBuildPromptCached_FileBasedInvalidation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	agentsPath := filepath.Join(tmpDir, "AGENTS.md")
+	_ = os.WriteFile(agentsPath, []byte("Original"), 0o644)
+
+	InvalidatePromptCache()
+
+	baseline := buildCacheBaseline(tmpDir)
+
+	if sourceFilesChanged(tmpDir, baseline) {
+		t.Error("Should not detect change immediately after building baseline")
+	}
+
+	newTime := time.Now().Add(time.Second)
+	_ = os.Chtimes(agentsPath, newTime, newTime)
+
+	if !sourceFilesChanged(tmpDir, baseline) {
+		t.Error("Should detect change after mtime update")
+	}
+}
+
+// A memory write must not invalidate the cached prefix. MEMORY.md is no
+// longer part of the cached block -- it is injected at runtime -- so
+// changing it changes the prompt the model sees without disturbing the
+// cache. Before this, every memory write threw the whole prefix away, so
+// the hit rate fell exactly when the agent was learning something.
+func TestBuildPromptCached_MemoryWriteDoesNotInvalidate(t *testing.T) {
 	tmpDir := t.TempDir()
 	memDir := filepath.Join(tmpDir, "memory")
 	_ = os.Mkdir(memDir, 0o755)
@@ -149,9 +187,45 @@ func TestBuildPromptCached_FileBasedInvalidation(t *testing.T) {
 	newTime := time.Now().Add(time.Second)
 	_ = os.Chtimes(memPath, newTime, newTime)
 
-	if !sourceFilesChanged(tmpDir, baseline) {
-		t.Error("Should detect change after mtime update")
+	if sourceFilesChanged(tmpDir, baseline) {
+		t.Error("A MEMORY.md write should not invalidate the cached prompt")
 	}
+}
+
+// The split moved a boundary; it must not have dropped content. The cached
+// block excludes memory and skills, but the prompt the model actually sees
+// must still contain both.
+func TestBuildPrompt_StillIncludesMemoryAndSkills(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	InvalidatePromptCache()
+
+	mockSkills := &mockSkillsLoader{
+		summaryFn: func(ctx context.Context) (string, error) {
+			return "Test skill summary from loader", nil
+		},
+	}
+	mockMemory := &stubMemoryLoader{body: "Fact the agent learned"}
+
+	prompt := BuildPrompt(tmpDir, mockSkills, mockMemory, "")
+
+	if !strings.Contains(prompt, "Fact the agent learned") {
+		t.Error("The assembled prompt should contain the memory content")
+	}
+	if !strings.Contains(prompt, "Test skill summary from loader") {
+		t.Error("The assembled prompt should contain the skills summary")
+	}
+}
+
+// stubMemoryLoader returns a fixed memory body.
+type stubMemoryLoader struct{ body string }
+
+func (m *stubMemoryLoader) LoadMemory(ctx context.Context) (string, error) {
+	return m.body, nil
+}
+
+func (m *stubMemoryLoader) LoadHistory(ctx context.Context, query string) (string, error) {
+	return "", nil
 }
 
 func TestInvalidatePromptCache(t *testing.T) {

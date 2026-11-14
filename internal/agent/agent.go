@@ -39,6 +39,7 @@ type ToolExecutor interface {
 	Execute(ctx context.Context, name string, args map[string]any) (string, error)
 	ExecuteWithContext(ctx context.Context, name string, args map[string]any, channel, channelID string, callback func(tools.AsyncResult)) (tools.ToolResult, bool)
 	GetSchemas() []providers.Tool
+	GetSpillConfig() tools.SpillConfig
 }
 
 // SessionManager is an interface for managing sessions.
@@ -1026,6 +1027,10 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 						Phase:   ToolProgressNote,
 					})
 				})
+			}
+			// Attach spill config to context for oversized result handling.
+			if spillCfg := a.tools.GetSpillConfig(); spillCfg.Threshold > 0 {
+				execCtx = tools.WithSpillSink(execCtx, spillCfg)
 			}
 			result, isAsync := a.tools.ExecuteWithContext(execCtx, tc.Function.Name, args, channel, channelID, nil)
 			ts.toolCalls++

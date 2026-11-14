@@ -79,6 +79,10 @@ func (m *mockToolExecutor) GetSchemas() []providers.Tool {
 	return m.registry.GetSchemas()
 }
 
+func (m *mockToolExecutor) GetSpillConfig() tools.SpillConfig {
+	return m.registry.GetSpillConfig()
+}
+
 // TestIntegrationBasicFlow tests a basic message processing flow.
 func TestIntegrationBasicFlow(t *testing.T) {
 	// Create mock provider that returns a simple response

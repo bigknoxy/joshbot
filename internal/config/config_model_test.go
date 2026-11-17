@@ -43,7 +43,9 @@ func TestStripProviderPrefix(t *testing.T) {
 	}{
 		{"anthropic/claude-sonnet-4", "claude-sonnet-4"},
 		{"groq/llama-3.3-70b", "llama-3.3-70b"},
-		{"nvidia/llama-3.1-nemotron-70b-instruct", "llama-3.1-nemotron-70b-instruct"},
+		// NVIDIA model IDs begin with "nvidia/" as part of the ID itself —
+		// the API 404s on the stripped name. See nvidia_prefix_test.go.
+		{"nvidia/llama-3.1-nemotron-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"},
 		{"openrouter/anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4"},
 		{"no-prefix-model", "no-prefix-model"},
 	}

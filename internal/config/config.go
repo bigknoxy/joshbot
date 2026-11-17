@@ -330,12 +330,40 @@ var prefixesPartOfModelID = map[string]bool{
 	"poolside/": true,
 }
 
+// prefixIsPartOfModelID reports whether the provider prefix on model is part
+// of the model ID the provider expects, rather than a routing hint joshbot
+// added and has to remove before the request goes out.
+//
+// NVIDIA is the awkward one. It publishes its own models as
+// "nvidia/<name>" — a single segment, no further slash — and it also serves
+// other vendors' models under their own prefixes, such as "z-ai/glm-5.2" and
+// "meta/llama-3.3-70b-instruct". joshbot's routing form prefixes the provider
+// name, so "nvidia/z-ai/glm-5.2" means "the nvidia provider, the model
+// z-ai/glm-5.2", while "nvidia/nemotron-3.5-lightning-30b-a3b" is a catalog
+// ID as it stands. The segment count is what tells them apart.
+//
+// Checked against the live catalog on 2026-11-14: 83 model IDs, 36 of them
+// under "nvidia/", and none of those 36 containing a second slash. The
+// failure mode is a future catalog ID of the form "nvidia/<a>/<b>", which
+// would be treated as a routing form and stripped — and the API answers 404
+// for the stripped name, so the symptom is a loud failure, not a wrong
+// answer.
+func prefixIsPartOfModelID(prefix, model string) bool {
+	if prefixesPartOfModelID[prefix] {
+		return true
+	}
+	if prefix == "nvidia/" {
+		return !strings.Contains(strings.TrimPrefix(model, prefix), "/")
+	}
+	return false
+}
+
 // StripProviderPrefix removes the provider prefix from a model name, except
 // where the prefix is part of the model ID the provider expects.
 func StripProviderPrefix(model string) string {
 	for prefix := range providerPrefixes {
 		if strings.HasPrefix(model, prefix) {
-			if prefixesPartOfModelID[prefix] {
+			if prefixIsPartOfModelID(prefix, model) {
 				return model
 			}
 			return strings.TrimPrefix(model, prefix)

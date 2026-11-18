@@ -651,9 +651,12 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 		// silent: the legacy block simply stops being read. Say so.
 		for name, p := range cfg.Providers {
 			if p.APIKey != "" && p.Enabled {
+				msg := fmt.Sprintf("Both models_config and legacy providers are populated; models_config takes precedence and legacy provider %q is ignored.", name)
+				hint := "run `joshbot configure --migrate` on a legacy config, or empty models_config.models"
+				fmt.Fprintf(os.Stderr, "Warning: %s (hint: %s)\n", msg, hint)
 				log.Warn("Both models_config and legacy providers are populated; the legacy block is ignored",
 					"ignored_provider", name,
-					"hint", "run `joshbot configure --migrate` on a legacy config, or empty models_config.models")
+					"hint", hint)
 				break
 			}
 		}
@@ -5518,6 +5521,9 @@ func runConfigure(c *cli.Context) error {
 			effectiveModel = providers.GetDefaultModel(opts.Name)
 		}
 		fmt.Printf("Provider %q configured with model %q.\n", opts.Name, effectiveModel)
+		if cfg.UseModelsConfig() {
+			fmt.Printf("Note: models_config is active in your configuration, so this legacy provider will not be used until models_config is removed or migrated.\n")
+		}
 	}
 
 	if provider := c.String("set-default"); provider != "" {
@@ -5690,6 +5696,9 @@ func runConfigureWizard(cfg *config.Config) error {
 				return fmt.Errorf("failed to save config: %w", err)
 			}
 			fmt.Println("\nConfiguration saved.")
+			if cfg.UseModelsConfig() {
+				fmt.Println("Note: models_config is active in your configuration; legacy providers will be ignored unless models_config is migrated or emptied.")
+			}
 			return nil
 		default:
 			fmt.Println("Invalid choice. Please try again.")

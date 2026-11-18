@@ -101,6 +101,32 @@ func TestConfigureProviderPersistsAndReportsEffectiveModel(t *testing.T) {
 	}
 }
 
+// When models_config is active, configuring a legacy provider must explicitly
+// notify the user that legacy providers are ignored in favor of models_config.
+func TestConfigureProviderWarnsWhenModelsConfigIsActive(t *testing.T) {
+	home := withTempHome(t)
+	// Seed a config that uses models_config
+	seed := `{
+		"models_config": {
+			"models": [
+				{"name": "smart", "model": "anthropic/claude-sonnet-4", "api_key": "sk-ant-test"}
+			],
+			"agent": {"model": "smart"}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(seed), 0600); err != nil {
+		t.Fatalf("write seed config: %v", err)
+	}
+
+	out, err := runConfigureCmd(t, "--provider", "openrouter", "--api-key", "sk-test-key-0123456789")
+	if err != nil {
+		t.Fatalf("configure failed: %v", err)
+	}
+	if !strings.Contains(out, "models_config is active") {
+		t.Errorf("configure output should warn user that models_config is active:\n%s", out)
+	}
+}
+
 // Configuring a brand-new provider with no key must fail loudly and write
 // nothing: "Configuration saved." over a provider with no credential is the
 // exits-0-over-a-failed-state class this package keeps shipping.

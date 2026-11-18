@@ -534,12 +534,19 @@ func TestAgentProcessWithToolCalls(t *testing.T) {
 
 func TestAgentProcessCommandStart(t *testing.T) {
 	cfg := config.Defaults()
+	cfg.Channels.Telegram.Enabled = true
+	cfg.Channels.Discord.Enabled = false
+
 	provider := &mockProvider{}
-	tools := &mockToolExecutor{}
+	tools := &mockToolExecutor{schemas: []providers.Tool{{Type: "function"}}}
 	sessions := newMockSessionManager()
 	logger := newMockLogger()
 
-	agent := NewAgent(cfg, provider, tools, sessions, logger)
+	agent := NewAgent(cfg, provider, tools, sessions, logger,
+		WithMemoryLoader(&mockMemoryLoader{memoryFn: func(ctx context.Context) (string, error) {
+			return "user prefers concise answers\nwork in Go", nil
+		}}),
+	)
 
 	msg := bus.InboundMessage{
 		SenderID:  "user123",
@@ -554,7 +561,39 @@ func TestAgentProcessCommandStart(t *testing.T) {
 	}
 
 	if response == "" {
-		t.Error("expected non-empty response")
+		t.Fatal("expected non-empty response")
+	}
+
+	// Acceptance criteria:
+	// 1. Answers "what can this bot do" rather than only command syntax.
+	if strings.HasPrefix(response, "Available commands:") {
+		t.Errorf("expected capabilities, got command list: %s", response)
+	}
+	if !strings.Contains(response, "what I can do") {
+		t.Errorf("expected what I can do summary, got: %s", response)
+	}
+
+	// 2. Command reference is still reachable and it is clear how (/help).
+	if !strings.Contains(response, "/help") {
+		t.Errorf("expected reference to /help, got: %s", response)
+	}
+
+	// 3. Channels reflect real configuration (Telegram enabled, Discord disabled).
+	if !strings.Contains(response, "Telegram") {
+		t.Errorf("expected enabled Telegram channel in output, got: %s", response)
+	}
+	if strings.Contains(response, "Discord") {
+		t.Errorf("did not expect disabled Discord channel in output, got: %s", response)
+	}
+
+	// 4. Memory facts reported.
+	if !strings.Contains(response, "2 facts/lines learned") {
+		t.Errorf("expected memory count in output, got: %s", response)
+	}
+
+	// 5. Tools count reported.
+	if !strings.Contains(response, "Tools: 1 available") {
+		t.Errorf("expected tools count in output, got: %s", response)
 	}
 }
 

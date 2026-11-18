@@ -2158,9 +2158,7 @@ func (a *Agent) handleCommand(ctx context.Context, msg bus.InboundMessage) strin
 
 	switch cmd {
 	case "start":
-		// /start and /help are the same answer on every channel: a user who
-		// sends either wants to know what the bot can do.
-		return commands.HelpText()
+		return a.handleStart(ctx)
 	case "new":
 		// Clear messages but preserve conversation context (user facts survive
 		// /new). The per-session model override and personality are scoped to
@@ -2274,6 +2272,66 @@ Just type normally to chat with me!`,
 // StatusStampLayout formats the "As of" line of /status: hour, minute and
 // zone, which is enough to tell a fresh render from a stale one.
 const StatusStampLayout = "15:04 MST"
+
+// handleStart implements /start. Unlike /help (which prints slash command syntax),
+// /start shows what the bot can do: core capabilities, registered tools and skills,
+// enabled communication channels, and learned context. It notes /help for command reference.
+func (a *Agent) handleStart(ctx context.Context) string {
+	var b strings.Builder
+	b.WriteString("🤖 Hi! Here is what I can do:\n\n")
+
+	b.WriteString("• Multi-turn conversational assistant with tools, memory and subagents\n")
+	b.WriteString("• File operations, shell execution, web search, and background processing\n")
+	b.WriteString("• Persistent memory and self-learning across conversations\n\n")
+
+	// Channels
+	var activeChannels []string
+	activeChannels = append(activeChannels, "CLI")
+	if a.cfg.Channels.Telegram.Enabled {
+		activeChannels = append(activeChannels, "Telegram")
+	}
+	if a.cfg.Channels.Discord.Enabled {
+		activeChannels = append(activeChannels, "Discord")
+	}
+	b.WriteString("Channels: " + strings.Join(activeChannels, ", ") + "\n")
+
+	// Tools
+	toolCount := 0
+	if a.tools != nil {
+		toolCount = len(a.tools.GetSchemas())
+	}
+	b.WriteString(fmt.Sprintf("Tools: %d available\n", toolCount))
+
+	// Skills
+	var skillNames []string
+	if a.skillLoader != nil {
+		for _, sk := range a.skillLoader.List() {
+			if sk.Trusted && sk.Available() {
+				skillNames = append(skillNames, sk.Name)
+			}
+		}
+	}
+	if len(skillNames) > 0 {
+		b.WriteString(fmt.Sprintf("Skills: %d loaded (%s)\n", len(skillNames), strings.Join(skillNames, ", ")))
+	} else {
+		b.WriteString("Skills: none loaded\n")
+	}
+
+	// Memory / learned context
+	memInfo := "none"
+	if a.memory != nil {
+		if content, err := a.memory.LoadMemory(ctx); err == nil && strings.TrimSpace(content) != "" {
+			lines := strings.Split(strings.TrimSpace(content), "\n")
+			memInfo = fmt.Sprintf("%d facts/lines learned", len(lines))
+		}
+	}
+	b.WriteString("Learned memory: " + memInfo + "\n\n")
+
+	b.WriteString("For command syntax and available slash commands, use /help.\n")
+	b.WriteString("Just type normally to chat!")
+
+	return b.String()
+}
 
 // handleModelCommand implements /model. With no argument it lists the current
 // model and the ones a user can switch to. With an argument it sets a

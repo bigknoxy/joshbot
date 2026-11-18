@@ -567,3 +567,30 @@ func TestSessionsSearchCommand(t *testing.T) {
 		t.Errorf("no-match: code=%d out=%s", code, out)
 	}
 }
+
+func TestSessionsReplayCommand(t *testing.T) {
+	configPath, dir := sessionsEnv(t)
+	seedCLISession(t, dir, "cli:replaytest", "first message", "second message")
+
+	// Replay for session with event log
+	out, code := runSessionsCmd(t, configPath, "replay", "cli:replaytest")
+	if code != 0 {
+		t.Fatalf("replay exited %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "message_added") {
+		t.Errorf("replay output missing message_added:\n%s", out)
+	}
+	if !strings.Contains(out, "first message") {
+		t.Errorf("replay output missing message content:\n%s", out)
+	}
+
+	// Missing ID is usage error
+	if _, code := runSessionsCmd(t, configPath, "replay"); code == 0 {
+		t.Error("replay with no id must not exit 0")
+	}
+
+	// Non-existent session
+	if _, code := runSessionsCmd(t, configPath, "replay", "cli:nosuchsession"); code == 0 {
+		t.Error("replay of non-existent session must not exit 0")
+	}
+}

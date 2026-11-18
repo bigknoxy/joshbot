@@ -360,3 +360,96 @@ func MessageFromJSONL(data []byte) (Message, error) {
 	err := json.Unmarshal(data, &msg)
 	return msg, err
 }
+
+// EventKind is the type of event recorded in the append-only session log.
+type EventKind string
+
+const (
+	// EventMessageAdded is recorded when a new message is appended to the session.
+	EventMessageAdded EventKind = "message_added"
+	// EventCompaction is recorded when a compaction replaces a prefix of messages.
+	EventCompaction EventKind = "compaction"
+	// EventReset is recorded when the session is reset (/new).
+	EventReset EventKind = "reset"
+	// EventGenerationBump is recorded when the generation fence is bumped.
+	EventGenerationBump EventKind = "generation_bump"
+	// EventTopicChanged is recorded when the conversation topic is updated.
+	EventTopicChanged EventKind = "topic_changed"
+	// EventModelOverrideChanged is recorded when the session's model override changes.
+	EventModelOverrideChanged EventKind = "model_override_changed"
+	// EventPersonalityChanged is recorded when the session's personality changes.
+	EventPersonalityChanged EventKind = "personality_changed"
+	// EventFallbackNoticedChanged is recorded when the fallback notice state changes.
+	EventFallbackNoticedChanged EventKind = "fallback_noticed_changed"
+)
+
+// Event is a single record in the append-only session event log.
+type Event struct {
+	// Version is the event schema version. Must be 1 for current format.
+	Version int `json:"v"`
+	// Kind is the type of event.
+	Kind EventKind `json:"kind"`
+	// Timestamp is when the event occurred.
+	Timestamp time.Time `json:"ts"`
+	// SessionID is the session this event belongs to.
+	SessionID string `json:"sid"`
+	// Data is the event-specific payload (JSON-encoded).
+	Data json.RawMessage `json:"data"`
+}
+
+// EventMessageAddedData is the payload for EventMessageAdded.
+type EventMessageAddedData struct {
+	Message Message `json:"message"`
+}
+
+// EventCompactionData is the payload for EventCompaction.
+type EventCompactionData struct {
+	// Summary is the compaction summary text.
+	Summary string `json:"summary"`
+	// PrefixLen is how many leading messages were replaced.
+	PrefixLen int `json:"prefix_len"`
+	// ArchivedCount is how many messages were moved to the archive.
+	ArchivedCount int `json:"archived_count"`
+}
+
+// EventResetData is the payload for EventReset.
+type EventResetData struct {
+	// ArchivedFile is the name of the archive file created.
+	ArchivedFile string `json:"archived_file"`
+	// ArchiveHistoryFile is the name of the compaction history archive moved.
+	ArchiveHistoryFile string `json:"archive_history_file,omitempty"`
+}
+
+// EventGenerationBumpData is the payload for EventGenerationBump.
+type EventGenerationBumpData struct {
+	Generation int `json:"generation"`
+}
+
+// EventTopicChangedData is the payload for EventTopicChanged.
+type EventTopicChangedData struct {
+	Topic string `json:"topic"`
+}
+
+// EventModelOverrideChangedData is the payload for EventModelOverrideChanged.
+type EventModelOverrideChangedData struct {
+	ModelOverride string `json:"model_override"`
+}
+
+// EventPersonalityChangedData is the payload for EventPersonalityChanged.
+type EventPersonalityChangedData struct {
+	Personality string `json:"personality"`
+}
+
+// EventFallbackNoticedChangedData is the payload for EventFallbackNoticedChanged.
+type EventFallbackNoticedChangedData struct {
+	FallbackNoticed string `json:"fallback_noticed"`
+}
+
+// Projection is the reconstructed session state from the event log.
+type Projection struct {
+	Session *Session
+	// LastEventIndex is the index of the last event applied.
+	LastEventIndex int
+	// Generation is the session's generation from the log.
+	Generation int
+}

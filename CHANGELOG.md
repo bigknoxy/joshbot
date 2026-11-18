@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Pending skills are now visible to the user who has to approve them (#465).** A workspace skill is withheld from the model entirely until it is trusted, so the user who added it had no way to learn that it was waiting — and on Telegram, where they never run a command, the skill simply never appeared. The agent now names the skills that are waiting, in the channel the user is talking in, and says what to do about it (`joshbot skills list`, then `joshbot skills trust <name>`). What is remembered is the set of names already shown, not a flag: the notice appears once rather than on every message, a skill added later is still announced, and the notice disappears once the skills are trusted or removed. Skill names come from the skill's own frontmatter, so they are stripped of control characters and bounded in length before they are shown.
 - **Token usage and cost are aggregated and persisted, with an optional spend ceiling (#436).**
   Every main-loop LLM call records its token usage onto `~/.joshbot/usage.json` (owner-only,
   atomically rewritten), keyed process-lifetime, per answering model and per session; totals

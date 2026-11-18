@@ -321,7 +321,7 @@ func (m *Manager) Load(ctx context.Context, sessionID string) (*Session, error) 
 			Checkpoint           *Checkpoint       `json:"checkpoint,omitempty"`
 			Generation           int               `json:"generation,omitempty"`
 			FallbackNoticed      string            `json:"fallback_noticed,omitempty"`
-			PendingSkillsNoticed bool              `json:"pending_skills_noticed,omitempty"`
+			PendingSkillsNoticed []string          `json:"pending_skills_noticed,omitempty"`
 		}
 		if err := json.Unmarshal(metaData, &meta); err != nil {
 			log.Warnf("session %s: metadata sidecar unparseable (%v); model override, personality and checkpoint not restored",
@@ -437,7 +437,7 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 	// Generation counts as presence: a reset clears every other field, so
 	// dropping the sidecar here would lose the fence and let the very turn the
 	// reset was racing write its transcript back on the next Save.
-	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" || s.Checkpoint != nil || s.Generation > 0 || s.FallbackNoticed != "" || s.PendingSkillsNoticed {
+	if s.ConversationTopic != "" || len(s.ConversationContext) > 0 || s.ModelOverride != "" || s.Personality != "" || s.Checkpoint != nil || s.Generation > 0 || s.FallbackNoticed != "" || len(s.PendingSkillsNoticed) > 0 {
 		meta := struct {
 			ConversationTopic    string            `json:"conversation_topic,omitempty"`
 			ConversationContext  map[string]string `json:"conversation_context,omitempty"`
@@ -446,7 +446,7 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 			Checkpoint           *Checkpoint       `json:"checkpoint,omitempty"`
 			Generation           int               `json:"generation,omitempty"`
 			FallbackNoticed      string            `json:"fallback_noticed,omitempty"`
-			PendingSkillsNoticed bool              `json:"pending_skills_noticed,omitempty"`
+			PendingSkillsNoticed []string          `json:"pending_skills_noticed,omitempty"`
 		}{
 			ConversationTopic:    s.ConversationTopic,
 			ConversationContext:  s.ConversationContext,
@@ -896,7 +896,7 @@ func (m *Manager) ResetConversation(ctx context.Context, sessionID string) (*Ses
 	sess.ModelOverride = ""
 	sess.Personality = ""
 	sess.FallbackNoticed = ""
-	sess.PendingSkillsNoticed = false
+	sess.PendingSkillsNoticed = nil
 	sess.Generation++
 
 	if err := m.Save(ctx, sess); err != nil {

@@ -152,10 +152,12 @@ type Session struct {
 	// by the same fallback carry a short marker instead of repeating the whole
 	// notice (#348). Cleared when the addressed provider answers again.
 	FallbackNoticed string `json:"fallback_noticed,omitempty"`
-	// PendingSkillsNoticed records whether the user has already been notified
-	// in this session about skills awaiting review (#465). Cleared when there
-	// are no more pending skills.
-	PendingSkillsNoticed bool `json:"pending_skills_noticed,omitempty"`
+	// PendingSkillsNoticed records the skills the user has already been told
+	// are awaiting review in this session (#465). It is a set rather than a
+	// flag so a skill added later is still noticed, while the same skills are
+	// not announced on every message. Cleared when there are no more pending
+	// skills.
+	PendingSkillsNoticed []string `json:"pending_skills_noticed,omitempty"`
 	// ModelOverride, when set, pins this session to a specific model name or
 	// provider:model spec instead of the configured default. Persisted per
 	// session so a /model switch survives restarts but never affects other

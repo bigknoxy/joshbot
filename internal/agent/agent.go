@@ -688,8 +688,18 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	// from the model entirely. The operator is the only one who can approve
 	// it, and on Telegram they never run a command - so the notice is the
 	// only way they learn it is waiting (#465).
+	//
+	// The notice has to travel the same road as the answer. When the turn
+	// streams, the answer reaches the user through the stream sink and the
+	// returned text is never printed, so a notice carried only in the return
+	// value is dropped on the floor. The live TTY showed exactly that: the
+	// notice was in the reply, and the user never saw it.
 	if notice := a.pendingSkillsNotice(sess); notice != "" {
-		responseContent = notice + "\n\n" + responseContent
+		if sink := streamSinkFromContext(ctx); sink != nil {
+			sink(StreamEvent{Delta: notice + "\n\n"})
+		} else {
+			responseContent = notice + "\n\n" + responseContent
+		}
 	}
 
 	// The writes below (history, compaction, session, topic) must survive a

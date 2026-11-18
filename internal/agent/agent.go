@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bigknoxy/joshbot/internal/bus"
@@ -681,6 +682,14 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 			Detail:       err.Error(),
 		})
 		return reply, nil
+	}
+
+	// A workspace skill that is waiting for approval is inert: it is withheld
+	// from the model entirely. The operator is the only one who can approve
+	// it, and on Telegram they never run a command - so the notice is the
+	// only way they learn it is waiting (#465).
+	if notice := a.pendingSkillsNotice(sess); notice != "" {
+		responseContent = notice + "\n\n" + responseContent
 	}
 
 	// The writes below (history, compaction, session, topic) must survive a
@@ -1515,6 +1524,91 @@ func formatFallbackNotice(n providers.FallbackNotice) string {
 		hint = fmt.Sprintf(" — %s no longer serves this model; pick another with /model", n.From)
 	}
 	return fmt.Sprintf("⚠️ %s unavailable (%s)%s — answered by %s (%s)\n\n", n.From, n.Reason, hint, n.To, n.Model)
+}
+
+// pendingSkillsNotice names the workspace skills that are waiting for the
+// operator's approval, or returns "" when there is nothing to say.
+//
+// A pending skill is inert: it is withheld from the model entirely, so
+// nothing the agent says will ever mention it. The operator is the only one
+// who can approve it, and on Telegram they never run a command - so the
+// notice is the only way they learn it is waiting (#465).
+//
+// What is remembered is the set of names already shown, not a flag: a skill
+// added later is a new one and has to be announced, while the same skills
+// must not be announced on every message. When every pending skill is
+// trusted or removed the set is cleared, so a skill added after that is
+// noticed again.
+func (a *Agent) pendingSkillsNotice(sess *session.Session) string {
+	if a.skillLoader == nil || sess == nil {
+		return ""
+	}
+	pending := a.skillLoader.Untrusted()
+	if len(pending) == 0 {
+		sess.PendingSkillsNoticed = nil
+		return ""
+	}
+
+	names := make([]string, 0, len(pending))
+	for _, sk := range pending {
+		names = append(names, sk.Name)
+	}
+	known := make(map[string]bool, len(sess.PendingSkillsNoticed))
+	for _, n := range sess.PendingSkillsNoticed {
+		known[n] = true
+	}
+	fresh := false
+	for _, n := range names {
+		if !known[n] {
+			fresh = true
+			break
+		}
+	}
+	if !fresh {
+		return ""
+	}
+	sess.PendingSkillsNoticed = names
+
+	shown := make([]string, 0, len(names))
+	for _, n := range names {
+		shown = append(shown, "`"+sanitizeSkillName(n)+"`")
+	}
+	subject, verb := "skill is", "it is"
+	if len(names) != 1 {
+		subject, verb = "skills are", "they are"
+	}
+	return fmt.Sprintf(
+		"%d workspace %s waiting for your approval, so %s not active yet: %s.\n"+
+			"Review them with `joshbot skills list`, then approve one with `joshbot skills trust <name>`.",
+		len(names), subject, verb, strings.Join(shown, ", "))
+}
+
+// sanitizeSkillName makes a skill name safe to show in a message the operator
+// reads. The name comes from the skill's own frontmatter, so it is text its
+// author chose: it can carry control characters that would garble a terminal
+// or a chat message. Keep it short and printable.
+func sanitizeSkillName(name string) string {
+	const maxLen = 64
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			b.WriteByte(' ')
+		case unicode.IsControl(r):
+			// dropped: an escape sequence in a chat message is noise at
+			// best and a way to disguise text at worst.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if utf8.RuneCountInString(out) > maxLen {
+		out = string([]rune(out)[:maxLen]) + "..."
+	}
+	if out == "" {
+		return "(unnamed)"
+	}
+	return out
 }
 
 // afterReActDetection records the trace and, if a strong-enough candidate is

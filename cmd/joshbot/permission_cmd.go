@@ -67,6 +67,7 @@ func runPermissionStatus(c *cli.Context) error {
 		fmt.Fprintf(out, "  shell_sandbox: off\n")
 		fmt.Fprintf(out, "  shell_sandbox_allow_network: false\n")
 		fmt.Fprintf(out, "  shell_approval: always\n")
+		fmt.Fprintf(out, "  shell_denied: true\n")
 		fmt.Fprintf(out, "  send_file_approval: always\n")
 		fmt.Fprintf(out, "  send_file_disabled: true\n")
 	case config.PermissionTierWorkspaceWrite:
@@ -95,6 +96,7 @@ func runPermissionStatus(c *cli.Context) error {
 	fmt.Fprintf(out, "  shell_sandbox: %s\n", cfg.Tools.ShellSandbox)
 	fmt.Fprintf(out, "  shell_sandbox_allow_network: %v\n", cfg.Tools.ShellSandboxAllowNetwork)
 	fmt.Fprintf(out, "  shell_approval: %s\n", cfg.Tools.ShellApproval)
+	fmt.Fprintf(out, "  shell_denied: %v\n", cfg.Tools.ShellDenied)
 	fmt.Fprintf(out, "  send_file_approval: %s\n", cfg.Tools.SendFileApproval)
 	fmt.Fprintf(out, "  send_file_disabled: %v\n", cfg.Tools.SendFileDisabled)
 
@@ -137,6 +139,7 @@ func runPermissionSet(c *cli.Context) error {
 		cfg.Tools.ShellApproval = "always"
 		cfg.Tools.SendFileApproval = "always"
 		cfg.Tools.SendFileDisabled = true
+		cfg.Tools.ShellDenied = true
 	case config.PermissionTierWorkspaceWrite:
 		cfg.Tools.RestrictToWorkspace = true
 		cfg.Tools.ShellSandbox = "workspace"
@@ -157,10 +160,17 @@ func runPermissionSet(c *cli.Context) error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
+	configPath := c.Path("config")
 	out := permissionOut()
-	fmt.Fprintf(out, "Permission tier set to %q.\n", tier)
+	fmt.Fprintf(out, "Permission tier set to %q in %s.\n", tier, configPath)
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "The following settings were updated:\n")
+	fmt.Fprintf(out, "The change is written to the config file. A running joshbot process does not\n")
+	fmt.Fprintf(out, "reload it: the shell, send_file and sandbox settings were fixed when that\n")
+	fmt.Fprintf(out, "process started, so it keeps the old tier until it is restarted.\n")
+	fmt.Fprintf(out, "Restart joshbot (`joshbot agent` or `joshbot gateway`) for the tier\n")
+	fmt.Fprintf(out, "to take effect. Until then nothing in this process has changed.\n")
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "The following settings will apply on the next start:\n")
 
 	switch tier {
 	case config.PermissionTierReadOnly:

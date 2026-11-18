@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -302,6 +304,43 @@ func TestConfigValidate(t *testing.T) {
 			}(),
 			wantErr: false,
 		},
+		{
+			name: "invalid permission_tier is fatal",
+			cfg: func() *Config {
+				cfg := Defaults()
+				cfg.Tools.PermissionTier = "read-onlyy"
+				return cfg
+			}(),
+			wantErr: true,
+			errMsg:  `permission_tier must be one of "read-only", "workspace-write", "full", or empty, got "read-onlyy"`,
+		},
+		{
+			name: "permission_tier read-only",
+			cfg: func() *Config {
+				cfg := Defaults()
+				cfg.Tools.PermissionTier = PermissionTierReadOnly
+				return cfg
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "permission_tier workspace-write",
+			cfg: func() *Config {
+				cfg := Defaults()
+				cfg.Tools.PermissionTier = PermissionTierWorkspaceWrite
+				return cfg
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "permission_tier full",
+			cfg: func() *Config {
+				cfg := Defaults()
+				cfg.Tools.PermissionTier = PermissionTierFull
+				return cfg
+			}(),
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -474,6 +513,94 @@ func TestLoadWithConfigFile(t *testing.T) {
 
 	if cfg.Gateway.Port != 8080 {
 		t.Errorf("expected gateway port 8080, got %d", cfg.Gateway.Port)
+	}
+}
+
+// A tier the operator chose and got wrong must not fall back to defaults:
+// the restrictions they intended would vanish silently. Load must fail with
+// a clear message naming the invalid value and the valid names.
+func TestLoad_InvalidPermissionTierIsFatal(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+	defer func() { DefaultHome = oldHome }()
+
+	configPath := filepath.Join(tmpDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"schema_version": 1,
+		"tools": { "permission_tier": "read-onlyy" }
+	}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err == nil {
+		t.Fatalf("Load() returned a config for an invalid permission_tier: %+v", cfg)
+	}
+	if !errors.As(err, &fatalConfigError{}) {
+		t.Errorf("Load() error for an invalid permission_tier must be fatal, got %T: %v", err, err)
+	}
+	got := err.Error()
+	for _, want := range []string{"permission_tier", "read-onlyy", "read-only", "workspace-write", "full"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Load() error %q does not mention %q", got, want)
+		}
+	}
+}
+
+// Valid tiers load fine, and an explicitly empty tier means "no tier".
+func TestLoad_PermissionTierValid(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := DefaultHome
+	DefaultHome = tmpDir
+	defer func() { DefaultHome = oldHome }()
+
+	for _, tier := range []string{PermissionTierReadOnly, PermissionTierWorkspaceWrite, PermissionTierFull, ""} {
+		configPath := filepath.Join(tmpDir, "config.json")
+		if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`{
+			"schema_version": 1,
+			"tools": { "permission_tier": %q }
+		}`, tier)), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Errorf("Load() with permission_tier %q: unexpected error %v", tier, err)
+			continue
+		}
+		if cfg.Tools.PermissionTier != tier {
+			t.Errorf("Load() with permission_tier %q: got %q", tier, cfg.Tools.PermissionTier)
+		}
+	}
+}
+
+// ApplyPermissionTier must make read-only mean no shell: ShellDenied is set,
+// and nothing else is denied by the other tiers.
+func TestApplyPermissionTier_ReadOnlyDeniesShell(t *testing.T) {
+	cases := []struct {
+		tier   string
+		denied bool
+	}{
+		{PermissionTierReadOnly, true},
+		{PermissionTierWorkspaceWrite, false},
+		{PermissionTierFull, false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		cfg := Defaults()
+		cfg.Tools.PermissionTier = tc.tier
+		cfg.ApplyPermissionTier()
+		if cfg.Tools.ShellDenied != tc.denied {
+			t.Errorf("tier %q: ShellDenied = %v, want %v", tc.tier, cfg.Tools.ShellDenied, tc.denied)
+		}
+	}
+	// read-only also gates shell behind approval-on-every-command as a
+	// second line of defence.
+	cfg := Defaults()
+	cfg.Tools.PermissionTier = PermissionTierReadOnly
+	cfg.ApplyPermissionTier()
+	if cfg.Tools.ShellApproval != "always" {
+		t.Errorf("read-only: ShellApproval = %q, want %q", cfg.Tools.ShellApproval, "always")
 	}
 }
 

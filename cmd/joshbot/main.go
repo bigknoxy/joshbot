@@ -1190,6 +1190,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	registryOpts := []tools.RegistryOption{
 		tools.WithShellSandbox(resolvedSandbox, cfg.Tools.ShellSandboxAllowNetwork),
 		tools.WithShellApproval(approvalMode),
+		tools.WithShellDenied(cfg.Tools.ShellDenied),
 		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
 		tools.WithAttachmentLimits(outboundAttachmentLimits(cfg)),
 		tools.WithSendFileApproval(sendFileApprovalMode),

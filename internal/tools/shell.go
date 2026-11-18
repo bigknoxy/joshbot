@@ -34,6 +34,18 @@ type ShellTool struct {
 	// concurrent Process calls Telegram makes and would hand one user's
 	// prompt to another's turn.
 	approval ApprovalMode
+	// shellDenied refuses every command, full stop. The read-only permission
+	// tier sets it: "no shell" means no command runs, not even one an
+	// interactive approver would allow. Checked before the allowlist, the
+	// deny list and the approval gate, so nothing can reach runCommand.
+	shellDenied bool
+}
+
+// SetShellDenied switches the tier-level shell refusal on or off. When on,
+// Execute denies every command before any other check, regardless of the
+// approval gate or the allowlist.
+func (t *ShellTool) SetShellDenied(denied bool) {
+	t.shellDenied = denied
 }
 
 // SetApproval turns the human-approval gate on for shell commands. The
@@ -247,6 +259,15 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 
 	if cmd == "" {
 		return ToolResult{Error: errors.New("command is required")}
+	}
+
+	// The read-only permission tier denies the shell entirely: no command
+	// runs, not even one an approver would allow. This is checked before
+	// the allowlist, the deny list and the approval gate, so nothing can
+	// reach runCommand while the tier is in force.
+	if t.shellDenied {
+		return ToolResult{Error: WithCode(
+			errors.New("shell is disabled by the read-only permission tier"), CodeDeny)}
 	}
 
 	// Check allowlist first - if allowlist is set, only allow listed commands

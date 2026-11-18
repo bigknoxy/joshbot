@@ -527,6 +527,11 @@ type ToolsConfig struct {
 	// "workspace-write", "full". Empty means no tier is active and the
 	// individual settings control behaviour.
 	PermissionTier string `mapstructure:"permission_tier" json:"permission_tier,omitempty" yaml:"permission_tier,omitempty"`
+	// ShellDenied refuses every shell command, full stop: no approver can
+	// allow one and the read-only permission tier sets it. It is the flag
+	// that makes "no shell" true instead of merely "shell needs approval".
+	// Zero value (false) keeps the shell available under the other gates.
+	ShellDenied bool `mapstructure:"shell_denied" json:"shell_denied,omitempty" yaml:"shell_denied,omitempty"`
 }
 
 // TuningConfig configures the narrow per-tool timeout auto-tuner
@@ -1596,8 +1601,13 @@ func (c *Config) Validate() error {
 		PermissionTierFull:           true,
 	}
 	if !validTiers[c.Tools.PermissionTier] {
-		return fmt.Errorf("permission_tier must be one of %q, %q, %q, or empty, got %q",
-			PermissionTierReadOnly, PermissionTierWorkspaceWrite, PermissionTierFull, c.Tools.PermissionTier)
+		// A tier the operator chose and got wrong must not fall back to
+		// defaults: the intended restrictions would vanish silently. Load
+		// treats fatalConfigError as "fail to start, do not substitute
+		// defaults", so a typo like "read-onlyy" is a clear startup error
+		// naming the bad value and the valid ones.
+		return fatalConfigError{fmt.Errorf("permission_tier must be one of %q, %q, %q, or empty, got %q",
+			PermissionTierReadOnly, PermissionTierWorkspaceWrite, PermissionTierFull, c.Tools.PermissionTier)}
 	}
 
 	return nil
@@ -1613,7 +1623,8 @@ func (c *Config) ApplyPermissionTier() {
 
 	switch c.Tools.PermissionTier {
 	case PermissionTierReadOnly:
-		// read-only: no shell, no send_file, workspace restricted, no network
+		// read-only: the shell is denied entirely (no approver can allow a
+		// command), no send_file, workspace restricted, no network.
 		if c.Tools.RestrictToWorkspace == def.Tools.RestrictToWorkspace {
 			c.Tools.RestrictToWorkspace = true
 		}
@@ -1631,6 +1642,9 @@ func (c *Config) ApplyPermissionTier() {
 		}
 		if c.Tools.SendFileDisabled == def.Tools.SendFileDisabled {
 			c.Tools.SendFileDisabled = true
+		}
+		if c.Tools.ShellDenied == def.Tools.ShellDenied {
+			c.Tools.ShellDenied = true
 		}
 	case PermissionTierWorkspaceWrite:
 		// workspace-write: shell in sandbox, send_file with approval, workspace restricted

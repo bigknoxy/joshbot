@@ -450,6 +450,7 @@ type registrySettings struct {
 	sandbox            SandboxMode
 	allowNetwork       bool
 	approval           ApprovalMode
+	shellDenied        bool
 	cronService        *cron.Service
 	cronDefaultChannel string
 	attachmentLimits   *bus.AttachmentLimits
@@ -508,6 +509,16 @@ func WithShellSandbox(mode SandboxMode, allowNetwork bool) RegistryOption {
 func WithShellApproval(mode ApprovalMode) RegistryOption {
 	return func(s *registrySettings) {
 		s.approval = mode
+	}
+}
+
+// WithShellDenied turns the shell tool into a hard refusal: every command is
+// denied with CodeDeny, before the allowlist, the deny list and the approval
+// gate. The read-only permission tier uses it, so "no shell" means no shell
+// even for a turn with an interactive approver.
+func WithShellDenied(denied bool) RegistryOption {
+	return func(s *registrySettings) {
+		s.shellDenied = denied
 	}
 }
 
@@ -632,6 +643,7 @@ func RegistryWithDefaults(
 	})
 	shellTool.SetSandbox(settings.sandbox, settings.allowNetwork)
 	shellTool.SetApproval(settings.approval)
+	shellTool.SetShellDenied(settings.shellDenied)
 	_ = registry.Register(shellTool)
 
 	// Web tool

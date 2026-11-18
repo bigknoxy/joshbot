@@ -564,7 +564,7 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	}
 
 	// Build system prompt with conversation context
-	systemPrompt := a.BuildSystemPrompt(ctx)
+	systemPrompt := a.BuildSystemPromptFor(ctx, msg.Content)
 	if summary := sess.ConversationSummary(); summary != "" {
 		systemPrompt += "\n\n<conversation_context>\n" + summary + "\n</conversation_context>"
 	}
@@ -753,6 +753,19 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 // BuildSystemPrompt builds the system prompt with memory and skills context.
 func (a *Agent) BuildSystemPrompt(ctx context.Context) string {
 	return BuildPrompt(a.cfg.Agents.Defaults.Workspace, a.skills, a.memory, a.cfg.User.Name)
+}
+
+// BuildSystemPromptFor builds the system prompt for one message.
+//
+// With a message to filter by, the prompt carries only the memory and the
+// skills that bear on it; without one it is the plain prompt. The static part
+// is served from the cache either way, so this costs the same file I/O the
+// plain prompt does.
+func (a *Agent) BuildSystemPromptFor(ctx context.Context, query string) string {
+	if strings.TrimSpace(query) == "" {
+		return a.BuildSystemPrompt(ctx)
+	}
+	return BuildSmartPrompt(a.cfg.Agents.Defaults.Workspace, a.skills, a.memory, a.cfg.User.Name, query)
 }
 
 // reactLoop executes the ReAct loop: LLM -> tools -> reflect -> repeat.

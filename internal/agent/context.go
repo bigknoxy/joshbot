@@ -178,8 +178,18 @@ func BuildPrompt(workspace string, skills SkillsLoader, memory MemoryLoader, use
 	return joinParts(parts)
 }
 
-// BuildSmartPrompt builds a system prompt with relevance-scored memory injection.
-// The currentQuery parameter is reserved for future smart memory retrieval.
+// BuildSmartPrompt builds the same system prompt as BuildPrompt, with the
+// memory and the skills filtered by relevance to currentQuery.
+//
+// A user with a hundred remembered facts does not need all hundred in front of
+// the model for every message, and the ones that do not bear on the question
+// are the ones that crowd it out. Two things are never dropped: the most
+// recent memory facts, because recency is relevance the query cannot express,
+// and every skill when nothing matches, because a skill the model cannot see
+// is a skill it cannot use.
+//
+// The static part is still served from the cache, so the split between the
+// cached prompt and the per-turn snapshot survives (#434).
 func BuildSmartPrompt(workspace string, skills SkillsLoader, mem MemoryLoader, userName string, currentQuery string) string {
 	parts := []string{}
 
@@ -190,18 +200,20 @@ func BuildSmartPrompt(workspace string, skills SkillsLoader, mem MemoryLoader, u
 
 	if mem != nil {
 		if memContent, err := mem.LoadMemory(context.Background()); err == nil && memContent != "" {
-			parts = append(parts, fmt.Sprintf("<memory>\n%s\n</memory>", memContent))
+			if relevant := relevantMemoryFacts(memContent, currentQuery); relevant != "" {
+				parts = append(parts, fmt.Sprintf("<memory>\n%s\n</memory>", relevant))
+			}
 		}
 	}
 
 	if skills != nil {
 		if summary, err := skills.LoadSummary(context.Background()); err == nil && summary != "" {
-			parts = append(parts, fmt.Sprintf("<skills>\n%s\n</skills>", summary))
+			parts = append(parts, fmt.Sprintf("<skills>\n%s\n</skills>", relevantSkills(summary, currentQuery)))
 		}
 	}
 
 	if userName != "" {
-		parts = append(parts, fmt.Sprintf(`The user's name is %s.`, userName))
+		parts = append(parts, fmt.Sprintf(`The user's name is %s. Use their name sparingly and naturally - occasional greetings, sign-offs, or personal touches are appropriate. Do not overuse it.`, userName))
 	}
 
 	now := time.Now().UTC().Format("2006-01-02 15:04 UTC")

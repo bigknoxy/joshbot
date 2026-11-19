@@ -442,6 +442,7 @@ func newApp() *cli.App {
 			incidentsCommand(),
 			docsCommand(),
 			memoryCommand(),
+			permissionCommand(),
 			{
 				Name:    "configure",
 				Aliases: []string{"config"},
@@ -1189,6 +1190,7 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	registryOpts := []tools.RegistryOption{
 		tools.WithShellSandbox(resolvedSandbox, cfg.Tools.ShellSandboxAllowNetwork),
 		tools.WithShellApproval(approvalMode),
+		tools.WithShellDenied(cfg.Tools.ShellDenied),
 		tools.WithCronService(cronSvc, defaultReminderChannel(cfg)),
 		tools.WithAttachmentLimits(outboundAttachmentLimits(cfg)),
 		tools.WithSendFileApproval(sendFileApprovalMode),
@@ -5383,6 +5385,7 @@ func runStatus(c *cli.Context) error {
 		MemoryWindow:        cfg.Agents.Defaults.MemoryWindow,
 		TelegramEnabled:     cfg.Channels.Telegram.Enabled,
 		WorkspaceRestricted: cfg.Tools.RestrictToWorkspace,
+		PermissionTier:      cfg.Tools.PermissionTier,
 		PendingSkills:       pendingSkillNames(cfg),
 		MemoryBytes:         memorySize,
 		HistoryBytes:        historySize,

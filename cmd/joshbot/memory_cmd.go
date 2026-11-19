@@ -56,24 +56,36 @@ func memoryCommand() *cli.Command {
 // returns its DreamManager. A nil manager means Dream is off — the caller has to
 // say so rather than printing zeros, which read as "on and idle".
 func dreamForCLI(c *cli.Context) (*memory.DreamManager, error) {
-	cfg, err := loadConfig(c.Path("config"))
+	_, dm, err := memoryForCLI(c)
 	if err != nil {
 		return nil, err
 	}
+	return dm, nil
+}
+
+// memoryForCLI returns the memory manager and its Dream subsystem. The
+// manager is needed alongside the Dream manager because a consolidation pass
+// has to promote its insights into the facts in MEMORY.md, and the Dream
+// subsystem alone cannot do that.
+func memoryForCLI(c *cli.Context) (*memory.Manager, *memory.DreamManager, error) {
+	cfg, err := loadConfig(c.Path("config"))
+	if err != nil {
+		return nil, nil, err
+	}
 	mode, err := memory.ParseDreamMode(cfg.Agents.Defaults.DreamMode)
 	if err != nil {
-		return nil, fmt.Errorf("agents.defaults.dream_mode: %w", err)
+		return nil, nil, fmt.Errorf("agents.defaults.dream_mode: %w", err)
 	}
 	if mode == memory.DreamOff {
-		return nil, nil
+		return nil, nil, nil
 	}
 	mgr, err := memory.New(cfg.Agents.Defaults.Workspace,
 		memory.WithMaxSize(cfg.Agents.Defaults.MaxMemorySize),
 		memory.WithDream(memory.WithDreamMode(mode)))
 	if err != nil {
-		return nil, fmt.Errorf("failed to init memory manager: %w", err)
+		return nil, nil, fmt.Errorf("failed to init memory manager: %w", err)
 	}
-	return mgr.Dream(), nil
+	return mgr, mgr.Dream(), nil
 }
 
 func runMemoryStatus(c *cli.Context) error {
@@ -108,7 +120,7 @@ func runMemoryStatus(c *cli.Context) error {
 }
 
 func runMemoryConsolidate(c *cli.Context) error {
-	dm, err := dreamForCLI(c)
+	mgr, dm, err := memoryForCLI(c)
 	if err != nil {
 		return err
 	}
@@ -124,9 +136,17 @@ func runMemoryConsolidate(c *cli.Context) error {
 	}
 
 	raw := dm.CountRawRecords()
-	insights, err := dm.Consolidate(c.Context)
-	if err != nil {
+	// The same pass the background ticker runs: consolidate, promote the
+	// insights into facts, reconcile them into MEMORY.md, and only then trim
+	// the raw log. Consolidating without promoting would leave the insights
+	// in the consolidated log - where nothing reads them again - and the
+	// facts would never be written.
+	if err := dm.ConsolidateAndPromote(c.Context, mgr); err != nil {
 		return fmt.Errorf("consolidation failed: %w", err)
+	}
+	insights, err := dm.ListConsolidated()
+	if err != nil {
+		return err
 	}
 	fmt.Fprintf(out, "Consolidated %d raw record(s) into %d insight(s).\n", raw, len(insights))
 	now := time.Now()

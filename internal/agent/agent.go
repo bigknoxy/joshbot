@@ -605,6 +605,37 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 	// incident they record.
 	ts := &turnStream{}
 	responseContent, err := a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &compaction, ts)
+	if err != nil && isContextLengthError(err) {
+		// The provider says the context is too long. Compact the conversation
+		// and run the turn once more.
+		//
+		// A successful retry is a normal answer and falls through to the
+		// ordinary post-processing below; only a failed one is an error.
+		a.logger.Info("Context length error, compacting and retrying the turn", "session", sess.ID)
+		var retryErr error
+		responseContent, retryErr = a.compactAndRetry(ctx, sess, msg, channelID, systemPrompt, err)
+		if retryErr == nil {
+			err = nil
+		} else if isContextLengthError(retryErr) {
+			// Still too long after a compaction. The conversation cannot be
+			// made to fit by asking again, and saying so plainly beats
+			// another provider error the user cannot act on.
+			reply := "I'm sorry, but this request is still too large even after condensing the conversation history. Try starting a new session with `/new`, splitting the request into smaller pieces, or switching to a larger-context model with `/model`."
+			a.recordIncident(incidents.Incident{
+				Type:         incidents.LLMFailure,
+				Session:      sess.ID,
+				Channel:      msg.Channel,
+				Model:        a.modelForSession(sess),
+				ElapsedNanos: int64(time.Since(startTime)),
+				Iterations:   ts.iterations,
+				ToolCalls:    ts.toolCalls,
+				Detail:       retryErr.Error(),
+			})
+			return reply, nil
+		} else {
+			err = retryErr
+		}
+	}
 	if err != nil {
 		a.logger.Error("ReAct loop error", "error", err)
 		// A spent turn budget must not take the accumulated conversation with
@@ -1804,9 +1835,26 @@ func (a *Agent) applyCompaction(ctx context.Context, sess *session.Session, st c
 // On success it also records the summary in st so Process can persist it once
 // the turn completes; without that the work is repeated on every later turn.
 func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers.Message, sess *session.Session, st *compactionState) []providers.Message {
+	messages, _ = a.compactContext(ctx, messages, sess, st, false)
+	return messages
+}
+
+// compactContext compacts the conversation when it grows past the configured
+// threshold of the model's budget, and reports whether it changed anything.
+//
+// force skips the threshold test. The provider has already rejected the turn
+// for being too long, and its real limit is below what our estimate said, so
+// waiting for the estimate to cross the threshold would mean the turn is never
+// compacted and never retried.
+//
+// The second return value says whether the request can now be sent. It is
+// false when there was nothing to compact, nothing worth compacting, or no
+// compressor to compact with, so a caller that forced a compaction does not
+// pay for a retry that would fail exactly as the first one did.
+func (a *Agent) compactContext(ctx context.Context, messages []providers.Message, sess *session.Session, st *compactionState, force bool) ([]providers.Message, bool) {
 	// Only proceed if we have budget manager and compressor
 	if a.budget == nil || a.compressor == nil {
-		return messages
+		return messages, false
 	}
 
 	threshold := a.cfg.Agents.Defaults.CompactionThreshold
@@ -1833,8 +1881,8 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	)
 
 	// If under threshold, no compaction needed
-	if totalTokens <= thresholdBudget {
-		return messages
+	if !force && totalTokens <= thresholdBudget {
+		return messages, false
 	}
 
 	// Compress the stored session, not the provider slice.
@@ -1852,13 +1900,13 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	// answering it — reach the model verbatim. Summarizing them produced a
 	// reply that asked what the user meant (#346).
 	if sess == nil || len(sess.Messages) == 0 {
-		return messages
+		return messages, false
 	}
 	prefixLen := compactionPrefixLen(sess, st)
 	if prefixLen <= 0 {
 		a.logger.Debug("Context over threshold but nothing before the live turn to compact",
 			"session_messages", len(sess.Messages))
-		return messages
+		return messages, false
 	}
 	if st != nil && st.active && st.prefixLen == prefixLen {
 		// Already compacted this exact prefix earlier in the turn; the excess
@@ -1867,13 +1915,20 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 		// already summarized, `messages` no longer holds the old content for
 		// masking to find, so trying first only spends an allocation to learn
 		// what this check already knows for free.
-		return messages
+		return messages, false
 	}
 
 	// Cheap tier next: truncating old tool/assistant content costs no LLM
 	// call, so try it before paying for a full compaction. A single oversized
 	// tool result mid-turn should not force a summarization round trip when
 	// trimming alone gets back under budget.
+	//
+	// The cheap tier is skipped when the compaction was forced. Its verdict
+	// is calibrated against our estimate of the budget, and the forced path
+	// exists precisely because that estimate is wrong — the provider has
+	// just said the context does not fit. "It fits now, by our reckoning" is
+	// not evidence in that case, and the retry it produced would fail the
+	// same way.
 	//
 	// protectTail is measured against sess.Messages, the stored session, on
 	// the same assumption the tail extraction below relies on: `messages` and
@@ -1883,10 +1938,12 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	// `messages` this turn). If `messages` is ever shorter than protectTail —
 	// exactly those cases — maskStaleToolOutput has nothing left outside the
 	// protected tail to mask and fails closed (ok=false) rather than guessing.
-	if masked, ok := maskStaleToolOutput(messages, len(sess.Messages)-prefixLen, thresholdBudget, totalTokens); ok {
-		a.logger.Debug("Cheap tool-output masking avoided a full compaction",
-			"threshold_budget", thresholdBudget)
-		return masked
+	if !force {
+		if masked, ok := maskStaleToolOutput(messages, len(sess.Messages)-prefixLen, thresholdBudget, totalTokens); ok {
+			a.logger.Debug("Cheap tool-output masking avoided a full compaction",
+				"threshold_budget", thresholdBudget)
+			return masked, true
+		}
 	}
 
 	// Threshold exceeded and cheap masking could not fix it - compact messages
@@ -1903,12 +1960,12 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 		// prefix spends an LLM call to recover nothing.
 		a.logger.Debug("Context over threshold but the compactable prefix is small; skipping",
 			"prefix_tokens", prefixTokens, "threshold_budget", thresholdBudget)
-		return messages
+		return messages, false
 	}
 	compressed, err := a.compressor.CompressMessages(ctx, model, sessionMsgs, thresholdBudget)
 	if err != nil {
 		a.logger.Warn("Context compaction failed", "error", err)
-		return messages
+		return messages, false
 	}
 
 	// The tail is taken from `messages`, not rebuilt from the session, so this
@@ -1944,7 +2001,59 @@ func (a *Agent) checkAndCompactContext(ctx context.Context, messages []providers
 	}
 
 	a.logger.Debug("Context compacted", "original_messages", len(sessionMsgs), "new_content_len", len(compressed))
-	return newMessages
+	return newMessages, true
+}
+
+// compactAndRetry compacts the conversation and runs the turn once more.
+//
+// It is called when the provider rejected the turn for being too long. The
+// compaction is forced, for the reason compactContext's force flag explains:
+// the provider's limit is below what our estimate said, so the usual
+// threshold would never be crossed.
+//
+// The retry is bounded to one attempt. A conversation that is still too long
+// after a compaction will not become short enough by trying again, and every
+// attempt costs a full provider round trip.
+//
+// The request is rebuilt from the same system prompt the turn already used,
+// conversation summary and personality included: a retry must ask the same
+// question, not a smaller one.
+func (a *Agent) compactAndRetry(ctx context.Context, sess *session.Session, msg bus.InboundMessage, channelID, systemPrompt string, original error) (string, error) {
+	compaction := compactionState{turnStart: len(sess.Messages) - 1}
+
+	// The images and documents of this turn live only on the request, so
+	// they are attached before the compaction: the cheap masking tier keeps
+	// the tail it is given, and the full compaction carries the tail over.
+	base := a.buildMessages(systemPrompt, sess)
+	attachImages(base, msg.Images)
+	attachDocuments(base, msg.Documents)
+
+	// Compact the stored session, not the provider slice. The same reasoning
+	// as checkAndCompactContext: the write-back replaces
+	// sess.Messages[:prefixLen] with a summary, so the two must describe
+	// the same set of messages.
+	compacted, changed := a.compactContext(ctx, base, sess, &compaction, true)
+	if !changed {
+		// Nothing could be compacted: there is nothing before the live turn,
+		// the prefix is too small to be worth summarizing, the compressor
+		// failed, or none is configured. A retry would be built from the
+		// same messages and would fail the same way, so report the original
+		// failure rather than spending another round trip to learn it.
+		return "", original
+	}
+
+	messages := compacted
+	if compaction.active {
+		// A full compaction happened: persist it and rebuild the request
+		// from the rewritten session.
+		a.applyCompaction(ctx, sess, compaction)
+		messages = a.buildMessages(systemPrompt, sess)
+		attachImages(messages, msg.Images)
+		attachDocuments(messages, msg.Documents)
+	}
+
+	retryCompaction := compactionState{turnStart: len(sess.Messages) - 1}
+	return a.reactLoop(ctx, messages, sess, msg.Channel, channelID, msg.Content, &retryCompaction, &turnStream{})
 }
 
 // compactionPrefixLen returns how many leading session messages a compaction

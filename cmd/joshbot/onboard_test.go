@@ -459,6 +459,7 @@ func onboardApp() *cli.App {
 				&cli.BoolFlag{Name: "force"},
 				&cli.BoolFlag{Name: "keep-data"},
 				&cli.BoolFlag{Name: "configure-channels"},
+				&cli.BoolFlag{Name: "no-channels"},
 				&cli.StringFlag{Name: "model", Aliases: []string{"m"}},
 				&cli.StringFlag{Name: "provider"},
 				&cli.StringFlag{Name: "api-key"},
@@ -611,7 +612,10 @@ func TestRunOnboard_Interactive_KeepCurrentAPIKey(t *testing.T) {
 // friction audit). It must say so, and it must not touch stdin for either
 // question: this is the same test as above in spirit, but on a fresh home
 // with nothing to preserve, which is the case that matters most.
-func TestRunOnboard_Interactive_SkipsChannelSetupByDefault(t *testing.T) {
+// The channel questions are asked on a plain first start now, so the test
+// that pinned the old default asks the opposite: --no-channels is the way to
+// skip them.
+func TestRunOnboard_Interactive_NoChannelsSkipsChannelSetup(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".joshbot")
 	setHome(t, home)
 	calls := stubTokenValidator(t, func(string) error { return nil })
@@ -624,7 +628,7 @@ func TestRunOnboard_Interactive_SkipsChannelSetupByDefault(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		if err := onboardApp().Run([]string{
-			"joshbot", "--config", filepath.Join(home, "config.json"), "onboard",
+			"joshbot", "--config", filepath.Join(home, "config.json"), "onboard", "--no-channels",
 		}); err != nil {
 			t.Fatalf("onboard failed: %v", err)
 		}
@@ -643,6 +647,45 @@ func TestRunOnboard_Interactive_SkipsChannelSetupByDefault(t *testing.T) {
 	}
 	if cfg.Channels.Telegram.Enabled {
 		t.Error("a skipped Telegram prompt must not enable Telegram")
+	}
+}
+
+// A plain first start asks about the channel. Most installs are for
+// Telegram, so the one thing left unconfigured after the provider setup was
+// the channel the operator came from.
+func TestRunOnboard_Interactive_AsksAboutTheChannelByDefault(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".joshbot")
+	setHome(t, home)
+	stubTokenValidator(t, func(string) error { return nil })
+
+	// 1: nvidia; nvapi-freshkey: api key; 1: personality; Enter: name;
+	// Enter: model; 2: skip Telegram; 2: skip Discord; 2: skip service.
+	withStdinInput(t, "1\nnvapi-freshkey\n1\n\n\n2\n2\n2\n")
+
+	out := captureStdout(t, func() {
+		if err := onboardApp().Run([]string{
+			"joshbot", "--config", filepath.Join(home, "config.json"), "onboard",
+		}); err != nil {
+			t.Fatalf("onboard failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Would you like to set up Telegram") {
+		t.Errorf("the Telegram question was not asked:\n%s", out)
+	}
+	if !strings.Contains(out, "Would you like to set up Discord") {
+		t.Errorf("the Discord question was not asked:\n%s", out)
+	}
+
+	cfg, err := config.LoadFrom(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Channels.Telegram.Enabled {
+		t.Error("a skipped Telegram prompt must not enable Telegram")
+	}
+	if cfg.Channels.Discord.Enabled {
+		t.Error("a skipped Discord prompt must not enable Discord")
 	}
 }
 

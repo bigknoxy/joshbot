@@ -395,10 +395,14 @@ func TestDreamManager_ConsolidatedInsightsPersistAcrossRestart(t *testing.T) {
 		t.Fatal("expected at least one consolidation")
 	}
 
-	// The raw log is cleared after consolidation; the durable consolidated log
-	// must now hold the insights.
-	if dm.CountRawRecords() != 0 {
-		t.Fatalf("expected raw log cleared after consolidation, got %d records", dm.CountRawRecords())
+	// The raw log is cleared once the promotion has landed, not by
+	// Consolidate itself: it is the input to the promotion, and the
+	// promotion is the part that can fail.
+	if dm.CountRawRecords() == 0 {
+		t.Fatal("expected the raw log to survive consolidation, it is the input to the promotion")
+	}
+	if err := dm.ClearRawRecords(); err != nil {
+		t.Fatalf("ClearRawRecords: %v", err)
 	}
 	if _, err := os.Stat(dm.consolidatedPath()); err != nil {
 		t.Fatalf("expected consolidated log to exist after consolidation: %v", err)

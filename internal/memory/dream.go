@@ -353,6 +353,11 @@ type DreamManager struct {
 	memoryDir string
 	now       func() time.Time
 	mu        sync.RWMutex
+	// consolidateMu serialises a full consolidation pass. The background
+	// ticker and the `joshbot memory consolidate` command can both ask for
+	// one, and two concurrent passes read the same raw records and write
+	// the same insights twice.
+	consolidateMu sync.Mutex
 }
 
 // NewDreamManager creates a Dream memory manager rooted in the given memory dir.
@@ -522,9 +527,16 @@ func (dm *DreamManager) Consolidate(ctx context.Context) ([]DreamConsolidated, e
 	// growth. The consolidated insights are persisted to the durable log, which
 	// replaces the raw data.
 	if len(consolidations) > 0 {
-		// Persist the consolidated insights first so a crash between the two
-		// steps cannot lose the work: the raw log is only cleared once the
-		// consolidated form is safely on disk.
+		// Persist the consolidated insights so a crash after this point
+		// cannot lose the work.
+		//
+		// The raw log is deliberately NOT cleared here. It is the input to
+		// the promotion that follows, and the promotion is the part that can
+		// fail: if the facts never reach MEMORY.md, the raw records are the
+		// only copy left, and clearing them here would strand the insights
+		// in the consolidated log - where nothing reads them again - and
+		// lose the facts for good. The caller clears the raw log once the
+		// promotion has landed; see ConsolidateAndPromote.
 		if err := dm.saveConsolidated(consolidations); err != nil {
 			// The raw log is deliberately left intact so the next run can
 			// retry — but the error is returned, not swallowed. Reporting
@@ -532,13 +544,51 @@ func (dm *DreamManager) Consolidate(ctx context.Context) ([]DreamConsolidated, e
 			// leave `memory status` showing none, with nothing to correlate.
 			return consolidations, fmt.Errorf("persist consolidated insights: %w", err)
 		}
-		if err := dm.ClearRawRecords(); err != nil {
-			// Non-fatal: consolidation succeeded, we just couldn't trim the log.
-			// Next consolidation will re-process these records.
-		}
 	}
 
 	return consolidations, nil
+}
+
+// ConsolidateAndPromote runs one full Dream Stage 2 pass: consolidate the raw
+// records, promote the insights to facts, reconcile the facts into MEMORY.md,
+// and only then trim the raw log.
+//
+// The order is the whole point. The raw log is the input and the facts are
+// the output; trimming the input before the output has landed means a failed
+// promotion loses the facts permanently, because the consolidated log is only
+// ever read - nothing promotes it a second time.
+//
+// The pass is serialised. The background ticker and the `joshbot memory
+// consolidate` command can both ask for one, and two concurrent passes would
+// read the same raw records and write the same insights twice.
+func (dm *DreamManager) ConsolidateAndPromote(ctx context.Context, mem *Manager) error {
+	dm.consolidateMu.Lock()
+	defer dm.consolidateMu.Unlock()
+
+	insights, err := dm.Consolidate(ctx)
+	if err != nil {
+		return fmt.Errorf("dream consolidate: %w", err)
+	}
+	if len(insights) == 0 {
+		return nil
+	}
+
+	facts := dm.PromoteToFacts(insights)
+	if len(facts) > 0 {
+		if err := mem.ReconcileFacts(ctx, facts); err != nil {
+			// The raw records are left intact on purpose: the promotion
+			// failed, so the next pass has to try again with the same
+			// input.
+			return fmt.Errorf("reconcile dream facts: %w", err)
+		}
+	}
+
+	// The promotion has landed (or there was nothing to promote). Only now
+	// may the raw log be trimmed.
+	if err := dm.ClearRawRecords(); err != nil {
+		return fmt.Errorf("clear dream raw records: %w", err)
+	}
+	return nil
 }
 
 // summarizeCluster produces a DreamConsolidated insight from a cluster of records.

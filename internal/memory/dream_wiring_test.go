@@ -153,8 +153,17 @@ func TestConsolidateProducesInsightsSearchableAfterAProcessRestart(t *testing.T)
 	if len(insights) == 0 {
 		t.Fatal("consolidation produced no insights")
 	}
+	// The raw log survives Consolidate: it is the input to the promotion, and
+	// the promotion is the part that can fail. It is trimmed once the facts
+	// have landed.
+	if n := mgr.Dream().CountRawRecords(); n == 0 {
+		t.Error("raw log was cleared before the facts were promoted")
+	}
+	if err := mgr.Dream().ConsolidateAndPromote(ctx, mgr); err != nil {
+		t.Fatalf("ConsolidateAndPromote: %v", err)
+	}
 	if n := mgr.Dream().CountRawRecords(); n != 0 {
-		t.Errorf("raw log still holds %d record(s) after consolidation", n)
+		t.Errorf("raw log still holds %d record(s) after the promotion", n)
 	}
 
 	// A second Manager over the same workspace is what a restarted joshbot

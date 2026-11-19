@@ -1350,6 +1350,12 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 				if err := runDreamConsolidation(context.Background(), dm, memoryManager); err != nil {
 					logger.Warn("Dream consolidation failed", "error", err)
 				}
+			} else {
+				// Say so. Dream full mode was asked for and the memory
+				// manager has no Dream subsystem, so the consolidation
+				// silently does nothing - the raw log grows and no facts
+				// are ever written, with nothing in the log to explain it.
+				logger.Warn("Dream full mode is configured but the memory manager has no Dream subsystem; consolidation is not running")
 			}
 			for {
 				select {
@@ -1485,24 +1491,12 @@ func publishAsyncResults(ch <-chan tools.AsyncResult, msgBus *bus.MessageBus) {
 }
 
 // runDreamConsolidation runs one pass of Dream Stage 2 consolidation:
-// Consolidate raw records -> PromoteToFacts -> ReconcileFacts into MEMORY.md.
+// Consolidate raw records -> PromoteToFacts -> ReconcileFacts into MEMORY.md,
+// and only then trim the raw log.
+//
 // This replaces the learning consolidator when dream_mode == full.
 func runDreamConsolidation(ctx context.Context, dm *memory.DreamManager, mem *memory.Manager) error {
-	insights, err := dm.Consolidate(ctx)
-	if err != nil {
-		return fmt.Errorf("dream consolidate: %w", err)
-	}
-	if len(insights) == 0 {
-		return nil
-	}
-	facts := dm.PromoteToFacts(insights)
-	if len(facts) == 0 {
-		return nil
-	}
-	if err := mem.ReconcileFacts(ctx, facts); err != nil {
-		return fmt.Errorf("reconcile dream facts: %w", err)
-	}
-	return nil
+	return dm.ConsolidateAndPromote(ctx, mem)
 }
 
 func registerMCPServers(ctx context.Context, reg *tools.Registry, cfg config.MCPConfig) {

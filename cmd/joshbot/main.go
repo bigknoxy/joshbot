@@ -366,7 +366,11 @@ func newApp() *cli.App {
 					},
 					&cli.BoolFlag{
 						Name:  "configure-channels",
-						Usage: "Also prompt for Telegram and background-service setup (skipped by default; use `joshbot configure` or `joshbot service install` later instead)",
+						Usage: "Prompt for Telegram and Discord setup (asked for by default; use --no-channels to skip)",
+					},
+					&cli.BoolFlag{
+						Name:  "no-channels",
+						Usage: "Skip the Telegram and Discord setup questions (the same as the old default)",
 					},
 					&cli.StringFlag{
 						Name:    "model",
@@ -4104,7 +4108,19 @@ func getChannelID(msg bus.InboundMessage) string {
 func runOnboard(c *cli.Context) error {
 	force := c.Bool("force")
 	keepData := c.Bool("keep-data")
-	configureChannels := c.Bool("configure-channels")
+	// Channel setup is offered by default now.
+	//
+	// Most installs are for Telegram, so the first thing a new user runs
+	// walked them through provider setup and then left them with a bot that
+	// answers nobody: the channel they came from was the one thing still
+	// unconfigured, and nothing said so. The questions are still questions -
+	// "no, skip for now" is a normal answer and not an error - but they are
+	// asked.
+	//
+	// --configure-channels still works and still means the same thing; it is
+	// simply no longer needed to reach the prompts. --no-channels is the way
+	// to skip them.
+	configureChannels := channelSetupOffered(c.Bool("configure-channels"), c.Bool("no-channels"))
 	modelFlag := c.String("model")
 	providerFlag := c.String("provider")
 	apiKeyFlag := c.String("api-key")
@@ -4298,8 +4314,12 @@ func runOnboard(c *cli.Context) error {
 		userName = promptUserName(existingCfg)
 		model = selectModel(existingCfg, provider, modelFlag)
 		if configureChannels {
-			telegramConfig = setupTelegram(existingCfg)
-			discordConfig = setupDiscord(existingCfg)
+			// A channel that is already set up is not offered again. The
+			// other one still is, so a second channel remains reachable -
+			// and a re-run of the wizard does not walk the operator through
+			// a token they already have.
+			telegramConfig = setupTelegramIfNeeded(existingCfg)
+			discordConfig = setupDiscordIfNeeded(existingCfg)
 		} else {
 			if existingCfg != nil {
 				// Skipping the prompt must never silently disable a Telegram

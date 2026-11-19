@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -130,6 +132,36 @@ func sessionsCommand() *cli.Command {
 					"(created after this feature was added). Legacy sessions fall back to\n" +
 					"the snapshot and show a message.",
 				Action: runSessionsReplay,
+			},
+			{
+				Name:      "switch",
+				Usage:     "Make the interactive CLI continue a session by ID",
+				ArgsUsage: "<session id | list number>",
+				Description: "Records the session the interactive CLI should continue.\n" +
+					"The id may be a full session id or the number of a session in\n" +
+					"'joshbot sessions list', so the id does not have to be known.\n" +
+					"The choice applies to the next start of 'joshbot agent'.",
+				Action: runSessionsSwitch,
+			},
+			{
+				Name:      "resume",
+				Usage:     "Make the interactive CLI continue the most recent session",
+				ArgsUsage: "[session id | list number]",
+				Description: "With no argument, continues the most recently updated\n" +
+					"session. With an argument, continues that session, as\n" +
+					"'joshbot sessions switch' does.",
+				Action: runSessionsResume,
+			},
+			{
+				Name:  "current",
+				Usage: "Show the session the interactive CLI will continue",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "reset",
+						Usage: "Go back to the default session (cli:cli_user)",
+					},
+				},
+				Action: runSessionsCurrent,
 			},
 		},
 	}
@@ -586,5 +618,137 @@ func runSessionsSearch(c *cli.Context) error {
 			m.Timestamp.Format("2006-01-02 15:04"), m.SessionID, m.Role, m.Snippet)
 	}
 	fmt.Fprintf(out, "\n%d match(es).\n", len(matches))
+	return nil
+}
+
+// resolveSessionTarget turns what the user typed into a session id.
+//
+// It accepts a full session id, and a number that picks one of the sessions
+// in the list order ('joshbot sessions list' prints the same order), so the
+// user can pick a session without knowing its id.
+func resolveSessionTarget(mgr *session.Manager, ctx context.Context, typed string) (string, error) {
+	typed = strings.TrimSpace(typed)
+	if typed == "" {
+		return "", fmt.Errorf("no session given")
+	}
+
+	infos, err := mgr.ListInfo(ctx)
+	if err != nil {
+		return "", err
+	}
+	// Most recently updated first, which is the order the list prints.
+	sort.SliceStable(infos, func(i, j int) bool {
+		return infos[i].UpdatedAt.After(infos[j].UpdatedAt)
+	})
+
+	if n, err := strconv.Atoi(typed); err == nil {
+		if n < 1 || n > len(infos) {
+			return "", fmt.Errorf("there are %d session(s); %d is not one of them", len(infos), n)
+		}
+		return infos[n-1].ID, nil
+	}
+
+	for _, info := range infos {
+		if info.ID == typed {
+			return info.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no session with id %q (run 'joshbot sessions list' to see them)", typed)
+}
+
+// switchToSession records the session the interactive CLI should continue and
+// prints what was chosen.
+func switchToSession(c *cli.Context, mgr *session.Manager, id string) error {
+	sess, err := mgr.Load(c.Context, id)
+	if err != nil {
+		return sessionError(id, err)
+	}
+
+	if err := writeCurrentSession(cliHomeDir(), sess.ID); err != nil {
+		return err
+	}
+
+	out := sessionsOut()
+	fmt.Fprintf(out, "The interactive CLI will continue session %s (%d message(s)).\n", sess.ID, len(sess.Messages))
+	if sess.ConversationTopic != "" {
+		fmt.Fprintf(out, "Topic: %s\n", sess.ConversationTopic)
+	}
+	fmt.Fprintln(out, "Start 'joshbot agent' to use it.")
+	return nil
+}
+
+func runSessionsSwitch(c *cli.Context) error {
+	parsed, err := parseSessionArgs(c.Args().Slice(), false, false, false)
+	if err != nil {
+		return usageError("%v", err)
+	}
+	if strings.TrimSpace(parsed.id) == "" {
+		return usageError("sessions switch needs a session id or a list number (see: joshbot sessions list)")
+	}
+
+	mgr, err := sessionManagerForCLI(c)
+	if err != nil {
+		return err
+	}
+
+	id, err := resolveSessionTarget(mgr, c.Context, parsed.id)
+	if err != nil {
+		return usageError("%v", err)
+	}
+	return switchToSession(c, mgr, id)
+}
+
+func runSessionsResume(c *cli.Context) error {
+	mgr, err := sessionManagerForCLI(c)
+	if err != nil {
+		return err
+	}
+
+	infos, err := mgr.ListInfo(c.Context)
+	if err != nil {
+		return err
+	}
+	if len(infos) == 0 {
+		return usageError("no sessions to resume from. Run 'joshbot sessions list' to see existing sessions.")
+	}
+
+	// Sort by UpdatedAt descending (most recent first)
+	sorted := infos
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].UpdatedAt.After(sorted[j].UpdatedAt)
+	})
+
+	target := sorted[0].ID
+	if typed := strings.TrimSpace(c.Args().First()); typed != "" {
+		target, err = resolveSessionTarget(mgr, c.Context, typed)
+		if err != nil {
+			return usageError("%v", err)
+		}
+	}
+
+	return switchToSession(c, mgr, target)
+}
+
+// runSessionsCurrent shows the recorded choice, and can put it back to the
+// default. Without it there would be no way back to cli:cli_user short of
+// deleting a file by hand.
+func runSessionsCurrent(c *cli.Context) error {
+	home := cliHomeDir()
+
+	if c.Bool("reset") {
+		if err := clearCurrentSession(home); err != nil {
+			return err
+		}
+		fmt.Fprintf(sessionsOut(), "The interactive CLI will use the default session %s again.\n", defaultCLIKey)
+		return nil
+	}
+
+	key := readCurrentSession(home)
+	out := sessionsOut()
+	if key == "" {
+		fmt.Fprintf(out, "The interactive CLI uses the default session %s (nothing has been chosen).\n", defaultCLIKey)
+		return nil
+	}
+	fmt.Fprintf(out, "The interactive CLI will continue session %s.\n", cliSessionKey(key))
 	return nil
 }

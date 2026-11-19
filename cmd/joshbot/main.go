@@ -1797,9 +1797,14 @@ func runAgent(c *cli.Context) error {
 		log.Get().Logger.SetOutput(os.Stderr)
 	}
 
-	// Interactive sessions always continue cli:cli_user, so say what is being
-	// continued: a short recap of the last exchange, the way a resumed
-	// conversation opens anywhere else. Silent for a fresh session.
+	// The interactive session may have been chosen with `joshbot sessions
+	// switch` or `joshbot sessions resume`; that choice is a file, so it
+	// survives the process that made it. With nothing chosen, the session is
+	// the historical cli:cli_user.
+
+	// Say what is being continued: a short recap of the last exchange, the
+	// way a resumed conversation opens anywhere else. Silent for a fresh
+	// session.
 	printSessionRecap(ctx, sessionMgr, os.Stdout)
 
 	done := make(chan struct{})
@@ -2017,6 +2022,14 @@ func (p *cliProgress) stopSpinner() {
 }
 
 func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan struct{}, input io.Reader, output io.Writer, agentInstance agentProcessor, messageSender *tools.BusMessageSender, streaming bool) error {
+	// The session the conversation lives in. It is the default cli:cli_user
+	// unless `joshbot sessions switch` chose another one.
+	cliChannel, cliSender := "cli", "cli_user"
+	if key := currentCLISessionKey(); key != defaultCLIKey {
+		ch, sn := headlessSession(key)
+		cliChannel, cliSender = ch, sn
+	}
+
 	// Set chat ID for CLI mode so message tools can send messages proactively
 	if messageSender != nil {
 		messageSender.SetChatID("cli", "cli_user")
@@ -2172,9 +2185,9 @@ func runAgentLoop(ctx context.Context, cancel context.CancelFunc, done <-chan st
 		}
 
 		msg := bus.InboundMessage{
-			SenderID:  "cli_user",
+			SenderID:  cliSender,
 			Content:   inputLine,
-			Channel:   "cli",
+			Channel:   cliChannel,
 			Timestamp: time.Now(),
 			Metadata: map[string]any{
 				"username": "user",
@@ -2301,7 +2314,7 @@ func printSessionRecap(ctx context.Context, mgr *session.Manager, output io.Writ
 	if mgr == nil {
 		return
 	}
-	sess, err := mgr.Load(ctx, "cli:cli_user")
+	sess, err := mgr.Load(ctx, currentCLISessionKey())
 	if err != nil || sess == nil || len(sess.Messages) == 0 {
 		return
 	}

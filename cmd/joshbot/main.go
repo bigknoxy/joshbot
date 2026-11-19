@@ -4224,6 +4224,7 @@ func runOnboard(c *cli.Context) error {
 	var provider string
 	var soulContent string
 	var telegramConfig *config.TelegramConfig
+	var discordConfig *config.DiscordConfig
 
 	if force {
 		// Use defaults for non-interactive setup
@@ -4298,6 +4299,7 @@ func runOnboard(c *cli.Context) error {
 		model = selectModel(existingCfg, provider, modelFlag)
 		if configureChannels {
 			telegramConfig = setupTelegram(existingCfg)
+			discordConfig = setupDiscord(existingCfg)
 		} else {
 			if existingCfg != nil {
 				// Skipping the prompt must never silently disable a Telegram
@@ -4305,8 +4307,10 @@ func runOnboard(c *cli.Context) error {
 				// preserving.
 				existing := existingCfg.Channels.Telegram
 				telegramConfig = &existing
+				existingDiscord := existingCfg.Channels.Discord
+				discordConfig = &existingDiscord
 			}
-			fmt.Println("\nSkipping Telegram and background-service setup for now. Run " +
+			fmt.Println("\nSkipping Telegram, Discord and background-service setup for now. Run " +
 				"`joshbot onboard --keep-data --configure-channels` to be asked, or " +
 				"`joshbot service install` for just the background service.")
 		}
@@ -4364,6 +4368,9 @@ func runOnboard(c *cli.Context) error {
 	}
 	if telegramConfig != nil {
 		cfg.Channels.Telegram = *telegramConfig
+	}
+	if discordConfig != nil {
+		cfg.Channels.Discord = *discordConfig
 	}
 
 	// Ensure directories and save config

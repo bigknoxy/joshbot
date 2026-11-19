@@ -34,7 +34,14 @@ func TestResetCommandIsNotBlockedByAHeldSessionLock(t *testing.T) {
 	}
 	defer release()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// The deadlines below are generous on purpose. The reset writes the
+	// session through an atomic write that fsyncs, and fsync latency on a
+	// loaded disk is seconds - the package's own wall clock swings by tens
+	// of seconds under load. A one-second deadline did not measure the
+	// property this test is about (the reset is not queued behind the
+	// lock); it measured the disk, and reported a slow disk as a stuck
+	// reset (#447).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	done := make(chan string, 1)
@@ -54,7 +61,10 @@ func TestResetCommandIsNotBlockedByAHeldSessionLock(t *testing.T) {
 		if strings.HasPrefix(got, ReplyPrefix) {
 			t.Fatalf("/new was blocked by the held lock: %q", got)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(60 * time.Second):
+		// The wait is longer than the context deadline on purpose. The
+		// reply is guaranteed to arrive by then - blocked or not - so this
+		// branch can only be reached by a hang, never by a slow machine.
 		t.Fatal("/new never returned while the session lock was held")
 	}
 }

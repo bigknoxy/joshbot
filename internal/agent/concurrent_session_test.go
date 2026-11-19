@@ -221,7 +221,10 @@ func TestResumeDoesNotDeadlockAgainstItsOwnSessionLock(t *testing.T) {
 		if !strings.Contains(resp, "Resuming from checkpoint") {
 			t.Errorf("expected a resume confirmation, got: %s", resp)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(60 * time.Second):
+		// A long wait, because the only thing this test is looking for is a
+		// deadlock: the resume itself is fast, and a loaded machine must
+		// not be mistaken for one (#447).
 		t.Fatal("/resume deadlocked on its own session lock")
 	}
 }

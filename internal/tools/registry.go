@@ -28,6 +28,7 @@ type Registry struct {
 	pendingMu       sync.RWMutex
 	asyncCallbackCh chan AsyncResult
 	spillConfig     SpillConfig
+	workspace       string
 }
 
 // Option is a functional option for configuring the Registry.
@@ -131,6 +132,31 @@ func (r *Registry) GetSpillConfig() SpillConfig {
 	return r.spillConfig
 }
 
+// toolContext returns the context every tool runs with.
+//
+// Two things are attached here, and both were missing, which is why the
+// spill mechanism never fired in a real run:
+//
+//   - The spill configuration. The spill decision is made by looking at the
+//     context, but the configuration lived only on the registry, so every
+//     lookup found an empty configuration and spilled nothing.
+//   - The workspace. The spill file has to land inside the workspace, and
+//     the workspace was read from the context by three different call sites
+//     that nothing ever wrote to.
+//
+// A tool also needs to know that a spill is waiting for its output: the
+// built-in tools truncate their own output first, and a truncation below the
+// spill threshold means the spill never sees anything to spill.
+func (r *Registry) toolContext(ctx context.Context) context.Context {
+	if r.spillConfig.Threshold > 0 {
+		ctx = WithSpillSink(ctx, r.spillConfig)
+	}
+	if r.workspace != "" {
+		ctx = context.WithValue(ctx, ContextKeyWorkspace, r.workspace)
+	}
+	return ctx
+}
+
 // Execute runs a tool by name with the given arguments.
 func (r *Registry) Execute(ctx context.Context, name string, args map[string]any) (string, error) {
 	tool, ok := r.Get(name)
@@ -138,7 +164,7 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 		return "", WithCode(fmt.Errorf("tool not found: %s", name), CodeNotFound)
 	}
 
-	result := tool.Execute(ctx, args)
+	result := tool.Execute(r.toolContext(ctx), args)
 
 	if result.Error != nil {
 		return "", fmt.Errorf("tool execution failed: %w", result.Error)
@@ -165,7 +191,13 @@ func (r *Registry) ExecuteWithContext(
 		return r.executeAsync(ctx, asyncTool, args, channel, chatID, asyncCallback)
 	}
 
-	// Execute synchronously
+	// Execute synchronously.
+	//
+	// The context carries the spill configuration and the workspace: the
+	// tool needs both to know that its output is about to be spilled, and
+	// the spill decision below needs the threshold and the workspace to
+	// make it.
+	ctx = r.toolContext(ctx)
 	result := tool.Execute(ctx, args)
 
 	// Spill large results if a threshold is configured.
@@ -224,13 +256,44 @@ func (r *Registry) ExecuteWithContext(
 					if err := os.WriteFile(path, content, 0o600); err == nil {
 						originalSize := len(result.Output)
 						storedSize := len(content)
+						// The instruction matters. A handle on its own left
+						// the model guessing: in a live run it tried to
+						// glob for the original file, failed, and then ran
+						// `find /` - thirteen minutes of the user's time.
+						// The model has the tools to read this path; it has
+						// to be told that the path is what to read.
+						const howToRead = "Read the full result with read_file(path=%q)."
 						if truncated {
-							result.Output = fmt.Sprintf("%s (%d bytes, stored %d bytes, truncated) at %s\n\n[HEAD]\n%s\n\n[TAIL]\n%s",
+							result.Output = fmt.Sprintf("%s (%d bytes, stored %d bytes, truncated) at %s\n\n[HEAD]\n%s\n\n[TAIL]\n%s\n\n%s",
 								handle, originalSize, storedSize, path,
 								result.Output[:sink.MaxSize/2],
-								result.Output[len(result.Output)-sink.MaxSize/2:])
+								result.Output[len(result.Output)-sink.MaxSize/2:],
+								fmt.Sprintf(howToRead, path))
 						} else {
-							result.Output = fmt.Sprintf("%s (%d bytes) at %s", handle, originalSize, path)
+							// The head and the tail go with the handle.
+							//
+							// A live run showed what a handle alone costs:
+							// the model was asked for the first line of a
+							// file, got a handle instead, and went looking
+							// for the file itself - a glob that found
+							// nothing, then `find /`, then thirteen
+							// minutes of the user's time. The head is
+							// usually the answer to the question that
+							// caused the read, and the tail is where the
+							// other end of the result is.
+							const headChars = 2000
+							const tailChars = 500
+							head := result.Output
+							if len(head) > headChars {
+								head = head[:headChars]
+							}
+							tail := ""
+							if len(result.Output) > tailChars {
+								tail = result.Output[len(result.Output)-tailChars:]
+							}
+							result.Output = fmt.Sprintf("%s (%d bytes) at %s\n\n[HEAD]\n%s\n\n[TAIL]\n%s\n\n%s",
+								handle, originalSize, path, head, tail,
+								fmt.Sprintf(howToRead, path))
 						}
 					}
 				}
@@ -593,6 +656,7 @@ func RegistryWithDefaults(
 
 	registry := NewRegistry()
 	registry.spillConfig = settings.spillConfig
+	registry.workspace = workspace
 
 	// Filesystem tool
 	fsTool := NewFilesystemToolFromConfig(FilesystemToolConfig{

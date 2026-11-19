@@ -124,3 +124,82 @@ func TestPermissionStatus_ShowsShellDenied(t *testing.T) {
 		t.Errorf("expected status to show shell_denied: true, got:\n%s", out)
 	}
 }
+
+// Every tier is a promise about what the agent may do, so `permission status`
+// has to be able to describe each of them - and say so plainly when no tier
+// is active at all.
+func TestPermissionStatus_DescribesEveryTier(t *testing.T) {
+	cases := []struct {
+		tier string
+		want []string
+	}{
+		{config.PermissionTierReadOnly, []string{
+			"restrict_to_workspace: true",
+			"shell_sandbox: off",
+			"shell_approval: always",
+			"shell_denied: true",
+			"send_file_disabled: true",
+		}},
+		{config.PermissionTierWorkspaceWrite, []string{
+			"restrict_to_workspace: true",
+			"shell_sandbox: workspace",
+			"shell_approval: interactive",
+			"send_file_approval: interactive",
+			"send_file_disabled: false",
+		}},
+		{config.PermissionTierFull, []string{
+			"restrict_to_workspace: false",
+			"shell_sandbox: off",
+			"shell_approval: off",
+			"send_file_approval: off",
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.tier, func(t *testing.T) {
+			configPath := workingPermissionConfig(t)
+
+			if _, err := runPermission(t, configPath, "permission", "set", tc.tier); err != nil {
+				t.Fatalf("permission set %s: %v", tc.tier, err)
+			}
+			out, err := runPermission(t, configPath, "permission", "status")
+			if err != nil {
+				t.Fatalf("permission status: %v", err)
+			}
+			if !strings.Contains(out, "Active permission tier: "+tc.tier) {
+				t.Errorf("status does not name the active tier %q:\n%s", tc.tier, out)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("status for %q does not show %q:\n%s", tc.tier, want, out)
+				}
+			}
+		})
+	}
+}
+
+// With no tier set, the status must say that rather than imply one.
+func TestPermissionStatus_SaysWhenNoTierIsActive(t *testing.T) {
+	configPath := workingPermissionConfig(t)
+
+	out, err := runPermission(t, configPath, "permission", "status")
+	if err != nil {
+		t.Fatalf("permission status: %v", err)
+	}
+	if !strings.Contains(out, "No tier active.") {
+		t.Errorf("expected status to say no tier is active, got:\n%s", out)
+	}
+}
+
+// `permission set` without a tier is a usage error, not a silent no-op.
+func TestPermissionSet_RequiresATier(t *testing.T) {
+	configPath := workingPermissionConfig(t)
+
+	_, err := runPermission(t, configPath, "permission", "set")
+	if err == nil {
+		t.Fatal("expected an error when no tier is given, got none")
+	}
+	if !strings.Contains(err.Error(), "usage:") {
+		t.Errorf("error %q is not a usage error", err)
+	}
+}

@@ -291,8 +291,18 @@ func (t *ShellTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 		timeout = time.Duration(to) * time.Second
 	}
 
-	// Create context with timeout
-	execCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Create context with timeout.
+	//
+	// Derived from the caller's context, not from Background. The caller's
+	// context carries the cancellation and the deadline the caller set, and
+	// it carries the spill configuration - a command that ran on a
+	// Background context could not be cancelled and could not tell that
+	// its output was about to be spilled (#431).
+	base := context.Background()
+	if c, ok := ctx.(context.Context); ok && c != nil {
+		base = c
+	}
+	execCtx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 
 	// Execute command
@@ -474,15 +484,31 @@ func (t *ShellTool) runCommand(ctx context.Context, cmd, workingDir string) Tool
 		result.WriteString("(command completed with no output)")
 	}
 
-	// Truncate output if it exceeds maxOutputChars
+	// Truncate output if it exceeds maxOutputChars.
+	//
+	// Not when a spill is waiting for the result: the limit here sits
+	// below the spill threshold, so truncating first would leave the
+	// registry nothing to spill and the model a fragment with no pointer
+	// back to the rest of the output (#431).
 	outputStr := result.String()
-	if len(outputStr) > t.maxOutputChars {
+	if len(outputStr) > t.maxOutputChars && !shellSpillEnabled(ctx) {
 		truncated := outputStr[:t.maxOutputChars]
 		suffix := fmt.Sprintf("\n... (truncated, %d chars total)", len(outputStr))
 		outputStr = truncated + suffix
 	}
 
 	return ToolResult{Output: outputStr}
+}
+
+// shellSpillEnabled reports whether a spill is waiting for this tool's
+// output. The shell tool's Execute takes an untyped context, so the check
+// lives here rather than at the call site.
+func shellSpillEnabled(ctx interface{}) bool {
+	c, ok := ctx.(context.Context)
+	if !ok || c == nil {
+		return false
+	}
+	return spillEnabled(c)
 }
 
 // readOutput reads all output from a pipe.

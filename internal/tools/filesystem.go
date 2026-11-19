@@ -142,9 +142,12 @@ func (t *FilesystemTool) Parameters() []Parameter {
 func (t *FilesystemTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	// Extract context values
 	var workspace string
-
+	// The typed context, for the spill check. The tool's Execute takes an
+	// untyped context for historical reasons.
+	toolCtx := context.Background()
 	if ctx != nil {
-		if c, ok := ctx.(context.Context); ok {
+		if c, ok := ctx.(context.Context); ok && c != nil {
+			toolCtx = c
 			if w := c.Value(ContextKeyWorkspace); w != nil {
 				workspace, _ = w.(string)
 			}
@@ -164,7 +167,7 @@ func (t *FilesystemTool) Execute(ctx interface{}, args map[string]any) ToolResul
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.readFile(t.containmentRoot(workspace, resolvedPath), resolvedPath, args)
+		return t.readFile(toolCtx, t.containmentRoot(workspace, resolvedPath), resolvedPath, args)
 	case "write_file":
 		resolvedPath, err := t.resolveRequiredPath(workspace, args)
 		if err != nil {
@@ -342,7 +345,7 @@ func (t *FilesystemTool) isAllowedResolved(path string) bool {
 }
 
 // readFile reads a file's contents.
-func (t *FilesystemTool) readFile(root, path string, args map[string]any) ToolResult {
+func (t *FilesystemTool) readFile(ctx context.Context, root, path string, args map[string]any) ToolResult {
 	offset := 0
 	limit := 100
 
@@ -376,8 +379,13 @@ func (t *FilesystemTool) readFile(root, path string, args map[string]any) ToolRe
 	output := fmt.Sprintf("File: %s (lines %d-%d of %d)\n", path, offset+1, end, len(lines))
 	output += strings.Join(selectedLines, "\n")
 
-	// Truncate output if it exceeds maxOutputChars
-	if len(output) > t.maxOutputChars {
+	// Truncate output if it exceeds maxOutputChars.
+	//
+	// Not when a spill is waiting for the result: the limit here sits
+	// below the spill threshold, so truncating first would leave the
+	// registry nothing to spill and the model a fragment with no pointer
+	// back to the rest of the file (#431).
+	if len(output) > t.maxOutputChars && !spillEnabled(ctx) {
 		truncated := output[:t.maxOutputChars]
 		suffix := fmt.Sprintf("\n... (truncated, %d chars total)", len(output))
 		output = truncated + suffix

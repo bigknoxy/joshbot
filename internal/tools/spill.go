@@ -48,3 +48,15 @@ func SpillSinkFromContext(ctx context.Context) SpillConfig {
 func WithSpillSink(ctx context.Context, cfg SpillConfig) context.Context {
 	return context.WithValue(ctx, spillKey{}, cfg)
 }
+
+// spillEnabled reports whether the context carries a live spill sink.
+//
+// The built-in tools truncate their own output before the registry ever sees
+// it, and their limits sit below the spill threshold - a file read is cut at
+// 8000 characters, shell output at 4000. A truncation below the threshold
+// means there is nothing left to spill, so the tool has to keep the whole
+// result when a spill is waiting for it and let the registry replace the
+// output with a handle that points at the full text.
+func spillEnabled(ctx context.Context) bool {
+	return SpillSinkFromContext(ctx).Threshold > 0
+}

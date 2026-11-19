@@ -169,6 +169,13 @@ func (t *mcpTool) Execute(ctx interface{}, args map[string]any) ToolResult {
 	if err != nil {
 		return ToolResult{Error: err}
 	}
+	// Not truncated when a spill is waiting for the result: the limit here
+	// sits below the spill threshold, so truncating first would leave the
+	// registry nothing to spill and the model a fragment with no pointer
+	// back to the rest of the output (#431).
+	if spillEnabled(base) {
+		return ToolResult{Output: out}
+	}
 	return ToolResult{Output: truncateMCPOutput(out, t.maxChars)}
 }
 

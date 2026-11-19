@@ -211,11 +211,11 @@ func (t *WebTool) exaCLICrawl(ctx context.Context, url string) (string, error) {
 		return "", fmt.Errorf("exa crawl failed: %w", err)
 	}
 
-	return parseExaCLICrawlResult(string(output))
+	return parseExaCLICrawlResult(ctx, string(output))
 }
 
 // parseExaCLICrawlResult parses the JSON output from exa crawl
-func parseExaCLICrawlResult(output string) (string, error) {
+func parseExaCLICrawlResult(ctx context.Context, output string) (string, error) {
 	var resp struct {
 		Results []struct {
 			Title string `json:"title"`
@@ -237,7 +237,11 @@ func parseExaCLICrawlResult(output string) (string, error) {
 	}
 
 	text := resp.Results[0].Text
-	if len(text) > 5000 {
+	// Not truncated when a spill is waiting for the result: the limit here
+	// sits below the spill threshold, so truncating first would leave the
+	// registry nothing to spill and the model a fragment with no pointer
+	// back to the rest of the page (#431).
+	if len(text) > 5000 && !spillEnabled(ctx) {
 		text = text[:5000] + "\n... (truncated, " + strconv.Itoa(len(text)) + " chars total)"
 	}
 	return text, nil

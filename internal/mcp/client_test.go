@@ -39,6 +39,8 @@ func TestMain(m *testing.M) {
 			os.Exit(0)
 		}
 		runEchoServer()
+	case "flapper":
+		runFlapperServer()
 	case "dupe":
 		runDuplicateResponseServer()
 	}
@@ -143,6 +145,40 @@ func runEchoServer() {
 		if err != nil {
 			return
 		}
+	}
+}
+
+// runFlapperServer completes the handshake and then exits: the shape of a
+// server that comes up and dies again straight away. It waits for the
+// initialized notification, so the client's handshake succeeds before the
+// process goes away.
+func runFlapperServer() {
+	in := bufio.NewReader(os.Stdin)
+	for {
+		line, err := in.ReadBytes('\n')
+		if len(line) == 0 && err != nil {
+			return
+		}
+		var req struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(string(line))), &req) != nil {
+			continue
+		}
+		if req.Method == "initialize" && req.ID != nil {
+			resp := map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": map[string]any{
+				"protocolVersion": protocolVersion,
+				"serverInfo":      map[string]any{"name": "flapper", "version": "1"},
+				"capabilities":    map[string]any{},
+			}}
+			data, _ := json.Marshal(resp)
+			fmt.Fprintf(os.Stdout, "%s\n", data)
+			continue
+		}
+		// The initialized notification: the handshake is complete, so die
+		// before the client can get anything out of the server.
+		return
 	}
 }
 

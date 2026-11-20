@@ -1,12 +1,16 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/log"
 )
 
 func TestManagerStatusAndObservability(t *testing.T) {
@@ -251,6 +255,14 @@ func TestManagerFlakyServerReconnectsAfterFailedAttempts(t *testing.T) {
 	mgr := NewManagerWithConfig([]Server{spec}, cfg)
 	defer mgr.Close()
 
+	// The stability window elapses at once: what this test is about is the
+	// reconnect, not the window.
+	mgr.afterFn = func(time.Duration) <-chan time.Time {
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -267,8 +279,258 @@ func TestManagerFlakyServerReconnectsAfterFailedAttempts(t *testing.T) {
 	if !st[0].Connected {
 		t.Errorf("expected Connected=true")
 	}
-	if st[0].Attempts != 0 { // reset to 0 on successful reconnect
+	if st[0].Attempts != 0 { // cleared once the stability window has elapsed
 		t.Errorf("expected Attempts=0 after success, got %d", st[0].Attempts)
+	}
+}
+
+// fakeWindow is the injectable stability-window timer. It fires only when the
+// test releases it, so a test can hold the window open — the server dies
+// inside it — or let it elapse at once.
+type fakeWindow struct {
+	mu       sync.Mutex
+	pending  []chan time.Time
+	requests chan time.Duration
+}
+
+func newFakeWindow() *fakeWindow {
+	return &fakeWindow{requests: make(chan time.Duration, 16)}
+}
+
+// after is the manager's afterFn: it records the window it was asked to wait
+// out and returns a channel that fires when the test releases it.
+func (w *fakeWindow) after(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	w.mu.Lock()
+	w.pending = append(w.pending, ch)
+	w.mu.Unlock()
+	select {
+	case w.requests <- d:
+	default:
+	}
+	return ch
+}
+
+// release lets every requested timer fire.
+func (w *fakeWindow) release() {
+	w.mu.Lock()
+	pending := w.pending
+	w.pending = nil
+	w.mu.Unlock()
+	for _, ch := range pending {
+		ch <- time.Now()
+	}
+}
+
+// fakeBackoff records the delays the manager waits out between reconnect
+// attempts and returns at once, so a test never sleeps for wall-clock time.
+type fakeBackoff struct {
+	mu     sync.Mutex
+	delays []time.Duration
+}
+
+func (b *fakeBackoff) sleep(d time.Duration) <-chan time.Time {
+	b.mu.Lock()
+	b.delays = append(b.delays, d)
+	b.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	ch <- time.Now()
+	return ch
+}
+
+func (b *fakeBackoff) recorded() []time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]time.Duration(nil), b.delays...)
+}
+
+// TestManagerFlappingServerReachesMaxAttempts is the regression test for the
+// attempt count that was cleared at every successful handshake: a server that
+// came up and died again straight away was reconnected every initial
+// interval, forever, because each successful reconnect zeroed the count.
+func TestManagerFlappingServerReachesMaxAttempts(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	spec := Server{
+		Name:    "flapper",
+		Command: exe,
+		Args:    []string{"-test.run=TestMain"},
+		Env:     []string{"GO_MCP_HELPER=flapper"},
+	}
+
+	cfg := ReconnectConfig{
+		InitialInterval: 5 * time.Millisecond,
+		MaxInterval:     20 * time.Millisecond,
+		MaxAttempts:     3,
+		JitterFraction:  0,
+		StabilityWindow: time.Minute,
+	}
+	mgr := NewManagerWithConfig([]Server{spec}, cfg)
+	defer mgr.Close()
+
+	backoff := &fakeBackoff{}
+	mgr.sleepFn = backoff.sleep
+	// The stability window never elapses: the server dies inside it.
+	mgr.afterFn = newFakeWindow().after
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr.handleServerDeath(ctx, mgr.Client("flapper"))
+
+	st := mgr.Status()
+	if st[0].Attempts != cfg.MaxAttempts {
+		t.Errorf("expected Attempts=%d once the flapping server reached the cap, got %d", cfg.MaxAttempts, st[0].Attempts)
+	}
+	if st[0].Reconnecting {
+		t.Errorf("expected Reconnecting=false once the manager gave up")
+	}
+	if st[0].Connected {
+		t.Errorf("expected Connected=false: the flapping server is not up")
+	}
+	if !strings.Contains(st[0].LastError, "could not be kept up") {
+		t.Errorf("expected the status to say the server could not be kept up, got %q", st[0].LastError)
+	}
+
+	// The backoff grew across the flaps: the attempt count survived every
+	// successful handshake, so the delay was not stuck at the initial interval.
+	want := []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond}
+	got := backoff.recorded()
+	if len(got) != len(want) {
+		t.Fatalf("expected %d reconnect attempts, got %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("backoff %d: got %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestManagerStableServerForgivesAttempts proves the other half of the
+// stability window: a server that holds the connection past the window is a
+// normal healthy server again, so its next failure starts from the initial
+// interval instead of a stale large delay.
+func TestManagerStableServerForgivesAttempts(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	spec := Server{
+		Name:    "steady",
+		Command: exe,
+		Args:    []string{"-test.run=TestMain"},
+		Env:     []string{"GO_MCP_HELPER=echo"},
+	}
+
+	cfg := ReconnectConfig{
+		InitialInterval: 5 * time.Millisecond,
+		MaxInterval:     20 * time.Millisecond,
+		MaxAttempts:     3,
+		JitterFraction:  0,
+		StabilityWindow: time.Minute,
+	}
+	mgr := NewManagerWithConfig([]Server{spec}, cfg)
+	defer mgr.Close()
+
+	mgr.sleepFn = (&fakeBackoff{}).sleep
+	window := newFakeWindow()
+	mgr.afterFn = window.after
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mgr.handleServerDeath(ctx, mgr.Client("steady"))
+	}()
+
+	// Wait until the manager has reconnected and is watching the window.
+	select {
+	case d := <-window.requests:
+		if d != cfg.StabilityWindow {
+			t.Fatalf("expected the manager to watch a %v stability window, got %v", cfg.StabilityWindow, d)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the manager never reached the stability window")
+	}
+
+	// Before the window elapses, the attempt that got the server here is
+	// still charged to it.
+	if got := mgr.Status()[0].Attempts; got != 1 {
+		t.Fatalf("expected Attempts=1 while the stability window is open, got %d", got)
+	}
+
+	window.release()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the manager did not finish the reconnect after the stability window elapsed")
+	}
+
+	st := mgr.Status()
+	if st[0].Attempts != 0 {
+		t.Errorf("expected Attempts=0 after the server held the connection for the stability window, got %d", st[0].Attempts)
+	}
+	if !st[0].Connected {
+		t.Errorf("expected Connected=true: the server held the connection")
+	}
+	if st[0].Reconnecting {
+		t.Errorf("expected Reconnecting=false once the server counted as recovered")
+	}
+}
+
+// TestManagerGiveUpReportsAttemptCount pins what the operator sees when the
+// cap is reached: the server could not be kept up, and how many attempts it
+// took — in the log and in the manager's status.
+func TestManagerGiveUpReportsAttemptCount(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	spec := Server{
+		Name:    "flapper",
+		Command: exe,
+		Args:    []string{"-test.run=TestMain"},
+		Env:     []string{"GO_MCP_HELPER=flapper"},
+	}
+
+	cfg := ReconnectConfig{
+		InitialInterval: 5 * time.Millisecond,
+		MaxInterval:     20 * time.Millisecond,
+		MaxAttempts:     2,
+		JitterFraction:  0,
+		StabilityWindow: time.Minute,
+	}
+	mgr := NewManagerWithConfig([]Server{spec}, cfg)
+	defer mgr.Close()
+
+	mgr.sleepFn = (&fakeBackoff{}).sleep
+	mgr.afterFn = newFakeWindow().after
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr.handleServerDeath(ctx, mgr.Client("flapper"))
+
+	out := logged.String()
+	if !strings.Contains(out, "could not be kept up") {
+		t.Errorf("expected the log to say the server could not be kept up, got:\n%s", out)
+	}
+	if !strings.Contains(out, "attempts=2") {
+		t.Errorf("expected the log to carry the attempt count, got:\n%s", out)
+	}
+
+	st := mgr.Status()
+	if !strings.Contains(st[0].LastError, "could not be kept up after 2 reconnect attempts") {
+		t.Errorf("expected the status to carry the attempt count, got %q", st[0].LastError)
 	}
 }
 

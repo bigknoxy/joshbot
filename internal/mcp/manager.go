@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -11,15 +13,27 @@ import (
 
 // ServerStatus describes the observability and connection health of an MCP server.
 type ServerStatus struct {
-	Name            string        `json:"name"`
-	Connected       bool          `json:"connected"`
-	Reconnecting    bool          `json:"reconnecting"`
+	Name string `json:"name"`
+	// Connected reports whether the server process is running.
+	Connected bool `json:"connected"`
+	// Reconnecting reports that the manager is still working on this server:
+	// reconnecting it, or watching a fresh connection to see whether it holds.
+	Reconnecting bool `json:"reconnecting"`
+	// Attempts counts the reconnect attempts the current outage consumed. It
+	// is cleared once a reconnected server has held the connection for the
+	// stability window.
 	Attempts        int           `json:"attempts"`
 	LastAttempt     time.Time     `json:"last_attempt,omitempty"`
 	LastError       string        `json:"last_error,omitempty"`
 	NextRetry       time.Time     `json:"next_retry,omitempty"`
 	BackoffDuration time.Duration `json:"backoff_duration,omitempty"`
 }
+
+// defaultStabilityWindow is how long a reconnected server must hold the
+// connection before its reconnect attempts are forgiven. A server that dies
+// again inside the window has not proved it can stay up, so it keeps
+// consuming attempts until it reaches MaxAttempts.
+const defaultStabilityWindow = 60 * time.Second
 
 // ReconnectConfig configures the exponential backoff parameters for reconnecting
 // dead MCP child processes.
@@ -28,6 +42,10 @@ type ReconnectConfig struct {
 	MaxInterval     time.Duration
 	MaxAttempts     int
 	JitterFraction  float64
+	// StabilityWindow is how long a reconnected server must hold the
+	// connection before its reconnect attempts are forgiven. Zero means
+	// defaultStabilityWindow.
+	StabilityWindow time.Duration
 }
 
 // DefaultReconnectConfig returns sensible defaults for MCP server reconnect backoff.
@@ -37,6 +55,7 @@ func DefaultReconnectConfig() ReconnectConfig {
 		MaxInterval:     30 * time.Second,
 		MaxAttempts:     10,
 		JitterFraction:  0.25,
+		StabilityWindow: defaultStabilityWindow,
 	}
 }
 
@@ -62,9 +81,12 @@ type Manager struct {
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
 
-	// now and sleepFn are injectable for fast, deterministic unit testing.
+	// now, sleepFn and afterFn are injectable for fast, deterministic unit testing.
 	now     func() time.Time
 	sleepFn func(time.Duration) <-chan time.Time
+	// afterFn waits out the stability window. It is a seam of its own so a
+	// test can hold the window open while the backoff sleeps complete at once.
+	afterFn func(time.Duration) <-chan time.Time
 	rnd     *rand.Rand
 }
 
@@ -76,12 +98,16 @@ func NewManager(servers []Server) *Manager {
 
 // NewManagerWithConfig builds a Manager with explicit reconnect backoff configuration.
 func NewManagerWithConfig(servers []Server, cfg ReconnectConfig) *Manager {
+	if cfg.StabilityWindow <= 0 {
+		cfg.StabilityWindow = defaultStabilityWindow
+	}
 	m := &Manager{
 		states:  make(map[string]*serverState),
 		cfg:     cfg,
 		stopCh:  make(chan struct{}),
 		now:     time.Now,
 		sleepFn: time.After,
+		afterFn: time.After,
 		rnd:     rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 	for _, s := range servers {
@@ -192,7 +218,8 @@ func (m *Manager) isClosed() bool {
 }
 
 // handleServerDeath runs the backoff retry loop for a killed MCP server until
-// it reconnects, reaches max attempts, or is closed.
+// it reconnects and holds the connection long enough to count as recovered,
+// reaches max attempts, or is closed.
 func (m *Manager) handleServerDeath(ctx context.Context, c *Client) {
 	name := c.Name()
 
@@ -219,13 +246,7 @@ func (m *Manager) handleServerDeath(ctx context.Context, c *Client) {
 		}
 
 		if m.cfg.MaxAttempts > 0 && st.attempts >= m.cfg.MaxAttempts {
-			// Permanently dead; stop spinning so agent is not blocked.
-			st.reconnecting = false
-			log.Warn("mcp: server permanently dead, reached max reconnect attempts",
-				"server", name,
-				"attempts", st.attempts,
-				"last_error", st.lastError,
-			)
+			m.giveUp(st, name)
 			m.mu.Unlock()
 			return
 		}
@@ -272,27 +293,133 @@ func (m *Manager) handleServerDeath(ctx context.Context, c *Client) {
 		err := c.Connect(connectCtx)
 		cancel()
 
+		if err != nil {
+			m.mu.Lock()
+			st.lastError = err
+			log.Warn("mcp: server reconnect attempt failed",
+				"server", name,
+				"attempt", st.attempts,
+				"error", err,
+			)
+			m.mu.Unlock()
+			continue
+		}
+
+		// The handshake succeeded, but the server has not proved it can stay
+		// up: it may die again in the next moment. The attempt count is only
+		// cleared once the connection has held for the stability window.
+		sess := c.currentSession()
 		m.mu.Lock()
-		if err == nil {
-			// Successfully reconnected! Reset backoff state.
-			st.reconnecting = false
+		st.lastError = nil
+		st.backoff = 0
+		st.nextRetry = time.Time{}
+		log.Info("mcp: server reconnected successfully",
+			"server", name,
+			"attempt", st.attempts,
+		)
+		m.mu.Unlock()
+
+		switch m.awaitStable(ctx, c, sess) {
+		case stabilityHeld:
+			m.mu.Lock()
 			st.attempts = 0
-			st.lastError = nil
-			st.backoff = 0
-			st.nextRetry = time.Time{}
-			log.Info("mcp: server reconnected successfully", "server", name)
+			st.reconnecting = false
+			m.mu.Unlock()
+			log.Info("mcp: server held the connection, reconnect attempts forgiven", "server", name)
+			return
+		case stabilityAborted:
+			m.mu.Lock()
+			st.reconnecting = false
 			m.mu.Unlock()
 			return
 		}
 
-		st.lastError = err
-		log.Warn("mcp: server reconnect attempt failed",
+		// It died inside the window, so the attempt stands: a server that
+		// keeps flapping spends its attempts and eventually reaches the cap.
+		m.mu.Lock()
+		st.lastError = flapError(sess)
+		log.Warn("mcp: server died again within the stability window, keeping the attempt count",
 			"server", name,
 			"attempt", st.attempts,
-			"error", err,
+			"error", st.lastError,
 		)
 		m.mu.Unlock()
 	}
+}
+
+// stabilityResult is the outcome of watching a freshly connected server for
+// the stability window.
+type stabilityResult int
+
+const (
+	// stabilityHeld: the server held the connection for the whole window.
+	stabilityHeld stabilityResult = iota
+	// stabilityFlapped: the server died inside the window.
+	stabilityFlapped
+	// stabilityAborted: the manager was closed or the context ended.
+	stabilityAborted
+)
+
+// awaitStable waits out the stability window for a freshly reconnected server.
+// A server that holds the connection for the window has proved it can stay
+// up; one that dies inside it has not, and its attempt stands.
+func (m *Manager) awaitStable(ctx context.Context, c *Client, sess *procSession) stabilityResult {
+	timer := m.afterFn(m.cfg.StabilityWindow)
+	select {
+	case <-timer:
+		// The window elapsed. The server may have died in the same instant,
+		// so confirm it is still there before calling it recovered.
+		if m.isClosed() || c.IsClosed() {
+			return stabilityAborted
+		}
+		if !c.IsConnected() {
+			return stabilityFlapped
+		}
+		return stabilityHeld
+	case <-sess.done:
+		if m.isClosed() || c.IsClosed() {
+			return stabilityAborted
+		}
+		return stabilityFlapped
+	case <-m.stopCh:
+		return stabilityAborted
+	case <-ctx.Done():
+		return stabilityAborted
+	}
+}
+
+// flapError describes a server that came back and died again inside the
+// stability window.
+func flapError(sess *procSession) error {
+	select {
+	case <-sess.done:
+		// The read loop published its error before closing done.
+		if sess.readErr != nil {
+			return fmt.Errorf("server died again within the stability window: %w", sess.readErr)
+		}
+	default:
+	}
+	return errors.New("server died again within the stability window")
+}
+
+// giveUp records the final failure: the server could not be kept up, and the
+// attempt count says how many tries it took.
+func (m *Manager) giveUp(st *serverState, name string) {
+	attempts := st.attempts
+	summary := fmt.Sprintf("server could not be kept up after %d reconnect attempts", attempts)
+	if st.lastError != nil {
+		summary += ": " + st.lastError.Error()
+	}
+	st.lastError = errors.New(summary)
+	st.backoff = 0
+	st.nextRetry = time.Time{}
+	st.reconnecting = false
+	log.Warn("mcp: server could not be kept up, giving up reconnecting",
+		"server", name,
+		"attempts", attempts,
+		"max_attempts", m.cfg.MaxAttempts,
+		"last_error", st.lastError,
+	)
 }
 
 // calculateBackoff computes exponential backoff with cap and jitter.

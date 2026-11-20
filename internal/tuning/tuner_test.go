@@ -2,6 +2,7 @@ package tuning
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -174,32 +175,93 @@ func TestDefaultTunerConfig(t *testing.T) {
 	}
 }
 
+// stopBlockWindow is how long the test holds the tick's evaluation open
+// before releasing it. A stop that waits for the evaluator cannot return
+// while the evaluation is held, so the window only has to be long enough
+// for a stop that returns at once to be noticed -- and short enough that
+// the violation is reported promptly.
+const stopBlockWindow = 500 * time.Millisecond
+
 // TestTunerStartEvaluatesOnATickAndStopBlocksUntilExited proves the
 // background loop actually runs Evaluate and that its stop func is
 // synchronous, following the "restartable objects keep per-run channels off
 // the struct" rule: Start must be safely callable, and its stop must not
 // return before the goroutine has actually exited.
+//
+// The tick's evaluation is held open at the tuner's clock hook -- the
+// first thing Evaluate does once it holds the tuner's lock -- so the
+// evaluator is provably still running when stop is called, and the
+// ordering of "the evaluation finished" and "stop returned" is decided by
+// the events themselves rather than by how fast the machine is.
+//
+// The waits are generous on purpose: the overlay write fsyncs, and fsync
+// latency on a loaded disk is seconds. A deadline shorter than the disk
+// round trip measures the disk and reports a slow disk as a stuck tuner --
+// the same defect #447 found in internal/agent.
 func TestTunerStartEvaluatesOnATickAndStopBlocksUntilExited(t *testing.T) {
 	tuner, overlayPath := newTestTuner(t)
 	for i := 0; i < 4; i++ {
 		tuner.Record("web_search", true)
 	}
 
-	stop := tuner.Start(20 * time.Millisecond)
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		ov, err := LoadOverlay(overlayPath)
-		if err != nil {
-			t.Fatalf("LoadOverlay: %v", err)
-		}
-		if len(ov.Tools) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			stop()
-			t.Fatal("background Start loop never wrote an overlay adjustment")
-		}
-		time.Sleep(5 * time.Millisecond)
+	evaluating := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseEvaluation := func() { releaseOnce.Do(func() { close(release) }) }
+	var enteredOnce sync.Once
+	tuner.now = func() time.Time {
+		enteredOnce.Do(func() { close(evaluating) })
+		<-release
+		return time.Now()
 	}
-	stop() // must return only once the goroutine has exited
+
+	stop := tuner.Start(20 * time.Millisecond)
+	t.Cleanup(func() {
+		releaseEvaluation()
+		stop()
+	})
+
+	select {
+	case <-evaluating:
+	case <-time.After(60 * time.Second):
+		t.Fatal("background Start loop never evaluated")
+	}
+
+	// The evaluation is still held, so a stop that waits for the evaluator
+	// cannot have returned; one that does not wait returns at once, with
+	// the evaluator still running. The evaluator holds the tuner's lock
+	// for the whole evaluation, so a lock that is still held when the
+	// stop returns is what tells the two apart.
+	returnedEarly := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		if tuner.mu.TryLock() {
+			tuner.mu.Unlock()
+			close(stopped)
+			return
+		}
+		close(returnedEarly)
+	}()
+
+	go func() {
+		time.Sleep(stopBlockWindow)
+		releaseEvaluation()
+	}()
+
+	select {
+	case <-returnedEarly:
+		t.Fatal("stop returned while the evaluator was still running")
+	case <-stopped:
+	case <-time.After(60 * time.Second):
+		t.Fatal("stop never returned after the evaluator exited")
+	}
+
+	ov, err := LoadOverlay(overlayPath)
+	if err != nil {
+		t.Fatalf("LoadOverlay: %v", err)
+	}
+	if len(ov.Tools) == 0 {
+		t.Fatal("background Start loop never wrote an overlay adjustment")
+	}
 }

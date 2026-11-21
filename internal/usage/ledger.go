@@ -78,16 +78,36 @@ type SessionTotals struct {
 // (process lifetime) and per session, and persists the whole thing to one
 // JSON file so `joshbot status` and the spend ceiling survive a restart.
 //
-// RecordUsage is safe from concurrent turns: everything happens under one
-// mutex. The zero value is not usable; construct with NewLedger.
+// RecordUsage is safe from concurrent turns: the accounting happens under
+// one mutex, and the disk write happens outside it. The zero value is not
+// usable; construct with NewLedger.
 type Ledger struct {
+	// mu guards the accounting state — the totals, the maps and the
+	// reservations. It is never held across a disk write.
 	mu sync.Mutex
+	// saveMu serialises the writes themselves. Two concurrent saves would
+	// otherwise race, and the older snapshot could be renamed last, losing
+	// the newer totals from the file.
+	saveMu sync.Mutex
 
 	path      string
 	StartedAt time.Time
 	Total     Totals
 	Models    map[string]Totals
 	Sessions  map[string]SessionTotals
+
+	// reserved is the estimated cost held by the calls that are in flight
+	// and reservations maps a reservation id to the amount it holds. Both
+	// are guarded by mu and neither is persisted: a reservation belongs to
+	// a call that is running now, and a restart ends that call.
+	reserved     float64
+	reservations map[string]float64
+	nextRes      uint64
+
+	// persist writes one snapshot to disk. It is a field so a test can
+	// hold a write open and observe that the state mutex is not held
+	// across it; production writes through writeLedgerFile.
+	persist func(ledgerFile) error
 }
 
 // ledgerFile is the on-disk shape of a persisted ledger.
@@ -108,10 +128,11 @@ type ledgerFile struct {
 // recording is disabled, the agent still runs.
 func NewLedger(path string) (*Ledger, error) {
 	l := &Ledger{
-		path:      path,
-		StartedAt: time.Now(),
-		Models:    map[string]Totals{},
-		Sessions:  map[string]SessionTotals{},
+		path:         path,
+		StartedAt:    time.Now(),
+		Models:       map[string]Totals{},
+		Sessions:     map[string]SessionTotals{},
+		reservations: map[string]float64{},
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -144,11 +165,99 @@ func NewLedger(path string) (*Ledger, error) {
 // Persist failures are logged at warn and left out of band: a lost total is
 // recoverable noise, while failing every turn over it is not.
 func (l *Ledger) RecordUsage(sessionID, model string, u providers.Usage) {
-	cost, known := CostOf(model, u)
+	l.record("", sessionID, model, u)
+}
+
+// ceilingError is what Reserve returns when the spend ceiling cannot cover
+// the call. It carries the figures the caller's reply needs — what was left
+// of the ceiling and what the call could have cost — so the reply can
+// explain the stop instead of quoting a log line.
+type ceilingError struct {
+	remaining float64
+	bound     float64
+}
+
+func (e *ceilingError) Error() string {
+	return fmt.Sprintf("usage: spend ceiling reached: $%.2f of the ceiling was left and this call could cost up to $%.2f", e.remaining, e.bound)
+}
+
+// Remaining is what was left of the ceiling when the call was refused.
+func (e *ceilingError) Remaining() float64 { return e.remaining }
+
+// Bound is what the refused call could have cost at most.
+func (e *ceilingError) Bound() float64 { return e.bound }
+
+// Reserve holds the worst case for one call against the spend ceiling and
+// returns a reservation id.
+//
+// The hold and the check that admitted the call happen together under the
+// ledger's lock: a turn spends nothing until its call is paid for, so a
+// burst of concurrent turns cannot each pass a check that none of them has
+// paid for yet. The call is admitted only when its bound fits in what is
+// left of the ceiling — the recorded spend plus what the calls that are
+// already in flight hold — so the recorded spend cannot pass the ceiling
+// while calls are running.
+//
+// The reservation is settled by Commit (the call returned, and its actual
+// cost replaces the bound) or by Release (the call failed and spent
+// nothing).
+func (l *Ledger) Reserve(model string, ceilingUSD float64, promptTokens, maxCompletionTokens int) (string, error) {
+	bound := callCostBound(model, promptTokens, maxCompletionTokens)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if ceilingUSD > 0 {
+		held := l.Total.CostUSD + l.reserved
+		remaining := ceilingUSD - held
+		if remaining < 0 {
+			remaining = 0
+		}
+		if remaining <= 0 || held+bound > ceilingUSD {
+			return "", &ceilingError{remaining: remaining, bound: bound}
+		}
+	}
+
+	l.nextRes++
+	id := fmt.Sprintf("r%d", l.nextRes)
+	if l.reservations == nil {
+		l.reservations = map[string]float64{}
+	}
+	l.reservations[id] = bound
+	l.reserved += bound
+	return id, nil
+}
+
+// Commit records one call's actual usage against the reservation it was
+// admitted with: the bound the reservation held is released and the actual
+// cost takes its place.
+func (l *Ledger) Commit(reservationID, sessionID, model string, u providers.Usage) {
+	l.record(reservationID, sessionID, model, u)
+}
+
+// Release drops a reservation whose call spent nothing — the call failed
+// before the provider billed it — so the budget it held returns to the
+// ceiling instead of being lost.
+func (l *Ledger) Release(reservationID string) {
+	l.mu.Lock()
+	if held, ok := l.reservations[reservationID]; ok {
+		delete(l.reservations, reservationID)
+		l.reserved -= held
+	}
+	l.mu.Unlock()
+}
+
+// record folds one call into the totals and persists the ledger. The
+// reservation, when there is one, is released and the call's actual cost
+// takes its place.
+func (l *Ledger) record(reservationID, sessionID, model string, u providers.Usage) {
+	cost, known := CostOf(model, u)
+
+	l.mu.Lock()
+	if held, ok := l.reservations[reservationID]; ok {
+		delete(l.reservations, reservationID)
+		l.reserved -= held
+	}
 	l.Total.add(u, cost, known)
 	m := l.Models[model]
 	m.add(u, cost, known)
@@ -159,10 +268,9 @@ func (l *Ledger) RecordUsage(sessionID, model string, u providers.Usage) {
 	s.LastSeen = time.Now()
 	l.Sessions[sessionID] = s
 	l.evictLocked()
+	l.mu.Unlock()
 
-	if err := l.saveLocked(); err != nil {
-		log.Warn("usage: failed to persist ledger", "path", l.path, "error", err)
-	}
+	l.save()
 }
 
 // evictLocked drops the stalest session when the cap is hit. Caller holds mu.
@@ -238,26 +346,52 @@ func (l *Ledger) Snapshot() (total Totals, models []ModelUsage, sessions []Sessi
 	return total, models, sessions
 }
 
-// saveLocked writes the ledger atomically at owner-only mode. Caller holds
-// mu, writes arrive from RecordUsage only, and the temp+rename keeps a crash
-// or a concurrent reader from seeing a half-written file — the same contract
-// internal/session's writeFileAtomic carries.
-func (l *Ledger) saveLocked() error {
-	f := ledgerFile{
+// save persists the ledger. The state mutex is not held across the write:
+// the write is the slow part and every turn pays for it, so holding the
+// lock across it would serialise the whole agent behind the slowest disk
+// on the machine. saveMu serialises the writes themselves, so two
+// concurrent saves cannot publish the older snapshot last.
+func (l *Ledger) save() {
+	l.saveMu.Lock()
+	defer l.saveMu.Unlock()
+
+	l.mu.Lock()
+	f := l.fileLocked()
+	l.mu.Unlock()
+
+	persist := l.persist
+	if persist == nil {
+		persist = func(f ledgerFile) error { return writeLedgerFile(l.path, f) }
+	}
+	if err := persist(f); err != nil {
+		log.Warn("usage: failed to persist ledger", "path", l.path, "error", err)
+	}
+}
+
+// fileLocked renders the on-disk shape. Caller holds mu.
+func (l *Ledger) fileLocked() ledgerFile {
+	return ledgerFile{
 		Schema:    1,
 		StartedAt: l.StartedAt,
 		Total:     l.Total,
 		Models:    l.Models,
 		Sessions:  l.Sessions,
 	}
+}
+
+// writeLedgerFile writes the ledger atomically at owner-only mode. The
+// temp+rename keeps a crash or a concurrent reader from seeing a
+// half-written file — the same contract internal/session's writeFileAtomic
+// carries.
+func writeLedgerFile(path string, f ledgerFile) error {
 	b, err := json.Marshal(f)
 	if err != nil {
 		return fmt.Errorf("usage: marshal ledger: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("usage: mkdir: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(l.path), ".usage-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".usage-*")
 	if err != nil {
 		return fmt.Errorf("usage: temp file: %w", err)
 	}
@@ -273,7 +407,7 @@ func (l *Ledger) saveLocked() error {
 	if err := os.Chmod(tmpName, fileMode); err != nil {
 		return fmt.Errorf("usage: chmod: %w", err)
 	}
-	if err := os.Rename(tmpName, l.path); err != nil {
+	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("usage: rename: %w", err)
 	}
 	return nil

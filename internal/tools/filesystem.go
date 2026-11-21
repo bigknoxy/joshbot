@@ -319,8 +319,23 @@ func readDirIn(root, path string) ([]os.DirEntry, error) {
 
 // isAllowedPath checks if the path is in the allowed paths list.
 func (t *FilesystemTool) isAllowedPath(path string) bool {
+	return t.allowedContains(path, false)
+}
+
+// allowedContains reports whether path sits inside an allowed path. resolved
+// says the path is already symlink-resolved, in which case each allowed base
+// is resolved the same way before the comparison — matching a resolved path
+// against a lexical base fails wherever the base lives behind a symlink
+// (macOS /var -> /private/var), and the match is refused that never should
+// have been.
+func (t *FilesystemTool) allowedContains(path string, resolved bool) bool {
 	for _, allowed := range t.allowedPaths {
 		allowedClean := filepath.Clean(allowed)
+		if resolved {
+			if r, err := resolveSymlinks(allowedClean); err == nil {
+				allowedClean = r
+			}
+		}
 		if isWithinBase(path, allowedClean) || path == allowedClean {
 			return true
 		}
@@ -486,7 +501,7 @@ func (t *FilesystemTool) glob(workspace string, args map[string]any) ToolResult 
 		if err != nil {
 			return ToolResult{Error: err}
 		}
-		return t.globResult(ws, args, matches, capped)
+		return t.globResult(ws, args, matches, capped, true)
 	}
 
 	if filepath.IsAbs(pattern) {
@@ -504,11 +519,16 @@ func (t *FilesystemTool) glob(workspace string, args map[string]any) ToolResult 
 		return ToolResult{Error: fmt.Errorf("invalid pattern: %w", err)}
 	}
 
-	return t.globResult(workspace, args, matches, false)
+	return t.globResult(workspace, args, matches, false, false)
 }
 
-// globResult renders the matches of a glob.
-func (t *FilesystemTool) globResult(workspace string, args map[string]any, matches []string, capped bool) ToolResult {
+// globResult renders the matches of a glob. resolved says whether the matches
+// are symlink-resolved — the recursive walk's are, filepath.Glob's are not —
+// so the containment filter compares each side in the same terms: a resolved
+// match held against a lexical workspace or a lexical allowed entry fails on
+// any machine where the paths live behind a symlink (macOS /var ->
+// /private/var), and every match is silently filtered away.
+func (t *FilesystemTool) globResult(workspace string, args map[string]any, matches []string, capped, resolved bool) ToolResult {
 	if len(matches) == 0 {
 		return ToolResult{Output: "No files match the pattern"}
 	}
@@ -519,7 +539,7 @@ func (t *FilesystemTool) globResult(workspace string, args map[string]any, match
 	}
 	output := header + ":\n"
 	for _, match := range matches {
-		if t.restrict && !isWithinBase(match, workspace) && !t.isAllowedPath(match) {
+		if t.restrict && !isWithinBase(match, workspace) && !t.allowedContains(match, resolved) {
 			continue
 		}
 		// Make paths relative to workspace

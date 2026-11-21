@@ -180,6 +180,34 @@ func TestGlobDoubleStarInAllowedPath(t *testing.T) {
 	}
 }
 
+// The walk's matches are symlink-resolved, and on macOS every temp path is
+// (/var -> /private/var), so a resolved match held against the lexical
+// allowed entry filtered every match away and the tool answered with an
+// empty list. This reproduces that without macOS: the allowed path is
+// registered through a symlink, the pattern walks the real one.
+func TestGlobDoubleStarInAnAllowedPathReachedThroughASymlink(t *testing.T) {
+	ws := t.TempDir()
+	real := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	writeGlobFile(t, filepath.Join(real, "target.txt"))
+
+	tool := NewFilesystemTool(ws, true, alias)
+	got := globOutputPaths(runGlob(t, tool, filepath.Join(real, "**", "target.txt")).Output)
+	if len(got) != 1 || !strings.HasSuffix(got[0], "target.txt") {
+		t.Fatalf("** in an allowed path reached through a symlink = %v, want the one target.txt", got)
+	}
+
+	// The same match through the alias itself, the way a caller that only
+	// knows the registered path would ask.
+	got = globOutputPaths(runGlob(t, tool, filepath.Join(alias, "**", "target.txt")).Output)
+	if len(got) != 1 || !strings.HasSuffix(got[0], "target.txt") {
+		t.Fatalf("** through the alias = %v, want the one target.txt", got)
+	}
+}
+
 // With the restriction off the walk is still rooted at the workspace for a
 // relative pattern, and nothing is refused.
 func TestGlobDoubleStarWithoutRestriction(t *testing.T) {

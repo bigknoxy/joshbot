@@ -370,12 +370,24 @@ func (l *Ledger) save() {
 
 // fileLocked renders the on-disk shape. Caller holds mu.
 func (l *Ledger) fileLocked() ledgerFile {
+	// The maps are copied, not shared: the snapshot is marshalled outside
+	// the state mutex, and the marshal would otherwise walk these maps
+	// while the next turn's record mutates them — a race the race detector
+	// catches under concurrent turns, and a torn read without it.
+	models := make(map[string]Totals, len(l.Models))
+	for k, v := range l.Models {
+		models[k] = v
+	}
+	sessions := make(map[string]SessionTotals, len(l.Sessions))
+	for k, v := range l.Sessions {
+		sessions[k] = v
+	}
 	return ledgerFile{
 		Schema:    1,
 		StartedAt: l.StartedAt,
 		Total:     l.Total,
-		Models:    l.Models,
-		Sessions:  l.Sessions,
+		Models:    models,
+		Sessions:  sessions,
 	}
 }
 

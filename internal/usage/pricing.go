@@ -80,3 +80,33 @@ func CostOf(model string, u providers.Usage) (cost float64, known bool) {
 	cost = float64(u.PromptTokens)/1e6*r.InputUSD + float64(u.CompletionTokens)/1e6*r.OutputUSD
 	return cost, true
 }
+
+// promptTokenMargin inflates the caller's prompt-token estimate before it
+// is priced into a call's bound. The house estimator counts four characters
+// per token, which undercounts a JSON-heavy prompt, and a reservation that
+// undercounts is a reservation that does not hold.
+const promptTokenMargin = 2
+
+// callCostBound prices the worst case for one call: the caller's
+// prompt-token estimate and the request's completion bound, at the model's
+// rate. It is the amount a reservation holds against the spend ceiling, so
+// it must never be an under-estimate of what the call can cost.
+//
+// An unpriced model has no bound: its cost is unknown, and an unknown cost
+// is never guessed. The bound is zero for it, which leaves the ceiling
+// counting only the priced models — the same rule the recorded spend
+// follows.
+func callCostBound(model string, promptTokens, maxCompletionTokens int) float64 {
+	r, ok := rateFor(model)
+	if !ok {
+		return 0
+	}
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if maxCompletionTokens < 0 {
+		maxCompletionTokens = 0
+	}
+	prompt := promptTokens * promptTokenMargin
+	return float64(prompt)/1e6*r.InputUSD + float64(maxCompletionTokens)/1e6*r.OutputUSD
+}

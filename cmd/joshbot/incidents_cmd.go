@@ -47,8 +47,8 @@ func incidentsCommand() *cli.Command {
 		Name:  "incidents",
 		Usage: "Inspect the bounded record of recent turn failures",
 		Description: "The agent appends one bounded record per failed turn (turn timeout,\n" +
-			"LLM failure, mid-stream death) to ~/.joshbot/incidents.jsonl so an\n" +
-			"incident can be diagnosed without reproducing it. The window is capped\n" +
+			"LLM failure, mid-stream death, spend ceiling stop) to ~/.joshbot/incidents.jsonl\n" +
+			"so an incident can be diagnosed without reproducing it. The window is capped\n" +
 			"in memory and the file holds at most the last 500 records; this is a\n" +
 			"troubleshooting aid, not an audit trail.",
 		Subcommands: []*cli.Command{
@@ -127,7 +127,7 @@ func runIncidentsSummary(c *cli.Context) error {
 	out := incidentsOut()
 	fmt.Fprintf(out, "Incidents in the last %s:\n", incidents.HealLookbackWindow)
 	shown := false
-	for _, typ := range []string{incidents.TurnTimeout, incidents.LLMFailure, incidents.StreamDied} {
+	for _, typ := range []string{incidents.TurnTimeout, incidents.LLMFailure, incidents.StreamDied, incidents.SpendCeiling} {
 		if n := log.CountSince(incidents.HealLookbackWindow, typ); n > 0 {
 			fmt.Fprintf(out, "  %-14s %d\n", typ+":", n)
 			shown = true

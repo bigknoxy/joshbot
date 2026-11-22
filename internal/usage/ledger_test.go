@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,6 +174,102 @@ func TestLedgerSnapshot(t *testing.T) {
 	if len(sessions) != 2 || sessions[0].Session != "cli:boss" {
 		t.Errorf("sessions = %+v, want cli:boss first", sessions)
 	}
+}
+
+// A burst of concurrent calls must not spend past the ceiling (#457). The
+// reservation and the check that admitted the call happen together under the
+// ledger's lock, so only the calls that fit in the ceiling are admitted —
+// the recorded spend cannot pass the limit while calls are in flight.
+func TestLedgerCeilingHoldsUnderConcurrentReservations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	l, err := NewLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const ceiling = 1.00
+	// One call holds $0.25 of the ceiling and costs $0.25: 25k output
+	// tokens on gpt-4o at $10/M, with no prompt tokens.
+	const calls = 50
+
+	var admitted, refused atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id, err := l.Reserve("gpt-4o", ceiling, 0, 25_000)
+			if err != nil {
+				refused.Add(1)
+				return
+			}
+			admitted.Add(1)
+			l.Commit(id, "cli:alice", "gpt-4o", providers.Usage{CompletionTokens: 25_000})
+		}()
+	}
+	wg.Wait()
+
+	if got := admitted.Load(); got != 4 {
+		t.Errorf("admitted calls = %d, want 4 (the ceiling fits exactly four $0.25 calls)", got)
+	}
+	if got := refused.Load(); got != calls-4 {
+		t.Errorf("refused calls = %d, want %d", got, calls-4)
+	}
+	if _, total := l.Spend("cli:alice"); total > ceiling {
+		t.Errorf("recorded spend = $%.4f, want at most the $%.2f ceiling", total, ceiling)
+	}
+
+	// The file carries the same totals: concurrent saves must not publish
+	// an older snapshot last.
+	reloaded, err := NewLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, total := reloaded.Spend("cli:alice"); total != 1.00 {
+		t.Errorf("recorded spend on disk = $%.4f, want $1.00", total)
+	}
+}
+
+// The ledger's disk write must not happen under the mutex that guards the
+// accounting state (#457). The write is the slow part and every turn pays
+// for it, so holding the lock across it would serialise the whole agent
+// behind the slowest disk on the machine.
+func TestLedgerWriteHappensOutsideTheStateLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	l, err := NewLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writing := make(chan struct{})
+	release := make(chan struct{})
+	l.persist = func(ledgerFile) error {
+		close(writing)
+		<-release
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		l.RecordUsage("cli:alice", "gpt-4o", providers.Usage{PromptTokens: 10, CompletionTokens: 5})
+	}()
+
+	<-writing // the write is in flight
+
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		l.Spend("cli:alice")
+	}()
+	select {
+	case <-read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Spend blocked on the ledger's disk write: the state lock is held across the I/O")
+	}
+
+	close(release)
+	<-done
 }
 
 func sessionName(i int) string {

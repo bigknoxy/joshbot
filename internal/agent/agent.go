@@ -690,8 +690,22 @@ func (a *Agent) process(ctx context.Context, msg bus.InboundMessage) (string, er
 			if serr := a.sessions.Save(persistCtx, sess); serr != nil {
 				a.logger.Warn("Failed to save session after a spent-ceiling stop", "session", sess.ID, "error", serr)
 			}
-			reply := a.spendCeilingReply(sess)
+			reply := a.spendCeilingReply(sess, err)
 			emitThroughSink(ctx, narrationSeparator(a.cfg.Agents.Defaults.Streaming, sess.Messages[startSessionLen:])+reply)
+			// The stop is recorded as an incident: an automated turn (a cron
+			// job, a heartbeat) has nobody to read the reply, so without
+			// this the ceiling would halt it silently and the operator
+			// would only see a scheduled job that quietly stopped (#457).
+			a.recordIncident(incidents.Incident{
+				Type:         incidents.SpendCeiling,
+				Session:      sess.ID,
+				Channel:      msg.Channel,
+				Model:        a.modelForSession(sess),
+				ElapsedNanos: int64(time.Since(startTime)),
+				Iterations:   ts.iterations,
+				ToolCalls:    ts.toolCalls,
+				Detail:       err.Error(),
+			})
 			return reply, nil
 		}
 		reply := fmt.Sprintf("Error processing request: %v", err)
@@ -863,19 +877,6 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		a.logger.Debug("ReAct iteration", "iteration", iteration+1, "max", a.maxIterations)
 		ts.iterations++
 
-		// Budget ceiling (#436): checked before the request is built, so a
-		// spent ledger stops the loop BEFORE the next LLM call. Cost is only
-		// recorded after a call returns, so the overshoot is bounded to the
-		// one call that tripped the ceiling — the calls after it never start.
-		// With a nil ledger no ceiling exists; the check needs both.
-		if a.usageLedger != nil {
-			if ceiling := a.cfg.Agents.Defaults.SpendCeilingUSD; ceiling > 0 {
-				if _, total := a.usageLedger.Spend(sess.ID); total >= ceiling {
-					return "", fmt.Errorf("%w: $%.2f recorded against a $%.2f ceiling", errSpendCeiling, total, ceiling)
-				}
-			}
-		}
-
 		// Get tool schemas if available
 		var toolSchemas []providers.Tool
 		if a.tools != nil {
@@ -891,14 +892,27 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			Tools:       toolSchemas,
 		}
 
+		// Budget ceiling (#436): the call is admitted against a reservation
+		// before it is sent. The reservation is what makes the ceiling
+		// atomic — the check and the hold happen together under the
+		// ledger's lock, so two turns cannot both pass a check that
+		// neither has paid for yet, and the recorded spend cannot pass the
+		// ceiling while calls are in flight (#457).
+		//
+		// With no ceiling (or no ledger) there is nothing to hold, and the
+		// call is recorded directly, exactly as before.
+		var resp *providers.ChatResponse
+		reservationID, err := a.reserveCallBudget(req)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", errSpendCeiling, err)
+		}
+
 		// When streaming is enabled and a stream sink is attached to the
 		// request context, use ChatStream and forward text deltas to the
 		// sink as they arrive. Otherwise, use the non-streaming Chat path.
 		sink := streamSinkFromContext(ctx)
 		streaming := a.cfg.Agents.Defaults.Streaming && sink != nil
 
-		var resp *providers.ChatResponse
-		var err error
 		if streaming {
 			resp, err = a.streamChat(ctx, req, sink, ts)
 			// A provider with no streaming endpoint (github-copilot today)
@@ -924,6 +938,10 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 			resp, err = a.provider.Chat(ctx, req)
 		}
 		if err != nil {
+			// The call never happened: the budget it was admitted against
+			// is given back, so the ceiling keeps it available instead of
+			// charging for a call that was never made.
+			a.releaseCallBudget(reservationID)
 			return "", fmt.Errorf("LLM call failed: %w", err)
 		}
 
@@ -944,9 +962,7 @@ func (a *Agent) reactLoop(ctx context.Context, messages []providers.Message, ses
 		if usageSink := usageFromContext(ctx); usageSink != nil {
 			usageSink(resp.Usage)
 		}
-		if a.usageLedger != nil {
-			a.usageLedger.RecordUsage(sess.ID, callModel, resp.Usage)
-		}
+		a.recordCallUsage(sess, reservationID, callModel, resp.Usage)
 		ts.answered = true
 
 		// Check if we have a valid response

@@ -37,6 +37,11 @@ const (
 	TurnTimeout = "turn_timeout"
 	LLMFailure  = "llm_failure"
 	StreamDied  = "stream_died"
+	// SpendCeiling is a turn the spend ceiling stopped. It is recorded
+	// because the stop is a configured outcome, not a failure — but an
+	// automated turn has nobody to read the reply it would have shown,
+	// so without the record a scheduled job would stop quietly.
+	SpendCeiling = "spend_ceiling"
 )
 
 // fileMode mirrors internal/session and internal/tuning: owner-only, because

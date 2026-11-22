@@ -33,10 +33,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM alpine:3.24 AS runtime
 
 # Install CA certificates for HTTPS and runtime dependencies.
-# --upgrade: the base image ships the zlib it was built with, and `apk add`
+# --upgrade: the base image ships the packages it was built with, and `apk add`
 # leaves an already-installed package alone, so CVE-2026-4738 (zlib < 1.4-r0)
-# survived a base bump until it was named explicitly.
-RUN apk add --no-cache --upgrade ca-certificates tzdata zlib
+# survived a base bump until it was named explicitly. libssl3 and libcrypto3
+# are named for the same reason (#495): five OpenSSL CVEs (CVE-2026-95692 and
+# friends) ship inside the base image and stay at the base's version however
+# fresh the build is, until the package is named here.
+RUN apk add --no-cache --upgrade ca-certificates tzdata zlib libssl3 libcrypto3
 
 # Create non-root user for security
 RUN adduser -D -g '' joshbot

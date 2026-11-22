@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The image scan is green again: Alpine's OpenSSL packages are named in the apk upgrade, the way zlib was (#495).** The Security workflow's `trivy-image` job went red on `main` with no image-related change anywhere: five OpenSSL CVEs (CVE-2026-95692 and friends) had been published to the Alpine security database, all fixed in `libssl3`/`libcrypto3` `3.5.9-r1`, and the runtime image still shipped the base's `3.5.9-r0` — because `apk add --upgrade` upgrades only the packages it names, and these arrive as dependencies of the base image. The same trap #450 closed for zlib, closed the same way: the packages are named in the upgrade line, so a build installs the mirror's current version instead of the base's. The rebuilt image scans clean at MEDIUM and above, not just at the job's HIGH/CRITICAL gate.
+
 ### Added
 - **The channel questions are asked on a plain first start (#461).** Most installs are for Telegram, so the first thing a new user ran walked them through provider setup and then left them with a bot that answers nobody: the channel they came from was the one thing still unconfigured, and nothing said so. The Telegram and Discord questions are now part of the normal flow — "no, skip for now" is still a normal answer and not an error, and the provider setup that came before it is untouched either way. `--configure-channels` still means exactly what it always meant; `--no-channels` is the new way to skip the questions. A channel that is already configured is not offered again, while the other channel stays reachable, so adding a second one is still one answer away.
 

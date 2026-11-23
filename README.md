@@ -7,7 +7,13 @@
 [![GitHub release](https://img.shields.io/github/v/release/bigknoxy/joshbot?include_prereleases)](https://github.com/bigknoxy/joshbot/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A nanobot-class personal AI agent as a **single ~19MB Go binary** — no Python, no venv, no runtime dependencies. Self-hosted, curl to running in under a minute, and scriptable enough to test in CI. Self-learning memory, skill self-creation, subagent delegation, multi-provider LLM routing, and Telegram/Discord chat all ship in the one static binary.
+**A nanobot-class personal AI agent as a single ~19MB Go binary — no Python, no venv.** Self-hosted, curl to running in under a minute, and scriptable enough to test in CI. Self-learning memory, skill self-creation, subagent delegation, multi-provider LLM routing, and Telegram/Discord chat all ship in the one static binary.
+
+<p align="center">
+  <img src="docs/demo.gif" alt="joshbot demo: a real agent turn — a tool call, the tool's real output, and an answer built from it — with no API key and no network" width="680">
+</p>
+
+That is `joshbot demo`: a real agent turn, real tools, no API key, no network, no account. The model's replies are scripted; everything around them is the binary you would install.
 
 ### Why joshbot instead of a Python agent stack?
 
@@ -51,6 +57,16 @@ joshbot is heavier on guarantees, lighter on your machine.
 
 ## Quick Start
 
+### See it work (no key needed)
+
+After any install below:
+
+```bash
+joshbot demo
+```
+
+Runs a real agent turn — the real loop, the real tools — against a scripted model. No API key, no network, no account.
+
 ### One-Line Install (Recommended)
 
 ```bash
@@ -63,6 +79,22 @@ For specific versions:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bigknoxy/joshbot/main/install.sh | bash -s -- -v v1.0.0
 ```
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew install bigknoxy/joshbot/joshbot
+```
+
+Builds from source with Go; `joshbot demo` and `joshbot onboard` are the first two things to run.
+
+### Nix
+
+```bash
+nix run github:bigknoxy/joshbot
+```
+
+The flake in the repo root maps your platform to the released binary from the latest GitHub release. After a new release, refresh the hashes the same way any flake is updated.
 
 ### Install with Go
 
@@ -91,6 +123,7 @@ docker run -it -v ~/.joshbot:/home/joshbot/.joshbot joshbot onboard
 
 ```bash
 joshbot onboard # First-time setup (interactive)
+joshbot demo # Watch a real agent turn — no API key, no network
 joshbot onboard --force --provider nvidia --api-key "$NVIDIA_API_KEY" # non-interactive, skips every prompt
 joshbot agent # Interactive CLI chat
 joshbot agent --debug # CLI chat with debug logging

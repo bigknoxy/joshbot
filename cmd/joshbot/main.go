@@ -408,6 +408,7 @@ func newApp() *cli.App {
 				Action: withJSONErrors(runPreflight),
 			},
 			mcpCommand(),
+			demoCommand(),
 			profilesCommand(),
 			{
 				Name:  "skills",

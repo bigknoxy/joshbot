@@ -80,8 +80,11 @@ type Logger struct {
 
 // Global logger instance.
 var (
-	global     *Logger
-	globalOnce sync.Once
+	// currentLevel mirrors the global logger's level so GetLevel can
+	// report it. The logger itself keeps the level private.
+	currentLevel = InfoLevel
+	global       *Logger
+	globalOnce   sync.Once
 )
 
 // traceIDFunc is an optional function to generate trace IDs.
@@ -298,7 +301,17 @@ func Close() error {
 
 // SetLevel sets the global log level.
 func SetLevel(level Level) {
+	currentLevel = level
 	Get().Logger.SetLevel(level)
+}
+
+// GetLevel returns the global log level.
+//
+// It exists so a caller that changes the level can put it back. The level
+// is process-wide, and a caller that lowers it for its own output and
+// leaves it lowered changes the behaviour of everything that runs after it.
+func GetLevel() Level {
+	return currentLevel
 }
 
 // Debug logs a message at debug level.

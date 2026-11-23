@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Skill represents a discovered skill.
@@ -94,6 +95,14 @@ func (s *Skill) ToSummaryXML() string {
 
 // Loader discovers skills in bundled and workspace directories.
 type Loader struct {
+	// mu guards the discovery cache — loaded and skills. The cache is read
+	// on the turn's goroutine (GetSkill, LoadSummary, Untrusted, List) and
+	// replaced from a background one: afterReActDetection creates a skill
+	// the turn produced and invalidates the cache, so the next turn's
+	// notice and prompt are built while the old map is being torn down
+	// (#497). Everything that touches the cache holds mu; the walk callback
+	// does not, because it only ever runs inside Discover.
+	mu sync.Mutex
 	// bundledDir is empty in production: the bundled set is embedded in the
 	// binary (see bundled.go). It exists so tests can point discovery at a
 	// fixture directory. It was previously the relative path "skills", which
@@ -131,6 +140,14 @@ func (l *Loader) TrustStore() *TrustStore { return l.trust }
 
 // Discover scans bundled and workspace skills. Workspace overrides bundled.
 func (l *Loader) Discover() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.discoverLocked()
+}
+
+// discoverLocked rebuilds the cache. Caller holds mu; the walk callback
+// writes l.skills and relies on that.
+func (l *Loader) discoverLocked() error {
 	l.skills = map[string]*Skill{}
 
 	l.discoverBundled()
@@ -184,8 +201,10 @@ func (l *Loader) Untrust(name string) error {
 // name. These are withheld from the model but must stay visible to the
 // operator, or there is no way to approve them.
 func (l *Loader) Untrusted() []*Skill {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.loaded {
-		_ = l.Discover()
+		_ = l.discoverLocked()
 	}
 	var out []*Skill
 	for _, sk := range l.skills {
@@ -309,8 +328,10 @@ func parseYAMLList(s string) []string {
 // LoadSummary returns XML summary of discovered skills. Implements SkillsLoader interface used by agent.
 // Skills with Always=true have their full content injected inline.
 func (l *Loader) LoadSummary(ctx context.Context) (string, error) {
+	l.mu.Lock()
 	if !l.loaded {
-		if err := l.Discover(); err != nil {
+		if err := l.discoverLocked(); err != nil {
+			l.mu.Unlock()
 			return "", err
 		}
 	}
@@ -331,7 +352,9 @@ func (l *Loader) LoadSummary(ctx context.Context) (string, error) {
 			}
 		}
 	}
-	return strings.Join(parts, "\n"), nil
+	summary := strings.Join(parts, "\n")
+	l.mu.Unlock()
+	return summary, nil
 }
 
 // LoadFullSkillContent returns the full content of a specific skill by name.
@@ -352,8 +375,10 @@ func (l *Loader) LoadFullSkillContent(ctx context.Context, skillName string) (st
 
 // GetSkill returns a discovered skill by name (nil if not found)
 func (l *Loader) GetSkill(name string) *Skill {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.loaded {
-		_ = l.Discover()
+		_ = l.discoverLocked()
 	}
 	return l.skills[name]
 }
@@ -361,6 +386,8 @@ func (l *Loader) GetSkill(name string) *Skill {
 // Invalidate clears the skill cache so the next call to Discover, LoadSummary, or GetSkill
 // will re-scan both bundled and workspace skill directories.
 func (l *Loader) Invalidate() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.loaded = false
 	l.skills = map[string]*Skill{}
 }
@@ -401,8 +428,10 @@ func (l *Loader) Delete(name string) error {
 
 // List returns all discovered skills.
 func (l *Loader) List() []*Skill {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.loaded {
-		_ = l.Discover()
+		_ = l.discoverLocked()
 	}
 	skills := make([]*Skill, 0, len(l.skills))
 	for _, sk := range l.skills {

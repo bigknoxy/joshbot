@@ -1808,7 +1808,7 @@ reaches the prompt.
 | `write_file` | Write/create files |
 | `edit_file` | Find-and-replace editing |
 | `list_dir` | List directory contents |
-| `glob` | Find files by pattern |
+| `glob` | Find files by pattern (a `**` segment matches any depth: `**/name` finds the name in the root and below) |
 | `grep` | Search file contents |
 | `shell` | Execute shell commands (deny-listed, allowlisted env, optional Linux sandbox) |
 | `web_search` | Search the web (exa-cli → Exa MCP → DuckDuckGo fallback chain — no key required) |

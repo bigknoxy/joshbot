@@ -118,7 +118,7 @@ func (t *FilesystemTool) Parameters() []Parameter {
 		{
 			Name:        "pattern",
 			Type:        ParamString,
-			Description: "Glob pattern (glob)",
+			Description: "Glob pattern (glob). A `**` segment matches any depth: `**/name` finds name in the root and at any depth, `**` alone finds every entry under the root",
 			Required:    false,
 		},
 		{
@@ -319,8 +319,23 @@ func readDirIn(root, path string) ([]os.DirEntry, error) {
 
 // isAllowedPath checks if the path is in the allowed paths list.
 func (t *FilesystemTool) isAllowedPath(path string) bool {
+	return t.allowedContains(path, false)
+}
+
+// allowedContains reports whether path sits inside an allowed path. resolved
+// says the path is already symlink-resolved, in which case each allowed base
+// is resolved the same way before the comparison — matching a resolved path
+// against a lexical base fails wherever the base lives behind a symlink
+// (macOS /var -> /private/var), and the match is refused that never should
+// have been.
+func (t *FilesystemTool) allowedContains(path string, resolved bool) bool {
 	for _, allowed := range t.allowedPaths {
 		allowedClean := filepath.Clean(allowed)
+		if resolved {
+			if r, err := resolveSymlinks(allowedClean); err == nil {
+				allowedClean = r
+			}
+		}
 		if isWithinBase(path, allowedClean) || path == allowedClean {
 			return true
 		}
@@ -477,6 +492,18 @@ func (t *FilesystemTool) glob(workspace string, args map[string]any) ToolResult 
 		return ToolResult{Error: errors.New("pattern is required")}
 	}
 
+	// A "**" segment is not something filepath.Glob understands: it reads
+	// "**/name" as a literal two-star name and matches nothing at all. The
+	// recursive walk is the only path that gives it its usual meaning.
+	if hasDoubleStarSegment(pattern) {
+		ws := globWorkspace(workspace)
+		matches, capped, err := t.globDoubleStar(ws, pattern)
+		if err != nil {
+			return ToolResult{Error: err}
+		}
+		return t.globResult(ws, args, matches, capped, true)
+	}
+
 	if filepath.IsAbs(pattern) {
 		pattern = filepath.Clean(pattern)
 		if t.restrict && !isWithinBase(pattern, workspace) && !t.isAllowedPath(pattern) {
@@ -492,13 +519,27 @@ func (t *FilesystemTool) glob(workspace string, args map[string]any) ToolResult 
 		return ToolResult{Error: fmt.Errorf("invalid pattern: %w", err)}
 	}
 
+	return t.globResult(workspace, args, matches, false, false)
+}
+
+// globResult renders the matches of a glob. resolved says whether the matches
+// are symlink-resolved — the recursive walk's are, filepath.Glob's are not —
+// so the containment filter compares each side in the same terms: a resolved
+// match held against a lexical workspace or a lexical allowed entry fails on
+// any machine where the paths live behind a symlink (macOS /var ->
+// /private/var), and every match is silently filtered away.
+func (t *FilesystemTool) globResult(workspace string, args map[string]any, matches []string, capped, resolved bool) ToolResult {
 	if len(matches) == 0 {
 		return ToolResult{Output: "No files match the pattern"}
 	}
 
-	output := fmt.Sprintf("Found %d files matching %s:\n", len(matches), args["pattern"])
+	header := fmt.Sprintf("Found %d files matching %s", len(matches), args["pattern"])
+	if capped {
+		header += fmt.Sprintf(" (result cap %d reached; more matches may exist)", maxGlobResults)
+	}
+	output := header + ":\n"
 	for _, match := range matches {
-		if t.restrict && !isWithinBase(match, workspace) && !t.isAllowedPath(match) {
+		if t.restrict && !isWithinBase(match, workspace) && !t.allowedContains(match, resolved) {
 			continue
 		}
 		// Make paths relative to workspace

@@ -1059,8 +1059,17 @@ func setupComponents(cfg *config.Config) (*bus.MessageBus, providers.Provider, *
 	// Seatbelt, and a Linux kernel old enough to lack Landlock.
 	resolvedSandbox := tools.ResolveSandboxMode(sandboxMode)
 	if sandboxMode == tools.SandboxAuto && resolvedSandbox == tools.SandboxOff {
-		log.Warn("Shell sandbox unavailable on this platform; shell commands run with the allowlist-only boundary",
-			"mechanism", tools.SandboxDescription())
+		// Say which of the two failures this is. "Unavailable on this
+		// platform" named landlock on Linux, where the platform is the one
+		// that has landlock: the kernel here simply does not enable it, and
+		// a reader left with "unavailable ... landlock (linux)" could not
+		// tell whether the sandbox was missing or merely switched off.
+		reason := "this platform has no " + tools.SandboxDescription() + " backend"
+		if tools.SandboxAvailable() {
+			reason = "the running kernel does not provide " + tools.SandboxDescription()
+		}
+		log.Warn("Shell containment is off: "+reason+"; shell commands run with the allowlist-only boundary",
+			"sandbox", "off")
 	}
 	if resolvedSandbox != tools.SandboxOff {
 		if !tools.SandboxAvailable() {
@@ -1670,6 +1679,10 @@ func runAgent(c *cli.Context) error {
 	if err := applyProfile(c, cfg); err != nil {
 		return err
 	}
+	// The logger's level, before anything logs: an explicit flag wins, then
+	// the environment, then the config file; an interactive session with
+	// nothing asked for is quiet (#505).
+	applyConfiguredLogLevel(c, cfg)
 
 	// Validate --output-format before doing any work so a typo fails fast
 	// with a validation exit code rather than after model setup.

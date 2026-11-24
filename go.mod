@@ -13,7 +13,7 @@ require (
 require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/google/uuid v1.6.0
-	github.com/landlock-lsm/go-landlock v0.10.1
+	github.com/landlock-lsm/go-landlock v0.11.2
 	github.com/mattn/go-isatty v0.0.24
 	github.com/muesli/termenv v0.16.0
 	github.com/urfave/cli/v2 v2.27.7
@@ -43,5 +43,5 @@ require (
 	golang.org/x/crypto v0.59.0 // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/net v0.62.0 // indirect
-	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
+	kernel.org/pub/linux/libs/security/libcap/psx v1.2.78 // indirect
 )

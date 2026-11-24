@@ -241,8 +241,23 @@ func decodeByte(b byte) keyEvent {
 
 // makeRaw switches the terminal into raw mode, returning the previous state so
 // the caller can restore it. fd must be a terminal.
+// makeRaw puts the terminal into raw mode and returns the state to restore.
+//
+// It does not use term.MakeRaw: that clears OPOST, and with output
+// post-processing off the kernel stops translating "\n" into "\r\n". Every
+// multi-line reply in the interactive TUI then starts at the column the
+// previous line ended — the staircase of #503. setRawMode keeps OPOST|ONLCR
+// on, so the agent's replies, the logger and the spinner all get the
+// newline behaviour they expect.
 func makeRaw(fd int) (*term.State, error) {
-	return term.MakeRaw(fd)
+	old, err := term.GetState(fd)
+	if err != nil {
+		return nil, err
+	}
+	if err := setRawMode(fd); err != nil {
+		return nil, err
+	}
+	return old, nil
 }
 
 // restoreTerminal returns a terminal to its pre-raw state.

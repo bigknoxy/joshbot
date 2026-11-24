@@ -17,6 +17,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/muesli/termenv v0.16.0
 	github.com/urfave/cli/v2 v2.27.7
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
 	golang.org/x/text v0.44.0
 	gopkg.in/telebot.v3 v3.3.8
@@ -42,6 +43,5 @@ require (
 	golang.org/x/crypto v0.59.0 // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
 )

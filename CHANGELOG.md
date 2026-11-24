@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **The README says how quiet the interactive TUI is, and how to turn the records back on (#510).** An interactive session runs at Warn; `--verbose`, `--debug` or `--log-level info` brings the logger's records back, and a level in the config file or in `JOSHBOT_LOG_LEVEL` is honoured too.
+
 ### Security
 - **The Discord channel's WebSocket dependency no longer uses a weak PRNG for the mask key (#508).** `govulncheck` fails with GO-2026-6278: `github.com/gorilla/websocket v1.5.3` derives the WebSocket mask key from a cryptographically weak source. There is no tagged v1.5.4, so the indirect dependency (through `discordgo`) moves to the fixed commit `v1.5.4-0.20240701034025-d67f41855da4`. `govulncheck ./...` is clean.
 

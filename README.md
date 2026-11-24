@@ -297,6 +297,13 @@ when stdout is not a TTY (piped output, `joshbot agent -m "..."`,
 `scripts/verify-local.sh`, etc.), so scripted and non-interactive usage stays
 clean and parseable — no spinner, no ANSI codes, no progress lines.
 
+An interactive session is also quiet by default: the logger's INFO records
+used to land in the middle of the conversation, so the session runs at Warn
+and the records are for when you ask for them — `--verbose`, `--debug`, or
+`--log-level info`. A level in the config file (`log_level`) or in
+`JOSHBOT_LOG_LEVEL` is honoured too, with the flags winning over the
+environment and the environment over the file.
+
 ### Debug Mode
 
 Use `--debug` flag to enable detailed logging for troubleshooting:

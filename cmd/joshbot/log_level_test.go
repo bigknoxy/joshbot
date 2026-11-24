@@ -34,6 +34,7 @@ func levelContext(t *testing.T) *cli.Context {
 func TestApplyConfiguredLogLevelQuietsTheInteractiveSession(t *testing.T) {
 	restore := log.GetLevel()
 	defer log.SetLevel(restore)
+	log.SetLevel(log.InfoLevel)
 	withTTY(t, true)
 
 	cfg := &config.Config{LogLevel: "info"}
@@ -47,6 +48,7 @@ func TestApplyConfiguredLogLevelQuietsTheInteractiveSession(t *testing.T) {
 func TestApplyConfiguredLogLevelHonoursAnExplicitFlag(t *testing.T) {
 	restore := log.GetLevel()
 	defer log.SetLevel(restore)
+	log.SetLevel(log.InfoLevel)
 
 	c := levelContext(t)
 	if err := c.Set("log-level", "debug"); err != nil {
@@ -65,6 +67,7 @@ func TestApplyConfiguredLogLevelHonoursAnExplicitFlag(t *testing.T) {
 func TestApplyConfiguredLogLevelHonoursTheConfig(t *testing.T) {
 	restore := log.GetLevel()
 	defer log.SetLevel(restore)
+	log.SetLevel(log.InfoLevel)
 	withTTY(t, true)
 
 	applyConfiguredLogLevel(levelContext(t), &config.Config{LogLevel: "error"})
@@ -79,6 +82,7 @@ func TestApplyConfiguredLogLevelHonoursTheConfig(t *testing.T) {
 func TestApplyConfiguredLogLevelTreatsTheConfigsInfoAsTheDefault(t *testing.T) {
 	restore := log.GetLevel()
 	defer log.SetLevel(restore)
+	log.SetLevel(log.InfoLevel)
 	withTTY(t, true)
 
 	applyConfiguredLogLevel(levelContext(t), &config.Config{LogLevel: "info"})
@@ -92,6 +96,7 @@ func TestApplyConfiguredLogLevelTreatsTheConfigsInfoAsTheDefault(t *testing.T) {
 func TestApplyConfiguredLogLevelHonoursTheEnvironment(t *testing.T) {
 	restore := log.GetLevel()
 	defer log.SetLevel(restore)
+	log.SetLevel(log.InfoLevel)
 	withTTY(t, true)
 
 	t.Setenv("JOSHBOT_LOG_LEVEL", "error")
@@ -105,6 +110,7 @@ func TestApplyConfiguredLogLevelHonoursTheEnvironment(t *testing.T) {
 func TestApplyConfiguredLogLevelHonoursAnExplicitInfoFromTheEnvironment(t *testing.T) {
 	restore := log.GetLevel()
 	defer log.SetLevel(restore)
+	log.SetLevel(log.InfoLevel)
 	withTTY(t, true)
 
 	t.Setenv("JOSHBOT_LOG_LEVEL", "info")
@@ -119,6 +125,7 @@ func TestApplyConfiguredLogLevelHonoursAnExplicitInfoFromTheEnvironment(t *testi
 func TestApplyConfiguredLogLevelLeavesNonInteractiveRunsAlone(t *testing.T) {
 	restore := log.GetLevel()
 	defer log.SetLevel(restore)
+	log.SetLevel(log.InfoLevel)
 	withTTY(t, true)
 
 	c := levelContext(t)

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A provider is no longer asked for another provider's model id (#513).** On a fresh install whose only credential is an NVIDIA key in the environment, joshbot registered nvidia and no openrouter while `agents.defaults.model` still held the global default `openrouter/free` — so NVIDIA was asked for a model it does not serve and answered `404 page not found`, and the error told the user to check a model name that was never wrong. A provider now answers with its own model: its configured one, else the global one when that model id belongs to it (it is that provider's registered default, or it carries the provider's name), else its own registry default. The same shape bit a *fallback*, which inherited the primary's model id; it does not any more. Verified by a fresh install (`rm -rf ~/.joshbot`, then `joshbot agent -m "..."`) answering for the first time.
 ### Documentation
 - **The README says how quiet the interactive TUI is, and how to turn the records back on (#510).** An interactive session runs at Warn; `--verbose`, `--debug` or `--log-level info` brings the logger's records back, and a level in the config file or in `JOSHBOT_LOG_LEVEL` is honoured too.
 

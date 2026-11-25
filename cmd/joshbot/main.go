@@ -691,32 +691,34 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 
 		// Register OpenRouter (if configured and enabled)
 		if p, ok := cfg.Providers["openrouter"]; ok && p.APIKey != "" && p.Enabled {
+			openrouterModel := providerModelFor(cfg, "openrouter", p)
 			openrouterProvider, err := providers.GetProvider("openrouter", providers.Config{
 				APIKey:             p.APIKey,
 				APIBase:            p.APIBase,
 				ExtraHeaders:       p.ExtraHeaders,
 				Timeout:            p.Timeout.Duration(),
 				DisableStreamUsage: p.DisableStreamUsage,
-				Model:              cfg.Agents.Defaults.Model,
+				Model:              openrouterModel,
 				MaxTokens:          cfg.Agents.Defaults.MaxTokens,
 				Temperature:        cfg.Agents.Defaults.Temperature,
 			})
 			if err != nil {
 				log.Warn("Failed to create OpenRouter provider", "error", err)
 			} else {
-				multiProvider.Register("openrouter", openrouterProvider, cfg.Agents.Defaults.Model, 0, p.Enabled)
+				multiProvider.Register("openrouter", openrouterProvider, openrouterModel, 0, p.Enabled)
 			}
 		}
 
 		// Register NVIDIA NIM (if configured) - first fallback
 		if p, ok := cfg.Providers["nvidia"]; ok && p.APIKey != "" && p.Enabled {
+			nvidiaModel := providerModelFor(cfg, "nvidia", p)
 			nvidiaProvider, err := providers.GetProvider("nvidia", providers.Config{
 				APIKey:             p.APIKey,
 				APIBase:            p.APIBase,
 				ExtraHeaders:       p.ExtraHeaders,
 				Timeout:            p.Timeout.Duration(),
 				DisableStreamUsage: p.DisableStreamUsage,
-				Model:              p.Model,
+				Model:              nvidiaModel,
 			})
 			if err != nil {
 				log.Warn("Failed to create NVIDIA provider", "error", err)
@@ -725,22 +727,20 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "nvidia"); idx >= 0 {
 					priority = idx + 1
 				}
-				model := p.Model
-				if model == "" {
-					model = cfg.Agents.Defaults.Model
-				}
-				multiProvider.Register("nvidia", nvidiaProvider, model, priority, p.Enabled)
+				multiProvider.Register("nvidia", nvidiaProvider, nvidiaModel, priority, p.Enabled)
 			}
 		}
 
 		// Register Groq (if configured)
 		if p, ok := cfg.Providers["groq"]; ok && p.APIKey != "" && p.Enabled {
+			groqModel := providerModelFor(cfg, "groq", p)
 			groqProvider, err := providers.GetProvider("groq", providers.Config{
 				APIKey:             p.APIKey,
 				APIBase:            p.APIBase,
 				ExtraHeaders:       p.ExtraHeaders,
 				Timeout:            p.Timeout.Duration(),
 				DisableStreamUsage: p.DisableStreamUsage,
+				Model:              groqModel,
 			})
 			if err != nil {
 				log.Warn("Failed to create Groq provider", "error", err)
@@ -749,7 +749,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "groq"); idx >= 0 {
 					priority = idx + 1
 				}
-				multiProvider.Register("groq", groqProvider, "", priority, p.Enabled)
+				multiProvider.Register("groq", groqProvider, groqModel, priority, p.Enabled)
 			}
 		}
 
@@ -770,10 +770,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "poolside"); idx >= 0 {
 					priority = idx + 1
 				}
-				model := p.Model
-				if model == "" {
-					model = providers.GetDefaultModel("poolside")
-				}
+				model := providerModelFor(cfg, "poolside", p)
 				multiProvider.Register("poolside", poolsideProvider, model, priority, p.Enabled)
 			}
 		}
@@ -802,10 +799,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 				if idx := indexOf(cfg.ProviderDefaults.FallbackOrder, "ollama"); idx >= 0 {
 					priority = idx + 1
 				}
-				model := p.Model
-				if model == "" {
-					model = providers.GetDefaultModel("ollama")
-				}
+				model := providerModelFor(cfg, "ollama", p)
 				multiProvider.Register("ollama", ollamaProvider, model, priority, p.Enabled)
 			}
 		}
@@ -897,10 +891,7 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 			if base == "" {
 				base = providers.GetDefaultAPIBaseFor(canonical)
 			}
-			model := p.Model
-			if model == "" {
-				model = providers.GetDefaultModel(canonical)
-			}
+			model := providerModelFor(cfg, canonical, p)
 			// The fallback order is operator-written too, so it is matched by
 			// canonical name for the same reason.
 			priority := len(cfg.ProviderDefaults.FallbackOrder) + 1

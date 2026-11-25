@@ -222,20 +222,32 @@ func (mp *MultiProvider) screenForDocuments(req ChatRequest, providers []*Provid
 
 // Chat sends a chat request with automatic fallback.
 func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	providerName, modelName := mp.parseModel(req.Model)
-	providerName = mp.effectiveAddressed(providerName)
+	// The provider the request names, and the provider that will actually be
+	// dialled, are not always the same one. They differ when the named
+	// provider is not registered — a fresh install whose only credential is
+	// for another provider, with the global default model still naming the
+	// absent one — and the difference decides the model id on the wire.
+	//
+	// Only a genuinely addressed provider may carry the requested model id,
+	// because that id belongs to the provider that is not there: the
+	// stand-in's own model is what it can actually answer. Sending
+	// "openrouter/free" to nvidia is how a fresh install that has an NVIDIA
+	// key got a 404 "page not found" and an error telling the user to check
+	// a model name that was never wrong.
+	requestedProvider, modelName := mp.parseModel(req.Model)
+	providerName := mp.effectiveAddressed(requestedProvider)
 	providers := mp.getFallbackChain(providerName)
 
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
 	}
 
-	providers, err := mp.screenForImages(req, providers, modelName, providerName)
+	providers, err := mp.screenForImages(req, providers, modelName, requestedProvider)
 	if err != nil {
 		return nil, err
 	}
 
-	providers, err = mp.screenForDocuments(req, providers, modelName, providerName)
+	providers, err = mp.screenForDocuments(req, providers, modelName, requestedProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +269,7 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		}
 
 		tryReq := req
-		tryReq.Model = mp.resolveModel(entry, modelName, entry.Name == providerName)
+		tryReq.Model = mp.resolveModel(entry, modelName, entry.Name == requestedProvider)
 
 		mp.logger.Debug("Trying provider",
 			"provider", entry.Name,
@@ -324,20 +336,22 @@ func (mp *MultiProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 
 // ChatStream sends a streaming chat request with fallback.
 func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
-	providerName, modelName := mp.parseModel(req.Model)
-	providerName = mp.effectiveAddressed(providerName)
+	// The same split as Chat: the named provider decides the model id, the
+	// effective one decides who is dialled first.
+	requestedProvider, modelName := mp.parseModel(req.Model)
+	providerName := mp.effectiveAddressed(requestedProvider)
 	providers := mp.getFallbackChain(providerName)
 
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
 	}
 
-	providers, err := mp.screenForImages(req, providers, modelName, providerName)
+	providers, err := mp.screenForImages(req, providers, modelName, requestedProvider)
 	if err != nil {
 		return nil, err
 	}
 
-	providers, err = mp.screenForDocuments(req, providers, modelName, providerName)
+	providers, err = mp.screenForDocuments(req, providers, modelName, requestedProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +370,7 @@ func (mp *MultiProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 		}
 
 		tryReq := req
-		tryReq.Model = mp.resolveModel(entry, modelName, entry.Name == providerName)
+		tryReq.Model = mp.resolveModel(entry, modelName, entry.Name == requestedProvider)
 
 		var ch <-chan StreamChunk
 		err := mp.tryWithRetry(ctx, entry.Name, func() error {

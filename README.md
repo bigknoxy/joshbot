@@ -7,7 +7,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/bigknoxy/joshbot?include_prereleases)](https://github.com/bigknoxy/joshbot/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**A nanobot-class personal AI agent as a single ~19MB Go binary — no Python, no venv.** Self-hosted, curl to running in under a minute, and scriptable enough to test in CI. Self-learning memory, skill self-creation, subagent delegation, multi-provider LLM routing, and Telegram/Discord chat all ship in the one static binary.
+**A nanobot-class personal AI agent as a single ~22MB Go binary — no Python, no venv.** Self-hosted, curl to running in under a minute, and scriptable enough to test in CI. Self-learning memory, skill self-creation, subagent delegation, multi-provider LLM routing, and Telegram/Discord chat all ship in the one static binary.
 
 <p align="center">
   <img src="docs/demo.gif" alt="joshbot demo: a real agent turn — a tool call, the tool's real output, and an answer built from it — with no API key and no network" width="680">
@@ -20,7 +20,7 @@ That is `joshbot demo`: a real agent turn, real tools, no API key, no network, n
 | | joshbot | Typical Python agent (e.g. nanobot) |
 |---|---|---|
 | **Install** | `curl … \| bash` → one binary | `pip`/`venv`, interpreter + wheels to keep in sync |
-| **Runtime deps** | Zero — static Go binary (~19MB) | CPython + a dependency tree |
+| **Runtime deps** | Zero — static Go binary (~22MB) | CPython + a dependency tree |
 | **Startup** | No interpreter, no imports — the binary is the runtime | Interpreter + import cost |
 | **Shell safety** | Deny-listed **and** env-stripped (no API keys inherited), optional OS sandbox | Varies |
 | **Untrusted skills** | Inert until `joshbot skills trust`, bound to a directory-tree hash | Varies |
@@ -452,8 +452,10 @@ joshbot skills untrust <name> # Revoke approval
 
 A session is one conversation, keyed `channel:senderID` and stored as JSONL under
 `~/.joshbot/sessions`. There is exactly one per user per channel and it is loaded
-automatically on every message, so there is nothing to "resume" — what these
-commands give you is a way to see what exists, read one back, and clear one.
+automatically on every message, so most of these commands are a way to see what
+exists, read one back, and clear one. The interactive CLI is the exception: it
+talks to `cli:cli_user` unless you point it at a session, and `switch`, `resume`
+and `current` are how you do that.
 
 ```bash
 joshbot sessions list                    # ID, message count, size, age, notes
@@ -465,7 +467,18 @@ joshbot sessions prune --older-than 30d  # delete everything untouched for 30 da
 joshbot sessions new <id>                # archive it and start empty
 joshbot sessions export <id>             # redacted Markdown + JSON manifest
 joshbot sessions export <id> --out ./bug --force
+joshbot sessions switch <id>            # the interactive CLI continues this session
+joshbot sessions switch 3               # ...by the number shown in `list`
+joshbot sessions resume                 # ...or the most recently updated one
+joshbot sessions current                # which session the CLI will continue
+joshbot sessions current --reset        # back to the default (cli:cli_user)
 ```
+
+The choice is a file, so it outlives the command that made it and the next
+`joshbot agent` opens that conversation — the recap it prints at start-up names
+it, so it is clear which one you are in. The id never has to be typed: `switch`
+and `resume` both accept the number a session has in `joshbot sessions list`. The
+`--resume` and `--continue` flags for a single non-interactive run are unchanged.
 
 `show` output is redacted: credentials and your home directory are stripped
 before display, though the files on disk are left verbatim. Destructive
@@ -1820,6 +1833,22 @@ so a server can never shadow a built-in tool like `shell`.
 > the same allowlisted, credential-screened environment as shell children (no
 > provider API keys), but their **filesystem access is not sandboxed**. See
 > `SECURITY.md`.
+
+### Adding a server
+
+```bash
+joshbot mcp add --env FOO=bar myserver some-mcp-server --stdio
+joshbot mcp add --arg --stdio myserver some-mcp-server   # for an argument that starts with a dash
+joshbot mcp add --disabled myserver some-mcp-server      # write it, but leave it off
+```
+
+`mcp add` writes the same fields the hand-authored JSON above writes, so there is
+no second configuration format. The server is **configured, not approved**: its
+tools are not offered to the model until `joshbot mcp trust <name>` says so, and
+adding one here is not a way around that gate. Flags come before the name;
+`--arg` is for a server argument that begins with a dash, which the command's own
+arguments would otherwise swallow. An invalid server is refused with the reason
+rather than written and left to fail at start-up.
 
 ### Approving a server
 

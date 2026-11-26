@@ -370,6 +370,12 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 	// Load the existing session to compute what changed (for event log).
 	// This is done under the lock to avoid races with concurrent saves.
 	var oldSess *Session
+	// codeql[cs/path-injection] -- ValidateSessionID above rejects the empty
+	// string, a null byte, a path separator and any "..", so s.ID cannot
+	// escape the sessions directory. CodeQL does not recognise a hand-written
+	// validator as a sanitizer, so the flow from the request's user field is
+	// reported anyway; the check is here rather than at the call site because
+	// every boundary that can produce a session id routes through it.
 	if data, err := os.ReadFile(m.sessionFilePath(s.ID)); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 		messages := make([]Message, 0, len(lines))
@@ -384,6 +390,8 @@ func (m *Manager) Save(ctx context.Context, s *Session) error {
 			}
 		}
 		// Also load metadata to detect changes
+		// codeql[cs/path-injection] -- the same ValidateSessionID check as
+		// above; this path is built from the same validated id.
 		metaData, _ := os.ReadFile(m.metadataFilePath(s.ID))
 		var meta struct {
 			ConversationTopic   string            `json:"conversation_topic,omitempty"`
@@ -704,6 +712,9 @@ func (m *Manager) appendEventLocked(ctx context.Context, sessionID string, event
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
+	// codeql[cs/path-injection] -- sessionID reaches this only from
+	// appendEventsLocked, which is called by Save, which validates the id
+	// with ValidateSessionID before it can reach a path.
 	f, err := os.OpenFile(m.logFilePath(sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, sessionFileMode)
 	if err != nil {
 		return fmt.Errorf("failed to open event log: %w", err)

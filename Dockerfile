@@ -1,7 +1,12 @@
 # Multi-stage Dockerfile for joshbot Go implementation
 #
 # Build stage
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+# The base images are pinned by digest, so what the build runs against is a
+# reviewed artefact rather than a moving tag. Bumping them is deliberate: a
+# new digest is a new base image, and the packages inside it need the same
+# review the image itself gets (see the apk --upgrade line in the runtime
+# stage -- the image's packages are pinned no more tightly than the image).
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -30,7 +35,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -o joshbot ./cmd/joshbot
 
 # Runtime stage - minimal image
-FROM alpine:3.24 AS runtime
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS runtime
 
 # Install CA certificates for HTTPS and runtime dependencies.
 # --upgrade: the base image ships the packages it was built with, and `apk add`

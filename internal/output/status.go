@@ -130,6 +130,9 @@ func providerNote(reason string) string {
 const (
 	ReasonNotEnabled = `set "enabled": true`
 	ReasonNoAPIKey   = `missing "api_key"`
+	// ReasonNoAPIBase is for a custom endpoint that carries no credential: it
+	// may be keyless, but it has to say which endpoint it is.
+	ReasonNoAPIBase = `missing "api_base"`
 )
 
 // FormatProviders renders the legacy provider list the way `status` always

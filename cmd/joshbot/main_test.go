@@ -419,6 +419,27 @@ func TestProviderStatuses(t *testing.T) {
 			},
 			want: `groq, openrouter (disabled — set "enabled": true)`,
 		},
+		{
+			// A custom endpoint may be keyless (#520): the operator points
+			// joshbot at a base URL they control, and that endpoint may need
+			// no credential. A status that called it disabled would contradict
+			// the registration path that actually uses it.
+			name: "custom endpoint with a base URL needs no api key",
+			providers: map[string]config.ProviderConfig{
+				"custom": {Enabled: true, APIBase: "https://example.invalid/v1"},
+			},
+			want: "custom",
+		},
+		{
+			// The permission is for an endpoint the operator named. Without a
+			// base URL there is nowhere to send the request, and the missing
+			// thing is the address, not a credential they may not need.
+			name: "custom endpoint without a base URL names the address",
+			providers: map[string]config.ProviderConfig{
+				"custom": {Enabled: true},
+			},
+			want: `custom (disabled — missing "api_base")`,
+		},
 	}
 
 	for _, tt := range tests {

@@ -5564,7 +5564,18 @@ func providerStatuses(providersCfg map[string]config.ProviderConfig) []output.Pr
 		switch {
 		case !p.Enabled:
 			out = append(out, output.ProviderStatus{Name: name, Reason: output.ReasonNotEnabled})
-		case providerRequiresAPIKey(name) && p.APIKey == "":
+		case p.APIKey != "":
+			out = append(out, output.ProviderStatus{Name: name, Usable: true})
+		case keylessCustomEndpoint(name, p):
+			// A custom endpoint may be keyless -- the operator has pointed
+			// joshbot at a base URL they control, and that endpoint may need
+			// no credential. This is the same rule the registration path uses
+			// (#520): a status that disagrees with it would call a working
+			// provider disabled.
+			out = append(out, output.ProviderStatus{Name: name, Usable: true})
+		case keylessCustomEndpointAllowed(name):
+			out = append(out, output.ProviderStatus{Name: name, Reason: output.ReasonNoAPIBase})
+		case providerRequiresAPIKey(name):
 			out = append(out, output.ProviderStatus{Name: name, Reason: output.ReasonNoAPIKey})
 		default:
 			out = append(out, output.ProviderStatus{Name: name, Usable: true})

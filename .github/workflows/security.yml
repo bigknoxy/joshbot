@@ -154,6 +154,23 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           govulncheck ./...
 
+  fuzz:
+    # The pull request leg fuzzes for thirty seconds; the weekly leg gives the
+    # same target longer, because a fuzzer's reach grows with the time it is
+    # allowed to run and this one is the only thing that tries to break the
+    # session id validator.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fuzz the session id validator
+        run: go test ./internal/session/ -run 'FuzzSessionID' -fuzz 'FuzzSessionIDCannotEscapeTheSessionsDirectory' -fuzztime 2m
+
   trivy-fs:
     runs-on: ubuntu-latest
     permissions:

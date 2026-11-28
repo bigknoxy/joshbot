@@ -196,6 +196,30 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
+  fuzz:
+    # The session id is attacker-influenced -- it carries the sender id from an
+    # external system -- and every path in the session package is built from it
+    # after a validator has vetted it. A reviewer can read the validator and see
+    # the rule; a fuzzer tries to break it. Thirty seconds per pull request is
+    # enough to cover the shapes that matter, and the weekly security run gives
+    # it longer.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Fuzz the session id validator
+        run: go test ./internal/session/ -run 'FuzzSessionID' -fuzz 'FuzzSessionIDCannotEscapeTheSessionsDirectory' -fuzztime 30s
+
   changelog-guard:
     # Release history in CHANGELOG.md is append-only, and git will not tell you
     # when a branch violates that: three branches cut from a pre-release main

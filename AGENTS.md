@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-joshbot is a lightweight personal AI assistant (~56,390 LOC Go non-test, 2,882 test functions across 348 test files — measured 2026-11-24) with self-learning memory, auto-skill-creation from tool usage patterns, and Telegram and Discord integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
+joshbot is a lightweight personal AI assistant (~56,605 LOC Go non-test, 2,897 test functions across 355 test files — measured 2026-11-28) with self-learning memory, auto-skill-creation from tool usage patterns, and Telegram and Discord integration. Architecture: goroutine-based message bus decoupling chat channels from a ReAct agent loop backed by multi-provider LLM via OpenRouter-compatible APIs.
 
 Module: `github.com/bigknoxy/joshbot`. Go 1.26.0 (toolchain 1.26.11).
 
@@ -115,7 +115,7 @@ go mod tidy
 ## Code Architecture
 
 ```
-cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~7,115 LOC
+cmd/joshbot/main.go            -- CLI entry (urfave/cli/v2), service wiring, ~7,165 LOC
   internal/
     agent/agent.go             -- ReAct loop (max 20 iterations)
     agent/context.go           -- System prompt assembly (identity files + memory + skills)

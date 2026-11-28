@@ -1,6 +1,6 @@
 # joshbot — Architect's Guide
 
-joshbot is a self-hosted Go personal AI assistant (~56.4K LOC non-test, 2,882 test functions across 348 test files in cmd+internal — measured 2026-11-24). Single binary, zero runtime deps.
+joshbot is a self-hosted Go personal AI assistant (~56.6K LOC non-test, 2,897 test functions across 355 test files in cmd+internal — measured 2026-11-28). Single binary, zero runtime deps.
 
 **`AGENTS.md` (repo root) is the full agent guide** — key interfaces, code style, naming, concurrency and logging patterns, complete gotchas list. Read it before non-trivial work. This file is the quick index.
 

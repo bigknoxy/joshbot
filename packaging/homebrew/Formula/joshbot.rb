@@ -8,8 +8,8 @@ class Joshbot < Formula
   #   curl -fsSL <url> | shasum -a 256
   desc "Nanobot-class personal AI agent as a single static Go binary"
   homepage "https://github.com/bigknoxy/joshbot"
-  url "https://github.com/bigknoxy/joshbot/archive/refs/tags/v1.71.0.tar.gz"
-  sha256 "4d37d870c65679a4b10097d9885103db6dc2031356be6c78f9767a7e8b5673c8"
+  url "https://github.com/bigknoxy/joshbot/archive/refs/tags/v1.72.0.tar.gz"
+  sha256 "0614c96582fceb076468ded39af61bf34665ef57b41782ca722b254d5b895ce8"
   license "MIT"
   head "https://github.com/bigknoxy/joshbot.git", branch: "main"
 

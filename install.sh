@@ -80,7 +80,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -v|--version)
-            require_value "--version" "${2:-}" "v1.71.0"
+            require_value "--version" "${2:-}" "v1.72.0"
             VERSION="$2"
             shift 2
             ;;
@@ -165,7 +165,7 @@ get_latest_version() {
     if [ -z "$version" ]; then
         die "Error: could not determine the latest joshbot version." \
             "GitHub may be unreachable, or rate-limiting this address." \
-            "Retry, or pin a version with --version (e.g. --version v1.71.0)."
+            "Retry, or pin a version with --version (e.g. --version v1.72.0)."
     fi
     
     echo "$version"

@@ -21,12 +21,12 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        version = "1.71.0";
+        version = "1.72.0";
         assets = {
-          x86_64-linux = { asset = "joshbot_v${version}_linux_amd64"; hash = "sha256-UKPR+AE2zIq7QSMbuJ9cSsKplrtRM94B1wN1MM6YjV0="; };
-          aarch64-linux = { asset = "joshbot_v${version}_linux_arm64"; hash = "sha256-HBRyR7a/5YNgzC4JVW5fvGI8MN4UYIHaMPsaqg4aAYo="; };
-          x86_64-darwin = { asset = "joshbot_v${version}_darwin_amd64"; hash = "sha256-Acoz9nR3nz6AoCn7L5aDwG2U4cpGUt0DW6JsguE8zo4="; };
-          aarch64-darwin = { asset = "joshbot_v${version}_darwin_arm64"; hash = "sha256-VJF9Tx8KRlPb3+D2yCbmUk7THfqKCD87CWNGRYPDNdY="; };
+          x86_64-linux = { asset = "joshbot_v${version}_linux_amd64"; hash = "sha256-hPVaIiz8Vf/RPsdXavER4TdgDeZULNDJAbB1RqZx5qw="; };
+          aarch64-linux = { asset = "joshbot_v${version}_linux_arm64"; hash = "sha256-hJotqL4slXbp/l0ftPpyep+JEB5Y1DxEZATh4irGSMA="; };
+          x86_64-darwin = { asset = "joshbot_v${version}_darwin_amd64"; hash = "sha256-8R43j9WX6HtNh6IQzXK6nX+OpVWqi1wuPXn53kYgSwk="; };
+          aarch64-darwin = { asset = "joshbot_v${version}_darwin_arm64"; hash = "sha256-yrDxBfzAoeFgTMszfGEQNGOH2UtqdaRufskhDWDfa3M="; };
         };
       in
       rec {

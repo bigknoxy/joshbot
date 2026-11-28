@@ -44,6 +44,13 @@ func run(basePath, headPath, tag string, requireSection bool) error {
 	}
 	head := string(headBytes)
 
+	// A conflict marker is checked first, in both modes: it is the one defect
+	// that no other check in the pipeline can see, and it must not be able to
+	// ship in a release either.
+	if err := relguard.CheckNoConflictMarkers(head); err != nil {
+		return err
+	}
+
 	if requireSection {
 		return relguard.CheckTagHasSection(head, tag)
 	}

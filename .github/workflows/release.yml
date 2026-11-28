@@ -12,11 +12,12 @@ on:
         required: true
         default: ''
 
+# The top level is the floor: read the code, nothing else. Each job below
+  # asks for the one extra scope it needs, so a job that creates a release
+  # cannot lend its token to a job that only builds binaries. The attestations
+  # and id-token scopes that were here had no step that used them.
 permissions:
-  contents: write
-  packages: write
-  attestations: write
-  id-token: write
+  contents: read
 
 jobs:
   # A tag pushed without a matching `## [x.y.z]` CHANGELOG section used to ship
@@ -26,6 +27,8 @@ jobs:
   changelog:
     name: Changelog section exists
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +56,8 @@ jobs:
     name: Test
     needs: changelog
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,6 +86,8 @@ jobs:
     name: Build
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         goos: [linux, darwin, windows]
@@ -132,6 +139,9 @@ jobs:
     needs: [test, build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      # The one job that writes: it creates the GitHub Release.
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,6 +210,9 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      # actions-gh-pages pushes the built site to the gh-pages branch.
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -217,6 +230,10 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      # The image is pushed to GitHub Container Registry.
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

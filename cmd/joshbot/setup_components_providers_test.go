@@ -40,8 +40,11 @@ func multiProviderFrom(t *testing.T, cfg *config.Config) *providers.MultiProvide
 // real OAuth token is on disk, which is covered by the auth tests.
 var legacyProviderCases = []struct {
 	name string
-	// needsKey records whether the block gates on a non-empty API key.
-	// Ollama is local and deliberately does not.
+	// needsKey records whether the block skips the provider when it carries no
+	// credential. Ollama is local and deliberately does not. A custom endpoint
+	// does not either, as long as it names the endpoint: the operator may be
+	// pointing at a proxy that authenticates elsewhere, or at a service with a
+	// per-IP allowance.
 	needsKey bool
 	cfg      config.ProviderConfig
 }{
@@ -50,7 +53,7 @@ var legacyProviderCases = []struct {
 	{"groq", true, config.ProviderConfig{Enabled: true, APIKey: "gsk-test"}},
 	{"poolside", true, config.ProviderConfig{Enabled: true, APIKey: "ps-test"}},
 	{"ollama", false, config.ProviderConfig{Enabled: true, Model: "llama3.2"}},
-	{"custom", true, config.ProviderConfig{Enabled: true, APIKey: "ck-test", APIBase: "https://example.invalid/v1", Model: "custom-model"}},
+	{"custom", false, config.ProviderConfig{Enabled: true, APIKey: "ck-test", APIBase: "https://example.invalid/v1", Model: "custom-model"}},
 }
 
 // Each supported legacy provider must actually reach the MultiProvider when it

@@ -884,7 +884,18 @@ func registerProviders(cfg *config.Config, multiProvider *providers.MultiProvide
 			// Mirror the bespoke arms' gates: only an enabled, keyed provider the
 			// registry can actually dial. A configured-but-unknown name is left for
 			// noProvidersRegisteredError to name, exactly as before.
-			if !p.Enabled || p.APIKey == "" || !providers.IsProviderRegistered(canonical) {
+			//
+			// A custom endpoint may be keyless. The operator who points joshbot at
+			// their own base URL is saying what it is, and plenty of such endpoints
+			// need no credential of their own: a local proxy, a gateway that
+			// authenticates further upstream, a service with a per-IP allowance.
+			// Requiring a key there made the endpoint unreachable rather than
+			// merely unconfigured -- the provider was skipped, and joshbot quietly
+			// answered from whichever provider it did register. The hosted
+			// providers still need one: without a key they answer 401, and that
+			// masks the real problem, which is what this gate exists to prevent.
+			if !p.Enabled || (p.APIKey == "" && !keylessCustomEndpoint(canonical, p)) ||
+				!providers.IsProviderRegistered(canonical) {
 				continue
 			}
 			base := p.APIBase
@@ -6796,6 +6807,36 @@ func isSupportedProvider(name string) bool {
 	return false
 }
 
+// keylessCustomEndpoint reports whether a provider may be registered without
+// a credential.
+//
+// The hosted providers may not: without a key they answer 401, and the
+// operator sees an auth error instead of the real problem. A custom
+// OpenAI-compatible endpoint may: the operator has pointed joshbot at a base
+// URL they control, and that endpoint may authenticate elsewhere (a proxy, a
+// gateway, a per-IP allowance) or not at all.
+//
+// The base URL is required as well as the permission. Without one there is
+// nowhere to send the request -- the custom provider's own factory refuses it
+// ("custom provider requires api_base to be set") -- so a keyless entry with
+// no base is a configuration mistake, and skipping it is what lets the
+// diagnostic name the mistake.
+func keylessCustomEndpoint(name string, p config.ProviderConfig) bool {
+	return keylessCustomEndpointAllowed(name) && p.APIBase != ""
+}
+
+// keylessCustomEndpointAllowed reports whether a provider may be used without
+// a credential at all. The hosted providers may not: without a key they answer
+// 401, and the operator sees an auth error instead of the real problem.
+func keylessCustomEndpointAllowed(name string) bool {
+	switch providers.CanonicalProviderName(name) {
+	case "custom", "litellm":
+		return true
+	default:
+		return false
+	}
+}
+
 func providerRequiresAPIKey(name string) bool {
 	switch name {
 	case "ollama", "github-copilot":
@@ -6819,7 +6860,7 @@ func noProvidersRegisteredError(providersCfg map[string]config.ProviderConfig) e
 	}
 
 	names := make([]string, 0, len(providersCfg))
-	var keyless, unknown []string
+	var keyless, unknown, noBase []string
 	for name, p := range providersCfg {
 		names = append(names, name)
 		if !p.Enabled {
@@ -6830,11 +6871,19 @@ func noProvidersRegisteredError(providersCfg map[string]config.ProviderConfig) e
 			continue
 		}
 		if providerRequiresAPIKey(name) && p.APIKey == "" {
+			// A custom endpoint may be keyless -- but then it must name the
+			// endpoint. "Set an api_key" would send the operator after the one
+			// thing they may not need, when what is missing is the address.
+			if keylessCustomEndpointAllowed(name) {
+				noBase = append(noBase, name)
+				continue
+			}
 			keyless = append(keyless, name)
 		}
 	}
 	sort.Strings(names)
 	sort.Strings(keyless)
+	sort.Strings(noBase)
 	sort.Strings(unknown)
 
 	// Enabled but not a provider that exists: telling this user to add
@@ -6845,6 +6894,16 @@ func noProvidersRegisteredError(providersCfg map[string]config.ProviderConfig) e
 			fmt.Errorf(
 				"no providers usable: %s enabled but not a known provider — supported providers are: %s",
 				strings.Join(unknown, ", "), strings.Join(configure.SupportedProviders(), ", "),
+			))
+	}
+
+	// Enabled, and allowed to be keyless, but with nowhere to send the
+	// request. The missing thing is the address, not a credential.
+	if len(noBase) > 0 {
+		return newExitError(exitAuth, "set an api_base for the provider, or run 'joshbot configure'",
+			fmt.Errorf(
+				"no providers usable: %s enabled but missing \"api_base\" — set api_base to the OpenAI-compatible endpoint (api_key only if that endpoint needs one), or run 'joshbot configure'",
+				strings.Join(noBase, ", "),
 			))
 	}
 

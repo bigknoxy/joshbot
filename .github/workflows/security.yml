@@ -50,9 +50,10 @@ on:
     - cron: '0 6 * * 1'
   workflow_dispatch:
 
+# The top level is the floor: read the code, nothing else. The jobs that
+  # upload SARIF ask for security-events by name.
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   # gosec: issue #358 triaged all 150 findings from its first real run. 129

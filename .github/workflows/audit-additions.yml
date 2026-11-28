@@ -14,16 +14,20 @@ on:
     - cron: '0 6 * * 1'
   workflow_dispatch:
 
+# The top level is the floor: read the code, nothing else. The jobs that
+  # upload SARIF ask for security-events by name, and the one that talks to
+  # the Scorecard API with OIDC asks for id-token by name.
 permissions:
   contents: read
-  security-events: write
-  id-token: write
 
 jobs:
   osv-scanner:
     name: osv-scanner
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install + run OSV-Scanner
@@ -47,6 +51,8 @@ jobs:
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install actionlint
@@ -63,6 +69,7 @@ jobs:
     name: scorecards
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write
       id-token: write
     steps:

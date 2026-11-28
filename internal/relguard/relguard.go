@@ -93,11 +93,18 @@ func CheckReleasedSectionsIntact(base, head string) error {
 		}
 		have := map[string]int{}
 		for _, l := range hl {
-			have[strings.TrimSpace(l)]++
+			t := strings.TrimSpace(l)
+			if isConflictMarker(t) {
+				// A marker is not part of the record of what was released -- it
+				// is an artifact of a bad merge -- so removing one is a repair,
+				// not the loss of history the append-only rule guards against.
+				continue
+			}
+			have[t]++
 		}
 		for _, l := range b.lines {
 			t := strings.TrimSpace(l)
-			if t == "" {
+			if t == "" || isConflictMarker(t) {
 				continue
 			}
 			if have[t] == 0 {
@@ -161,6 +168,64 @@ func CheckTopVersion(changelog, latestTag string) error {
 			"section", top, tag)
 	}
 	return nil
+}
+
+// CheckNoConflictMarkers fails when the changelog carries a leftover merge
+// conflict marker.
+//
+// A marker in a Markdown file is invisible to every other check in the
+// pipeline: gofmt reads only Go, actionlint reads only the workflows, and the
+// release-history checks read only the headings. A conflict resolved by hand
+// can therefore leave a marker in the file and the PR is green — which is
+// how one reached main in #494: a lone `=======` line sat between two
+// entries of the 1.72.0 section, and nothing in CI could see it.
+//
+// The rule is deliberately blunt. A line made only of `=` characters is a
+// conflict separator in this file, and a Markdown setext heading (a title
+// underlined with `===`) is not something this changelog has ever used: every
+// heading here is an ATX `## [x.y.z]`. If a setext heading is ever wanted,
+// the guard's message says how to write it instead.
+func CheckNoConflictMarkers(changelog string) error {
+	for i, line := range strings.Split(changelog, "\n") {
+		trimmed := strings.TrimRight(line, " \t\r")
+		switch {
+		case strings.HasPrefix(trimmed, "<<<<<<<"), strings.HasPrefix(trimmed, ">>>>>>>"):
+			return fmt.Errorf("CHANGELOG.md line %d carries a merge conflict marker (%q) — "+
+				"resolve the conflict and remove the marker before merging", i+1, trimmed)
+		case isEqualsRule(trimmed):
+			return fmt.Errorf("CHANGELOG.md line %d is a leftover conflict separator (%q) — "+
+				"remove it; a heading in this file is written as an ATX heading (## [x.y.z]), "+
+				"not as a title underlined with =", i+1, trimmed)
+		}
+	}
+	return nil
+}
+
+// isConflictMarker reports whether a line is a merge conflict marker: the
+// start or end marker, or the separator between the two sides.
+//
+// One definition, used by the check that rejects a changelog carrying a
+// marker and by the append-only comparison that ignores one -- so the two
+// cannot drift apart and disagree about what a marker is.
+func isConflictMarker(line string) bool {
+	trimmed := strings.TrimRight(strings.TrimSpace(line), " \t\r")
+	return strings.HasPrefix(trimmed, "<<<<<<<") ||
+		strings.HasPrefix(trimmed, ">>>>>>>") ||
+		isEqualsRule(trimmed)
+}
+
+// isEqualsRule reports whether a line is made only of `=` characters, and at
+// least three of them: the shape git writes for a conflict separator.
+func isEqualsRule(line string) bool {
+	if len(line) < 3 {
+		return false
+	}
+	for _, r := range line {
+		if r != '=' {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckTagHasSection fails when the changelog has no `## [<tag-without-v>]`

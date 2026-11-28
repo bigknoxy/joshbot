@@ -13,8 +13,11 @@ on:
   # reviewed PRs unmergeable under the green-CI rule with no way to run CI.
   workflow_dispatch:
 
+# The top level is the floor: read the code, nothing else. The one job that
+  # writes (deploy-pages, which pushes the site to the gh-pages branch) asks
+  # for it by name.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:

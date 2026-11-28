@@ -248,6 +248,15 @@ func TestConsolidateReportsAFailedPersistAndKeepsTheRawLog(t *testing.T) {
 
 	// Make the consolidated log unwritable the way a permissions change or a
 	// full disk would.
+	//
+	// The premise is a permission the process cannot get past, and root can
+	// get past every one of them: it writes a 0400 file without complaint. So
+	// as root there is no way to arrange the failure this test is about, and
+	// the honest thing is to say so rather than to fail for the wrong reason
+	// (or to pass by asserting nothing).
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a read-only file is still writable, so the failed-persist path cannot be arranged")
+	}
 	consolidated := filepath.Join(dir, "dream_consolidated.jsonl")
 	if err := os.WriteFile(consolidated, nil, 0o400); err != nil {
 		t.Fatal(err)
